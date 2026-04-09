@@ -22,15 +22,21 @@
 *
 ******************************************************************************************/
 /*** Uncomment one of these three  ***/
+#if !defined(PICOMITE) && !defined(PICOMITEVGA) && !defined(PICOMITEWEB)
 #define PICOMITE
 //#define PICOMITEVGA
 //#define PICOMITEWEB
+#endif
 
 /***  Uncomment this define if using PICO2 Chip  ***/
-#define PICORP2350
+// #ifndef PICORP2350
+// #define PICORP2350 1
+// #endif
 
 /***  Uncomment this define if HDMI pins required  ***/
+#ifndef GUICONTROLS
 #define GUICONTROLS
+#endif
 
 /*****************************************************************************************/
 #define MAXVARLEN           32                      // maximum length of a variable name
@@ -39,7 +45,7 @@
 #define MAXKEYLEN 64
 
 //Addresses in the API Table for the pointers to each function
-#ifdef PICORP2350
+#if PICORP2350
  #define BaseAddress   0x1000023C
 #else
  #define BaseAddress   0x100002D4
