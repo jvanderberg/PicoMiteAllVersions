@@ -3955,13 +3955,16 @@ void __not_in_flash_func(UpdateCore)()
                 spi_write_data(t >> 8);
                 spi_write_data(t);
 #endif
-            } else if(command==1){ 
+            } else if(command==1){
                 uint8_t *s=(uint8_t *)multicore_fifo_pop_blocking();
                 mutex_enter_blocking(&frameBufferMutex);			// lock the frame buffer
                 copyframetoscreen(s,0,HRes-1,0,VRes-1,0);
                 mutex_exit(&frameBufferMutex);
+            } else if(command==8){
+                extern void fastgfx_swap_core1(void);
+                fastgfx_swap_core1();
             }
-        } 
+        }
     }
 
 }

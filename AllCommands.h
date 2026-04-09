@@ -104,6 +104,7 @@ void cmd_tile(void);
 void cmd_mode(void);
 void cmd_3D(void);
 void cmd_framebuffer(void);
+void cmd_fastgfx(void);
 void cmd_edit(void);
 void cmd_editfile(void);
 void cmd_port(void);
@@ -431,6 +432,7 @@ void fun_map(void);
 	{ (unsigned char *)"Arc",            T_CMD,                      0, cmd_arc	},
 	{ (unsigned char *)"Polygon",        T_CMD,                  	 0, cmd_polygon	},
   	{ (unsigned char *)"FRAMEBUFFER",     T_CMD,                     0, cmd_framebuffer   },
+  	{ (unsigned char *)"FASTGFX",         T_CMD,                     0, cmd_fastgfx       },
 	{ (unsigned char *)"Sprite",           T_CMD,                      0, cmd_sprite	},
 	{ (unsigned char *)"Blit",           T_CMD,                      0, cmd_blit	},
     { (unsigned char *)"Edit File",   T_CMD,              0, cmd_editfile     },

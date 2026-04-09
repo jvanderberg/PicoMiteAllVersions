@@ -5648,6 +5648,218 @@ void cmd_framebuffer(void){
 }
 #endif
 
+// ============================================================
+// FASTGFX - double-buffered display with scanline diffing + DMA
+// ============================================================
+#ifdef PICOMITE
+#include "hardware/dma.h"
+
+static uint8_t *FastGFXBackBuf = NULL;
+static uint8_t *FastGFXFrontBuf = NULL;
+static volatile bool fastgfx_done = true;
+static bool fastgfx_active = false;
+static int fastgfx_dma_chan = -1;
+static uint32_t fastgfx_frame_us = 0;       // target frame time in microseconds (0 = unlimited)
+static uint64_t fastgfx_last_swap_us = 0;   // timestamp of last swap
+
+// Ping-pong line buffers for RGB565 conversion (max 320 pixels * 2 bytes)
+static uint16_t fastgfx_linebuf[2][320];
+
+// Determine which SPI instance the LCD is on
+static inline spi_inst_t *fastgfx_get_spi(void) {
+#if defined(rp2350)
+    return (PinDef[Option.LCD_CLK].mode & SPI0SCK) ? spi0 : spi1;
+#else
+    return (PinDef[Option.SYSTEM_CLK].mode & SPI0SCK) ? spi0 : spi1;
+#endif
+}
+
+// Core1 swap: diff back vs front, DMA changed scanlines to SPI, copy back->front
+void __not_in_flash_func(fastgfx_swap_core1)(void) {
+    spi_inst_t *spi = fastgfx_get_spi();
+    int stride = HRes / 2;  // bytes per scanline in 4-bit framebuffer
+    uint8_t *back = FastGFXBackBuf;
+    uint8_t *front = FastGFXFrontBuf;
+    int buf_idx = 0;  // ping-pong index
+
+    // Ensure map[] is populated using same encoding as copyframetoscreen
+    if (map[15] == 0) {
+        for (int i = 0; i < 16; i++) {
+            uint8_t col0 = ((RGB121map[i] >> 16) & 0xF8) | ((RGB121map[i] >> 13) & 0x07);
+            uint8_t col1 = ((RGB121map[i] >>  5) & 0xE0) | ((RGB121map[i] >>  3) & 0x1F);
+            map[i] = col0 | (col1 << 8);
+        }
+    }
+
+    // Configure DMA channel for SPI writes
+    dma_channel_config dma_cfg = dma_channel_get_default_config(fastgfx_dma_chan);
+    channel_config_set_transfer_data_size(&dma_cfg, DMA_SIZE_8);
+    channel_config_set_read_increment(&dma_cfg, true);
+    channel_config_set_write_increment(&dma_cfg, false);
+    channel_config_set_dreq(&dma_cfg, spi_get_dreq(spi, true));  // TX DREQ
+
+    // Tear sync
+    if (Option.DISPLAY_TYPE == ILI9341 || Option.DISPLAY_TYPE == ST7796SP ||
+        Option.DISPLAY_TYPE == ST7796S || Option.DISPLAY_TYPE == ST7789B ||
+        Option.DISPLAY_TYPE == ILI9488 || Option.DISPLAY_TYPE == ILI9488P) {
+        while (GetLineILI9341() != 0) {}
+    }
+
+    // Scan for dirty regions: batch consecutive dirty scanlines
+    int y = 0;
+    while (y < VRes) {
+        // Skip clean scanlines
+        if (memcmp(back + y * stride, front + y * stride, stride) == 0) {
+            y++;
+            continue;
+        }
+
+        // Found a dirty scanline — find the extent of the dirty region
+        int y_start = y;
+        int x_min = stride;  // in bytes
+        int x_max = 0;
+
+        while (y < VRes && memcmp(back + y * stride, front + y * stride, stride) != 0) {
+            uint8_t *b = back + y * stride;
+            uint8_t *f = front + y * stride;
+            // Find leftmost and rightmost dirty byte in this scanline
+            for (int x = 0; x < stride; x++) {
+                if (b[x] != f[x]) {
+                    if (x < x_min) x_min = x;
+                    if (x > x_max) x_max = x;
+                }
+            }
+            y++;
+        }
+        int y_end = y;  // exclusive
+
+        // Convert byte range to pixel range (each byte = 2 pixels)
+        int px_start = x_min * 2;
+        int px_end = x_max * 2 + 1;  // inclusive
+
+        // Set display window for this dirty rectangle
+        DefineRegionSPI(px_start, y_start, px_end, y_end - 1, 1);
+
+        // Send each scanline in the dirty region
+        for (int sy = y_start; sy < y_end; sy++) {
+            uint16_t *lb = fastgfx_linebuf[buf_idx];
+            int pixel_count = px_end - px_start + 1;
+
+            // Convert 4-bit indexed -> RGB565 into line buffer
+            int out = 0;
+            for (int bx = x_min; bx <= x_max; bx++) {
+                uint8_t byte = back[sy * stride + bx];
+                lb[out++] = (uint16_t)map[byte & 0x0F];
+                lb[out++] = (uint16_t)map[(byte >> 4) & 0x0F];
+            }
+
+            // Wait for previous DMA to finish before reusing this buffer
+            dma_channel_wait_for_finish_blocking(fastgfx_dma_chan);
+
+            // DMA the line buffer to SPI
+            dma_channel_configure(
+                fastgfx_dma_chan,
+                &dma_cfg,
+                &spi_get_hw(spi)->dr,    // write to SPI data register
+                (uint8_t *)lb,            // read from line buffer
+                pixel_count * 2,          // byte count (RGB565 = 2 bytes/pixel)
+                true                      // start immediately
+            );
+
+            // Copy this scanline's dirty bytes from back to front
+            memcpy(front + sy * stride + x_min, back + sy * stride + x_min, x_max - x_min + 1);
+
+            // Alternate ping-pong buffer
+            buf_idx ^= 1;
+        }
+
+        // Wait for last DMA in this region to finish before next DefineRegionSPI
+        dma_channel_wait_for_finish_blocking(fastgfx_dma_chan);
+        spi_finish(spi);
+        ClearCS(Option.LCD_CS);
+    }
+
+    __dmb();
+    fastgfx_done = true;
+}
+
+void cmd_fastgfx(void) {
+    unsigned char *p = NULL;
+    if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
+        if (fastgfx_active) {
+            // Auto-close previous session (e.g. after Ctrl+C)
+            while (!fastgfx_done) { __dmb(); }
+            if (fastgfx_dma_chan >= 0) {
+                dma_channel_unclaim(fastgfx_dma_chan);
+                fastgfx_dma_chan = -1;
+            }
+            FreeMemory(FastGFXBackBuf);
+            FreeMemory(FastGFXFrontBuf);
+            FastGFXBackBuf = NULL;
+            FastGFXFrontBuf = NULL;
+            fastgfx_active = false;
+            restorepanel();
+        }
+        if (FrameBuf || LayerBuf) error("FRAMEBUFFER is active");
+        FastGFXBackBuf = GetMemory(HRes * VRes / 2);
+        FastGFXFrontBuf = GetMemory(HRes * VRes / 2);
+        memset(FastGFXBackBuf, 0, HRes * VRes / 2);
+        memset(FastGFXFrontBuf, 0, HRes * VRes / 2);
+        fastgfx_dma_chan = dma_claim_unused_channel(true);
+        WriteBuf = FastGFXBackBuf;
+        setframebuffer();
+        fastgfx_active = true;
+        fastgfx_done = true;
+        fastgfx_frame_us = 0;
+        fastgfx_last_swap_us = 0;
+    } else if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
+        if (!fastgfx_active) error("FASTGFX not active");
+        // Implicit sync: wait for previous swap to finish
+        while (!fastgfx_done) { __dmb(); }
+        // Frame rate limiter: wait until target frame time has elapsed
+        if (fastgfx_frame_us > 0) {
+            while (time_us_64() - fastgfx_last_swap_us < fastgfx_frame_us) {
+                tight_loop_contents();
+            }
+        }
+        fastgfx_last_swap_us = time_us_64();
+        // Signal core1 to run the swap
+        fastgfx_done = false;
+        __dmb();
+        multicore_fifo_push_blocking(8);
+    } else if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
+        if (!fastgfx_active) error("FASTGFX not active");
+        while (!fastgfx_done) { __dmb(); }
+    } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
+        if (!fastgfx_active) error("FASTGFX not active");
+        int fps = getint(p, 0, 120);
+        if (fps == 0)
+            fastgfx_frame_us = 0;
+        else
+            fastgfx_frame_us = 1000000 / fps;
+    } else if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
+        if (!fastgfx_active) error("FASTGFX not active");
+        while (!fastgfx_done) { __dmb(); }
+        if (fastgfx_dma_chan >= 0) {
+            dma_channel_unclaim(fastgfx_dma_chan);
+            fastgfx_dma_chan = -1;
+        }
+        FreeMemory(FastGFXBackBuf);
+        FreeMemory(FastGFXFrontBuf);
+        FastGFXBackBuf = NULL;
+        FastGFXFrontBuf = NULL;
+        fastgfx_active = false;
+        restorepanel();
+    } else {
+        error("Syntax");
+    }
+}
+#else
+void cmd_fastgfx(void) {
+    error("FASTGFX not supported on this platform");
+}
+#endif
+
 void cmd_blit(void) {
     int x1, y1, x2, y2, w, h, bnbr;
     unsigned char *buff = NULL;
