@@ -73,6 +73,49 @@ static void emit_abs_jump(BCCompiler *cs, uint8_t opcode, int lineno) {
         bc_add_fixup_line(cs, patch, lineno, 4, 0);
 }
 
+/*
+ * Try to compile a bare SUB call: "SubName arg1, arg2, ..."
+ * If *pp points to a name that is a known SUB (return_type == 0),
+ * compile the call and advance *pp.  Returns 1 if compiled, 0 if not.
+ */
+static int try_compile_sub_call(BCCompiler *cs, unsigned char **pp) {
+    unsigned char *p = *pp;
+    if (!isnamestart(*p)) return 0;
+
+    int nlen = 0;
+    while (isnamechar(p[nlen])) nlen++;
+
+    /* Variables have type suffixes, SUBs don't */
+    if (nlen > 0 && (p[nlen] == '%' || p[nlen] == '!' || p[nlen] == '$'))
+        return 0;
+
+    int sf_idx = bc_find_subfun(cs, (const char *)p, nlen);
+    if (sf_idx < 0 || cs->subfuns[sf_idx].return_type != 0)
+        return 0;
+
+    /* It's a SUB call */
+    p += nlen;
+    skipspace(p);
+    int nargs = 0;
+    if (*p == '(' || (*p && *p != '\0' && *p != '\'')) {
+        if (*p == '(') p++;
+        while (*p && *p != ')' && *p != '\0') {
+            skipspace(p);
+            if (*p == ')' || *p == '\0') break;
+            bc_compile_expression(cs, &p);
+            nargs++;
+            skipspace(p);
+            if (*p == ',') p++; else break;
+        }
+        if (*p == ')') p++;
+    }
+    bc_emit_byte(cs, OP_CALL_SUB);
+    bc_emit_u16(cs, (uint16_t)sf_idx);
+    bc_emit_byte(cs, (uint8_t)nargs);
+    *pp = p;
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /*  IF / ELSEIF / ELSE / ENDIF                                        */
 /* ------------------------------------------------------------------ */
@@ -102,36 +145,53 @@ static void compile_if(BCCompiler *cs, unsigned char **pp) {
             if (lineno < 0) { bc_set_error(cs, "Expected line number after GOTO"); *pp = p; return; }
             emit_abs_jump(cs, OP_JMP_ABS, lineno);
         } else {
-            /* Find tokenELSE boundary so statement compilers stop before it */
-            unsigned char *else_pos = NULL;
-            for (unsigned char *scan = p; *scan; scan++) {
-                if (*scan == tokenELSE) { else_pos = scan; break; }
+            /* Compile all colon-separated statements in the THEN clause.
+             * The tokenizer converts ':' to 0x00 element separators.
+             * We step past 0x00 separators to compile all THEN statements.
+             * Stop at T_NEWLINE, T_LINENBR, or end-of-program. */
+            while (1) {
+                skipspace(p);
+                if (*p == 0) {
+                    /* Null separator — check if more THEN-clause content follows */
+                    unsigned char *peek = p + 1;
+                    skipspace(peek);
+                    if (*peek == 0 || *peek == T_NEWLINE || *peek == T_LINENBR) break;
+                    if (*peek == tokenELSE) { p = peek; break; }
+                    p = peek; /* step past null, continue with next statement */
+                    continue;
+                }
+                if (*p == tokenELSE) break;
+                if (bc_is_cmd_token(p)) {
+                    uint16_t cmd = bc_decode_cmd(p); p += 2; skipspace(p);
+                    bc_compile_statement(cs, &p, cmd);
+                } else if (isnamestart(*p)) {
+                    if (!try_compile_sub_call(cs, &p))
+                        bc_compile_assignment(cs, &p);
+                } else break;
             }
-            /* Temporarily null-terminate at ELSE so THEN-branch compiles cleanly */
-            unsigned char saved_else = 0;
-            if (else_pos) { saved_else = *else_pos; *else_pos = 0; }
 
-            if (bc_is_cmd_token(p)) {
-                uint16_t cmd = bc_decode_cmd(p); p += 2; skipspace(p);
-                bc_compile_statement(cs, &p, cmd);
-            } else if (isnamestart(*p)) {
-                bc_compile_assignment(cs, &p);
-            }
-
-            /* Restore the ELSE token */
-            if (else_pos) { *else_pos = saved_else; }
-
-            skipspace(p);
             if (*p == tokenELSE) {
                 p++; skipspace(p);
                 uint32_t jmp_patch = emit_jmp_placeholder(cs, OP_JMP);
                 patch_jmp_here(cs, jz_patch);
                 jz_patch = 0xFFFFFFFF;
-                if (bc_is_cmd_token(p)) {
-                    uint16_t cmd = bc_decode_cmd(p); p += 2; skipspace(p);
-                    bc_compile_statement(cs, &p, cmd);
-                } else if (isnamestart(*p)) {
-                    bc_compile_assignment(cs, &p);
+                /* Compile all colon-separated statements in the ELSE clause */
+                while (1) {
+                    skipspace(p);
+                    if (*p == 0) {
+                        unsigned char *peek = p + 1;
+                        skipspace(peek);
+                        if (*peek == 0 || *peek == T_NEWLINE || *peek == T_LINENBR) break;
+                        p = peek;
+                        continue;
+                    }
+                    if (bc_is_cmd_token(p)) {
+                        uint16_t cmd = bc_decode_cmd(p); p += 2; skipspace(p);
+                        bc_compile_statement(cs, &p, cmd);
+                    } else if (isnamestart(*p)) {
+                        if (!try_compile_sub_call(cs, &p))
+                            bc_compile_assignment(cs, &p);
+                    } else break;
                 }
                 patch_jmp_here(cs, jmp_patch);
             }
@@ -805,8 +865,23 @@ static void compile_exit(BCCompiler *cs, unsigned char **pp) {
         target_type = NEST_FOR; skip_len = 3;
     } else if (strncasecmp((char *)p, "DO", 2) == 0 && !isnamechar(p[2])) {
         target_type = NEST_DO; skip_len = 2;
+    } else if (strncasecmp((char *)p, "FUNCTION", 8) == 0 && !isnamechar(p[8])) {
+        /* EXIT FUNCTION — load return value, leave frame, return */
+        BCNestEntry *ne = bc_nest_find(cs, NEST_FUNCTION);
+        if (!ne) { bc_set_error(cs, "EXIT FUNCTION without matching FUNCTION"); *pp = p; return; }
+        bc_emit_load_var(cs, ne->var_slot, ne->var_type, 1);
+        bc_emit_byte(cs, OP_LEAVE_FRAME);
+        bc_emit_byte(cs, OP_RET_FUN);
+        p += 8; *pp = p; return;
+    } else if (strncasecmp((char *)p, "SUB", 3) == 0 && !isnamechar(p[3])) {
+        /* EXIT SUB — leave frame, return */
+        BCNestEntry *ne = bc_nest_find(cs, NEST_SUB);
+        if (!ne) { bc_set_error(cs, "EXIT SUB without matching SUB"); *pp = p; return; }
+        bc_emit_byte(cs, OP_LEAVE_FRAME);
+        bc_emit_byte(cs, OP_RET_SUB);
+        p += 3; *pp = p; return;
     } else {
-        bc_set_error(cs, "Expected FOR or DO after EXIT"); *pp = p; return;
+        bc_set_error(cs, "Expected FOR, DO, FUNCTION or SUB after EXIT"); *pp = p; return;
     }
 
     BCNestEntry *ne = bc_nest_find(cs, target_type);
@@ -817,6 +892,23 @@ static void compile_exit(BCCompiler *cs, unsigned char **pp) {
     if (ne->exit_fixup_count < 16) ne->exit_fixups[ne->exit_fixup_count++] = patch;
     p += skip_len;
     *pp = p;
+}
+
+static void compile_exit_function(BCCompiler *cs, unsigned char **pp) {
+    BCNestEntry *ne = bc_nest_find(cs, NEST_FUNCTION);
+    if (!ne) { bc_set_error(cs, "EXIT FUNCTION without matching FUNCTION"); return; }
+    bc_emit_load_var(cs, ne->var_slot, ne->var_type, 1);
+    bc_emit_byte(cs, OP_LEAVE_FRAME);
+    bc_emit_byte(cs, OP_RET_FUN);
+    (void)pp;
+}
+
+static void compile_exit_sub(BCCompiler *cs, unsigned char **pp) {
+    BCNestEntry *ne = bc_nest_find(cs, NEST_SUB);
+    if (!ne) { bc_set_error(cs, "EXIT SUB without matching SUB"); return; }
+    bc_emit_byte(cs, OP_LEAVE_FRAME);
+    bc_emit_byte(cs, OP_RET_SUB);
+    (void)pp;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1263,7 +1355,7 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
     /* Commands not available as pre-cached globals: use static cache */
     {
         static unsigned short cGOTO, cGOSUB, cRETURN, cPRINT;
-        static unsigned short cDIM, cEND, cEXIT, cEXITFOR, cEXITDO, cLET;
+        static unsigned short cDIM, cEND, cEXIT, cEXITFOR, cEXITDO, cEXITFUN, cEXITSUB, cLET;
         static unsigned short cDATA, cREAD, cRESTORE;
         static unsigned short cINC, cCONST, cRANDOMIZE, cERROR, cCLEAR;
         static int cached = 0;
@@ -1277,6 +1369,8 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
             cEXIT    = (unsigned short)GetCommandValue((unsigned char *)"Exit");
             cEXITFOR = (unsigned short)GetCommandValue((unsigned char *)"Exit For");
             cEXITDO  = (unsigned short)GetCommandValue((unsigned char *)"Exit Do");
+            cEXITFUN = (unsigned short)GetCommandValue((unsigned char *)"Exit Function");
+            cEXITSUB = (unsigned short)GetCommandValue((unsigned char *)"Exit Sub");
             cLET     = (unsigned short)GetCommandValue((unsigned char *)"Let");
             cDATA    = (unsigned short)GetCommandValue((unsigned char *)"Data");
             cREAD    = (unsigned short)GetCommandValue((unsigned char *)"Read");
@@ -1296,6 +1390,8 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         if (cmd_token == cEND)     { bc_emit_byte(cs, OP_END); return; }
         if (cmd_token == cEXITFOR) { compile_exit_for(cs, pp); return; }
         if (cmd_token == cEXITDO)  { compile_exit_do(cs, pp);  return; }
+        if (cmd_token == cEXITFUN) { compile_exit_function(cs, pp); return; }
+        if (cmd_token == cEXITSUB) { compile_exit_sub(cs, pp); return; }
         if (cmd_token == cEXIT)    { compile_exit(cs, pp);   return; }
         if (cmd_token == cLET)     { bc_compile_assignment(cs, pp); return; }
         if (cmd_token == cDATA)    { compile_data(cs, pp);    return; }
