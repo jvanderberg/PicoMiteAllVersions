@@ -436,13 +436,26 @@ static void compile_print(BCCompiler *cs, unsigned char **pp) {
 
 static void compile_dim(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp;
+
+    /* Check for DIM INTEGER / DIM FLOAT / DIM STRING — sets default type
+     * for all variables in this DIM statement */
+    uint8_t forced_type = 0;
+    skipspace(p);
+    if (strncasecmp((char *)p, "INTEGER", 7) == 0 && !isnamechar(p[7])) {
+        forced_type = T_INT; p += 7;
+    } else if (strncasecmp((char *)p, "FLOAT", 5) == 0 && !isnamechar(p[5])) {
+        forced_type = T_NBR; p += 5;
+    } else if (strncasecmp((char *)p, "STRING", 6) == 0 && !isnamechar(p[6])) {
+        forced_type = T_STR; p += 6;
+    }
+
     while (1) {
         skipspace(p);
         if (!isnamestart(*p)) break;
         uint8_t vtype = 0; int is_arr = 0;
         int namelen = bc_parse_varname(p, &vtype, &is_arr);
         if (namelen == 0) break;
-        if (vtype == 0) vtype = T_NBR;
+        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
 
         uint16_t slot = bc_find_slot(cs, (const char *)p, namelen);
         if (slot == 0xFFFF) slot = bc_add_slot(cs, (const char *)p, namelen, vtype, 1);
@@ -660,13 +673,24 @@ static void compile_local(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp;
     if (cs->current_subfun < 0) { bc_set_error(cs, "LOCAL outside SUB/FUNCTION"); *pp = p; return; }
 
+    /* Check for LOCAL INTEGER / LOCAL FLOAT / LOCAL STRING */
+    uint8_t forced_type = 0;
+    skipspace(p);
+    if (strncasecmp((char *)p, "INTEGER", 7) == 0 && !isnamechar(p[7])) {
+        forced_type = T_INT; p += 7;
+    } else if (strncasecmp((char *)p, "FLOAT", 5) == 0 && !isnamechar(p[5])) {
+        forced_type = T_NBR; p += 5;
+    } else if (strncasecmp((char *)p, "STRING", 6) == 0 && !isnamechar(p[6])) {
+        forced_type = T_STR; p += 6;
+    }
+
     while (1) {
         skipspace(p);
         if (!isnamestart(*p)) break;
         uint8_t vtype = 0; int is_arr = 0;
         int namelen = bc_parse_varname(p, &vtype, &is_arr);
         if (namelen == 0) break;
-        if (vtype == 0) vtype = T_NBR;
+        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
         bc_add_local(cs, (const char *)p, namelen, vtype, is_arr);
         p += namelen;
         if (is_arr && *p == '(') {
