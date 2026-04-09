@@ -17,8 +17,15 @@
 /* External MMBasic globals */
 extern void MMPrintString(char *s);
 extern void error(char *msg, ...);
+#ifdef MMBASIC_HOST
+#define BC_ALLOC(sz)   calloc(1, (sz))
+#define BC_FREE(p)     free((p))
+#else
 extern void *GetMemory(int size);
 extern void FreeMemory(unsigned char *addr);
+#define BC_ALLOC(sz)   GetMemory((sz))
+#define BC_FREE(p)     FreeMemory((unsigned char *)(p))
+#endif
 extern void tokenise(int console);
 extern unsigned char inpbuf[];
 extern unsigned char tknbuf[];
@@ -869,18 +876,18 @@ static const BCTestCase test_cases[] = {
 static void cleanup_vm(BCVMState *vm, BCCompiler *cs) {
     int i;
     (void)cs;
-    /* Free array data (allocated via calloc in OP_DIM_ARR).
+    /* Free array data (allocated via GetMemory in OP_DIM_ARR).
      * String element buffers were GetTempMemory — don't free individually. */
     for (i = 0; i < BC_MAX_SLOTS; i++) {
         if (vm->arrays[i].data) {
-            free(vm->arrays[i].data);
+            BC_FREE(vm->arrays[i].data);
             vm->arrays[i].data = NULL;
         }
     }
     /* Free local array data */
     for (i = 0; i < VM_MAX_LOCALS; i++) {
         if (vm->local_arrays[i].data) {
-            free(vm->local_arrays[i].data);
+            BC_FREE(vm->local_arrays[i].data);
             vm->local_arrays[i].data = NULL;
         }
     }
@@ -898,7 +905,7 @@ void bc_run_tests(void) {
     char msg[256];
 
     /* Save ProgMemory state so we can restore after tests */
-    unsigned char *saved_prog = (unsigned char *)malloc(PSize + 16);
+    unsigned char *saved_prog = (unsigned char *)BC_ALLOC(PSize + 16);
     int saved_psize = PSize;
     if (saved_prog) {
         memcpy(saved_prog, ProgMemory, PSize);
@@ -910,10 +917,21 @@ void bc_run_tests(void) {
 
     for (i = 0; i < NUM_TESTS; i++) {
         const BCTestCase *tc = &test_cases[i];
-        BCCompiler *cs = NULL;
-        BCVMState *vm = NULL;
         char *capture_buf = NULL;
         int test_error = 0;
+
+        /* Heap-allocate structs — BCVMState is ~6 KB, overflows device stack */
+        BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
+        BCVMState  *vm = (BCVMState  *)BC_ALLOC(sizeof(BCVMState));
+        if (cs) memset(cs, 0, sizeof(BCCompiler));
+        if (vm) memset(vm, 0, sizeof(BCVMState));
+        if (!cs || !vm) {
+            if (cs) BC_FREE(cs);
+            if (vm) BC_FREE(vm);
+            MMPrintString("ERROR: out of memory (structs)\r\n");
+            errors++;
+            continue;
+        }
 
         /* Allow user to abort with Ctrl-C */
         CheckAbort();
@@ -924,27 +942,31 @@ void bc_run_tests(void) {
         /* Load the test program into ProgMemory */
         load_test_program(tc->source);
 
-        /* Allocate compiler and VM via calloc — too large for MMBasic heap */
-        cs = (BCCompiler *)calloc(1, sizeof(BCCompiler));
-        if (!cs) {
+        if (bc_compiler_alloc(cs) != 0) {
+            BC_FREE(cs);
+            BC_FREE(vm);
             MMPrintString("ERROR: out of memory (compiler)\r\n");
             errors++;
             continue;
         }
 
-        vm = (BCVMState *)calloc(1, sizeof(BCVMState));
-        if (!vm) {
-            free(cs);
+        if (bc_vm_alloc(vm) != 0) {
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            BC_FREE(vm);
             MMPrintString("ERROR: out of memory (VM)\r\n");
             errors++;
             continue;
         }
 
         /* Allocate capture buffer */
-        capture_buf = (char *)malloc(4096);
+        capture_buf = (char *)BC_ALLOC(4096);
+        if (capture_buf) memset(capture_buf, 0, 4096);
         if (!capture_buf) {
-            free(vm);
-            free(cs);
+            bc_vm_free(vm);
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            BC_FREE(vm);
             MMPrintString("ERROR: out of memory (capture)\r\n");
             errors++;
             continue;
@@ -956,9 +978,11 @@ void bc_run_tests(void) {
             snprintf(msg, sizeof(msg), "COMPILE ERROR at line %d: %s\r\n",
                      cs->error_line, cs->error_msg);
             MMPrintString(msg);
-            free(capture_buf);
-            free(vm);
-            free(cs);
+            BC_FREE(capture_buf);
+            bc_vm_free(vm);
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            BC_FREE(vm);
             errors++;
             continue;
         }
@@ -988,9 +1012,11 @@ void bc_run_tests(void) {
             snprintf(msg, sizeof(msg), "RUNTIME ERROR\r\n");
             MMPrintString(msg);
             cleanup_vm(vm, cs);
-            free(capture_buf);
-            free(vm);
-            free(cs);
+            BC_FREE(capture_buf);
+            bc_vm_free(vm);
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            BC_FREE(vm);
             errors++;
             continue;
         }
@@ -1091,16 +1117,18 @@ void bc_run_tests(void) {
 
         /* Clean up this test */
         cleanup_vm(vm, cs);
-        free(capture_buf);
-        free(vm);
-        free(cs);
+        BC_FREE(capture_buf);
+        bc_vm_free(vm);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        BC_FREE(vm);
     }
 
     /* Restore ProgMemory */
     if (saved_prog) {
         memcpy(ProgMemory, saved_prog, saved_psize);
         PSize = saved_psize;
-        free(saved_prog);
+        BC_FREE(saved_prog);
     }
 
     /* Print summary */

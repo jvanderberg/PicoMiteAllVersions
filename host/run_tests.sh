@@ -2,12 +2,11 @@
 # run_tests.sh — Run all .bas test programs through the MMBasic host build
 #
 # Usage:
-#   ./run_tests.sh              Run all tests in tests/ with interpreter
-#   ./run_tests.sh --interp     Run all tests with interpreter only
-#   ./run_tests.sh --vm         Run all tests with bytecode VM only
-#   ./run_tests.sh --compare    Run all tests comparing both engines (default when VM works)
-#   ./run_tests.sh tests/t01_print.bas          Run a single test
-#   ./run_tests.sh tests/t01_print.bas --interp Run a single test with specific engine
+#   ./run_tests.sh                                 Compare both engines (default)
+#   ./run_tests.sh --interp                        Run all tests with interpreter only
+#   ./run_tests.sh --vm                            Run all tests with bytecode VM only
+#   ./run_tests.sh tests/t01_print.bas             Run a single test (compare mode)
+#   ./run_tests.sh tests/t01_print.bas --vm        Run a single test with specific engine
 #
 # Exit code: 0 if all tests pass, 1 if any test fails.
 
@@ -20,17 +19,22 @@ if [ ! -x "$BINARY" ]; then
     ./build.sh
 fi
 
-MODE="${1:---interp}"
+# Default to comparison mode (both engines)
+MODE=""
 SINGLE_FILE=""
 PASSED=0
 FAILED=0
 ERRORS=""
 
 # Parse arguments
-if [ -f "$1" ] 2>/dev/null; then
-    # Single file mode
-    SINGLE_FILE="$1"
-    MODE="${2:---interp}"
+if [ $# -ge 1 ]; then
+    if [ -f "$1" ] 2>/dev/null; then
+        # Single file mode
+        SINGLE_FILE="$1"
+        MODE="${2:-}"
+    else
+        MODE="$1"
+    fi
 fi
 
 run_one_test() {
@@ -39,11 +43,11 @@ run_one_test() {
     local name
     name=$(basename "$testfile" .bas)
 
-    printf "  %-25s " "$name"
+    printf "  %-30s " "$name"
 
     # Capture output and exit code
     local output
-    if output=$($BINARY "$testfile" "$mode" 2>&1); then
+    if output=$($BINARY "$testfile" $mode 2>&1); then
         echo "PASS"
         PASSED=$((PASSED + 1))
         return 0
@@ -55,19 +59,26 @@ run_one_test() {
     fi
 }
 
+display_mode="compare (interpreter vs VM)"
+if [ "$MODE" = "--interp" ]; then
+    display_mode="interpreter only"
+elif [ "$MODE" = "--vm" ]; then
+    display_mode="bytecode VM only"
+fi
+
 echo "MMBasic Host Test Runner"
 echo "========================"
 echo ""
 
 if [ -n "$SINGLE_FILE" ]; then
-    echo "Running: $SINGLE_FILE ($MODE)"
+    echo "Running: $SINGLE_FILE ($display_mode)"
     echo ""
     # For single file, show full output
-    $BINARY "$SINGLE_FILE" "$MODE"
+    $BINARY "$SINGLE_FILE" $MODE
     exit $?
 fi
 
-echo "Mode: $MODE"
+echo "Mode: $display_mode"
 echo ""
 
 # Run all test files in sorted order

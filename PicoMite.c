@@ -57,7 +57,8 @@ extern void start_vga_i2s(void);
 #endif
 #endif
 #define COPYRIGHT   "Copyright " YEAR " Geoff Graham\r\n"\
-                    "Copyright " YEAR2 " Peter Mather\r\n\r\n"
+                    "Copyright " YEAR2 " Peter Mather\r\n"\
+                    "FRUN bytecode VM by Josh V\r\n\r\n"
 
 #ifdef USBKEYBOARD
     #include "tusb.h"

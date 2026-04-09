@@ -406,9 +406,9 @@ static void compile_print(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp; skipspace(p);
     int suppress_newline = 0;
 
-    while (*p && *p != '\'') {
+    while (*p && *p != '\'' && *p != T_NEWLINE) {
         skipspace(p);
-        if (*p == '\0' || *p == '\'') break;
+        if (*p == '\0' || *p == '\'' || *p == T_NEWLINE) break;
         if (*p == ';') { suppress_newline = 1; p++; continue; }
         if (*p == ',') { bc_emit_byte(cs, OP_PRINT_TAB); suppress_newline = 1; p++; continue; }
 
@@ -586,10 +586,21 @@ static void compile_function(BCCompiler *cs, unsigned char **pp) {
     unsigned char *name_start = p;  /* save pointer to full name including suffix */
     int namelen = bc_parse_varname(p, &ret_type, &is_arr);
     if (namelen == 0) { bc_set_error(cs, "Expected FUNCTION name"); *pp = p; return; }
-    if (ret_type == 0) ret_type = T_NBR;
+    int has_suffix = (ret_type != 0);
 
-    /* Subfun names are stored WITHOUT type suffix — strip it for lookup */
-    int sf_namelen = (ret_type != 0) ? namelen - 1 : namelen;
+    /* Subfun names are stored WITHOUT type suffix */
+    int sf_namelen = has_suffix ? namelen - 1 : namelen;
+
+    /* If no suffix on name, check for AS type after the param list.
+     * Pass 1 already parsed this, so use the stored return_type. */
+    if (ret_type == 0) {
+        int sf_idx_tmp = bc_find_subfun(cs, (const char *)p, sf_namelen);
+        if (sf_idx_tmp >= 0 && cs->subfuns[sf_idx_tmp].return_type != 0)
+            ret_type = cs->subfuns[sf_idx_tmp].return_type;
+        else
+            ret_type = T_NBR;  /* default to float */
+    }
+
     int sf_idx = get_or_create_subfun(cs, (const char *)p, sf_namelen, ret_type);
     if (sf_idx < 0) { *pp = p; return; }
     p += namelen; skipspace(p);
@@ -600,10 +611,18 @@ static void compile_function(BCCompiler *cs, unsigned char **pp) {
     cs->local_count = 0;
 
     /* Function name is local slot 0 (return value).
-       Use the full name from the source (including type suffix) so that
-       assignments like "Fib% = n%" can find it via bc_find_local. */
-    bc_add_local(cs, (const char *)name_start, namelen, ret_type, 0);
+       Use the base name (without suffix) for unsuffixed functions so that
+       assignments like "Double = x%" can find it via bc_find_local. */
+    bc_add_local(cs, (const char *)name_start, has_suffix ? namelen : sf_namelen, ret_type, 0);
+
+    /* Skip past AS clause if present */
     cs->subfuns[sf_idx].nparams = (uint8_t)parse_params(cs, &p, sf_idx);
+    skipspace(p);
+    if (*p == tokenAS) {
+        p++;  /* skip tokenAS byte */
+        skipspace(p);
+        while (isnamechar(*p)) p++;  /* skip INTEGER/FLOAT/STRING */
+    }
 
     bc_emit_byte(cs, OP_ENTER_FRAME);
     uint32_t nlocals_patch = cs->code_len;
@@ -791,9 +810,9 @@ static void compile_data(BCCompiler *cs, unsigned char **pp) {
         tokPlus  = (unsigned char)GetTokenValue((unsigned char *)"+");
     }
 
-    while (*p && *p != '\'' && *p != 0) {
+    while (*p && *p != '\'' && *p != T_NEWLINE) {
         skipspace(p);
-        if (!*p || *p == '\'') break;
+        if (!*p || *p == '\'' || *p == T_NEWLINE) break;
 
         if (cs->data_count >= BC_MAX_DATA_ITEMS) {
             bc_set_error(cs, "Too many DATA items");
@@ -890,9 +909,9 @@ static void compile_read(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp;
     skipspace(p);
 
-    while (*p && *p != '\'' && *p != 0) {
+    while (*p && *p != '\'' && *p != T_NEWLINE) {
         skipspace(p);
-        if (!*p || *p == '\'') break;
+        if (!*p || *p == '\'' || *p == T_NEWLINE) break;
 
         /* Parse variable name */
         uint8_t vtype = 0;
@@ -1114,7 +1133,18 @@ void bc_compile_assignment(BCCompiler *cs, unsigned char **pp) {
     uint8_t vtype = 0; int is_arr = 0;
     int namelen = bc_parse_varname(p, &vtype, &is_arr);
     if (namelen == 0) { bc_set_error(cs, "Expected variable in assignment"); return; }
-    if (vtype == 0) vtype = T_NBR;
+    if (vtype == 0) {
+        /* No suffix — look up the existing local or slot to get its type */
+        if (cs->current_subfun >= 0) {
+            int loc = bc_find_local(cs, (const char *)p, namelen);
+            if (loc >= 0) vtype = cs->locals[loc].type;
+        }
+        if (vtype == 0) {
+            uint16_t existing = bc_find_slot(cs, (const char *)p, namelen);
+            if (existing != 0xFFFF) vtype = cs->slots[existing].type;
+        }
+        if (vtype == 0) vtype = T_NBR;  /* default to float */
+    }
 
     int is_local = 0;
     uint16_t slot = resolve_var(cs, (const char *)p, namelen, vtype, is_arr, &is_local);

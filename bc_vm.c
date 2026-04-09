@@ -14,6 +14,24 @@
 
 #include "MMBasic.h"
 #include "bytecode.h"
+#ifndef MMBASIC_HOST
+#include "pico/time.h"
+#endif
+
+/* Host: calloc/free (MMBasic heap uses 32-bit pointer math on 64-bit host) */
+/* Device: GetMemory/FreeMemory (MMBasic heap) */
+#ifdef MMBASIC_HOST
+#define BC_ALLOC(sz)   calloc(1, (sz))
+#define BC_FREE(p)     free((p))
+#else
+extern void *GetMemory(int size);
+extern void FreeMemory(unsigned char *addr);
+#define BC_ALLOC(sz)   GetMemory((sz))
+#define BC_FREE(p)     FreeMemory((unsigned char *)(p))
+#endif
+
+extern void *GetTempMemory(int NbrBytes);
+extern void *GetTempStrMemory(void);
 
 /* External declarations */
 extern int MMInkey(void);
@@ -26,8 +44,6 @@ extern int MMInkey(void);
 /* External MMBasic runtime functions */
 extern void CheckAbort(void);
 extern int  check_interrupt(void);
-extern void *GetTempMemory(int NbrBytes);
-extern void *GetTempStrMemory(void);
 
 /* ======================================================================
  * Helper: get next rotating string temp buffer
@@ -92,10 +108,67 @@ static void vm_output_mstr(BCVMState *vm, uint8_t *s) {
 }
 
 /* ======================================================================
+ * bc_vm_alloc / bc_vm_free — dynamic allocation for large VM arrays
+ * ====================================================================== */
+
+int bc_vm_alloc(BCVMState *vm) {
+    vm->globals      = (BCValue *)BC_ALLOC(BC_MAX_SLOTS * sizeof(BCValue));
+    vm->global_types = (uint8_t *)BC_ALLOC(BC_MAX_SLOTS);
+    vm->arrays       = (BCArray *)BC_ALLOC(BC_MAX_SLOTS * sizeof(BCArray));
+    vm->locals       = (BCValue *)BC_ALLOC(VM_MAX_LOCALS * sizeof(BCValue));
+    vm->local_types  = (uint8_t *)BC_ALLOC(VM_MAX_LOCALS);
+    vm->local_arrays = (BCArray *)BC_ALLOC(VM_MAX_LOCALS * sizeof(BCArray));
+    if (!vm->globals || !vm->global_types || !vm->arrays ||
+        !vm->locals || !vm->local_types || !vm->local_arrays) {
+        bc_vm_free(vm);
+        return -1;
+    }
+    return 0;
+}
+
+void bc_vm_free(BCVMState *vm) {
+    if (vm->globals)      BC_FREE(vm->globals);
+    if (vm->global_types) BC_FREE(vm->global_types);
+    if (vm->arrays)       BC_FREE(vm->arrays);
+    if (vm->locals)       BC_FREE(vm->locals);
+    if (vm->local_types)  BC_FREE(vm->local_types);
+    if (vm->local_arrays) BC_FREE(vm->local_arrays);
+    vm->globals = NULL;
+    vm->global_types = NULL;
+    vm->arrays = NULL;
+    vm->locals = NULL;
+    vm->local_types = NULL;
+    vm->local_arrays = NULL;
+}
+
+/* ======================================================================
  * bc_vm_init — initialise VM state from compiled output
+ *
+ * Arrays must already be allocated via bc_vm_alloc().
  * ====================================================================== */
 void bc_vm_init(BCVMState *vm, BCCompiler *cs) {
-    memset(vm, 0, sizeof(BCVMState));
+    /* Zero inline fields without touching the dynamic array pointers */
+    memset(vm->stack, 0, sizeof(vm->stack));
+    memset(vm->stack_types, 0, sizeof(vm->stack_types));
+    memset(vm->call_stack, 0, sizeof(vm->call_stack));
+    memset(vm->gosub_stack, 0, sizeof(vm->gosub_stack));
+    memset(vm->for_stack, 0, sizeof(vm->for_stack));
+    memset(vm->str_temp, 0, sizeof(vm->str_temp));
+
+    /* Zero dynamically-allocated arrays.  On device GetMemory() zeros,
+     * but on host calloc also zeros.  Keep explicit zeroing for safety. */
+    if (vm->arrays)
+        memset(vm->arrays, 0, BC_MAX_SLOTS * sizeof(BCArray));
+    if (vm->local_arrays)
+        memset(vm->local_arrays, 0, VM_MAX_LOCALS * sizeof(BCArray));
+    if (vm->globals)
+        memset(vm->globals, 0, BC_MAX_SLOTS * sizeof(BCValue));
+    if (vm->global_types)
+        memset(vm->global_types, 0, BC_MAX_SLOTS);
+    if (vm->locals)
+        memset(vm->locals, 0, VM_MAX_LOCALS * sizeof(BCValue));
+    if (vm->local_types)
+        memset(vm->local_types, 0, VM_MAX_LOCALS);
     vm->bytecode     = cs->code;
     vm->bytecode_len = cs->code_len;
     vm->compiler     = cs;
@@ -133,6 +206,9 @@ void bc_vm_error(BCVMState *vm, const char *msg, ...) {
     va_start(ap, msg);
     vsnprintf(buf, sizeof(buf), msg, ap);
     va_end(ap);
+
+    /* Dump VM state for debugging before the longjmp */
+    bc_dump_vm_state(vm);
 
     /* Format with line number and call MMBasic's error() which longjmps */
     char errbuf[320];
@@ -435,13 +511,19 @@ op_load_s: {
 
 op_store_i: {
     uint16_t slot = READ_U16();
-    vm->globals[slot].i = POP_I();
+    if (vm->stack_types[vm->sp] == T_NBR)
+        vm->globals[slot].i = (int64_t)POP_F();
+    else
+        vm->globals[slot].i = POP_I();
     DISPATCH();
 }
 
 op_store_f: {
     uint16_t slot = READ_U16();
-    vm->globals[slot].f = POP_F();
+    if (vm->stack_types[vm->sp] == T_INT)
+        vm->globals[slot].f = (MMFLOAT)POP_I();
+    else
+        vm->globals[slot].f = POP_F();
     DISPATCH();
 }
 
@@ -1193,7 +1275,7 @@ op_leave_frame: {
         /* local_arrays cleanup: zero out local array data pointers */
         for (int i = vm->frame_base; i < vm->frame_base + (int)cf->nlocals; i++) {
             if (i < VM_MAX_LOCALS && vm->local_arrays[i].data) {
-                free(vm->local_arrays[i].data);
+                BC_FREE(vm->local_arrays[i].data);
                 vm->local_arrays[i].data = NULL;
                 vm->local_arrays[i].total_elements = 0;
             }
@@ -1267,7 +1349,10 @@ op_store_local_i: {
     uint16_t offset = READ_U16();
     int idx = vm->frame_base + offset;
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    vm->locals[idx].i = POP_I();
+    if (vm->stack_types[vm->sp] == T_NBR)
+        vm->locals[idx].i = (int64_t)POP_F();
+    else
+        vm->locals[idx].i = POP_I();
     vm->local_types[idx] = T_INT;
     DISPATCH();
 }
@@ -1276,7 +1361,10 @@ op_store_local_f: {
     uint16_t offset = READ_U16();
     int idx = vm->frame_base + offset;
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    vm->locals[idx].f = POP_F();
+    if (vm->stack_types[vm->sp] == T_INT)
+        vm->locals[idx].f = (MMFLOAT)POP_I();
+    else
+        vm->locals[idx].f = POP_F();
     vm->local_types[idx] = T_NBR;
     DISPATCH();
 }
@@ -1476,8 +1564,9 @@ op_dim_arr_i: {
         total *= (uint32_t)(dims[d] + 1);  /* 0..N inclusive */
     }
     arr->total_elements = total;
-    arr->data = calloc(total, sizeof(BCValue));
+    arr->data = (BCValue *)BC_ALLOC(total * sizeof(BCValue));
     if (!arr->data) bc_vm_error(vm, "Out of memory for array");
+    memset(arr->data, 0, total * sizeof(BCValue));
     DISPATCH();
 }
 
@@ -1498,8 +1587,9 @@ op_dim_arr_f: {
         total *= (uint32_t)(dims[d] + 1);
     }
     arr->total_elements = total;
-    arr->data = calloc(total, sizeof(BCValue));
+    arr->data = (BCValue *)BC_ALLOC(total * sizeof(BCValue));
     if (!arr->data) bc_vm_error(vm, "Out of memory for array");
+    memset(arr->data, 0, total * sizeof(BCValue));
     DISPATCH();
 }
 
@@ -1520,7 +1610,7 @@ op_dim_arr_s: {
         total *= (uint32_t)(dims[d] + 1);
     }
     arr->total_elements = total;
-    arr->data = calloc(total, sizeof(BCValue));
+    arr->data = (BCValue *)BC_ALLOC(total * sizeof(BCValue));
     if (!arr->data) bc_vm_error(vm, "Out of memory for array");
     /* Allocate string buffers for each element */
     for (uint32_t i = 0; i < total; i++) {
@@ -2086,7 +2176,7 @@ op_end:
     /* Clean up dynamically allocated arrays */
     for (int i = 0; i < BC_MAX_SLOTS; i++) {
         if (vm->arrays[i].data) {
-            free(vm->arrays[i].data);
+            BC_FREE(vm->arrays[i].data);
             vm->arrays[i].data = NULL;
         }
     }
@@ -2097,7 +2187,7 @@ op_halt:
     /* Clean up dynamically allocated arrays */
     for (int i = 0; i < BC_MAX_SLOTS; i++) {
         if (vm->arrays[i].data) {
-            free(vm->arrays[i].data);
+            BC_FREE(vm->arrays[i].data);
             vm->arrays[i].data = NULL;
         }
     }

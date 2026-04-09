@@ -21,7 +21,7 @@ CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c
 
 # Bytecode VM sources
 BC_SRCS = bc_compiler.c bc_compiler_core.c bc_compiler_expr.c \
-          bc_compiler_stmt.c bc_vm.c bc_bridge.c bc_test.c
+          bc_compiler_stmt.c bc_vm.c bc_bridge.c bc_test.c bc_debug.c
 
 # Host-specific sources
 HOST_SRCS = host_stubs.c host_main.c

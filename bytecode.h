@@ -221,17 +221,33 @@ typedef enum {
 #define PRINT_SEMICOLON   0x04
 
 /*
- * Compiler limits
+ * Compiler limits — platform-conditional
+ *
+ * Host build uses full limits for comprehensive testing.
+ * Device build uses reduced limits to fit in GetMemory() heap (~58 KB).
+ * Compiler arrays are dynamically allocated via bc_compiler_alloc().
  */
-#define BC_MAX_CODE       (64 * 1024)
-#define BC_MAX_CONSTANTS  512
-#define BC_MAX_SLOTS      512
-#define BC_MAX_SUBFUNS    256
-#define BC_MAX_FIXUPS     2048
-#define BC_MAX_LINEMAP    4096
-#define BC_MAX_LOCALS     64
-#define BC_MAX_NEST       64       /* max nesting depth for control flow */
-#define BC_MAX_DATA_ITEMS 1024     /* max DATA values in program */
+#ifdef MMBASIC_HOST
+  #define BC_MAX_CODE       (64 * 1024)
+  #define BC_MAX_CONSTANTS  512
+  #define BC_MAX_SLOTS      512
+  #define BC_MAX_SUBFUNS    256
+  #define BC_MAX_FIXUPS     2048
+  #define BC_MAX_LINEMAP    4096
+  #define BC_MAX_LOCALS     64
+  #define BC_MAX_NEST       64
+  #define BC_MAX_DATA_ITEMS 1024
+#else
+  #define BC_MAX_CODE       (16 * 1024)
+  #define BC_MAX_CONSTANTS  32
+  #define BC_MAX_SLOTS      128
+  #define BC_MAX_SUBFUNS    32
+  #define BC_MAX_FIXUPS     256
+  #define BC_MAX_LINEMAP    512
+  #define BC_MAX_LOCALS     64
+  #define BC_MAX_NEST       16
+  #define BC_MAX_DATA_ITEMS 512
+#endif
 
 /*
  * Variable slot — compile-time record
@@ -332,52 +348,60 @@ typedef struct {
 } BCDataItem;
 
 /*
- * Compiler state
+ * Local variable record (used during compilation)
  */
 typedef struct {
-    /* Output bytecode */
-    uint8_t    code[BC_MAX_CODE];
+    char    name[MAXVARLEN + 1];
+    uint8_t type;
+    uint8_t is_array;
+} BCLocalVar;
+
+/*
+ * Compiler state
+ *
+ * All large arrays are dynamically allocated via bc_compiler_alloc().
+ * On host: calloc/free.  On device: GetMemory/FreeMemory from MMBasic heap.
+ */
+typedef struct {
+    /* Output bytecode (allocated: BC_MAX_CODE bytes) */
+    uint8_t    *code;
     uint32_t   code_len;
 
-    /* Constant pool */
-    BCConstant constants[BC_MAX_CONSTANTS];
+    /* Constant pool (allocated: BC_MAX_CONSTANTS entries) */
+    BCConstant *constants;
     uint16_t   const_count;
 
-    /* Global variable slots */
-    BCSlot     slots[BC_MAX_SLOTS];
+    /* Global variable slots (allocated: BC_MAX_SLOTS entries) */
+    BCSlot     *slots;
     uint16_t   slot_count;
     uint16_t   next_hidden_slot;   /* for compiler-generated temporaries */
 
-    /* SUB/FUNCTION table */
-    BCSubFun   subfuns[BC_MAX_SUBFUNS];
+    /* SUB/FUNCTION table (allocated: BC_MAX_SUBFUNS entries) */
+    BCSubFun   *subfuns;
     uint16_t   subfun_count;
 
-    /* Forward reference fixups */
-    BCFixup    fixups[BC_MAX_FIXUPS];
+    /* Forward reference fixups (allocated: BC_MAX_FIXUPS entries) */
+    BCFixup    *fixups;
     uint16_t   fixup_count;
 
-    /* Line map */
-    BCLineMap  linemap[BC_MAX_LINEMAP];
+    /* Line map (allocated: BC_MAX_LINEMAP entries) */
+    BCLineMap  *linemap;
     uint16_t   linemap_count;
 
-    /* Control flow nesting stack */
-    BCNestEntry nest_stack[BC_MAX_NEST];
+    /* Control flow nesting stack (allocated: BC_MAX_NEST entries) */
+    BCNestEntry *nest_stack;
     int         nest_depth;
 
     /* Current context */
     int        current_subfun;     /* -1 if not in SUB/FUNCTION */
     uint16_t   current_line;
 
-    /* Local variable tracking (per SUB/FUNCTION) */
-    struct {
-        char    name[MAXVARLEN + 1];
-        uint8_t type;
-        uint8_t is_array;
-    } locals[BC_MAX_LOCALS];
+    /* Local variable tracking (allocated: BC_MAX_LOCALS entries) */
+    BCLocalVar *locals;
     uint16_t   local_count;
 
-    /* DATA pool (populated at compile time, read at runtime) */
-    BCDataItem data_pool[BC_MAX_DATA_ITEMS];
+    /* DATA pool (allocated: BC_MAX_DATA_ITEMS entries) */
+    BCDataItem *data_pool;
     uint16_t   data_count;
 
     /* Error state */
@@ -435,44 +459,55 @@ typedef struct {
 #define VM_STACK_SIZE    256
 #define VM_MAX_CALL      64
 #define VM_MAX_FOR       32
-#define VM_MAX_LOCALS   1024
 #define VM_MAX_GOSUB     64
 
+#ifdef MMBASIC_HOST
+  #define VM_MAX_LOCALS   1024
+#else
+  #define VM_MAX_LOCALS   256    /* supports ~4 recursion levels * 64 locals */
+#endif
+
+/*
+ * VM state
+ *
+ * Large arrays (globals, arrays, locals, local_arrays) are dynamically
+ * allocated via bc_vm_alloc().  Small fixed-size arrays stay inline.
+ */
 typedef struct {
     uint8_t    *pc;             /* program counter into bytecode */
 
-    /* Operand stack for expression evaluation */
+    /* Operand stack for expression evaluation (inline — small, fixed) */
     BCValue     stack[VM_STACK_SIZE];
     uint8_t     stack_types[VM_STACK_SIZE];
     int         sp;             /* stack pointer (-1 = empty) */
 
-    /* Global variable storage (flat array by slot) */
-    BCValue     globals[BC_MAX_SLOTS];
-    uint8_t     global_types[BC_MAX_SLOTS]; /* tracks what's stored */
+    /* Global variable storage (allocated: BC_MAX_SLOTS entries) */
+    BCValue    *globals;
+    uint8_t    *global_types;   /* tracks what's stored */
 
-    /* Array storage for globals */
-    BCArray     arrays[BC_MAX_SLOTS];       /* parallel to globals[], used if is_array */
+    /* Array storage for globals (allocated: BC_MAX_SLOTS entries) */
+    BCArray    *arrays;         /* parallel to globals[], used if is_array */
 
-    /* Call stack (for SUB/FUNCTION) */
+    /* Call stack (inline — small, fixed) */
     BCCallFrame call_stack[VM_MAX_CALL];
     int         csp;            /* call stack pointer */
 
-    /* GOSUB stack (separate from SUB/FUNCTION calls) */
+    /* GOSUB stack (inline — small, fixed) */
     struct {
         uint8_t *return_pc;
     } gosub_stack[VM_MAX_GOSUB];
     int         gsp;            /* gosub stack pointer */
 
-    /* Local variable frames (stack-allocated) */
-    BCValue     locals[VM_MAX_LOCALS];
-    uint8_t     local_types[VM_MAX_LOCALS];
+    /* Local variable frames (allocated: VM_MAX_LOCALS entries) */
+    BCValue    *locals;
+    uint8_t    *local_types;
     int         frame_base;     /* current frame base in locals[] */
     int         locals_top;     /* next free slot in locals[] */
 
-    /* Local array storage */
-    BCArray     local_arrays[VM_MAX_LOCALS]; /* parallel to locals[] */
+    /* Local array storage (allocated: VM_MAX_LOCALS entries) */
+    BCArray    *local_arrays;   /* parallel to locals[] */
 
-    /* FOR loop stack */
+    /* FOR loop stack (inline — small, fixed) */
     BCForEntry  for_stack[VM_MAX_FOR];
     int         fsp;
 
@@ -487,7 +522,7 @@ typedef struct {
     /* Error reporting */
     uint16_t    current_line;
 
-    /* String temp storage for VM operations */
+    /* String temp storage (inline — small, fixed) */
     uint8_t     str_temp[4][STRINGSIZE];
     int         str_temp_idx;
 
@@ -503,10 +538,14 @@ typedef struct {
  */
 
 /* Compiler */
+int  bc_compiler_alloc(BCCompiler *cs);   /* allocate all dynamic arrays */
+void bc_compiler_free(BCCompiler *cs);    /* free all dynamic arrays */
+void bc_compiler_init(BCCompiler *cs);    /* reset state (arrays must be allocated) */
 int  bc_compile(BCCompiler *cs, unsigned char *prog_memory, int prog_size);
-void bc_compiler_init(BCCompiler *cs);
 
 /* VM */
+int  bc_vm_alloc(BCVMState *vm);    /* allocate dynamic arrays */
+void bc_vm_free(BCVMState *vm);     /* free dynamic arrays */
 void bc_vm_init(BCVMState *vm, BCCompiler *cs);
 void bc_vm_execute(BCVMState *vm);
 void bc_vm_error(BCVMState *vm, const char *msg, ...);
@@ -544,6 +583,45 @@ void bc_emit_f64(BCCompiler *cs, MMFLOAT v);
 void bc_patch_u16(BCCompiler *cs, uint32_t addr, uint16_t v);
 void bc_patch_i16(BCCompiler *cs, uint32_t addr, int16_t v);
 void bc_patch_u32(BCCompiler *cs, uint32_t addr, uint32_t v);
+
+/* Debug / diagnostic tools */
+extern int bc_debug_enabled;       /* set to 1 to dump stats+disassembly on FRUN */
+void bc_disassemble(BCCompiler *cs);
+void bc_dump_stats(BCCompiler *cs);
+void bc_dump_vm_state(BCVMState *vm);
+
+/* ------------------------------------------------------------------ */
+/* Crash diagnostic breadcrumb — survives soft reset via                */
+/* __uninitialized_ram on device                                       */
+/* ------------------------------------------------------------------ */
+#define BC_CRASH_MAGIC 0xDEADC0DE
+
+typedef struct {
+    uint32_t magic;         /* BC_CRASH_MAGIC if valid crash data present */
+    uint32_t checkpoint;    /* last checkpoint ID reached */
+    uint32_t sp;            /* ARM stack pointer at last checkpoint */
+    uint32_t cfsr;          /* ARM CFSR (fault status) */
+    uint32_t hfsr;          /* ARM HFSR (hard fault status) */
+    uint32_t bfar;          /* ARM BFAR (bus fault address) */
+    uint32_t mmfar;         /* ARM MMFAR (mem-manage fault address) */
+    char     label[32];     /* checkpoint description string */
+} BCCrashInfo;
+
+/* Checkpoint stage IDs for cmd_frun() */
+#define BC_CK_FRUN_ENTRY       1
+#define BC_CK_FRUN_ALLOC_CS    2
+#define BC_CK_FRUN_ALLOC_VM    3
+#define BC_CK_FRUN_COMP_ALLOC  4
+#define BC_CK_FRUN_VM_ALLOC    5
+#define BC_CK_FRUN_COMPILE     6
+#define BC_CK_FRUN_VM_INIT     7
+#define BC_CK_FRUN_EXECUTE     8
+#define BC_CK_FRUN_CLEANUP     9
+
+void bc_crash_checkpoint(int stage, const char *label);
+void bc_crash_save_fault(void);    /* called from sigbus() to capture ARM regs */
+void bc_crash_dump_if_any(void);   /* called at boot to print crash report */
+void bc_crash_clear(void);
 
 #ifdef __cplusplus
 }

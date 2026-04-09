@@ -31,10 +31,18 @@ extern long long int iarg1, iarg2;
 extern unsigned char *sarg1, *sarg2;
 
 /* External memory functions */
-extern void *GetMemory(int size);
-extern void FreeMemory(unsigned char *addr);
 extern void *GetTempMemory(int NbrBytes);
 extern void ClearTempMemory(void);
+
+#ifdef MMBASIC_HOST
+#define BC_ALLOC(sz)   calloc(1, (sz))
+#define BC_FREE(p)     free((p))
+#else
+extern void *GetMemory(int size);
+extern void FreeMemory(unsigned char *addr);
+#define BC_ALLOC(sz)   GetMemory((sz))
+#define BC_FREE(p)     FreeMemory((unsigned char *)(p))
+#endif
 
 /* External output functions */
 extern void MMPrintString(char *s);
@@ -324,59 +332,136 @@ void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t 
  * Compiles the current program to bytecode and executes it on the VM.
  */
 void cmd_frun(void) {
-    BCCompiler *cs;
-    BCVMState *vm;
     int err;
 
-    /* Allocate compiler and VM state via malloc — these structures are too
-     * large (BCCompiler ~350KB, BCVMState ~80KB) for the MMBasic heap
-     * (128KB on RP2040, 300KB on RP2350). calloc zeroes the memory. */
-    cs = (BCCompiler *)calloc(1, sizeof(BCCompiler));
-    if (!cs) {
+    bc_crash_checkpoint(BC_CK_FRUN_ENTRY, "entry");
+
+    /* Heap-allocate the compiler and VM structs themselves.
+     * BCVMState is ~6 KB which overflows the 4 KB device stack. */
+    BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
+    BCVMState  *vm = (BCVMState  *)BC_ALLOC(sizeof(BCVMState));
+    if (!cs || !vm) {
+        if (cs) BC_FREE(cs);
+        if (vm) BC_FREE(vm);
+        error("Not enough memory for FRUN");
+        return;
+    }
+    memset(cs, 0, sizeof(BCCompiler));
+    memset(vm, 0, sizeof(BCVMState));
+
+    bc_crash_checkpoint(BC_CK_FRUN_ALLOC_CS, "structs ok");
+
+    if (bc_compiler_alloc(cs) != 0) {
+        BC_FREE(cs);
+        BC_FREE(vm);
         error("Not enough memory for FRUN compiler");
         return;
     }
 
-    vm = (BCVMState *)calloc(1, sizeof(BCVMState));
-    if (!vm) {
-        free(cs);
+    bc_crash_checkpoint(BC_CK_FRUN_COMP_ALLOC, "compiler alloc");
+
+    if (bc_vm_alloc(vm) != 0) {
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        BC_FREE(vm);
         error("Not enough memory for FRUN VM");
         return;
     }
 
+    bc_crash_checkpoint(BC_CK_FRUN_VM_ALLOC, "vm alloc");
+
     /* Compile the program */
     bc_compiler_init(cs);
-    err = bc_compile(cs, ProgMemory, PSize);
+
+    /* PSize is unreliable on device (often 0).  The regular interpreter
+     * never uses it — it scans for the double-null terminator.  We do
+     * the same: walk ProgMemory element-by-element to find the true end.
+     * Must handle T_LINENBR specially (3 bytes) since line-number bytes
+     * can be 0x00 and would fool a naive scan. */
+    int compile_size;
+    {
+        unsigned char *ep = ProgMemory;
+        while (1) {
+            if (*ep == 0) {
+                if (ep[1] == 0 || ep[1] == 0xFF) break;  /* end of program */
+                ep++;           /* element separator — skip */
+                continue;
+            }
+            if (*ep == T_NEWLINE) { ep++; continue; }
+            if (*ep == T_LINENBR) { ep += 3; continue; }   /* token + hi + lo */
+            if (*ep == T_LABEL)   { ep += ep[1] + 2; continue; }
+            ep++;               /* any other byte */
+        }
+        compile_size = (int)(ep - ProgMemory) + 2;  /* include double-null */
+    }
+
+    bc_crash_checkpoint(BC_CK_FRUN_COMPILE, "compiling");
+    err = bc_compile(cs, ProgMemory, compile_size);
     if (err) {
         char msg[160];
         snprintf(msg, sizeof(msg), "FRUN compile error at line %d: %s",
                  cs->error_line, cs->error_msg);
-        free(vm);
-        free(cs);
+        bc_dump_stats(cs);
+        bc_vm_free(vm);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        BC_FREE(vm);
         error(msg);
         return;
     }
 
+    if (bc_debug_enabled) {
+        bc_dump_stats(cs);
+        bc_disassemble(cs);
+    }
+
     /* Initialize and run the VM */
+    bc_crash_checkpoint(BC_CK_FRUN_VM_INIT, "vm init");
     bc_vm_init(vm, cs);
     bc_bridge_reset_sync();
 
+    bc_crash_checkpoint(BC_CK_FRUN_EXECUTE, "executing");
+
+    /* Save the main loop's mark jmp_buf.  cmd_frun returns to the caller
+     * (MMBasic main loop) which relies on mark for error recovery.  If we
+     * overwrite mark without restoring it, longjmp(mark) after we return
+     * would jump into our destroyed stack frame → bus fault. */
+    jmp_buf saved_mark;
+    memcpy(saved_mark, mark, sizeof(jmp_buf));
+
     if (setjmp(mark) == 0) {
         bc_vm_execute(vm);
+    } else {
+        /* VM exited via error/longjmp — fall through to cleanup */
     }
 
+    memcpy(mark, saved_mark, sizeof(jmp_buf));
+
+    bc_crash_checkpoint(BC_CK_FRUN_CLEANUP, "cleanup");
+
     /* Clean up */
-    /* Free any array data allocated by the VM (via calloc in OP_DIM_ARR).
+    /* Free any array data allocated by the VM (via BC_ALLOC in OP_DIM_ARR).
      * String element buffers were allocated via GetTempMemory and will be
      * cleaned up by ClearTempMemory or on next m_alloc. */
     for (int i = 0; i < BC_MAX_SLOTS; i++) {
         if (vm->arrays[i].data) {
-            free(vm->arrays[i].data);
+            BC_FREE(vm->arrays[i].data);
         }
     }
 
-    free(vm);
-    free(cs);
+    bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 1, "cleanup:vm_free");
+    bc_vm_free(vm);
+
+    bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 2, "cleanup:comp_free");
+    bc_compiler_free(cs);
+
+    bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 3, "cleanup:struct_free");
+    BC_FREE(cs);
+    BC_FREE(vm);
+
+    bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 4, "cleanup:done");
+    /* Successful completion — clear crash breadcrumb */
+    bc_crash_clear();
 }
 
 

@@ -1024,15 +1024,30 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
         if (expect_value && isnamestart(*p)) {
             uint8_t var_type = 0;
             int is_array = 0;
+            int has_suffix = 0;  /* was suffix in source text? */
             int name_len = bc_parse_varname(p, &var_type, &is_array);
+            if (var_type != 0) has_suffix = 1;
 
             if (name_len == 0) {
                 bc_set_error(cs, "Invalid variable name"); break;
             }
             if (var_type == 0) {
-                bc_set_error(cs,
-                    "Variable must have explicit type suffix (%%/!/$)");
-                break;
+                /* No suffix — check if it's an existing slot (e.g. CONST
+                 * declared without a suffix, which defaults to T_NBR) */
+                uint16_t existing = bc_find_slot(cs, (const char *)p, name_len);
+                if (existing != 0xFFFF) {
+                    var_type = cs->slots[existing].type;
+                } else {
+                    /* Check if it's a user FUNCTION with AS type */
+                    int sf_idx = bc_find_subfun(cs, (const char *)p, name_len);
+                    if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0) {
+                        var_type = cs->subfuns[sf_idx].return_type;
+                    } else {
+                        bc_set_error(cs,
+                            "Variable must have explicit type suffix (%%/!/$)");
+                        break;
+                    }
+                }
             }
 
             /* Followed by '(' -- array or function call */
@@ -1040,7 +1055,7 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
                 unsigned char *name_start = p;
 
                 /* Check for user-defined FUNCTION (strip type suffix for lookup) */
-                int sf_name_len = (var_type != 0) ? name_len - 1 : name_len;
+                int sf_name_len = has_suffix ? name_len - 1 : name_len;
                 int sf_idx = bc_find_subfun(cs, (const char *)p, sf_name_len);
                 if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0) {
                     p += name_len;

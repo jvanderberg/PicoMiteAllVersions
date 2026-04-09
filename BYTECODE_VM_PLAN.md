@@ -1,4 +1,4 @@
-# MMBasic Bytecode VM — Status & Plan
+# MMBasic Bytecode VM -- Status & Plan
 
 ## Current Status (49/49 tests passing)
 
@@ -27,67 +27,89 @@
 - Everything else: bridged to interpreter's cmd_*/fun_* functions
 
 **Test Suite** (host/tests/):
-- 49 compare-mode tests — all PASS (interpreter output == VM output)
+- 49 compare-mode tests -- all PASS (interpreter output == VM output)
 - Covers: arithmetic, strings, control flow, recursion, arrays, type coercion, DATA/READ, bridge functions, edge cases, INC/CONST, RANDOMIZE/RND/SPACE$/STRING$/INKEY$
 
 **Host Build** (host/):
 - Native macOS build for off-device testing
-- `./build.sh && ./run_tests.sh` — builds and runs all 49 tests
+- `./build.sh && ./run_tests.sh` -- builds and runs all 49 tests
+- `./run_bench.sh` -- runs benchmarks with timing
 
 ### What's Left
 
-## Phase 1: Memory — Use Interpreter's Heap (NEXT)
+## Phase 1: Memory -- Dynamic Allocation (DONE)
 
-**Problem:** BCCompiler struct is 344 KB with current limits. Device heap (GetMemory pool) is 128-300 KB depending on platform. But the pool is mostly empty at FRUN time.
+**Problem:** BCCompiler and BCVMState structs were too large for device heap with inline arrays.
 
-**Solution:** Allocate compiler arrays from MMBasic's existing GetMemory() pool with reduced limits. No new allocator needed.
+**Solution:** Converted both structs to dynamically allocated pointer-based arrays. Platform-conditional limits via `#ifdef MMBASIC_HOST`.
 
-Reduced limits for on-device:
-| Array | Current | Device | Size |
-|-------|---------|--------|------|
+### BCCompiler
+
+API: `bc_compiler_alloc()` / `bc_compiler_free()` / `bc_compiler_init()`
+
+| Array | Host | Device | Device Size |
+|-------|------|--------|-------------|
 | code[] | 64 KB | 16 KB | 16 KB |
-| constants[] | 512 | 64 | 16.5 KB |
-| slots[] | 512 | 128 | 8.7 KB |
-| subfuns[] | 256 | 32 | 5.4 KB |
-| fixups[] | 2048 | 256 | 3.6 KB |
-| linemap[] | 4096 | 512 | 3 KB |
-| nest_stack[] | 64 | 16 | 3.6 KB |
-| data_pool[] | 1024 | 128 | 1.1 KB |
-| **Total** | **344 KB** | | **~58 KB** |
+| constants[] | 512 | 64 | ~16 KB |
+| slots[] | 512 | 128 | ~8.7 KB |
+| subfuns[] | 256 | 32 | ~5.4 KB |
+| fixups[] | 2048 | 256 | ~3.6 KB |
+| linemap[] | 4096 | 512 | ~3 KB |
+| nest_stack[] | 64 | 16 | ~3.6 KB |
+| data_pool[] | 1024 | 128 | ~1.1 KB |
+| locals[] | 64 | 64 | ~2.2 KB |
+| **Total** | **344 KB** | | **~60.8 KB** |
 
-Steps:
-1. Change BCCompiler from inline arrays to pointers
-2. Add bc_compiler_alloc()/bc_compiler_free() that use GetMemory()/FreeMemory()
-3. Use full limits on host build, reduced limits on device
-4. Compile → copy final bytecode to right-sized buffer → free compiler arrays
-5. VM runs from the small bytecode buffer
+BCCompiler struct itself: 288 bytes (just pointers + counters).
 
-Memory flow:
-```
-FRUN:
-  GetMemory(~58 KB) for compiler working data
-  Compile ProgMemory → bytecode
-  GetMemory(bytecode_size) for final bytecode (typically 2-10 KB)
-  FreeMemory(compiler data)  ← pool is clean again
-  VM executes from bytecode buffer
-  FreeMemory(bytecode buffer)
-```
+### BCVMState
+
+API: `bc_vm_alloc()` / `bc_vm_free()`
+
+| Array | Host | Device | Device Size |
+|-------|------|--------|-------------|
+| globals[] | 512 | 128 | ~1.5 KB |
+| global_types[] | 512 | 128 | 128 B |
+| arrays[] | 512 | 128 | ~6.1 KB |
+| locals[] | 1024 | 256 | ~3 KB |
+| local_types[] | 1024 | 256 | 256 B |
+| local_arrays[] | 1024 | 256 | ~6.1 KB |
+| **Total** | **79.6 KB** | | **~18.4 KB** |
+
+BCVMState struct itself: 6.1 KB (stack, call_stack, for_stack, str_temp are inline).
+
+### Device Memory Budget
+
+| | RP2040 | RP2350 |
+|---|---|---|
+| Heap available | 128 KB | 300 KB |
+| Compiler heap | 60.8 KB | 60.8 KB |
+| VM heap | 18.4 KB | 18.4 KB |
+| Structs on stack | 6.4 KB | 6.4 KB |
+| **Total FRUN** | **85.6 KB** | **85.6 KB** |
+| **Remaining** | **42.4 KB** | **214.4 KB** |
+
+Allocation: calloc/free on host, GetMemory/FreeMemory on device.
 
 ## Phase 2: Device Build & Test
 
 1. Add bc_*.c to CMakeLists.txt (already partly done)
-2. Build for RP2350 — verify fits in flash
+2. Build for RP2350 -- verify fits in flash
 3. Test FRUN on actual PicoCalc hardware
-4. Run benchmark comparisons (Fibonacci, Sieve, matrix multiply)
+4. Run benchmark comparisons on device
 
-## Phase 3: Performance Benchmarking
+## Phase 3: Performance (MEASURED)
 
-Target speedups vs interpreter:
-- Fibonacci(25): >= 3x faster
-- Sieve of Eratosthenes: >= 5x faster
-- Matrix multiply: >= 5x faster
+Host benchmark results (macOS, Apple Silicon):
 
-The VM avoids repeated tokenized-text parsing and uses direct opcode dispatch, so tight loops should see significant improvement.
+| Benchmark | Interpreter | VM | Speedup |
+|-----------|-------------|-----|---------|
+| Fibonacci(30) | 5.9s | 0.23s | **~25x** |
+| Mandelbrot 161x161 | 1.5s | 0.11s | **~13x** |
+| Matrix 41x41 multiply | 0.10s | 0.01s | **~8x** |
+| Sieve x10 | 0.10s | 0.02s | **~4x** |
+
+Recursive function calls (Fibonacci) benefit most from bytecode dispatch. Float-heavy inner loops (Mandelbrot) also show strong speedup. Array-heavy code (Sieve) benefits less since array access still goes through similar indexing.
 
 ## Platform Memory Summary
 
@@ -102,22 +124,22 @@ The VM avoids repeated tokenized-text parsing and uses direct opcode dispatch, s
 | Code execution | Flash via XIP | Flash via XIP |
 | Compiler code in flash | ~170 KB | ~170 KB |
 | VM code in flash | ~104 KB | ~104 KB |
-| Compiler working data (from heap) | ~40-58 KB | ~58 KB |
 
-Key insight: Compiler and VM **code** lives in flash, executes via XIP, costs zero RAM. Only the compiler's working **data** needs RAM, temporarily, from the existing interpreter heap.
+Key insight: Compiler and VM **code** lives in flash, executes via XIP, costs zero RAM. Only working **data** needs RAM, temporarily, from the existing interpreter heap.
 
 ## Files
 
 ```
-bytecode.h              — Opcode definitions, compiler/VM structs
-bc_compiler.c           — Two-pass compilation orchestration
-bc_compiler_core.c      — Bytecode emission helpers, slot/constant management
-bc_compiler_expr.c      — Expression compiler (shunting-yard + native functions)
-bc_compiler_stmt.c      — Statement compiler (control flow, PRINT, DIM, etc.)
-bc_compiler_internal.h  — Internal compiler API
-bc_vm.c                 — VM dispatch loop (~148 opcodes)
-bc_bridge.c             — Bridge to interpreter's cmd_*/fun_* functions
-bc_test.c               — Embedded test harness (FTEST command)
-host/                   — Native macOS build for off-device testing
-host/tests/t*.bas       — 49 test programs
+bytecode.h              -- Opcode definitions, compiler/VM structs, platform limits
+bc_compiler.c           -- Two-pass compilation orchestration
+bc_compiler_core.c      -- Bytecode emission helpers, slot/constant management, alloc/free
+bc_compiler_expr.c      -- Expression compiler (shunting-yard + native functions)
+bc_compiler_stmt.c      -- Statement compiler (control flow, PRINT, DIM, etc.)
+bc_compiler_internal.h  -- Internal compiler API
+bc_vm.c                 -- VM dispatch loop (~148 opcodes), vm alloc/free
+bc_bridge.c             -- Bridge to interpreter's cmd_*/fun_* functions, cmd_frun/cmd_ftest
+bc_test.c               -- Embedded test harness (FTEST command, 40 inline tests)
+host/                   -- Native macOS build for off-device testing
+host/tests/t*.bas       -- 49 test programs
+host/bench_*.bas        -- Benchmark programs (fibonacci, mandelbrot, matrix, sieve)
 ```

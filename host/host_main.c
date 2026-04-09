@@ -8,6 +8,7 @@
  *   ./mmbasic_test program.bas          Compare both engines
  *   ./mmbasic_test program.bas --interp Run interpreter only
  *   ./mmbasic_test program.bas --vm     Run bytecode VM only
+ *   ./mmbasic_test program.bas --debug  Compile-only: show stats + disassembly
  */
 
 #include <stdio.h>
@@ -181,7 +182,7 @@ static int run_bytecode_vm(char *output, int outsize) {
 }
 
 int main(int argc, char **argv) {
-    int mode = 0;  /* 0=compare, 1=interp only, 2=vm only */
+    int mode = 0;  /* 0=compare, 1=interp only, 2=vm only, 3=debug */
 
     if (argc < 2) {
         printf("MMBasic Host Test Build\n");
@@ -190,6 +191,7 @@ int main(int argc, char **argv) {
         printf("  %s program.bas          Compare both engines\n", argv[0]);
         printf("  %s program.bas --interp Run interpreter only\n", argv[0]);
         printf("  %s program.bas --vm     Run bytecode VM only\n", argv[0]);
+        printf("  %s program.bas --debug  Compile + show stats/disassembly\n", argv[0]);
         return 0;
     }
 
@@ -198,6 +200,7 @@ int main(int argc, char **argv) {
     if (argc > 2) {
         if (strcmp(argv[2], "--interp") == 0) mode = 1;
         else if (strcmp(argv[2], "--vm") == 0) mode = 2;
+        else if (strcmp(argv[2], "--debug") == 0) mode = 3;
     }
 
     /* Allocate backing storage for flash_progmemory (normally in flash on device).
@@ -229,6 +232,34 @@ int main(int argc, char **argv) {
         printf("%s", vm_output);
         printf("\n--- Done ---\n");
         return 0;
+    }
+
+    if (mode == 3) {
+        /* Debug mode: compile only, show stats + disassembly */
+        printf("--- Debug: %s ---\n\n", filename);
+
+        PrepareProgram(1);
+
+        BCCompiler cs_local;
+        BCCompiler *cs = &cs_local;
+        if (bc_compiler_alloc(cs) != 0) {
+            printf("ERROR: Cannot allocate compiler\n");
+            return 1;
+        }
+
+        bc_compiler_init(cs);
+        int err = bc_compile(cs, ProgMemory, PSize);
+        if (err) {
+            printf("COMPILE ERROR at line %d: %s\n\n",
+                   cs->error_line, cs->error_msg);
+        }
+
+        bc_dump_stats(cs);
+        if (!err) {
+            bc_disassemble(cs);
+        }
+        bc_compiler_free(cs);
+        return err ? 1 : 0;
     }
 
     /* Comparison mode: run both and compare */

@@ -134,18 +134,49 @@ static void pass1_scan(BCCompiler *cs, unsigned char *prog, int prog_size) {
                     int name_len = 0;
                     while (isnamechar(np[name_len])) name_len++;
 
-                    /* For FUNCTION, check return type suffix */
+                    /* For FUNCTION, check return type suffix on name */
                     uint8_t ret_type = 0;
+                    int base_name_len = name_len;
                     if (np[name_len] == '%' || np[name_len] == '!' || np[name_len] == '$') {
                         ret_type = bc_type_from_suffix(np[name_len]);
-                        name_len++;
+                        name_len++;  /* include suffix in full name_len */
+                    }
+
+                    /* For FUNCTION, also check for AS INTEGER/FLOAT/STRING
+                     * after the parameter list.  In tokenized form, AS is
+                     * tokenAS (single byte), followed by literal text. */
+                    if (cmd == cmdFUN && ret_type == 0) {
+                        unsigned char *scan = np + name_len;
+                        skipspace(scan);
+                        /* Skip past parameter list */
+                        if (*scan == '(') {
+                            int depth = 1;
+                            scan++;
+                            while (*scan && depth > 0) {
+                                if (*scan == '(') depth++;
+                                else if (*scan == ')') depth--;
+                                scan++;
+                            }
+                            skipspace(scan);
+                        }
+                        /* Check for tokenAS */
+                        if (*scan == tokenAS) {
+                            scan++;  /* skip tokenAS byte */
+                            skipspace(scan);
+                            if (strncasecmp((char *)scan, "INTEGER", 7) == 0)
+                                ret_type = T_INT;
+                            else if (strncasecmp((char *)scan, "FLOAT", 5) == 0)
+                                ret_type = T_NBR;
+                            else if (strncasecmp((char *)scan, "STRING", 6) == 0)
+                                ret_type = T_STR;
+                        }
                     }
 
                     /* Add to subfun table */
-                    int idx = bc_find_subfun(cs, (const char *)np, name_len - (ret_type ? 1 : 0));
+                    int idx = bc_find_subfun(cs, (const char *)np, base_name_len);
                     if (idx < 0 && cs->subfun_count < BC_MAX_SUBFUNS) {
                         idx = cs->subfun_count++;
-                        int copy_len = name_len - (ret_type ? 1 : 0);
+                        int copy_len = base_name_len;
                         if (copy_len > MAXVARLEN) copy_len = MAXVARLEN;
                         memcpy(cs->subfuns[idx].name, np, copy_len);
                         cs->subfuns[idx].name[copy_len] = '\0';
@@ -181,6 +212,9 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
     while (p < end && !cs->has_error) {
         /* Skip element separator */
         if (*p == 0) { p++; continue; }
+
+        /* Skip whitespace (important for colon-separated statements) */
+        if (*p == ' ') { p++; continue; }
 
         /* New line marker */
         if (*p == T_NEWLINE) {
@@ -256,8 +290,11 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
             /* Dispatch to statement compiler */
             bc_compile_statement(cs, &args, cmd);
 
-            /* Advance past element */
-            skipelement(p);
+            /* Advance to next statement boundary:
+             * T_NEWLINE = colon separator (more statements follow),
+             * 0x00 = element end. */
+            p = args;
+            while (*p && *p != T_NEWLINE) p++;
             if (*p == 0) p++;
             continue;
         }
@@ -296,8 +333,8 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
                     bc_emit_byte(cs, OP_CALL_SUB);
                     bc_emit_u16(cs, (uint16_t)sf_idx);
                     bc_emit_byte(cs, (uint8_t)nargs);
-                    /* Advance to end of element */
-                    if (*p != 0) skipelement(p);
+                    /* Advance to next statement boundary */
+                    while (*p && *p != T_NEWLINE) p++;
                     if (*p == 0) p++;
                     continue;
                 }
@@ -306,17 +343,14 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
             unsigned char *save = p;
             bc_compile_assignment(cs, &p);
 
-            /* If assignment didn't consume anything, skip the element */
+            /* Advance to next statement boundary */
             if (p == save) {
-                skipelement(p);
-                if (*p == 0) p++;
+                /* Assignment didn't consume anything — skip to next boundary */
+                while (*p && *p != T_NEWLINE) p++;
             } else {
-                /* Advance to end of element if not already there */
-                if (*p != 0) {
-                    skipelement(p);
-                }
-                if (*p == 0) p++;
+                while (*p && *p != T_NEWLINE) p++;
             }
+            if (*p == 0) p++;
             continue;
         }
 
