@@ -458,7 +458,7 @@ int   MIPS16 PrepareProgramExt(unsigned char *p, int i, unsigned char **CFunPtr,
     }
     while(*p == 0) p++;                                             // the end of the program can have multiple zeros
     p++;                                                            // step over the terminating 0xff
-    *CFunPtr = (unsigned char *)(((unsigned int)p + 0b11) & ~0b11); // CFunction flash (if it exists) starts on the next word address after the program in flash
+    *CFunPtr = (unsigned char *)(((uintptr_t)p + 0b11) & ~(uintptr_t)0b11); // CFunction flash (if it exists) starts on the next word address after the program in flash
     if(i < MAXSUBFUN) subfun[i] = NULL;
     CurrentLinePtr = NULL;
     // now, step through the CFunction area looking for fonts to add to the font table

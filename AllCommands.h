@@ -105,6 +105,8 @@ void cmd_mode(void);
 void cmd_3D(void);
 void cmd_framebuffer(void);
 void cmd_fastgfx(void);
+void cmd_frun(void);
+void cmd_ftest(void);
 void cmd_edit(void);
 void cmd_editfile(void);
 void cmd_port(void);
@@ -571,6 +573,8 @@ void fun_map(void);
   	{ (unsigned char *)"Map(",            T_CMD | T_FUN  ,           0, cmd_map   },
 	{ (unsigned char *)"Map",            T_CMD,           0, cmd_map   },
 #endif
+{ (unsigned char *)"FRun",       T_CMD,                      0, cmd_frun      },
+{ (unsigned char *)"FTest",      T_CMD,                      0, cmd_ftest     },
 { (unsigned char *)"",   0,                  0, cmd_null,    }                   // this dummy entry is always at the end
 #endif
 /* ********************************************************************************

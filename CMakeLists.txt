@@ -72,6 +72,13 @@ add_executable(PicoMite
     VS1053.c
 	aes.c
 	Memory.c
+	bc_compiler.c
+	bc_compiler_core.c
+	bc_compiler_expr.c
+	bc_compiler_stmt.c
+	bc_vm.c
+	bc_bridge.c
+	bc_test.c
 )
 if (COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "HDMIUSB"  OR COMPILE STREQUAL "VGARP2350"  OR COMPILE STREQUAL "VGAUSBRP2350"  OR COMPILE STREQUAL "PICORP2350"  OR COMPILE STREQUAL "PICOUSBRP2350" )
     target_sources(PicoMite PRIVATE psram.c)
