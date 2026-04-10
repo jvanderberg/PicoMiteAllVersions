@@ -67,6 +67,50 @@ void bc_compiler_free(BCCompiler *cs) {
     memset(cs, 0, sizeof(*cs));
 }
 
+/*
+ * Compact compiler state after compilation: free compile-only arrays and
+ * shrink runtime arrays from MAX to actual size.  This reclaims the bulk
+ * of the heap (often >100 KB) so the running program can allocate memory
+ * for display buffers, large arrays, etc.
+ *
+ * Call after bc_compile() returns successfully, before bc_vm_execute().
+ */
+void bc_compiler_compact(BCCompiler *cs) {
+    /* 1. Free arrays only needed during compilation */
+    if (cs->fixups)     { BC_FREE(cs->fixups);     cs->fixups = NULL; }
+    if (cs->linemap)    { BC_FREE(cs->linemap);    cs->linemap = NULL; }
+    if (cs->nest_stack) { BC_FREE(cs->nest_stack);  cs->nest_stack = NULL; }
+    if (cs->locals)     { BC_FREE(cs->locals);      cs->locals = NULL; }
+
+    /* 2. Shrink runtime arrays to actual size.
+     *    Alloc new right-sized buffer, copy, free oversized original.
+     *    If alloc fails, keep the original (still works, just wastes memory). */
+#define COMPACT(field, count, type) do { \
+    if (cs->field && (count) > 0) { \
+        size_t sz = (size_t)(count) * sizeof(type); \
+        type *p = (type *)BC_ALLOC(sz); \
+        if (p) { memcpy(p, cs->field, sz); BC_FREE(cs->field); cs->field = p; } \
+    } else if (cs->field && (count) == 0) { \
+        BC_FREE(cs->field); cs->field = NULL; \
+    } \
+} while(0)
+
+    /* Shrink code buffer from BC_MAX_CODE to actual code_len */
+    if (cs->code && cs->code_len > 0) {
+        uint8_t *p = (uint8_t *)BC_ALLOC(cs->code_len);
+        if (p) { memcpy(p, cs->code, cs->code_len); BC_FREE(cs->code); cs->code = p; }
+    }
+
+    COMPACT(constants, cs->const_count, BCConstant);
+    COMPACT(slots, cs->slot_count, BCSlot);
+    COMPACT(subfuns, cs->subfun_count, BCSubFun);
+    COMPACT(subfun_locals_base, cs->subfun_count, uint16_t);
+    COMPACT(local_meta, cs->local_meta_count, BCLocalMeta);
+    COMPACT(data_pool, cs->data_count, BCDataItem);
+
+#undef COMPACT
+}
+
 /* ------------------------------------------------------------------ */
 /*  Compiler initialisation (reset state, arrays must be allocated)   */
 /* ------------------------------------------------------------------ */

@@ -5831,7 +5831,6 @@ void cmd_fastgfx(void) {
         if (!fastgfx_active) error("FASTGFX not active");
         while (!fastgfx_done) { __dmb(); }
     } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
-        if (!fastgfx_active) error("FASTGFX not active");
         int fps = getint(p, 0, 120);
         if (fps == 0)
             fastgfx_frame_us = 0;

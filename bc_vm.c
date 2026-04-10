@@ -61,12 +61,20 @@ static uint8_t *vm_get_str_temp(BCVMState *vm) {
  * ====================================================================== */
 static uint32_t calc_array_offset(BCVMState *vm, BCArray *arr,
                                   int64_t *indices, int ndim) {
-    uint32_t offset = 0;
+    /* MMBasic uses column-major (Fortran) ordering: first index varies
+     * fastest.  offset = idx[0] + idx[1]*stride1 + idx[2]*stride1*stride2 …
+     * This must match the interpreter's findvar() so that the bridge can
+     * point MMBasic at VM array data and get correct element lookups. */
     for (int d = 0; d < ndim; d++) {
         int dim_size = arr->dims[d] + 1;   /* 0..N inclusive = N+1 elements */
         if (indices[d] < 0 || indices[d] >= dim_size)
             bc_vm_error(vm, "Array index out of bounds");
-        offset = offset * (uint32_t)dim_size + (uint32_t)indices[d];
+    }
+    uint32_t offset = (uint32_t)indices[0];
+    uint32_t stride = 1;
+    for (int d = 1; d < ndim; d++) {
+        stride *= (uint32_t)(arr->dims[d - 1] + 1);
+        offset += (uint32_t)indices[d] * stride;
     }
     if (offset >= arr->total_elements)
         bc_vm_error(vm, "Array index out of bounds");
@@ -1455,13 +1463,6 @@ op_store_local_arr_i: {
 
 op_builtin_cmd: {
     uint16_t idx = READ_U16();
-#ifndef MMBASIC_HOST
-    if (bc_debug_enabled) {
-        char cbuf[64];
-        snprintf(cbuf, sizeof(cbuf), "[CMD %d @ L%d]\r\n", (int)idx, (int)vm->current_line);
-        MMPrintString(cbuf);
-    }
-#endif
     bc_bridge_call_cmd(vm, idx);
     DISPATCH();
 }
@@ -2173,13 +2174,6 @@ op_clear: {
 op_line: {
     uint16_t lineno = READ_U16();
     vm->current_line = lineno;
-#ifndef MMBASIC_HOST
-    if (bc_debug_enabled) {
-        char lbuf[32];
-        snprintf(lbuf, sizeof(lbuf), "[L%d]\r\n", (int)lineno);
-        MMPrintString(lbuf);
-    }
-#endif
     DISPATCH();
 }
 

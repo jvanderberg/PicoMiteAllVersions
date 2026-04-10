@@ -575,6 +575,7 @@ typedef struct {
 /* Compiler */
 int  bc_compiler_alloc(BCCompiler *cs);   /* allocate all dynamic arrays */
 void bc_compiler_free(BCCompiler *cs);    /* free all dynamic arrays */
+void bc_compiler_compact(BCCompiler *cs); /* shrink to actual size after compile */
 void bc_compiler_init(BCCompiler *cs);    /* reset state (arrays must be allocated) */
 int  bc_compile(BCCompiler *cs, unsigned char *prog_memory, int prog_size);
 

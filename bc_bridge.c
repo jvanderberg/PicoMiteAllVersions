@@ -475,10 +475,6 @@ void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t 
 
 void cmd_frun(void) {
     int err;
-#ifndef MMBASIC_HOST
-    bc_debug_enabled = 1;  /* enable line/cmd tracing on device */
-    FRUN_DBG("FRUN: entry\r\n");
-#endif
     bc_crash_checkpoint(BC_CK_FRUN_ENTRY, "entry");
 
     /* Heap-allocate the compiler and VM structs themselves.
@@ -494,7 +490,6 @@ void cmd_frun(void) {
     memset(cs, 0, sizeof(BCCompiler));
     memset(vm, 0, sizeof(BCVMState));
 
-    FRUN_DBG("FRUN: structs allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_ALLOC_CS, "structs ok");
 
     if (bc_compiler_alloc(cs) != 0) {
@@ -504,7 +499,6 @@ void cmd_frun(void) {
         return;
     }
 
-    FRUN_DBG("FRUN: compiler allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_COMP_ALLOC, "compiler alloc");
 
     if (bc_vm_alloc(vm) != 0) {
@@ -515,7 +509,6 @@ void cmd_frun(void) {
         return;
     }
 
-    FRUN_DBG("FRUN: vm allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_VM_ALLOC, "vm alloc");
 
     /* Compile the program */
@@ -543,7 +536,6 @@ void cmd_frun(void) {
         compile_size = (int)(ep - ProgMemory) + 2;  /* include double-null */
     }
 
-    FRUN_DBGF("FRUN: compiling %d bytes...\r\n", compile_size);
     bc_crash_checkpoint(BC_CK_FRUN_COMPILE, "compiling");
     err = bc_compile(cs, ProgMemory, compile_size);
     if (err) {
@@ -559,20 +551,20 @@ void cmd_frun(void) {
         return;
     }
 
-    FRUN_DBGF("FRUN: compiled OK, %d bytes code, %d slots\r\n",
+#ifndef MMBASIC_HOST
+    FRUN_DBGF("FRUN: %d bytes, %d vars\r\n",
               (int)cs->code_len, (int)cs->slot_count);
+#endif
 
-    if (bc_debug_enabled) {
-        bc_dump_stats(cs);
-        bc_disassemble(cs);
-    }
+    /* Compact: free compile-only arrays + shrink runtime arrays to actual size.
+     * Reclaims >100KB for program use (display buffers, large arrays, etc.) */
+    bc_compiler_compact(cs);
 
     /* Initialize and run the VM */
     bc_crash_checkpoint(BC_CK_FRUN_VM_INIT, "vm init");
     bc_vm_init(vm, cs);
     bc_bridge_reset_sync();
 
-    FRUN_DBG("FRUN: executing...\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_EXECUTE, "executing");
 
     /* Save the main loop's mark jmp_buf.  cmd_frun returns to the caller
@@ -586,13 +578,10 @@ void cmd_frun(void) {
         bc_vm_execute(vm);
     } else {
         /* VM exited via error/longjmp — fall through to cleanup */
-        FRUN_DBGF("FRUN: VM exited via longjmp at line %d\r\n",
-                  (int)vm->current_line);
     }
 
     memcpy(mark, saved_mark, sizeof(jmp_buf));
 
-    FRUN_DBG("FRUN: cleanup\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_CLEANUP, "cleanup");
 
     /* Clean up */
@@ -615,7 +604,6 @@ void cmd_frun(void) {
     BC_FREE(cs);
     BC_FREE(vm);
 
-    FRUN_DBG("FRUN: done\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 4, "cleanup:done");
     /* Successful completion — clear crash breadcrumb */
     bc_crash_clear();
