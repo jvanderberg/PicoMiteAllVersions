@@ -25,6 +25,9 @@ void host_runtime_configure(int timeout_ms, const char *screenshot_path);
 void host_runtime_begin(void);
 void host_runtime_finish(void);
 int host_runtime_timed_out(void);
+uint32_t host_runtime_get_pixel(int x, int y);
+int host_runtime_width(void);
+int host_runtime_height(void);
 
 /* flash_progmemory is NULL on host -- we need to allocate backing storage */
 extern const uint8_t *flash_progmemory;
@@ -40,6 +43,14 @@ static int capture_remaining = 0;
 
 /* Hook into MMPrintString to capture output */
 static int capturing = 0;
+
+typedef struct {
+    int x;
+    int y;
+    uint32_t rgb;
+} PixelAssert;
+
+#define MAX_PIXEL_ASSERTS 64
 
 /* We override MMPrintString etc in host_stubs.c, so we need a way
  * to redirect output.  We'll use a global function pointer. */
@@ -86,6 +97,48 @@ static void stop_capture(void) {
     host_output_hook = NULL;
     capturing = 0;
     if (capture_buf) strip_ansi_sequences(capture_buf);
+}
+
+static int parse_pixel_assert(const char *spec, PixelAssert *out) {
+    char *end;
+    long x = strtol(spec, &end, 10);
+    if (end == spec || *end != ',') return -1;
+    long y = strtol(end + 1, &end, 10);
+    if (end == spec || *end != ',') return -1;
+    const char *rgb_text = end + 1;
+    if (*rgb_text == '#') rgb_text++;
+    else if (rgb_text[0] == '0' && (rgb_text[1] == 'x' || rgb_text[1] == 'X')) rgb_text += 2;
+    unsigned long rgb = strtoul(rgb_text, &end, 16);
+    if (*rgb_text == '\0' || *end != '\0' || rgb > 0xFFFFFFUL) return -1;
+    out->x = (int)x;
+    out->y = (int)y;
+    out->rgb = (uint32_t)rgb;
+    return 0;
+}
+
+static int check_pixel_assertions(const char *label, const PixelAssert *asserts, int count) {
+    int failures = 0;
+    int width = host_runtime_width();
+    int height = host_runtime_height();
+
+    for (int i = 0; i < count; ++i) {
+        const PixelAssert *pa = &asserts[i];
+        if (pa->x < 0 || pa->y < 0 || pa->x >= width || pa->y >= height) {
+            printf("%s pixel assertion %d out of bounds: (%d,%d) not in %dx%d\n",
+                   label, i + 1, pa->x, pa->y, width, height);
+            failures++;
+            continue;
+        }
+        uint32_t actual = host_runtime_get_pixel(pa->x, pa->y);
+        if (actual != pa->rgb) {
+            printf("%s pixel assertion %d failed at (%d,%d): expected 0x%06X got 0x%06X\n",
+                   label, i + 1, pa->x, pa->y,
+                   (unsigned)pa->rgb, (unsigned)actual);
+            failures++;
+        }
+    }
+
+    return failures;
 }
 
 /*
@@ -224,6 +277,8 @@ int main(int argc, char **argv) {
     int mode = 0;  /* 0=compare, 1=interp only, 2=vm only, 3=debug */
     int timeout_ms = 0;
     const char *screenshot_path = NULL;
+    PixelAssert pixel_asserts[MAX_PIXEL_ASSERTS];
+    int pixel_assert_count = 0;
 
     if (argc < 2) {
         printf("MMBasic Host Test Build\n");
@@ -234,6 +289,7 @@ int main(int argc, char **argv) {
         printf("  %s program.bas --vm     Run bytecode VM only\n", argv[0]);
         printf("  %s program.bas --debug  Compile + show stats/disassembly\n", argv[0]);
         printf("  %s program.bas --interp --timeout-ms 100 --screenshot out.ppm\n", argv[0]);
+        printf("  %s program.bas --vm --assert-pixel 10,20,FF0000\n", argv[0]);
         return 0;
     }
 
@@ -247,6 +303,16 @@ int main(int argc, char **argv) {
             timeout_ms = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             screenshot_path = argv[++i];
+        } else if (strcmp(argv[i], "--assert-pixel") == 0 && i + 1 < argc) {
+            if (pixel_assert_count >= MAX_PIXEL_ASSERTS) {
+                fprintf(stderr, "Too many --assert-pixel options (max %d)\n", MAX_PIXEL_ASSERTS);
+                return 2;
+            }
+            if (parse_pixel_assert(argv[++i], &pixel_asserts[pixel_assert_count]) != 0) {
+                fprintf(stderr, "Invalid --assert-pixel spec: %s\n", argv[i]);
+                return 2;
+            }
+            pixel_assert_count++;
         } else {
             fprintf(stderr, "Unknown option: %s\n", argv[i]);
             return 2;
@@ -272,9 +338,12 @@ int main(int argc, char **argv) {
         printf("--- Interpreter ---\n");
         int rc = run_interpreter(interp_output, CAPTURE_SIZE);
         printf("%s", interp_output);
+        int pixel_failures = (rc == 0) ? check_pixel_assertions("Interpreter", pixel_asserts, pixel_assert_count) : 0;
         if (rc == 2) printf("\n--- Timed Out ---\n");
+        else if (pixel_failures) printf("\n--- Pixel Assertions Failed ---\n");
         else printf("\n--- Done ---\n");
-        return rc == 2 ? 124 : rc;
+        if (rc == 2) return 124;
+        return (rc != 0 || pixel_failures) ? 1 : 0;
     }
 
     if (mode == 2) {
@@ -282,9 +351,12 @@ int main(int argc, char **argv) {
         printf("--- Bytecode VM ---\n");
         int rc = run_bytecode_vm(vm_output, CAPTURE_SIZE);
         printf("%s", vm_output);
+        int pixel_failures = (rc == 0) ? check_pixel_assertions("Bytecode VM", pixel_asserts, pixel_assert_count) : 0;
         if (rc == 2) printf("\n--- Timed Out ---\n");
+        else if (pixel_failures) printf("\n--- Pixel Assertions Failed ---\n");
         else printf("\n--- Done ---\n");
-        return rc == 2 ? 124 : rc;
+        if (rc == 2) return 124;
+        return (rc != 0 || pixel_failures) ? 1 : 0;
     }
 
     if (mode == 3) {
@@ -320,19 +392,25 @@ int main(int argc, char **argv) {
 
     printf("--- Interpreter ---\n");
     int r1 = run_interpreter(interp_output, CAPTURE_SIZE);
+    int p1 = (r1 == 0) ? check_pixel_assertions("Interpreter", pixel_asserts, pixel_assert_count) : 0;
 
     /* Re-load the program (interpreter may have modified ProgMemory) */
     load_basic_file(filename);
 
     printf("--- Bytecode VM ---\n");
     int r2 = run_bytecode_vm(vm_output, CAPTURE_SIZE);
+    int p2 = (r2 == 0) ? check_pixel_assertions("Bytecode VM", pixel_asserts, pixel_assert_count) : 0;
 
     /* Compare */
     printf("\n--- Results ---\n");
     printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
     printf("Bytecode VM: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
+    if (pixel_assert_count > 0) {
+        printf("Interpreter pixels: %s\n", p1 == 0 ? "OK" : "FAIL");
+        printf("Bytecode VM pixels: %s\n", p2 == 0 ? "OK" : "FAIL");
+    }
 
-    if (r1 != 0 || r2 != 0) {
+    if (r1 != 0 || r2 != 0 || p1 != 0 || p2 != 0) {
         printf("\nInterpreter output:\n---\n%s\n---\n\n", interp_output);
         printf("Bytecode VM output:\n---\n%s\n---\n\n", vm_output);
         return 1;

@@ -1167,6 +1167,7 @@ op_call_sub: {
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     cf->return_pc  = vm->pc;
     cf->frame_base = vm->frame_base;
+    cf->locals_top = vm->locals_top;
     cf->saved_sp   = vm->sp - nargs;  /* SP after popping args */
     cf->nlocals    = sf->nlocals;
     cf->subfun_idx = idx;
@@ -1216,6 +1217,7 @@ op_call_fun: {
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     cf->return_pc  = vm->pc;
     cf->frame_base = vm->frame_base;
+    cf->locals_top = vm->locals_top;
     cf->saved_sp   = vm->sp - nargs;  /* Where SP should be after popping args (return val goes here+1) */
     cf->nlocals    = sf->nlocals;
     cf->subfun_idx = idx;
@@ -1300,7 +1302,7 @@ op_ret_sub: {
     vm->csp--;
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     vm->frame_base = cf->frame_base;
-    vm->locals_top = vm->frame_base;  /* Reclaim local slots */
+    vm->locals_top = cf->locals_top;
     vm->sp = cf->saved_sp;
     vm->pc = cf->return_pc;
     DISPATCH();
@@ -1316,7 +1318,7 @@ op_ret_fun: {
     vm->csp--;
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     vm->frame_base = cf->frame_base;
-    vm->locals_top = vm->frame_base;
+    vm->locals_top = cf->locals_top;
     vm->sp = cf->saved_sp;
     vm->pc = cf->return_pc;
 

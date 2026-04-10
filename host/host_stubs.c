@@ -361,6 +361,21 @@ static inline void host_put_pixel(int x, int y, int c) {
     host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
 }
 
+uint32_t host_runtime_get_pixel(int x, int y) {
+    if (!host_framebuffer) host_fb_ensure();
+    if (!host_framebuffer) return 0;
+    if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return 0;
+    return host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
+}
+
+int host_runtime_width(void) {
+    return host_fb_width;
+}
+
+int host_runtime_height(void) {
+    return host_fb_height;
+}
+
 static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
     if (!host_framebuffer) host_fb_ensure();
     if (!host_framebuffer) return;
