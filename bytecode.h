@@ -207,6 +207,8 @@ typedef enum {
     OP_ERROR_S      = 0xCC,  /* — pop string, raise error */
     OP_ERROR_EMPTY  = 0xCD,  /* — raise empty error */
     OP_CLEAR        = 0xCE,  /* — CLEAR all variables */
+    OP_FASTGFX_SWAP = 0xCF,  /* — FASTGFX SWAP */
+    OP_FASTGFX_SYNC = 0xD0,  /* — FASTGFX SYNC */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -627,6 +629,10 @@ void bc_patch_u32(BCCompiler *cs, uint32_t addr, uint32_t v);
 /* Debug / diagnostic tools */
 extern int bc_debug_enabled;       /* set to 1 to dump stats+disassembly on FRUN */
 void bc_disassemble(BCCompiler *cs);
+
+/* Native FASTGFX helpers implemented by the platform runtime. */
+void bc_fastgfx_swap(void);
+void bc_fastgfx_sync(void);
 void bc_dump_stats(BCCompiler *cs);
 void bc_dump_vm_state(BCVMState *vm);
 

@@ -200,6 +200,8 @@ static const char *opcode_name(uint8_t op) {
         case OP_ERROR_S:      return "ERROR_S";
         case OP_ERROR_EMPTY:  return "ERROR_EMPTY";
         case OP_CLEAR:        return "CLEAR";
+        case OP_FASTGFX_SWAP: return "FASTGFX_SWAP";
+        case OP_FASTGFX_SYNC: return "FASTGFX_SYNC";
 
         case OP_LINE:         return "LINE";
         case OP_CHECKINT:     return "CHECKINT";
@@ -400,6 +402,11 @@ void bc_disassemble(BCCompiler *cs) {
             dbg_print("  %04X: %-16s %d\r\n", start, name, line);
             break;
         }
+
+        case OP_FASTGFX_SWAP:
+        case OP_FASTGFX_SYNC:
+            dbg_print("  %04X: %-16s\r\n", start, name);
+            break;
 
         /* All other opcodes have no operands */
         default:

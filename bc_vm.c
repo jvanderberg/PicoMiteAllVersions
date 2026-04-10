@@ -470,6 +470,8 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_ERROR_S]        = &&op_error_s,
         [OP_ERROR_EMPTY]    = &&op_error_empty,
         [OP_CLEAR]          = &&op_clear,
+        [OP_FASTGFX_SWAP]   = &&op_fastgfx_swap,
+        [OP_FASTGFX_SYNC]   = &&op_fastgfx_sync,
 
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
@@ -2202,6 +2204,14 @@ op_clear: {
     ClearVars(0, true);
     DISPATCH();
 }
+
+op_fastgfx_swap:
+    bc_fastgfx_swap();
+    DISPATCH();
+
+op_fastgfx_sync:
+    bc_fastgfx_sync();
+    DISPATCH();
 
     /* ==================================================================
      * Housekeeping

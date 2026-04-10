@@ -1231,6 +1231,48 @@ static void compile_clear(BCCompiler *cs, unsigned char **pp) {
     *pp = p;
 }
 
+static int cmdline_matches_exact(unsigned char *p, const char *kw) {
+    static unsigned short kw_swap = 0;
+    static unsigned short kw_sync = 0;
+    unsigned char *rest;
+
+    skipspace(p);
+    if (bc_is_cmd_token(p)) {
+        uint16_t want = 0;
+        if (strcmp(kw, "SWAP") == 0) {
+            if (!kw_swap) kw_swap = (unsigned short)GetCommandValue((unsigned char *)"Swap");
+            want = kw_swap;
+        } else if (strcmp(kw, "SYNC") == 0) {
+            if (!kw_sync) kw_sync = (unsigned short)GetCommandValue((unsigned char *)"Sync");
+            want = kw_sync;
+        }
+        if (want && bc_decode_cmd(p) == want) {
+            p += 2;
+            skipspace(p);
+            return *p == 0;
+        }
+    }
+
+    rest = checkstring(p, (unsigned char *)kw);
+    if (!rest) return 0;
+    skipspace(rest);
+    return *rest == 0;
+}
+
+static int compile_fastgfx_native(BCCompiler *cs, unsigned char **pp) {
+    unsigned char *p = *pp;
+    if (cmdline_matches_exact(p, "SWAP")) {
+        bc_emit_byte(cs, OP_FASTGFX_SWAP);
+    } else if (cmdline_matches_exact(p, "SYNC")) {
+        bc_emit_byte(cs, OP_FASTGFX_SYNC);
+    } else {
+        return 0;
+    }
+    while (*p) p++;
+    *pp = p;
+    return 1;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Bridge: default handler for unrecognised commands                  */
 /* ------------------------------------------------------------------ */
@@ -1366,7 +1408,7 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         static unsigned short cGOTO, cGOSUB, cRETURN, cPRINT;
         static unsigned short cDIM, cEND, cEXIT, cEXITFOR, cEXITDO, cEXITFUN, cEXITSUB, cLET;
         static unsigned short cDATA, cREAD, cRESTORE;
-        static unsigned short cINC, cCONST, cRANDOMIZE, cERROR, cCLEAR;
+        static unsigned short cINC, cCONST, cRANDOMIZE, cERROR, cCLEAR, cFASTGFX;
         static int cached = 0;
         if (!cached) {
             cGOTO    = (unsigned short)GetCommandValue((unsigned char *)"GoTo");
@@ -1389,6 +1431,7 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
             cRANDOMIZE = (unsigned short)GetCommandValue((unsigned char *)"Randomize");
             cERROR     = (unsigned short)GetCommandValue((unsigned char *)"Error");
             cCLEAR     = (unsigned short)GetCommandValue((unsigned char *)"Clear");
+            cFASTGFX   = (unsigned short)GetCommandValue((unsigned char *)"FASTGFX");
             cached   = 1;
         }
         if (cmd_token == cGOTO)    { compile_goto(cs, pp);   return; }
@@ -1411,6 +1454,7 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         if (cmd_token == cRANDOMIZE) { compile_randomize(cs, pp); return; }
         if (cmd_token == cERROR)     { compile_error(cs, pp);     return; }
         if (cmd_token == cCLEAR)     { compile_clear(cs, pp);     return; }
+        if (cmd_token == cFASTGFX && compile_fastgfx_native(cs, pp)) { return; }
     }
 
     /* Default: bridge to built-in command */

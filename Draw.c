@@ -5783,6 +5783,25 @@ void __not_in_flash_func(fastgfx_swap_core1)(void) {
     fastgfx_done = true;
 }
 
+void bc_fastgfx_swap(void) {
+    if (!fastgfx_active) error("FASTGFX not active");
+    while (!fastgfx_done) { __dmb(); }
+    if (fastgfx_frame_us > 0) {
+        while (time_us_64() - fastgfx_last_swap_us < fastgfx_frame_us) {
+            tight_loop_contents();
+        }
+    }
+    fastgfx_last_swap_us = time_us_64();
+    fastgfx_done = false;
+    __dmb();
+    multicore_fifo_push_blocking(8);
+}
+
+void bc_fastgfx_sync(void) {
+    if (!fastgfx_active) error("FASTGFX not active");
+    while (!fastgfx_done) { __dmb(); }
+}
+
 void cmd_fastgfx(void) {
     unsigned char *p = NULL;
     if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
@@ -5813,23 +5832,9 @@ void cmd_fastgfx(void) {
         fastgfx_frame_us = 0;
         fastgfx_last_swap_us = 0;
     } else if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
-        if (!fastgfx_active) error("FASTGFX not active");
-        // Implicit sync: wait for previous swap to finish
-        while (!fastgfx_done) { __dmb(); }
-        // Frame rate limiter: wait until target frame time has elapsed
-        if (fastgfx_frame_us > 0) {
-            while (time_us_64() - fastgfx_last_swap_us < fastgfx_frame_us) {
-                tight_loop_contents();
-            }
-        }
-        fastgfx_last_swap_us = time_us_64();
-        // Signal core1 to run the swap
-        fastgfx_done = false;
-        __dmb();
-        multicore_fifo_push_blocking(8);
+        bc_fastgfx_swap();
     } else if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
-        if (!fastgfx_active) error("FASTGFX not active");
-        while (!fastgfx_done) { __dmb(); }
+        bc_fastgfx_sync();
     } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
         int fps = getint(p, 0, 120);
         if (fps == 0)

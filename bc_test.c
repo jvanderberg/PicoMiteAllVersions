@@ -933,6 +933,34 @@ static int run_compiler_selftests(char *msg, size_t msglen) {
         return -1;
     }
 
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "FASTGFX CREATE\n"
+            "FASTGFX SWAP\n"
+            "FASTGFX SYNC\n"
+            "FASTGFX CLOSE\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "FASTGFX native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_swap = 0;
+        int saw_sync = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_FASTGFX_SWAP) saw_swap = 1;
+            if (cs->code[i] == OP_FASTGFX_SYNC) saw_sync = 1;
+        }
+        if (!saw_swap || !saw_sync) {
+            snprintf(msg, msglen, "FASTGFX SWAP/SYNC did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
     bc_compiler_free(cs);
     BC_FREE(cs);
     snprintf(msg, msglen, "compiler self-tests passed");

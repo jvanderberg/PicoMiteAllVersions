@@ -690,6 +690,16 @@ void cmd_ds18b20(void) {}
 void cmd_edit(void) {}
 void cmd_editfile(void) {}
 void cmd_endprogram(void) {}
+void bc_fastgfx_swap(void) {}
+void bc_fastgfx_sync(void) {
+    if (!host_fastgfx_active || host_fastgfx_fps <= 0) return;
+    uint64_t frame_us = 1000000ULL / (uint64_t)host_fastgfx_fps;
+    uint64_t now = host_time_us_64();
+    if (host_fastgfx_next_sync_us == 0) host_fastgfx_next_sync_us = now + frame_us;
+    if (now < host_fastgfx_next_sync_us) host_sleep_us(host_fastgfx_next_sync_us - now);
+    host_fastgfx_next_sync_us += frame_us;
+}
+
 void cmd_fastgfx(void) {
     unsigned char *p;
 
@@ -707,16 +717,12 @@ void cmd_fastgfx(void) {
     }
     if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
         checkend(p);
+        bc_fastgfx_swap();
         return;
     }
     if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
         checkend(p);
-        if (!host_fastgfx_active || host_fastgfx_fps <= 0) return;
-        uint64_t frame_us = 1000000ULL / (uint64_t)host_fastgfx_fps;
-        uint64_t now = host_time_us_64();
-        if (host_fastgfx_next_sync_us == 0) host_fastgfx_next_sync_us = now + frame_us;
-        if (now < host_fastgfx_next_sync_us) host_sleep_us(host_fastgfx_next_sync_us - now);
-        host_fastgfx_next_sync_us += frame_us;
+        bc_fastgfx_sync();
         return;
     }
     if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
