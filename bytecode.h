@@ -130,7 +130,9 @@ typedef enum {
     OP_LOAD_LOCAL_ARR_I  = 0x7C, /* offset:16, ndim:8 */
     OP_LOAD_LOCAL_ARR_F  = 0x7D, /* offset:16, ndim:8 */
     OP_LOAD_LOCAL_ARR_S  = 0x7E, /* offset:16, ndim:8 */
-    OP_STORE_LOCAL_ARR_I = 0x7F, /* offset:16, ndim:8 (unused in this range but reserved) */
+    OP_STORE_LOCAL_ARR_I = 0x7F, /* offset:16, ndim:8 */
+    OP_STORE_LOCAL_ARR_F = 0x84, /* offset:16, ndim:8 */
+    OP_STORE_LOCAL_ARR_S = 0x85, /* offset:16, ndim:8 */
 
     /* Built-in Bridge */
     OP_BUILTIN_CMD  = 0x80,  /* idx:16 */
@@ -209,6 +211,16 @@ typedef enum {
     OP_CLEAR        = 0xCE,  /* — CLEAR all variables */
     OP_FASTGFX_SWAP = 0xCF,  /* — FASTGFX SWAP */
     OP_FASTGFX_SYNC = 0xD0,  /* — FASTGFX SYNC */
+    OP_BOX          = 0xD1,  /* — native BOX */
+    OP_RGB          = 0xD2,  /* — pop b,g,r ints, push RGB(r,g,b) */
+    OP_CIRCLE       = 0xD3,  /* — native CIRCLE */
+    OP_DRAW_LINE    = 0xD4,  /* — native LINE */
+    OP_TEXT         = 0xD5,  /* — native TEXT */
+    OP_CLS          = 0xD6,  /* — native CLS */
+    OP_PIXEL        = 0xD7,  /* — native PIXEL */
+    OP_FASTGFX_CREATE = 0xD8, /* — FASTGFX CREATE */
+    OP_FASTGFX_CLOSE  = 0xD9, /* — FASTGFX CLOSE */
+    OP_FASTGFX_FPS    = 0xDA, /* — pop int fps, FASTGFX FPS */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -221,6 +233,19 @@ typedef enum {
 #define PRINT_NO_NEWLINE  0x01
 #define PRINT_TAB_AFTER   0x02
 #define PRINT_SEMICOLON   0x04
+
+/* Native BOX argument kinds */
+#define BC_BOX_ARG_COUNT         7
+#define BC_BOX_ARG_EMPTY         0
+#define BC_BOX_ARG_STACK         1
+#define BC_BOX_ARG_GLOBAL_ARR_I  2
+#define BC_BOX_ARG_GLOBAL_ARR_F  3
+#define BC_BOX_ARG_LOCAL_ARR_I   4
+#define BC_BOX_ARG_LOCAL_ARR_F   5
+
+#define BC_LINE_ARG_COUNT        6
+#define BC_TEXT_ARG_COUNT        8
+#define BC_PIXEL_ARG_COUNT       3
 
 /*
  * Compiler limits — platform-conditional
@@ -456,6 +481,14 @@ typedef union {
     uint8_t    *s;       /* MMBasic format string (length prefix) */
 } BCValue;
 
+/* Internal-only VM stack tags for array-by-reference parameter passing. */
+#define BC_STK_GARR_I  0x80
+#define BC_STK_GARR_F  0x81
+#define BC_STK_GARR_S  0x82
+#define BC_STK_LARR_I  0x83
+#define BC_STK_LARR_F  0x84
+#define BC_STK_LARR_S  0x85
+
 /*
  * VM call stack frame
  */
@@ -545,6 +578,7 @@ typedef struct {
 
     /* Local array storage (allocated: VM_MAX_LOCALS entries) */
     BCArray    *local_arrays;   /* parallel to locals[] */
+    uint8_t     local_array_is_alias[VM_MAX_LOCALS];
 
     /* FOR loop stack (inline — small, fixed) */
     BCForEntry  for_stack[VM_MAX_FOR];
@@ -633,6 +667,9 @@ void bc_disassemble(BCCompiler *cs);
 /* Native FASTGFX helpers implemented by the platform runtime. */
 void bc_fastgfx_swap(void);
 void bc_fastgfx_sync(void);
+void bc_fastgfx_create(void);
+void bc_fastgfx_close(void);
+void bc_fastgfx_set_fps(int fps);
 void bc_dump_stats(BCCompiler *cs);
 void bc_dump_vm_state(BCVMState *vm);
 

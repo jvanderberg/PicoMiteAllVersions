@@ -961,6 +961,158 @@ static int run_compiler_selftests(char *msg, size_t msglen) {
         }
     }
 
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "CLS RGB(BLACK)\n"
+            "BOX 4, 5, 6, 4, 0, , RGB(RED)\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "BOX native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_box = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_BOX) saw_box = 1;
+        }
+        if (!saw_box) {
+            snprintf(msg, msglen, "BOX did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "DIM INTEGER x%(1), y%(1), r%(1)\n"
+            "x%(0)=10 : x%(1)=20\n"
+            "y%(0)=10 : y%(1)=20\n"
+            "r%(0)=5  : r%(1)=5\n"
+            "CIRCLE x%(), y%(), r%()\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "CIRCLE native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_circle = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_CIRCLE) saw_circle = 1;
+        }
+        if (!saw_circle) {
+            snprintf(msg, msglen, "CIRCLE did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "LINE 1, 2, 3, 4, , RGB(RED)\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "LINE native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_draw_line = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_DRAW_LINE) saw_draw_line = 1;
+        }
+        if (!saw_draw_line) {
+            snprintf(msg, msglen, "LINE did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "DIM s$ = \"A\", j$ = \"LT\"\n"
+            "TEXT 1, 2, s$, j$, , , RGB(WHITE), RGB(BLACK)\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "TEXT native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_text = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_TEXT) saw_text = 1;
+        }
+        if (!saw_text) {
+            snprintf(msg, msglen, "TEXT did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "CLS RGB(BLUE)\n"
+            "CLS\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "CLS native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_cls = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_CLS) saw_cls = 1;
+        }
+        if (!saw_cls) {
+            snprintf(msg, msglen, "CLS did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    bc_compiler_init(cs);
+    if (load_test_program(
+            "DIM x%(2), y%(2), c%(2)\n"
+            "PIXEL x%(), y%(), c%()\n"
+            "END\n") != 0 ||
+        bc_compile(cs, ProgMemory, PSize) != 0) {
+        snprintf(msg, msglen, "PIXEL native opcode compile failed: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    {
+        int saw_pixel = 0;
+        for (i = 0; i < cs->code_len; i++) {
+            if (cs->code[i] == OP_PIXEL) saw_pixel = 1;
+        }
+        if (!saw_pixel) {
+            snprintf(msg, msglen, "PIXEL did not compile natively");
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
     bc_compiler_free(cs);
     BC_FREE(cs);
     snprintf(msg, msglen, "compiler self-tests passed");

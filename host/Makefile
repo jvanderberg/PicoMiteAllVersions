@@ -18,6 +18,7 @@ VPATH = ..
 
 # Core MMBasic sources (language runtime)
 CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c
+CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c
 
 # Bytecode VM sources
 BC_SRCS = bc_compiler.c bc_compiler_core.c bc_compiler_expr.c \

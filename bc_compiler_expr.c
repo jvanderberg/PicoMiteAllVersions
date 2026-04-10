@@ -12,6 +12,8 @@
 #include <math.h>
 #include "bytecode.h"
 #include "bc_compiler_internal.h"
+#include "Draw.h"
+#include "AllCommands.h"
 
 /* ------------------------------------------------------------------ */
 /*  Operator stack entry (shunting-yard)                               */
@@ -542,6 +544,90 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
         return T_STR;
     }
 
+    if (fptr == fun_rgb) {
+        unsigned char *scan = p;
+        unsigned char *arg_end = p;
+        int comma_count = 0;
+        int depth = 1;
+
+        while (*scan && depth > 0) {
+            if (*scan == '(') depth++;
+            else if (*scan == ')') {
+                depth--;
+                if (depth == 0) {
+                    arg_end = scan;
+                    break;
+                }
+            } else if (*scan == ',' && depth == 1) {
+                comma_count++;
+            } else if (*scan == '"') {
+                scan++;
+                while (*scan && *scan != '"') scan++;
+            }
+            scan++;
+        }
+
+        if (*scan != ')') return 0;
+
+        if (comma_count == 0) {
+            unsigned char *start = p;
+            unsigned char *end = arg_end;
+            int color = -1;
+            while (start < end && *start == ' ') start++;
+            while (end > start && end[-1] == ' ') end--;
+#define RGB_NAME(name, value) \
+            if (end - start == (int)strlen(name) && strncasecmp((const char *)start, name, strlen(name)) == 0) color = value;
+            RGB_NAME("WHITE", WHITE)
+            else RGB_NAME("YELLOW", YELLOW)
+            else RGB_NAME("LILAC", LILAC)
+            else RGB_NAME("BROWN", BROWN)
+            else RGB_NAME("FUCHSIA", FUCHSIA)
+            else RGB_NAME("RUST", RUST)
+            else RGB_NAME("MAGENTA", MAGENTA)
+            else RGB_NAME("RED", RED)
+            else RGB_NAME("CYAN", CYAN)
+            else RGB_NAME("GREEN", GREEN)
+            else RGB_NAME("CERULEAN", CERULEAN)
+            else RGB_NAME("MIDGREEN", MIDGREEN)
+            else RGB_NAME("COBALT", COBALT)
+            else RGB_NAME("MYRTLE", MYRTLE)
+            else RGB_NAME("BLUE", BLUE)
+            else RGB_NAME("BLACK", BLACK)
+            else RGB_NAME("GRAY", GRAY)
+            else RGB_NAME("GREY", GRAY)
+            else RGB_NAME("LIGHTGRAY", LITEGRAY)
+            else RGB_NAME("LIGHTGREY", LITEGRAY)
+            else RGB_NAME("ORANGE", ORANGE)
+            else RGB_NAME("PINK", PINK)
+            else RGB_NAME("GOLD", GOLD)
+            else RGB_NAME("SALMON", SALMON)
+            else RGB_NAME("BEIGE", BEIGE)
+#undef RGB_NAME
+            if (color < 0) return 0;
+            bc_emit_byte(cs, OP_PUSH_INT);
+            bc_emit_i64(cs, color);
+            p = scan + 1;
+            *pp = p;
+            return T_INT;
+        }
+
+        if (comma_count == 2) {
+            uint8_t at;
+            at = bc_compile_expression(cs, &p);
+            if (at == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
+            skipspace(p); if (*p == ',') p++;
+            at = bc_compile_expression(cs, &p);
+            if (at == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
+            skipspace(p); if (*p == ',') p++;
+            at = bc_compile_expression(cs, &p);
+            if (at == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
+            if (*p == ')') p++;
+            bc_emit_byte(cs, OP_RGB);
+            *pp = p;
+            return T_INT;
+        }
+    }
+
     /* ---- Math functions (single-arg, float->float) ---- */
 
     /* ---- Math: single-arg float functions (auto-convert int to float) ---- */
@@ -812,8 +898,21 @@ static void pop_and_emit(BCCompiler *cs, OpEntry *op,
 
         /* Power (^) and float division (/) always need float operands */
         int needs_float = (op->fptr == op_exp || op->fptr == op_div);
+        /* Integer division (\) always truncates integer operands */
+        int needs_int = (op->fptr == op_divint);
 
-        if (needs_float && ltype == T_INT && rtype == T_INT) {
+        if (needs_int) {
+            /* Coerce both sides to INT for OP_IDIV_I */
+            if (rtype == T_NBR) {
+                bc_emit_byte(cs, OP_CVT_F2I);
+                eff_r = T_INT;
+            }
+            if (ltype == T_NBR) {
+                code_insert_byte(cs, left_end, OP_CVT_F2I,
+                                 type_stack, tsp);
+                eff_l = T_INT;
+            }
+        } else if (needs_float && ltype == T_INT && rtype == T_INT) {
             /* Both int but need float: convert both */
             bc_emit_byte(cs, OP_CVT_I2F);
             eff_r = T_NBR;
@@ -1032,20 +1131,26 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
                 bc_set_error(cs, "Invalid variable name"); break;
             }
             if (var_type == 0) {
-                /* No suffix — check if it's an existing slot (e.g. CONST
-                 * declared without a suffix, which defaults to T_NBR) */
-                uint16_t existing = bc_find_slot(cs, (const char *)p, name_len);
-                if (existing != 0xFFFF) {
-                    var_type = cs->slots[existing].type;
+                /* No suffix — resolve locals first, then globals/functions. */
+                int loc = bc_find_local(cs, (const char *)p, name_len);
+                if (loc >= 0) {
+                    var_type = cs->locals[loc].type;
                 } else {
-                    /* Check if it's a user FUNCTION with AS type */
-                    int sf_idx = bc_find_subfun(cs, (const char *)p, name_len);
-                    if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0) {
-                        var_type = cs->subfuns[sf_idx].return_type;
+                    /* Check if it's an existing slot (e.g. CONST
+                     * declared without a suffix, which defaults to T_NBR) */
+                    uint16_t existing = bc_find_slot(cs, (const char *)p, name_len);
+                    if (existing != 0xFFFF) {
+                        var_type = cs->slots[existing].type;
                     } else {
-                        bc_set_error(cs,
-                            "Variable must have explicit type suffix (%%/!/$)");
-                        break;
+                        /* Check if it's a user FUNCTION with AS type */
+                        int sf_idx = bc_find_subfun(cs, (const char *)p, name_len);
+                        if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0) {
+                            var_type = cs->subfuns[sf_idx].return_type;
+                        } else {
+                            bc_set_error(cs,
+                                "Variable must have explicit type suffix (%%/!/$)");
+                            break;
+                        }
                     }
                 }
             }

@@ -1,0 +1,10 @@
+OPTION EXPLICIT
+
+DIM s$ = "OK"
+DIM j$ = "RT"
+
+CLS RGB(BLACK)
+TEXT 140, 40, s$, j$, , , RGB(YELLOW), RGB(BLACK)
+
+PRINT "done"
+END

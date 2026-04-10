@@ -13,7 +13,14 @@
 #include <math.h>
 
 #include "MMBasic.h"
+#include "Hardware_Includes.h"
 #include "bytecode.h"
+#include "gfx_box_shared.h"
+#include "gfx_circle_shared.h"
+#include "gfx_line_shared.h"
+#include "gfx_pixel_shared.h"
+#include "gfx_cls_shared.h"
+#include "gfx_text_shared.h"
 #ifndef MMBASIC_HOST
 #include "pico/time.h"
 #endif
@@ -53,6 +60,48 @@ static uint8_t *vm_get_str_temp(BCVMState *vm) {
     uint8_t *p = vm->str_temp[idx];
     vm->str_temp_idx = (idx + 1) & 3;
     return p;
+}
+
+static void bc_push_array_ref(BCVMState *vm, uint8_t tag, int64_t ref) {
+    if (vm->sp + 1 >= VM_STACK_SIZE)
+        bc_vm_error(vm, "Stack overflow");
+    vm->sp++;
+    vm->stack[vm->sp].i = ref;
+    vm->stack_types[vm->sp] = tag;
+}
+
+static int bc_stack_type_matches_array_param(uint8_t stack_type, uint8_t param_type) {
+    switch (param_type) {
+        case T_INT:
+            return stack_type == BC_STK_GARR_I || stack_type == BC_STK_LARR_I;
+        case T_NBR:
+            return stack_type == BC_STK_GARR_F || stack_type == BC_STK_LARR_F;
+        case T_STR:
+            return stack_type == BC_STK_GARR_S || stack_type == BC_STK_LARR_S;
+        default:
+            return 0;
+    }
+}
+
+static BCArray *bc_resolve_array_ref(BCVMState *vm, BCValue value, uint8_t type) {
+    int idx = (int)value.i;
+    switch (type) {
+        case BC_STK_GARR_I:
+        case BC_STK_GARR_F:
+        case BC_STK_GARR_S:
+            if (idx < 0 || idx >= BC_MAX_SLOTS)
+                bc_vm_error(vm, "Global array reference out of range");
+            return &vm->arrays[idx];
+        case BC_STK_LARR_I:
+        case BC_STK_LARR_F:
+        case BC_STK_LARR_S:
+            if (idx < 0 || idx >= VM_MAX_LOCALS)
+                bc_vm_error(vm, "Local array reference out of range");
+            return &vm->local_arrays[idx];
+        default:
+            bc_vm_error(vm, "Invalid array reference");
+            return NULL;
+    }
 }
 
 /* ======================================================================
@@ -144,12 +193,24 @@ void bc_vm_free(BCVMState *vm) {
             }
         }
     }
-    if (vm->globals)      BC_FREE(vm->globals);
-    if (vm->global_types) BC_FREE(vm->global_types);
-    if (vm->arrays)       BC_FREE(vm->arrays);
-    if (vm->locals)       BC_FREE(vm->locals);
-    if (vm->local_types)  BC_FREE(vm->local_types);
-    if (vm->local_arrays) BC_FREE(vm->local_arrays);
+    if (vm->globals) {
+        BC_FREE(vm->globals);
+    }
+    if (vm->global_types) {
+        BC_FREE(vm->global_types);
+    }
+    if (vm->arrays) {
+        BC_FREE(vm->arrays);
+    }
+    if (vm->locals) {
+        BC_FREE(vm->locals);
+    }
+    if (vm->local_types) {
+        BC_FREE(vm->local_types);
+    }
+    if (vm->local_arrays) {
+        BC_FREE(vm->local_arrays);
+    }
     vm->globals = NULL;
     vm->global_types = NULL;
     vm->arrays = NULL;
@@ -171,6 +232,7 @@ void bc_vm_init(BCVMState *vm, BCCompiler *cs) {
     memset(vm->gosub_stack, 0, sizeof(vm->gosub_stack));
     memset(vm->for_stack, 0, sizeof(vm->for_stack));
     memset(vm->str_temp, 0, sizeof(vm->str_temp));
+    memset(vm->local_array_is_alias, 0, sizeof(vm->local_array_is_alias));
 
     /* Zero dynamically-allocated arrays.  On device GetMemory() zeros,
      * but on host calloc also zeros.  Keep explicit zeroing for safety. */
@@ -247,6 +309,223 @@ static inline BCValue bc_vm_coerce_arg_value(BCValue value, uint8_t from_type, u
     return out;
 }
 
+static int bc_vm_box_is_array_kind(uint8_t kind) {
+    return kind == BC_BOX_ARG_GLOBAL_ARR_I || kind == BC_BOX_ARG_GLOBAL_ARR_F ||
+           kind == BC_BOX_ARG_LOCAL_ARR_I || kind == BC_BOX_ARG_LOCAL_ARR_F;
+}
+
+static int bc_vm_box_is_float_array_kind(uint8_t kind) {
+    return kind == BC_BOX_ARG_GLOBAL_ARR_F || kind == BC_BOX_ARG_LOCAL_ARR_F;
+}
+
+static BCArray *bc_vm_box_get_array(BCVMState *vm, uint8_t kind, uint16_t slot, int *count_out) {
+    BCArray *arr = NULL;
+    int idx;
+
+    switch (kind) {
+        case BC_BOX_ARG_GLOBAL_ARR_I:
+        case BC_BOX_ARG_GLOBAL_ARR_F:
+            if (slot >= BC_MAX_SLOTS) bc_vm_error(vm, "Array index out of range");
+            arr = &vm->arrays[slot];
+            if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
+            break;
+        case BC_BOX_ARG_LOCAL_ARR_I:
+        case BC_BOX_ARG_LOCAL_ARR_F:
+            idx = vm->frame_base + slot;
+            if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
+            arr = &vm->local_arrays[idx];
+            if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+            break;
+        default:
+            bc_vm_error(vm, "Invalid BOX array kind");
+    }
+
+    if (arr->ndims != 1) bc_vm_error(vm, "Invalid variable");
+    if (count_out) *count_out = arr->dims[0] + 1 - g_OptionBase;
+    return arr;
+}
+
+static int bc_vm_box_array_int(BCVMState *vm, uint8_t kind, uint16_t slot, int index) {
+    int count = 0;
+    BCArray *arr = bc_vm_box_get_array(vm, kind, slot, &count);
+    if (index < 0 || index >= count) bc_vm_error(vm, "Array index out of bounds");
+    if (bc_vm_box_is_float_array_kind(kind)) return (int)arr->data[index].f;
+    return (int)arr->data[index].i;
+}
+
+static MMFLOAT bc_vm_box_array_float(BCVMState *vm, uint8_t kind, uint16_t slot, int index) {
+    int count = 0;
+    BCArray *arr = bc_vm_box_get_array(vm, kind, slot, &count);
+    if (index < 0 || index >= count) bc_vm_error(vm, "Array index out of bounds");
+    if (bc_vm_box_is_float_array_kind(kind)) return arr->data[index].f;
+    return (MMFLOAT)arr->data[index].i;
+}
+
+static int bc_vm_box_scalar_int(BCVMState *vm, BCValue value, uint8_t type) {
+    if (type == T_INT) return (int)value.i;
+    if (type == T_NBR) return (int)FloatToInt64(value.f);
+    bc_vm_error(vm, "BOX requires numeric arguments");
+    return 0;
+}
+
+static MMFLOAT bc_vm_box_scalar_float(BCVMState *vm, BCValue value, uint8_t type) {
+    if (type == T_INT) return (MMFLOAT)value.i;
+    if (type == T_NBR) return value.f;
+    bc_vm_error(vm, "Numeric argument required");
+    return 0;
+}
+
+static uint8_t *bc_vm_string_to_c_temp(BCVMState *vm, uint8_t *src) {
+    uint8_t *tmp;
+    if (!src) return NULL;
+    tmp = vm_get_str_temp(vm);
+    Mstrcpy(tmp, src);
+    return MtoC(tmp);
+}
+
+static int bc_vm_box_checked(int value, int min, int max, BCVMState *vm, const char *label) {
+    if (value < min || value > max) {
+        if (label)
+            bc_vm_error(vm, "%s %d is invalid (valid is %d to %d)", label, value, min, max);
+        else
+            bc_vm_error(vm, "%d is invalid (valid is %d to %d)", value, min, max);
+    }
+    return value;
+}
+
+typedef struct {
+    int value;
+} VMBoxScalarCtx;
+
+typedef struct {
+    MMFLOAT value;
+} VMFloatScalarCtx;
+
+typedef struct {
+    BCVMState *vm;
+    uint8_t *value;
+} VMStringScalarCtx;
+
+typedef struct {
+    BCVMState *vm;
+    uint8_t kind;
+    uint16_t slot;
+} VMBoxArrayCtx;
+
+static int vm_box_scalar_get_int(void *ctx, int index) {
+    (void)index;
+    return ((VMBoxScalarCtx *)ctx)->value;
+}
+
+static int vm_box_array_get_int(void *ctx, int index) {
+    VMBoxArrayCtx *arg = (VMBoxArrayCtx *)ctx;
+    return bc_vm_box_array_int(arg->vm, arg->kind, arg->slot, index);
+}
+
+static MMFLOAT vm_box_scalar_get_float(void *ctx, int index) {
+    (void)index;
+    return ((VMFloatScalarCtx *)ctx)->value;
+}
+
+static MMFLOAT vm_box_array_get_float(void *ctx, int index) {
+    VMBoxArrayCtx *arg = (VMBoxArrayCtx *)ctx;
+    return bc_vm_box_array_float(arg->vm, arg->kind, arg->slot, index);
+}
+
+static char *vm_text_scalar_get_str(void *ctx) {
+    VMStringScalarCtx *arg = (VMStringScalarCtx *)ctx;
+    return (char *)bc_vm_string_to_c_temp(arg->vm, arg->value);
+}
+
+static int vm_text_scalar_get_int(void *ctx) {
+    return ((VMBoxScalarCtx *)ctx)->value;
+}
+
+static void vm_box_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_box_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    BCVMState *vm = (BCVMState *)ctx;
+    if (label)
+        bc_vm_error(vm, "%s %d is invalid (valid is %d to %d)", label, value, min, max);
+    else
+        bc_vm_error(vm, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
+static void vm_circle_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_circle_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)label;
+    bc_vm_error((BCVMState *)ctx, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
+static void vm_line_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_line_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)label;
+    bc_vm_error((BCVMState *)ctx, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
+static void vm_pixel_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_pixel_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)label;
+    bc_vm_error((BCVMState *)ctx, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
+static int vm_cls_get_int(void *ctx) {
+    VMBoxScalarCtx *arg = (VMBoxScalarCtx *)ctx;
+    return arg->value;
+}
+
+static void vm_cls_do_clear(void *ctx, int use_default, int colour) {
+    (void)ctx;
+    ClearScreen(use_default ? gui_bcolour : colour);
+}
+
+static void vm_cls_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_cls_fail_range(void *ctx, int value, int min, int max) {
+    bc_vm_error((BCVMState *)ctx, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
+static void vm_text_get_defaults(void *ctx, int *font, int *scale, int *fc, int *bc) {
+    (void)ctx;
+    *font = (gui_font >> 4) + 1;
+    *scale = gui_font & 0x0F;
+    *fc = gui_fcolour;
+    *bc = gui_bcolour;
+}
+
+static int vm_text_font_valid(void *ctx, int font) {
+    (void)ctx;
+    if (font < 1 || font > FONT_TABLE_SIZE) return 0;
+    return FontTable[font - 1] != NULL;
+}
+
+static void vm_text_render(void *ctx, int x, int y, int font, int scale,
+                           int jh, int jv, int jo, int fc, int bc, char *s) {
+    (void)ctx;
+    GUIPrintString(x, y, ((font - 1) << 4) | scale, jh, jv, jo, fc, bc, s);
+}
+
+static void vm_text_fail_msg(void *ctx, const char *msg) {
+    bc_vm_error((BCVMState *)ctx, "%s", msg);
+}
+
+static void vm_text_fail_range(void *ctx, int value, int min, int max) {
+    bc_vm_error((BCVMState *)ctx, "%d is invalid (valid is %d to %d)", value, min, max);
+}
+
 /* ======================================================================
  * bc_vm_execute — main dispatch loop using computed goto
  * ====================================================================== */
@@ -281,6 +560,11 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
 #define POP_S() (vm->stack[vm->sp--].s)
 #define TOS_I() (vm->stack[vm->sp].i)
 #define TOS_F() (vm->stack[vm->sp].f)
+#define POP_NUMERIC_I() \
+    ((vm->sp < 0) ? (bc_vm_error(vm, "Stack underflow"), (int64_t)0) : \
+     (vm->stack_types[vm->sp] == T_NBR ? \
+        ({ MMFLOAT _x = vm->stack[vm->sp--].f; (_x >= 0) ? (int64_t)(_x + 0.5) : (int64_t)(_x - 0.5); }) : \
+        POP_I()))
 
     /* ---- Build dispatch table ---- */
     static const void *dispatch_table[256] = {
@@ -396,6 +680,8 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_LOAD_LOCAL_ARR_F]  = &&op_load_local_arr_f,
         [OP_LOAD_LOCAL_ARR_S]  = &&op_load_local_arr_s,
         [OP_STORE_LOCAL_ARR_I] = &&op_store_local_arr_i,
+        [OP_STORE_LOCAL_ARR_F] = &&op_store_local_arr_f,
+        [OP_STORE_LOCAL_ARR_S] = &&op_store_local_arr_s,
 
         /* Built-in Bridge */
         [OP_BUILTIN_CMD]    = &&op_builtin_cmd,
@@ -472,6 +758,16 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_CLEAR]          = &&op_clear,
         [OP_FASTGFX_SWAP]   = &&op_fastgfx_swap,
         [OP_FASTGFX_SYNC]   = &&op_fastgfx_sync,
+        [OP_BOX]            = &&op_box,
+        [OP_RGB]            = &&op_rgb,
+        [OP_CIRCLE]         = &&op_circle,
+        [OP_DRAW_LINE]      = &&op_draw_line,
+        [OP_TEXT]           = &&op_text,
+        [OP_CLS]            = &&op_cls,
+        [OP_PIXEL]          = &&op_pixel,
+        [OP_FASTGFX_CREATE] = &&op_fastgfx_create,
+        [OP_FASTGFX_CLOSE]  = &&op_fastgfx_close,
+        [OP_FASTGFX_FPS]    = &&op_fastgfx_fps,
 
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
@@ -581,10 +877,14 @@ op_load_arr_i: {
     uint8_t ndim = *vm->pc++;
     BCArray *arr = &vm->arrays[slot];
     if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_GARR_I, slot);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     /* Indices are pushed first-dim-first, so pop in reverse */
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_I(arr->data[off].i);
     DISPATCH();
@@ -595,9 +895,13 @@ op_load_arr_f: {
     uint8_t ndim = *vm->pc++;
     BCArray *arr = &vm->arrays[slot];
     if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_GARR_F, slot);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_F(arr->data[off].f);
     DISPATCH();
@@ -608,9 +912,13 @@ op_load_arr_s: {
     uint8_t ndim = *vm->pc++;
     BCArray *arr = &vm->arrays[slot];
     if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_GARR_S, slot);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_S(arr->data[off].s);
     DISPATCH();
@@ -621,10 +929,10 @@ op_store_arr_i: {
     uint8_t ndim = *vm->pc++;
     BCArray *arr = &vm->arrays[slot];
     if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
-    int64_t val = POP_I();
+    int64_t val = POP_NUMERIC_I();
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     arr->data[off].i = val;
     DISPATCH();
@@ -635,10 +943,10 @@ op_store_arr_f: {
     uint8_t ndim = *vm->pc++;
     BCArray *arr = &vm->arrays[slot];
     if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
-    MMFLOAT val = POP_F();
+    MMFLOAT val = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     arr->data[off].f = val;
     DISPATCH();
@@ -652,7 +960,7 @@ op_store_arr_s: {
     uint8_t *val = POP_S();
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     /* Allocate string storage in the array element if needed */
     if (!arr->data[off].s) {
@@ -996,7 +1304,7 @@ op_jmp_abs: {
 
 op_jz: {
     int16_t offset = READ_I16();
-    int64_t val = POP_I();
+    int64_t val = POP_NUMERIC_I();
     if (val == 0)
         vm->pc += offset;
     DISPATCH();
@@ -1004,7 +1312,7 @@ op_jz: {
 
 op_jnz: {
     int16_t offset = READ_I16();
-    int64_t val = POP_I();
+    int64_t val = POP_NUMERIC_I();
     if (val != 0)
         vm->pc += offset;
     DISPATCH();
@@ -1207,18 +1515,33 @@ op_call_sub: {
     /* Pop arguments into local slots (they are pushed left-to-right,
        so the first arg is deepest on the stack) */
     for (int i = nargs - 1; i >= 0; i--) {
-        if (new_base + i >= VM_MAX_LOCALS)
+        int slot = new_base + i;
+        if (slot >= VM_MAX_LOCALS)
             bc_vm_error(vm, "Local variable overflow");
         uint8_t arg_type = vm->stack_types[vm->sp];
         uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
-        vm->locals[new_base + i] = bc_vm_coerce_arg_value(vm->stack[vm->sp], arg_type, param_type);
-        vm->local_types[new_base + i] = param_type;
+        if (i < sf->nparams && sf->param_is_array[i]) {
+            BCArray *src;
+            if (!bc_stack_type_matches_array_param(arg_type, param_type))
+                bc_vm_error(vm, "Array parameter type mismatch");
+            src = bc_resolve_array_ref(vm, vm->stack[vm->sp], arg_type);
+            vm->local_arrays[slot] = *src;
+            vm->local_array_is_alias[slot] = 1;
+            vm->local_types[slot] = param_type;
+            vm->locals[slot].i = 0;
+            vm->sp--;
+            continue;
+        }
+        vm->locals[slot] = bc_vm_coerce_arg_value(vm->stack[vm->sp], arg_type, param_type);
+        vm->local_types[slot] = param_type;
+        vm->local_array_is_alias[slot] = 0;
+        memset(&vm->local_arrays[slot], 0, sizeof(BCArray));
         /* Deep-copy strings so they survive temp buffer rotation */
         if (param_type == T_STR && vm->stack[vm->sp].s) {
             uint8_t *copy = GetTempMemory(STRINGSIZE);
             Mstrcpy(copy, vm->stack[vm->sp].s);
-            vm->locals[new_base + i].s = copy;
+            vm->locals[slot].s = copy;
         }
         vm->sp--;
     }
@@ -1265,8 +1588,22 @@ op_call_fun: {
         uint8_t arg_type = vm->stack_types[vm->sp];
         uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
+        if (i < sf->nparams && sf->param_is_array[i]) {
+            BCArray *src;
+            if (!bc_stack_type_matches_array_param(arg_type, param_type))
+                bc_vm_error(vm, "Array parameter type mismatch");
+            src = bc_resolve_array_ref(vm, vm->stack[vm->sp], arg_type);
+            vm->local_arrays[slot] = *src;
+            vm->local_array_is_alias[slot] = 1;
+            vm->local_types[slot] = param_type;
+            vm->locals[slot].i = 0;
+            vm->sp--;
+            continue;
+        }
         vm->locals[slot] = bc_vm_coerce_arg_value(vm->stack[vm->sp], arg_type, param_type);
         vm->local_types[slot] = param_type;
+        vm->local_array_is_alias[slot] = 0;
+        memset(&vm->local_arrays[slot], 0, sizeof(BCArray));
         /* Deep-copy strings so they survive temp buffer rotation */
         if (param_type == T_STR && vm->stack[vm->sp].s) {
             uint8_t *copy = GetTempMemory(STRINGSIZE);
@@ -1279,6 +1616,8 @@ op_call_fun: {
     /* Zero out slot 0 (return value) */
     vm->locals[new_base].i = 0;
     vm->local_types[new_base] = sf->return_type;
+    vm->local_array_is_alias[new_base] = 0;
+    memset(&vm->local_arrays[new_base], 0, sizeof(BCArray));
 
     /* Update locals_top so ENTER_FRAME won't zero the args */
     vm->locals_top = new_base + 1 + nargs;
@@ -1305,6 +1644,8 @@ op_enter_frame: {
         if (idx >= vm->locals_top) {
             vm->locals[idx].i = 0;
             vm->local_types[idx] = T_INT;
+            vm->local_array_is_alias[idx] = 0;
+            memset(&vm->local_arrays[idx], 0, sizeof(BCArray));
         }
     }
     vm->locals_top = vm->frame_base + nlocals;
@@ -1321,9 +1662,12 @@ op_leave_frame: {
         /* local_arrays cleanup: zero out local array data pointers */
         for (int i = vm->frame_base; i < vm->frame_base + (int)cf->nlocals; i++) {
             if (i < VM_MAX_LOCALS && vm->local_arrays[i].data) {
-                BC_FREE(vm->local_arrays[i].data);
-                vm->local_arrays[i].data = NULL;
-                vm->local_arrays[i].total_elements = 0;
+                if (!vm->local_array_is_alias[i])
+                    BC_FREE(vm->local_arrays[i].data);
+            }
+            if (i < VM_MAX_LOCALS) {
+                memset(&vm->local_arrays[i], 0, sizeof(BCArray));
+                vm->local_array_is_alias[i] = 0;
             }
         }
     }
@@ -1441,9 +1785,13 @@ op_load_local_arr_i: {
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
     BCArray *arr = &vm->local_arrays[idx];
     if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_LARR_I, idx);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_I(arr->data[off].i);
     DISPATCH();
@@ -1456,9 +1804,13 @@ op_load_local_arr_f: {
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
     BCArray *arr = &vm->local_arrays[idx];
     if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_LARR_F, idx);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_F(arr->data[off].f);
     DISPATCH();
@@ -1471,9 +1823,13 @@ op_load_local_arr_s: {
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
     BCArray *arr = &vm->local_arrays[idx];
     if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+    if (ndim == 0) {
+        bc_push_array_ref(vm, BC_STK_LARR_S, idx);
+        DISPATCH();
+    }
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     PUSH_S(arr->data[off].s);
     DISPATCH();
@@ -1486,12 +1842,47 @@ op_store_local_arr_i: {
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
     BCArray *arr = &vm->local_arrays[idx];
     if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
-    int64_t val = POP_I();
+    int64_t val = POP_NUMERIC_I();
     int64_t indices[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        indices[d] = POP_I();
+        indices[d] = POP_NUMERIC_I();
     uint32_t off = calc_array_offset(vm, arr, indices, ndim);
     arr->data[off].i = val;
+    DISPATCH();
+}
+
+op_store_local_arr_f: {
+    uint16_t offset = READ_U16();
+    uint8_t ndim = *vm->pc++;
+    int idx = vm->frame_base + offset;
+    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
+    BCArray *arr = &vm->local_arrays[idx];
+    if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+    MMFLOAT val = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
+    int64_t indices[MAXDIM];
+    for (int d = ndim - 1; d >= 0; d--)
+        indices[d] = POP_NUMERIC_I();
+    uint32_t off = calc_array_offset(vm, arr, indices, ndim);
+    arr->data[off].f = val;
+    DISPATCH();
+}
+
+op_store_local_arr_s: {
+    uint16_t offset = READ_U16();
+    uint8_t ndim = *vm->pc++;
+    int idx = vm->frame_base + offset;
+    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
+    BCArray *arr = &vm->local_arrays[idx];
+    if (!arr->data) bc_vm_error(vm, "Local array not dimensioned");
+    uint8_t *val = POP_S();
+    int64_t indices[MAXDIM];
+    for (int d = ndim - 1; d >= 0; d--)
+        indices[d] = POP_NUMERIC_I();
+    uint32_t off = calc_array_offset(vm, arr, indices, ndim);
+    if (!arr->data[off].s) {
+        arr->data[off].s = GetTempMemory(STRINGSIZE);
+    }
+    Mstrcpy(arr->data[off].s, val);
     DISPATCH();
 }
 
@@ -1538,7 +1929,7 @@ op_builtin_fun_s: {
 op_print_int: {
     uint8_t flags = *vm->pc++;
     (void)flags;
-    int64_t val = POP_I();
+    int64_t val = POP_NUMERIC_I();
     char buf[64];
     IntToStr(buf, val, 10);
     /* MMBasic: positive numbers get leading space, no trailing space */
@@ -1556,7 +1947,7 @@ op_print_int: {
 op_print_flt: {
     uint8_t flags = *vm->pc++;
     (void)flags;
-    MMFLOAT val = POP_F();
+    MMFLOAT val = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
     char buf[64];
     FloatToStr(buf, val, 0, STR_AUTO_PRECISION, ' ');
     /* MMBasic: positive floats get leading space, no trailing space */
@@ -1605,7 +1996,7 @@ op_dim_arr_i: {
     int64_t dims[MAXDIM];
     /* Pop dimension sizes (last dim first) */
     for (int d = ndim - 1; d >= 0; d--)
-        dims[d] = POP_I();
+        dims[d] = POP_NUMERIC_I();
     for (int d = 0; d < ndim; d++) {
         if (dims[d] < 0) bc_vm_error(vm, "Invalid array dimension");
         arr->dims[d] = (int)dims[d];
@@ -1628,7 +2019,7 @@ op_dim_arr_f: {
     uint32_t total = 1;
     int64_t dims[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        dims[d] = POP_I();
+        dims[d] = POP_NUMERIC_I();
     for (int d = 0; d < ndim; d++) {
         if (dims[d] < 0) bc_vm_error(vm, "Invalid array dimension");
         arr->dims[d] = (int)dims[d];
@@ -1651,7 +2042,7 @@ op_dim_arr_s: {
     uint32_t total = 1;
     int64_t dims[MAXDIM];
     for (int d = ndim - 1; d >= 0; d--)
-        dims[d] = POP_I();
+        dims[d] = POP_NUMERIC_I();
     for (int d = 0; d < ndim; d++) {
         if (dims[d] < 0) bc_vm_error(vm, "Invalid array dimension");
         arr->dims[d] = (int)dims[d];
@@ -2205,6 +2596,101 @@ op_clear: {
     DISPATCH();
 }
 
+op_cls: {
+    uint8_t has_arg = *vm->pc++;
+    GfxClsArg arg = {0};
+    GfxClsOps ops;
+    VMBoxScalarCtx scalar_ctx;
+
+    if (has_arg) {
+        BCValue v;
+        uint8_t type;
+        if (vm->sp < 0) bc_vm_error(vm, "CLS stack underflow");
+        v = vm->stack[vm->sp];
+        type = vm->stack_types[vm->sp];
+        vm->sp--;
+        if ((type & (T_INT | T_NBR)) == 0 || (type & T_STR))
+            bc_vm_error(vm, "CLS requires numeric arguments");
+        scalar_ctx.value = bc_vm_box_scalar_int(vm, v, type);
+        arg.ctx = &scalar_ctx;
+        arg.get_int = vm_cls_get_int;
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+#ifdef GUICONTROLS
+    HideAllControls();
+#endif
+    ops.ctx = vm;
+    ops.do_clear = vm_cls_do_clear;
+    ops.fail_msg = vm_cls_fail_msg;
+    ops.fail_range = vm_cls_fail_range;
+    gfx_cls_execute(has_arg, &arg, &ops);
+    if (Option.Refresh) Display_Refresh();
+    DISPATCH();
+}
+
+op_pixel: {
+    uint8_t field_count = *vm->pc++;
+    uint8_t kinds[BC_PIXEL_ARG_COUNT];
+    uint16_t slots[BC_PIXEL_ARG_COUNT];
+    BCValue scalars[BC_PIXEL_ARG_COUNT];
+    uint8_t scalar_types[BC_PIXEL_ARG_COUNT];
+    GfxPixelArg args[GFX_PIXEL_ARG_COUNT] = {0};
+    VMBoxScalarCtx scalar_ctx[GFX_PIXEL_ARG_COUNT];
+    VMBoxArrayCtx array_ctx[GFX_PIXEL_ARG_COUNT];
+    GfxPixelErrorSink errors;
+    int i;
+
+    for (i = 0; i < BC_PIXEL_ARG_COUNT; i++) {
+        kinds[i] = *vm->pc++;
+        slots[i] = 0;
+        scalar_types[i] = 0;
+        if (bc_vm_box_is_array_kind(kinds[i])) slots[i] = READ_U16();
+    }
+
+    for (i = BC_PIXEL_ARG_COUNT - 1; i >= 0; i--) {
+        if (kinds[i] == BC_BOX_ARG_STACK) {
+            if (vm->sp < 0) bc_vm_error(vm, "PIXEL stack underflow");
+            scalars[i] = vm->stack[vm->sp];
+            scalar_types[i] = vm->stack_types[vm->sp];
+            vm->sp--;
+        }
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+    errors.ctx = vm;
+    errors.fail_msg = vm_pixel_fail_msg;
+    errors.fail_range = vm_pixel_fail_range;
+
+    for (i = 0; i < GFX_PIXEL_ARG_COUNT; i++) {
+        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
+        args[i].present = 1;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            int count = 0;
+            array_ctx[i].vm = vm;
+            array_ctx[i].kind = kinds[i];
+            array_ctx[i].slot = slots[i];
+            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
+            args[i].count = count;
+            args[i].ctx = &array_ctx[i];
+            args[i].get_int = vm_box_array_get_int;
+        } else if (kinds[i] == BC_BOX_ARG_STACK) {
+            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
+            args[i].count = 1;
+            args[i].ctx = &scalar_ctx[i];
+            args[i].get_int = vm_box_scalar_get_int;
+        } else {
+            bc_vm_error(vm, "Argument count");
+        }
+    }
+
+    gfx_pixel_execute((bc_vm_box_is_array_kind(kinds[0]) && bc_vm_box_is_array_kind(kinds[1])) ?
+                          GFX_PIXEL_MODE_VECTOR : GFX_PIXEL_MODE_SCALAR,
+                      args, field_count, &errors);
+    if (Option.Refresh) Display_Refresh();
+    DISPATCH();
+}
+
 op_fastgfx_swap:
     bc_fastgfx_swap();
     DISPATCH();
@@ -2212,6 +2698,287 @@ op_fastgfx_swap:
 op_fastgfx_sync:
     bc_fastgfx_sync();
     DISPATCH();
+
+op_fastgfx_create:
+    bc_fastgfx_create();
+    DISPATCH();
+
+op_fastgfx_close:
+    bc_fastgfx_close();
+    DISPATCH();
+
+op_fastgfx_fps:
+    bc_fastgfx_set_fps((int)POP_NUMERIC_I());
+    DISPATCH();
+
+op_box: {
+    uint8_t field_count = *vm->pc++;
+    uint8_t kinds[BC_BOX_ARG_COUNT];
+    uint16_t slots[BC_BOX_ARG_COUNT];
+    BCValue scalars[BC_BOX_ARG_COUNT];
+    uint8_t scalar_types[BC_BOX_ARG_COUNT];
+    GfxBoxIntArg args[GFX_BOX_ARG_COUNT] = {0};
+    VMBoxScalarCtx scalar_ctx[GFX_BOX_ARG_COUNT];
+    VMBoxArrayCtx array_ctx[GFX_BOX_ARG_COUNT];
+    GfxBoxErrorSink errors;
+    int i;
+
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
+        kinds[i] = *vm->pc++;
+        slots[i] = 0;
+        scalar_types[i] = 0;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            slots[i] = READ_U16();
+        }
+    }
+
+    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
+        if (kinds[i] == BC_BOX_ARG_STACK) {
+            if (vm->sp < 0) bc_vm_error(vm, "BOX stack underflow");
+            scalars[i] = vm->stack[vm->sp];
+            scalar_types[i] = vm->stack_types[vm->sp];
+            vm->sp--;
+        }
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+    errors.ctx = vm;
+    errors.fail_msg = vm_box_fail_msg;
+    errors.fail_range = vm_box_fail_range;
+
+    for (i = 0; i < GFX_BOX_ARG_COUNT; i++) {
+        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
+        args[i].present = 1;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            int count = 0;
+            array_ctx[i].vm = vm;
+            array_ctx[i].kind = kinds[i];
+            array_ctx[i].slot = slots[i];
+            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
+            args[i].count = count;
+            args[i].ctx = &array_ctx[i];
+            args[i].get_int = vm_box_array_get_int;
+        } else if (kinds[i] == BC_BOX_ARG_STACK) {
+            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
+            args[i].count = 1;
+            args[i].ctx = &scalar_ctx[i];
+            args[i].get_int = vm_box_scalar_get_int;
+        } else {
+            bc_vm_error(vm, "Argument count");
+        }
+    }
+
+    gfx_box_execute((bc_vm_box_is_array_kind(kinds[0]) && bc_vm_box_is_array_kind(kinds[1])) ?
+                        GFX_BOX_MODE_VECTOR : GFX_BOX_MODE_SCALAR,
+                    args, field_count, &errors);
+
+    if (Option.Refresh) Display_Refresh();
+    DISPATCH();
+}
+
+op_rgb: {
+    int b = (int)POP_I();
+    int g = (int)POP_I();
+    int r = (int)POP_I();
+    PUSH_I(rgb(r, g, b));
+    DISPATCH();
+}
+
+op_circle: {
+    uint8_t field_count = *vm->pc++;
+    uint8_t kinds[BC_BOX_ARG_COUNT];
+    uint16_t slots[BC_BOX_ARG_COUNT];
+    BCValue scalars[BC_BOX_ARG_COUNT];
+    uint8_t scalar_types[BC_BOX_ARG_COUNT];
+    GfxCircleArg args[GFX_CIRCLE_ARG_COUNT] = {0};
+    VMBoxScalarCtx int_scalar_ctx[GFX_CIRCLE_ARG_COUNT];
+    VMFloatScalarCtx float_scalar_ctx[GFX_CIRCLE_ARG_COUNT];
+    VMBoxArrayCtx array_ctx[GFX_CIRCLE_ARG_COUNT];
+    GfxCircleErrorSink errors;
+    int i;
+
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
+        kinds[i] = *vm->pc++;
+        slots[i] = 0;
+        scalar_types[i] = 0;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            slots[i] = READ_U16();
+        }
+    }
+
+    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
+        if (kinds[i] == BC_BOX_ARG_STACK) {
+            if (vm->sp < 0) bc_vm_error(vm, "CIRCLE stack underflow");
+            scalars[i] = vm->stack[vm->sp];
+            scalar_types[i] = vm->stack_types[vm->sp];
+            vm->sp--;
+        }
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+    errors.ctx = vm;
+    errors.fail_msg = vm_circle_fail_msg;
+    errors.fail_range = vm_circle_fail_range;
+
+    for (i = 0; i < GFX_CIRCLE_ARG_COUNT; i++) {
+        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
+        args[i].present = 1;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            int count = 0;
+            array_ctx[i].vm = vm;
+            array_ctx[i].kind = kinds[i];
+            array_ctx[i].slot = slots[i];
+            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
+            args[i].count = count;
+            args[i].ctx = &array_ctx[i];
+            args[i].get_int = vm_box_array_get_int;
+            args[i].get_float = vm_box_array_get_float;
+        } else if (kinds[i] == BC_BOX_ARG_STACK) {
+            int_scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
+            float_scalar_ctx[i].value = bc_vm_box_scalar_float(vm, scalars[i], scalar_types[i]);
+            args[i].count = 1;
+            args[i].ctx = &int_scalar_ctx[i];
+            args[i].get_int = vm_box_scalar_get_int;
+            if (i == 4) {
+                args[i].ctx = &float_scalar_ctx[i];
+                args[i].get_float = vm_box_scalar_get_float;
+            } else {
+                args[i].get_float = NULL;
+            }
+        } else {
+            bc_vm_error(vm, "Argument count");
+        }
+    }
+
+    gfx_circle_execute((bc_vm_box_is_array_kind(kinds[0]) &&
+                        bc_vm_box_is_array_kind(kinds[1]) &&
+                        bc_vm_box_is_array_kind(kinds[2])) ?
+                           GFX_CIRCLE_MODE_VECTOR : GFX_CIRCLE_MODE_SCALAR,
+                       args, field_count, &errors);
+
+    if (Option.Refresh) Display_Refresh();
+    DISPATCH();
+}
+
+op_draw_line: {
+    uint8_t field_count = *vm->pc++;
+    uint8_t kinds[BC_LINE_ARG_COUNT];
+    uint16_t slots[BC_LINE_ARG_COUNT];
+    BCValue scalars[BC_LINE_ARG_COUNT];
+    uint8_t scalar_types[BC_LINE_ARG_COUNT];
+    GfxLineArg args[GFX_LINE_ARG_COUNT] = {0};
+    VMBoxScalarCtx scalar_ctx[GFX_LINE_ARG_COUNT];
+    VMBoxArrayCtx array_ctx[GFX_LINE_ARG_COUNT];
+    GfxLineErrorSink errors;
+    int i;
+
+    for (i = 0; i < BC_LINE_ARG_COUNT; i++) {
+        kinds[i] = *vm->pc++;
+        slots[i] = 0;
+        scalar_types[i] = 0;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            slots[i] = READ_U16();
+        }
+    }
+
+    for (i = BC_LINE_ARG_COUNT - 1; i >= 0; i--) {
+        if (kinds[i] == BC_BOX_ARG_STACK) {
+            if (vm->sp < 0) bc_vm_error(vm, "LINE stack underflow");
+            scalars[i] = vm->stack[vm->sp];
+            scalar_types[i] = vm->stack_types[vm->sp];
+            vm->sp--;
+        }
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+    errors.ctx = vm;
+    errors.fail_msg = vm_line_fail_msg;
+    errors.fail_range = vm_line_fail_range;
+
+    for (i = 0; i < GFX_LINE_ARG_COUNT; i++) {
+        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
+        args[i].present = 1;
+        if (bc_vm_box_is_array_kind(kinds[i])) {
+            int count = 0;
+            array_ctx[i].vm = vm;
+            array_ctx[i].kind = kinds[i];
+            array_ctx[i].slot = slots[i];
+            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
+            args[i].count = count;
+            args[i].ctx = &array_ctx[i];
+            args[i].get_int = vm_box_array_get_int;
+        } else if (kinds[i] == BC_BOX_ARG_STACK) {
+            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
+            args[i].count = 1;
+            args[i].ctx = &scalar_ctx[i];
+            args[i].get_int = vm_box_scalar_get_int;
+        } else {
+            bc_vm_error(vm, "Argument count");
+        }
+    }
+
+    gfx_line_execute((bc_vm_box_is_array_kind(kinds[0]) &&
+                      bc_vm_box_is_array_kind(kinds[1]) &&
+                      field_count > 3 &&
+                      bc_vm_box_is_array_kind(kinds[2]) &&
+                      bc_vm_box_is_array_kind(kinds[3])) ?
+                         GFX_LINE_MODE_VECTOR : GFX_LINE_MODE_SCALAR,
+                     args, field_count, &errors);
+    DISPATCH();
+}
+
+op_text: {
+    uint8_t field_count = *vm->pc++;
+    uint8_t kinds[BC_TEXT_ARG_COUNT];
+    BCValue scalars[BC_TEXT_ARG_COUNT];
+    uint8_t scalar_types[BC_TEXT_ARG_COUNT];
+    GfxTextArg args[GFX_TEXT_ARG_COUNT] = {0};
+    VMBoxScalarCtx int_ctx[GFX_TEXT_ARG_COUNT];
+    VMStringScalarCtx str_ctx[GFX_TEXT_ARG_COUNT];
+    GfxTextOps ops;
+    int i;
+
+    for (i = 0; i < BC_TEXT_ARG_COUNT; i++) {
+        kinds[i] = *vm->pc++;
+        scalar_types[i] = 0;
+    }
+
+    for (i = BC_TEXT_ARG_COUNT - 1; i >= 0; i--) {
+        if (kinds[i] == BC_BOX_ARG_STACK) {
+            if (vm->sp < 0) bc_vm_error(vm, "TEXT stack underflow");
+            scalars[i] = vm->stack[vm->sp];
+            scalar_types[i] = vm->stack_types[vm->sp];
+            vm->sp--;
+        }
+    }
+
+    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
+    for (i = 0; i < GFX_TEXT_ARG_COUNT; i++) {
+        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
+        if (kinds[i] != BC_BOX_ARG_STACK) bc_vm_error(vm, "Argument count");
+        args[i].present = 1;
+        if (scalar_types[i] == T_STR) {
+            str_ctx[i].vm = vm;
+            str_ctx[i].value = scalars[i].s;
+            args[i].ctx = &str_ctx[i];
+            args[i].get_str = vm_text_scalar_get_str;
+        } else {
+            int_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
+            args[i].ctx = &int_ctx[i];
+            args[i].get_int = vm_text_scalar_get_int;
+        }
+    }
+
+    ops.ctx = vm;
+    ops.get_defaults = vm_text_get_defaults;
+    ops.font_valid = vm_text_font_valid;
+    ops.render = vm_text_render;
+    ops.fail_msg = vm_text_fail_msg;
+    ops.fail_range = vm_text_fail_range;
+    gfx_text_execute(args, field_count, &ops);
+    if (Option.Refresh) Display_Refresh();
+    DISPATCH();
+}
 
     /* ==================================================================
      * Housekeeping
@@ -2229,24 +2996,10 @@ op_checkint:
     DISPATCH();
 
 op_end:
-    /* Clean up dynamically allocated arrays */
-    for (int i = 0; i < BC_MAX_SLOTS; i++) {
-        if (vm->arrays[i].data) {
-            BC_FREE(vm->arrays[i].data);
-            vm->arrays[i].data = NULL;
-        }
-    }
     return;
 
 op_halt:
     vm_output(vm, "STOP\r\n");
-    /* Clean up dynamically allocated arrays */
-    for (int i = 0; i < BC_MAX_SLOTS; i++) {
-        if (vm->arrays[i].data) {
-            BC_FREE(vm->arrays[i].data);
-            vm->arrays[i].data = NULL;
-        }
-    }
     return;
 
 op_invalid:

@@ -72,6 +72,12 @@ add_executable(PicoMite
     VS1053.c
 	aes.c
 	Memory.c
+	gfx_box_shared.c
+	gfx_circle_shared.c
+	gfx_line_shared.c
+	gfx_pixel_shared.c
+	gfx_cls_shared.c
+	gfx_text_shared.c
 	bc_compiler.c
 	bc_compiler_core.c
 	bc_compiler_expr.c

@@ -1,0 +1,8 @@
+OPTION EXPLICIT
+
+CLS RGB(RED)
+BOX 2, 2, 6, 6, 0, , RGB(WHITE)
+CLS
+
+PRINT "done"
+END

@@ -32,7 +32,7 @@ extern int PSize;
 /* ------------------------------------------------------------------ */
 
 /*
- * Parse a parameter list  "(name%, name!, ...)"  from the tokenized
+ * Parse a parameter list  "(name%, x AS INTEGER, ...)"  from the tokenized
  * stream and fill in a BCSubFun record's parameter info.
  * Returns the pointer past the closing ')'.
  */
@@ -55,17 +55,6 @@ static unsigned char *scan_params(BCCompiler *cs, BCSubFun *sf, unsigned char *p
         int len = bc_parse_varname(p, &ptype, &is_arr);
         if (len == 0) break;
 
-        if (ptype == 0) {
-            bc_set_error(cs, "Parameter must have explicit type suffix");
-            return p;
-        }
-
-        if (sf->nparams < BC_MAX_LOCALS) {
-            sf->param_types[sf->nparams] = ptype;
-            sf->param_is_array[sf->nparams] = (uint8_t)is_arr;
-            sf->nparams++;
-        }
-
         p += len;
         if (is_arr) {
             /* skip past the () */
@@ -78,6 +67,16 @@ static unsigned char *scan_params(BCCompiler *cs, BCSubFun *sf, unsigned char *p
                     p++;
                 }
             }
+        }
+
+        uint8_t as_type = bc_parse_as_type_clause(&p);
+        if (as_type != 0) ptype = as_type;
+        if (ptype == 0) ptype = T_NBR;
+
+        if (sf->nparams < BC_MAX_LOCALS) {
+            sf->param_types[sf->nparams] = ptype;
+            sf->param_is_array[sf->nparams] = (uint8_t)is_arr;
+            sf->nparams++;
         }
 
         skipspace(p);
@@ -159,17 +158,7 @@ static void pass1_scan(BCCompiler *cs, unsigned char *prog, int prog_size) {
                             }
                             skipspace(scan);
                         }
-                        /* Check for tokenAS */
-                        if (*scan == tokenAS) {
-                            scan++;  /* skip tokenAS byte */
-                            skipspace(scan);
-                            if (strncasecmp((char *)scan, "INTEGER", 7) == 0)
-                                ret_type = T_INT;
-                            else if (strncasecmp((char *)scan, "FLOAT", 5) == 0)
-                                ret_type = T_NBR;
-                            else if (strncasecmp((char *)scan, "STRING", 6) == 0)
-                                ret_type = T_STR;
-                        }
+                        ret_type = bc_parse_as_type_clause(&scan);
                     }
 
                     /* Add to subfun table */

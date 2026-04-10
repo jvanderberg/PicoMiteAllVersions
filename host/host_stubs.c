@@ -9,6 +9,12 @@
 
 #include "Hardware_Includes.h"
 #include "bytecode.h"
+#include "gfx_box_shared.h"
+#include "gfx_circle_shared.h"
+#include "gfx_line_shared.h"
+#include "gfx_pixel_shared.h"
+#include "gfx_cls_shared.h"
+#include "gfx_text_shared.h"
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
@@ -24,6 +30,36 @@ static void host_fb_reset(int colour);
 static void host_write_screenshot(const char *path);
 static void host_runtime_check_timeout(void);
 static int host_parse_escaped_char(const char **src);
+static void host_getargaddress(unsigned char *p, long long int **ip, MMFLOAT **fp, int *n);
+
+typedef struct {
+    unsigned char *expr;
+    long long int *ip;
+    MMFLOAT *fp;
+} HostBoxArgCtx;
+
+static int host_box_arg_get_int(void *ctx, int index);
+static void host_box_fail_msg(void *ctx, const char *msg);
+static void host_box_fail_range(void *ctx, const char *label, int value, int min, int max);
+static MMFLOAT host_circle_arg_get_float(void *ctx, int index);
+static void host_circle_fail_msg(void *ctx, const char *msg);
+static void host_circle_fail_range(void *ctx, const char *label, int value, int min, int max);
+static void host_line_fail_msg(void *ctx, const char *msg);
+static void host_line_fail_range(void *ctx, const char *label, int value, int min, int max);
+static void host_pixel_fail_msg(void *ctx, const char *msg);
+static void host_pixel_fail_range(void *ctx, const char *label, int value, int min, int max);
+static int host_cls_get_int(void *ctx);
+static void host_cls_do_clear(void *ctx, int use_default, int colour);
+static void host_cls_fail_msg(void *ctx, const char *msg);
+static void host_cls_fail_range(void *ctx, int value, int min, int max);
+static int host_text_get_int(void *ctx);
+static char *host_text_get_str(void *ctx);
+static void host_text_get_defaults(void *ctx, int *font, int *scale, int *fc, int *bc);
+static int host_text_font_valid(void *ctx, int font);
+static void host_text_render(void *ctx, int x, int y, int font, int scale,
+                             int jh, int jv, int jo, int fc, int bc, char *s);
+static void host_text_fail_msg(void *ctx, const char *msg);
+static void host_text_fail_range(void *ctx, int value, int min, int max);
 
 static uint32_t *host_framebuffer = NULL;
 static int host_fb_width = 320;
@@ -361,6 +397,10 @@ static inline void host_put_pixel(int x, int y, int c) {
     host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
 }
 
+static void host_draw_pixel_ptr(int x, int y, int c) {
+    host_put_pixel(x, y, c);
+}
+
 uint32_t host_runtime_get_pixel(int x, int y) {
     if (!host_framebuffer) host_fb_ensure();
     if (!host_framebuffer) return 0;
@@ -598,6 +638,7 @@ void host_runtime_begin(void) {
     }
     host_fb_reset(gui_bcolour);
     FontTable[0] = host_font_metrics;
+    DrawPixel = host_draw_pixel_ptr;
 }
 
 void host_runtime_finish(void) {
@@ -634,48 +675,332 @@ void cmd_backlight(void) {}
 void cmd_blit(void) {}
 void cmd_blitmemory(void) {}
 void cmd_box(void) {
-    int x1, y1, width, height, w = 1, c = gui_fcolour, f = -1;
-    int wmod, hmod;
+    GfxBoxIntArg args[GFX_BOX_ARG_COUNT] = {0};
+    HostBoxArgCtx arg_ctx[GFX_BOX_ARG_COUNT] = {0};
+    GfxBoxErrorSink errors;
+    int n = 0;
+
     getargs(&cmdline, 13, (unsigned char *)",");
     if (!(argc & 1) || argc < 7) error("Argument count");
-    x1 = getinteger(argv[0]);
-    y1 = getinteger(argv[2]);
-    width = getinteger(argv[4]);
-    height = getinteger(argv[6]);
-    wmod = (width > 0) ? -1 : 1;
-    hmod = (height > 0) ? -1 : 1;
-    if (argc > 7 && *argv[8]) w = getint(argv[8], 0, 100);
-    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    if (argc == 13 && *argv[12]) f = getint(argv[12], -1, WHITE);
-    if (width != 0 && height != 0) {
-        DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
+
+    errors.ctx = NULL;
+    errors.fail_msg = host_box_fail_msg;
+    errors.fail_range = host_box_fail_range;
+
+    arg_ctx[0].expr = argv[0];
+    host_getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+    args[0].present = 1;
+    args[0].count = n;
+    args[0].ctx = &arg_ctx[0];
+    args[0].get_int = host_box_arg_get_int;
+
+    arg_ctx[1].expr = argv[2];
+    if (n != 1) host_getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+    else n = 1;
+    args[1].present = 1;
+    args[1].count = n;
+    args[1].ctx = &arg_ctx[1];
+    args[1].get_int = host_box_arg_get_int;
+
+    arg_ctx[2].expr = argv[4];
+    host_getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+    args[2].present = 1;
+    args[2].ctx = &arg_ctx[2];
+    args[2].get_int = host_box_arg_get_int;
+
+    arg_ctx[3].expr = argv[6];
+    host_getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+    args[3].present = 1;
+    args[3].ctx = &arg_ctx[3];
+    args[3].get_int = host_box_arg_get_int;
+
+    if (argc > 7 && *argv[8]) {
+        arg_ctx[4].expr = argv[8];
+        host_getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+        args[4].present = 1;
+        args[4].ctx = &arg_ctx[4];
+        args[4].get_int = host_box_arg_get_int;
     }
+
+    if (argc > 9 && *argv[10]) {
+        arg_ctx[5].expr = argv[10];
+        host_getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+        args[5].present = 1;
+        args[5].ctx = &arg_ctx[5];
+        args[5].get_int = host_box_arg_get_int;
+    }
+
+    if (argc == 13 && *argv[12]) {
+        arg_ctx[6].expr = argv[12];
+        host_getargaddress(argv[12], &arg_ctx[6].ip, &arg_ctx[6].fp, &args[6].count);
+        args[6].present = 1;
+        args[6].ctx = &arg_ctx[6];
+        args[6].get_int = host_box_arg_get_int;
+    }
+
+    gfx_box_execute((n == 1) ? GFX_BOX_MODE_SCALAR : GFX_BOX_MODE_VECTOR,
+                    args, (argc + 1) / 2, &errors);
+    if (Option.Refresh) Display_Refresh();
 }
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
 void cmd_chdir(void) {}
+static void host_getargaddress(unsigned char *p, long long int **ip, MMFLOAT **fp, int *n) {
+    unsigned char *ptr = NULL;
+    char pp[STRINGSIZE] = {0};
+
+    *fp = NULL;
+    *ip = NULL;
+    strcpy(pp, (char *)p);
+    if (!isnamestart(pp[0])) {
+        *n = 1;
+        return;
+    }
+
+    ptr = findvar((unsigned char *)pp, V_FIND | V_EMPTY_OK | V_NOFIND_NULL);
+    if (ptr && (g_vartbl[g_VarIndex].type & (T_NBR | T_INT))) {
+        if (g_vartbl[g_VarIndex].dims[0] <= 0) {
+            *n = 1;
+            return;
+        } else {
+            if (*n == 0) *n = g_vartbl[g_VarIndex].dims[0] + 1 - g_OptionBase;
+            else {
+                int an = g_vartbl[g_VarIndex].dims[0] + 1 - g_OptionBase;
+                *n = an < *n ? an : *n;
+            }
+            skipspace(p);
+            do {
+                p++;
+            } while (isnamechar(*p));
+            if (*p == '!' || *p == '%') p++;
+            if (*p == '(') {
+                p++;
+                skipspace(p);
+                if (*p != ')') {
+                    *n = 1;
+                    return;
+                }
+            }
+        }
+        if (g_vartbl[g_VarIndex].dims[1] != 0) error("Invalid variable");
+        if (g_vartbl[g_VarIndex].type & T_NBR) *fp = (MMFLOAT *)ptr;
+        else *ip = (long long int *)ptr;
+    } else {
+        *n = 1;
+    }
+}
+
+static int host_box_arg_get_int(void *ctx, int index) {
+    HostBoxArgCtx *arg = (HostBoxArgCtx *)ctx;
+    if (arg->ip != NULL) return (int)arg->ip[index];
+    if (arg->fp != NULL) return (int)arg->fp[index];
+    return getinteger(arg->expr);
+}
+
+static void host_box_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_box_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    if (label != NULL && strcmp(label, "Width") == 0)
+        error("Width % is invalid (valid is % to %)", value, min, max);
+    else if (label != NULL && strcmp(label, "Height") == 0)
+        error("Height % is invalid (valid is % to %)", value, min, max);
+    else
+        error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static MMFLOAT host_circle_arg_get_float(void *ctx, int index) {
+    HostBoxArgCtx *arg = (HostBoxArgCtx *)ctx;
+    if (arg->fp != NULL) return arg->fp[index];
+    if (arg->ip != NULL) return (MMFLOAT)arg->ip[index];
+    return getnumber(arg->expr);
+}
+
+static void host_circle_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_circle_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static void host_line_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_line_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static void host_pixel_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_pixel_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static int host_cls_get_int(void *ctx) {
+    return getint((unsigned char *)ctx, 0, WHITE);
+}
+
+static void host_cls_do_clear(void *ctx, int use_default, int colour) {
+    (void)ctx;
+    ClearScreen(use_default ? gui_bcolour : colour);
+}
+
+static void host_cls_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_cls_fail_range(void *ctx, int value, int min, int max) {
+    (void)ctx;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static int host_text_get_int(void *ctx) {
+    return getinteger((unsigned char *)ctx);
+}
+
+static char *host_text_get_str(void *ctx) {
+    return (char *)getCstring((unsigned char *)ctx);
+}
+
+static void host_text_get_defaults(void *ctx, int *font, int *scale, int *fc, int *bc) {
+    (void)ctx;
+    *font = (gui_font >> 4) + 1;
+    *scale = gui_font & 0x0F;
+    if (*scale == 0) *scale = 1;
+    *fc = gui_fcolour;
+    *bc = gui_bcolour;
+}
+
+static int host_text_font_valid(void *ctx, int font) {
+    (void)ctx;
+    (void)font;
+    return 1;
+}
+
+static void host_text_render(void *ctx, int x, int y, int font, int scale,
+                             int jh, int jv, int jo, int fc, int bc, char *s) {
+    (void)ctx;
+    (void)font;
+    GUIPrintString(x, y, scale, jh, jv, jo, fc, bc, s);
+}
+
+static void host_text_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void host_text_fail_range(void *ctx, int value, int min, int max) {
+    (void)ctx;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
 void cmd_circle(void) {
-    int x, y, r, w = 1, c = gui_fcolour, f = -1;
-    MMFLOAT a = 1.0;
+    GfxCircleArg args[GFX_CIRCLE_ARG_COUNT] = {0};
+    HostBoxArgCtx arg_ctx[GFX_CIRCLE_ARG_COUNT] = {0};
+    GfxCircleErrorSink errors;
+    int n = 0;
+
     getargs(&cmdline, 13, (unsigned char *)",");
     if (!(argc & 1) || argc < 5) error("Argument count");
-    x = getinteger(argv[0]);
-    y = getinteger(argv[2]);
-    r = getinteger(argv[4]);
-    if (argc > 5 && *argv[6]) w = getint(argv[6], 0, 100);
-    if (argc > 7 && *argv[8]) a = getnumber(argv[8]);
-    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    if (argc > 11 && *argv[12]) f = getint(argv[12], -1, WHITE);
-    DrawCircle(x, y, r, w, c, f, a);
+    errors.ctx = NULL;
+    errors.fail_msg = host_circle_fail_msg;
+    errors.fail_range = host_circle_fail_range;
+
+    arg_ctx[0].expr = argv[0];
+    host_getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+    args[0].present = 1;
+    args[0].count = n;
+    args[0].ctx = &arg_ctx[0];
+    args[0].get_int = host_box_arg_get_int;
+    args[0].get_float = host_circle_arg_get_float;
+
+    arg_ctx[1].expr = argv[2];
+    if (n != 1) host_getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+    else n = 1;
+    args[1].present = 1;
+    args[1].count = n;
+    args[1].ctx = &arg_ctx[1];
+    args[1].get_int = host_box_arg_get_int;
+    args[1].get_float = host_circle_arg_get_float;
+
+    arg_ctx[2].expr = argv[4];
+    if (n != 1) host_getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &n);
+    else n = 1;
+    args[2].present = 1;
+    args[2].count = n;
+    args[2].ctx = &arg_ctx[2];
+    args[2].get_int = host_box_arg_get_int;
+    args[2].get_float = host_circle_arg_get_float;
+
+    if (argc > 5 && *argv[6]) {
+        arg_ctx[3].expr = argv[6];
+        host_getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+        args[3].present = 1;
+        args[3].ctx = &arg_ctx[3];
+        args[3].get_int = host_box_arg_get_int;
+        args[3].get_float = host_circle_arg_get_float;
+    }
+
+    if (argc > 7 && *argv[8]) {
+        arg_ctx[4].expr = argv[8];
+        host_getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+        args[4].present = 1;
+        args[4].ctx = &arg_ctx[4];
+        args[4].get_int = host_box_arg_get_int;
+        args[4].get_float = host_circle_arg_get_float;
+    }
+
+    if (argc > 9 && *argv[10]) {
+        arg_ctx[5].expr = argv[10];
+        host_getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+        args[5].present = 1;
+        args[5].ctx = &arg_ctx[5];
+        args[5].get_int = host_box_arg_get_int;
+        args[5].get_float = host_circle_arg_get_float;
+    }
+
+    if (argc > 11 && *argv[12]) {
+        arg_ctx[6].expr = argv[12];
+        host_getargaddress(argv[12], &arg_ctx[6].ip, &arg_ctx[6].fp, &args[6].count);
+        args[6].present = 1;
+        args[6].ctx = &arg_ctx[6];
+        args[6].get_int = host_box_arg_get_int;
+        args[6].get_float = host_circle_arg_get_float;
+    }
+
+    gfx_circle_execute((n == 1) ? GFX_CIRCLE_MODE_SCALAR : GFX_CIRCLE_MODE_VECTOR,
+                       args, (argc + 1) / 2, &errors);
+    if (Option.Refresh) Display_Refresh();
 }
 void cmd_Classic(void) {}
 void cmd_close(void) {}
 void cmd_cls(void) {
-    int colour = gui_bcolour;
-    if (cmdline && *cmdline) colour = getint(cmdline, 0, WHITE);
-    ClearScreen(colour);
-    CurrentX = 0;
-    CurrentY = 0;
+    GfxClsArg arg;
+    GfxClsOps ops;
+    arg.ctx = cmdline;
+    arg.get_int = host_cls_get_int;
+    ops.ctx = cmdline;
+    ops.do_clear = host_cls_do_clear;
+    ops.fail_msg = host_cls_fail_msg;
+    ops.fail_range = host_cls_fail_range;
+    gfx_cls_execute(cmdline && *cmdline, &arg, &ops);
 }
 void cmd_colour(void) {}
 void cmd_configure(void) {}
@@ -700,19 +1025,34 @@ void bc_fastgfx_sync(void) {
     host_fastgfx_next_sync_us += frame_us;
 }
 
+void bc_fastgfx_create(void) {
+    host_fastgfx_active = 1;
+    host_fastgfx_next_sync_us = 0;
+}
+
+void bc_fastgfx_close(void) {
+    if (!host_fastgfx_active) error("FASTGFX not active");
+    host_fastgfx_active = 0;
+    host_fastgfx_next_sync_us = 0;
+}
+
+void bc_fastgfx_set_fps(int fps) {
+    if (fps < 1 || fps > 1000) error("Number out of bounds");
+    host_fastgfx_fps = fps;
+    host_fastgfx_next_sync_us = 0;
+}
+
 void cmd_fastgfx(void) {
     unsigned char *p;
 
     if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
         checkend(p);
-        host_fastgfx_active = 1;
-        host_fastgfx_next_sync_us = 0;
+        bc_fastgfx_create();
         return;
     }
     if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
         checkend(p);
-        host_fastgfx_active = 0;
-        host_fastgfx_next_sync_us = 0;
+        bc_fastgfx_close();
         return;
     }
     if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
@@ -726,8 +1066,7 @@ void cmd_fastgfx(void) {
         return;
     }
     if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
-        host_fastgfx_fps = getint(p, 1, 1000);
-        host_fastgfx_next_sync_us = 0;
+        bc_fastgfx_set_fps(getint(p, 1, 1000));
         return;
     }
 
@@ -756,19 +1095,66 @@ void cmd_label(void) {}
 void cmd_lcd(void) {}
 void cmd_library(void) {}
 void cmd_line(void) {
-    int x1, y1, x2, y2, w = 1, c = gui_fcolour;
+    GfxLineArg args[GFX_LINE_ARG_COUNT] = {0};
+    HostBoxArgCtx arg_ctx[GFX_LINE_ARG_COUNT] = {0};
+    GfxLineErrorSink errors;
+    int n = 0;
+
     getargs(&cmdline, 11, (unsigned char *)",");
-    if (!(argc & 1) || argc < 7) error("Argument count");
-    x1 = getinteger(argv[0]);
-    y1 = getinteger(argv[2]);
-    x2 = getinteger(argv[4]);
-    y2 = getinteger(argv[6]);
-    if (argc > 7 && *argv[8]) {
-        w = getint(argv[8], -100, 100);
-        if (!w) return;
+    if (!(argc & 1) || argc < 3) error("Argument count");
+    errors.ctx = NULL;
+    errors.fail_msg = host_line_fail_msg;
+    errors.fail_range = host_line_fail_range;
+
+    arg_ctx[0].expr = argv[0];
+    host_getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+    args[0].present = 1;
+    args[0].count = n;
+    args[0].ctx = &arg_ctx[0];
+    args[0].get_int = host_box_arg_get_int;
+
+    arg_ctx[1].expr = argv[2];
+    if (n != 1) host_getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+    else n = 1;
+    args[1].present = 1;
+    args[1].count = n;
+    args[1].ctx = &arg_ctx[1];
+    args[1].get_int = host_box_arg_get_int;
+
+    if (argc >= 5 && *argv[4]) {
+        arg_ctx[2].expr = argv[4];
+        host_getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+        args[2].present = 1;
+        args[2].ctx = &arg_ctx[2];
+        args[2].get_int = host_box_arg_get_int;
     }
-    if (argc == 11 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    DrawLine(x1, y1, x2, y2, w, c);
+
+    if (argc >= 7 && *argv[6]) {
+        arg_ctx[3].expr = argv[6];
+        host_getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+        args[3].present = 1;
+        args[3].ctx = &arg_ctx[3];
+        args[3].get_int = host_box_arg_get_int;
+    }
+
+    if (argc > 7 && *argv[8]) {
+        arg_ctx[4].expr = argv[8];
+        host_getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+        args[4].present = 1;
+        args[4].ctx = &arg_ctx[4];
+        args[4].get_int = host_box_arg_get_int;
+    }
+
+    if (argc == 11 && *argv[10]) {
+        arg_ctx[5].expr = argv[10];
+        host_getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+        args[5].present = 1;
+        args[5].ctx = &arg_ctx[5];
+        args[5].get_int = host_box_arg_get_int;
+    }
+
+    gfx_line_execute((n == 1) ? GFX_LINE_MODE_SCALAR : GFX_LINE_MODE_VECTOR,
+                     args, (argc + 1) / 2, &errors);
 }
 void cmd_load(void) {}
 void cmd_longString(void) {}
@@ -791,7 +1177,45 @@ void cmd_pause(void) {
 void cmd_pin(void) {}
 void cmd_pio(void) {}
 void cmd_PIOline(void) {}
-void cmd_pixel(void) {}
+void cmd_pixel(void) {
+    GfxPixelArg args[GFX_PIXEL_ARG_COUNT] = {0};
+    HostBoxArgCtx arg_ctx[GFX_PIXEL_ARG_COUNT] = {0};
+    GfxPixelErrorSink errors;
+    int n = 0;
+
+    getargs(&cmdline, 5, (unsigned char *)",");
+    if (!(argc == 3 || argc == 5)) error("Argument count");
+    errors.ctx = NULL;
+    errors.fail_msg = host_pixel_fail_msg;
+    errors.fail_range = host_pixel_fail_range;
+
+    arg_ctx[0].expr = argv[0];
+    host_getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+    args[0].present = 1;
+    args[0].count = n;
+    args[0].ctx = &arg_ctx[0];
+    args[0].get_int = host_box_arg_get_int;
+
+    arg_ctx[1].expr = argv[2];
+    if (n != 1) host_getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+    else n = 1;
+    args[1].present = 1;
+    args[1].count = n;
+    args[1].ctx = &arg_ctx[1];
+    args[1].get_int = host_box_arg_get_int;
+
+    if (argc == 5 && *argv[4]) {
+        arg_ctx[2].expr = argv[4];
+        host_getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+        args[2].present = 1;
+        args[2].ctx = &arg_ctx[2];
+        args[2].get_int = host_box_arg_get_int;
+    }
+
+    gfx_pixel_execute((n == 1) ? GFX_PIXEL_MODE_SCALAR : GFX_PIXEL_MODE_VECTOR,
+                      args, (argc + 1) / 2, &errors);
+    if (Option.Refresh) Display_Refresh();
+}
 void cmd_play(void) {}
 void cmd_poke(void) {}
 void cmd_polygon(void) {}
@@ -843,36 +1267,27 @@ int GetJustification(char *p, int *jh, int *jv, int *jo) {
 }
 
 void cmd_text(void) {
-    int x, y, font, scale, fc, bc;
-    char *s;
-    int jh = JUSTIFY_LEFT, jv = JUSTIFY_TOP, jo = ORIENT_NORMAL;
+    GfxTextArg args[GFX_TEXT_ARG_COUNT] = {0};
+    GfxTextOps ops;
 
     getargs(&cmdline, 17, (unsigned char *)",");
     if (!(argc & 1) || argc < 5) error("Argument count");
-    x = getinteger(argv[0]);
-    y = getinteger(argv[2]);
-    s = (char *)getCstring(argv[4]);
+    args[0].present = 1; args[0].ctx = argv[0]; args[0].get_int = host_text_get_int;
+    args[1].present = 1; args[1].ctx = argv[2]; args[1].get_int = host_text_get_int;
+    args[2].present = 1; args[2].ctx = argv[4]; args[2].get_str = host_text_get_str;
+    if (argc > 5 && *argv[6]) { args[3].present = 1; args[3].ctx = argv[6]; args[3].get_str = host_text_get_str; }
+    if (argc > 7 && *argv[8]) { args[4].present = 1; args[4].ctx = argv[8]; args[4].get_int = host_text_get_int; }
+    if (argc > 9 && *argv[10]) { args[5].present = 1; args[5].ctx = argv[10]; args[5].get_int = host_text_get_int; }
+    if (argc > 11 && *argv[12]) { args[6].present = 1; args[6].ctx = argv[12]; args[6].get_int = host_text_get_int; }
+    if (argc == 15 && *argv[14]) { args[7].present = 1; args[7].ctx = argv[14]; args[7].get_int = host_text_get_int; }
 
-    if (argc > 5 && *argv[6]) {
-        if (!GetJustification((char *)argv[6], &jh, &jv, &jo)) {
-            if (!GetJustification((char *)getCstring(argv[6]), &jh, &jv, &jo)) {
-                error("Justification");
-            }
-        }
-    }
-
-    font = (gui_font >> 4) + 1;
-    scale = gui_font & 0x0F;
-    if (scale == 0) scale = 1;
-    fc = gui_fcolour;
-    bc = gui_bcolour;
-    if (argc > 7 && *argv[8]) font = getint(argv[8], 1, FONT_TABLE_SIZE);
-    if (argc > 9 && *argv[10]) scale = getint(argv[10], 1, 15);
-    if (argc > 11 && *argv[12]) fc = getint(argv[12], 0, WHITE);
-    if (argc == 15 && *argv[14]) bc = getint(argv[14], -1, WHITE);
-    (void)font;
-    (void)jo;
-    GUIPrintString(x, y, scale, jh, jv, jo, fc, bc, s);
+    ops.ctx = NULL;
+    ops.get_defaults = host_text_get_defaults;
+    ops.font_valid = host_text_font_valid;
+    ops.render = host_text_render;
+    ops.fail_msg = host_text_fail_msg;
+    ops.fail_range = host_text_fail_range;
+    gfx_text_execute(args, (argc + 1) / 2, &ops);
 }
 void cmd_time(void) {}
 void cmd_timer(void) {
@@ -1129,7 +1544,66 @@ void UnloadFont(int f) { (void)f; }
 void ResetDisplay(void) {}
 int GetFontWidth(int fnt) { (void)fnt; return 6; }
 int GetFontHeight(int fnt) { (void)fnt; return 8; }
-void DrawLine(int x1, int y1, int x2, int y2, int w, int c) { host_draw_line_pixels(x1, y1, x2, y2, w, c); }
+void DrawLine(int x1, int y1, int x2, int y2, int w, int c) {
+    if (y1 == y2 && w > 0) {
+        host_fill_rect_pixels(x1, y1, x2, y2 + w - 1, c);
+        return;
+    }
+    if (x1 == x2 && w > 0) {
+        host_fill_rect_pixels(x1, y1, x2 + w - 1, y2, c);
+        return;
+    }
+    if (w == 1 || w == -1) {
+        int dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+        int dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+        int err = dx + dy;
+        while (1) {
+            host_put_pixel(x1, y1, c);
+            if (x1 == x2 && y1 == y2) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) {
+                if (x1 == x2) break;
+                err += dy;
+                x1 += sx;
+            }
+            if (e2 <= dx) {
+                if (y1 == y2) break;
+                err += dx;
+                y1 += sy;
+            }
+        }
+        return;
+    }
+
+    {
+        float start, end;
+        if (w < 0) {
+            w = abs(w);
+            start = -(w / 2.0f);
+            end = w / 2.0f;
+        } else {
+            start = 0.0f;
+            end = (float)w;
+        }
+        float dx = (float)(x2 - x1);
+        float dy = (float)(y2 - y1);
+        float length = sqrtf(dx * dx + dy * dy);
+        float nx = dx / length;
+        float ny = dy / length;
+        float px = -ny;
+        float py = nx;
+
+        for (int i = 0; i <= (int)length; i++) {
+            float lineX = x1 + i * nx;
+            float lineY = y1 + i * ny;
+            for (float j = start; j <= end; j += 0.25f) {
+                float pixelX = lineX + j * px;
+                float pixelY = lineY + j * py;
+                host_put_pixel((int)roundf(pixelX), (int)roundf(pixelY), c);
+            }
+        }
+    }
+}
 void DrawBox(int x1, int y1, int x2, int y2, int w, int c, int fill) {
     if (fill >= 0) host_fill_rect_pixels(x1, y1, x2, y2, fill);
     if (w > 0) {
@@ -1175,7 +1649,7 @@ void ShowCursor(int show) { (void)show; }
 int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }
 void setmode(int mode, bool clear) { (void)mode; (void)clear; }
 int rgb(int r, int g, int b) { return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF); }
-void DrawPixel16(int x, int y, int c) { (void)x; (void)y; (void)c; }
+void DrawPixel16(int x, int y, int c) { host_put_pixel(x, y, c); }
 void DrawRectangle16(int x1, int y1, int x2, int y2, int c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void DrawBitmap16(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char *bitmap) { (void)x1; (void)y1; (void)width; (void)height; (void)scale; (void)fc; (void)bc; (void)bitmap; }
 void ScrollLCD16(int lines) { (void)lines; }
@@ -1183,7 +1657,7 @@ void DrawBuffer16(int x1, int y1, int x2, int y2, unsigned char *p) { (void)x1; 
 void DrawBuffer16Fast(int x1, int y1, int x2, int y2, int blank, unsigned char *p) { (void)x1; (void)y1; (void)x2; (void)y2; (void)blank; (void)p; }
 void ReadBuffer16(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void ReadBuffer16Fast(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void DrawPixelNormal(int x, int y, int c) { (void)x; (void)y; (void)c; }
+void DrawPixelNormal(int x, int y, int c) { host_put_pixel(x, y, c); }
 void ReadBuffer2(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void copyframetoscreen(uint8_t *s, int xstart, int xend, int ystart, int yend, int odd) { (void)s; (void)xstart; (void)xend; (void)ystart; (void)yend; (void)odd; }
 void copybuffertoscreen(unsigned char *s, int lx, int ly, int hx, int hy) { (void)s; (void)lx; (void)ly; (void)hx; (void)hy; }

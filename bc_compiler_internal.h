@@ -74,6 +74,32 @@ static inline int bc_parse_varname(unsigned char *p, uint8_t *type_out, int *is_
     return len;
 }
 
+/* Parse an optional "AS INTEGER/FLOAT/STRING" type clause.
+ * Returns the parsed type or 0 if no clause/type was found.
+ * Advances *pp past the clause when present. */
+static inline uint8_t bc_parse_as_type_clause(unsigned char **pp) {
+    unsigned char *p = *pp;
+    skipspace(p);
+    if (*p != tokenAS) return 0;
+    p++;
+    skipspace(p);
+
+    uint8_t type = 0;
+    if (strncasecmp((char *)p, "INTEGER", 7) == 0 && !isnamechar(p[7])) {
+        type = T_INT;
+        p += 7;
+    } else if (strncasecmp((char *)p, "FLOAT", 5) == 0 && !isnamechar(p[5])) {
+        type = T_NBR;
+        p += 5;
+    } else if (strncasecmp((char *)p, "STRING", 6) == 0 && !isnamechar(p[6])) {
+        type = T_STR;
+        p += 6;
+    }
+
+    *pp = p;
+    return type;
+}
+
 /* Compiler error helper — sets error state without aborting */
 static inline void bc_set_error(BCCompiler *cs, const char *fmt, ...) {
     if (cs->has_error) return;  /* keep first error */

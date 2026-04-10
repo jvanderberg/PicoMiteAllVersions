@@ -34,6 +34,12 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "gfx_box_shared.h"
+#include "gfx_circle_shared.h"
+#include "gfx_line_shared.h"
+#include "gfx_pixel_shared.h"
+#include "gfx_cls_shared.h"
+#include "gfx_text_shared.h"
 #include "hardware/spi.h"
 #include "Memory.h"
 #ifndef PICOMITEWEB
@@ -465,6 +471,167 @@ void  getargaddress (unsigned char *p, long long int **ip, MMFLOAT **fp, int *n)
     } else {
     	*n=1; //may be a function call
     }
+}
+
+typedef struct {
+    unsigned char *expr;
+    long long int *ip;
+    MMFLOAT *fp;
+} DrawBoxArgCtx;
+
+static int draw_box_arg_get_int(void *ctx, int index) {
+    DrawBoxArgCtx *arg = (DrawBoxArgCtx *)ctx;
+    if(arg->ip != NULL) return (int)arg->ip[index];
+    if(arg->fp != NULL) return (int)arg->fp[index];
+    return getinteger(arg->expr);
+}
+
+static void draw_box_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_box_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    if(label != NULL && strcmp(label, "Width") == 0)
+        error("Width % is invalid (valid is % to %)", value, min, max);
+    else if(label != NULL && strcmp(label, "Height") == 0)
+        error("Height % is invalid (valid is % to %)", value, min, max);
+    else
+        error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static int draw_circle_arg_get_int(void *ctx, int index) {
+    DrawBoxArgCtx *arg = (DrawBoxArgCtx *)ctx;
+    if(arg->ip != NULL) return (int)arg->ip[index];
+    if(arg->fp != NULL) return (int)arg->fp[index];
+    return getinteger(arg->expr);
+}
+
+static MMFLOAT draw_circle_arg_get_float(void *ctx, int index) {
+    DrawBoxArgCtx *arg = (DrawBoxArgCtx *)ctx;
+    if(arg->fp != NULL) return arg->fp[index];
+    if(arg->ip != NULL) return (MMFLOAT)arg->ip[index];
+    return getnumber(arg->expr);
+}
+
+static void draw_circle_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_circle_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static void draw_line_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_line_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static void draw_pixel_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_pixel_fail_range(void *ctx, const char *label, int value, int min, int max) {
+    (void)ctx;
+    (void)label;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static int draw_cls_get_int(void *ctx) {
+    return getint((unsigned char *)ctx, 0, WHITE);
+}
+
+static void draw_cls_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_cls_fail_range(void *ctx, int value, int min, int max) {
+    (void)ctx;
+    error("% is invalid (valid is % to %)", value, min, max);
+}
+
+static void draw_cls_do_clear(void *ctx, int use_default, int colour) {
+    (void)ctx;
+#ifdef PICOMITEVGA
+    if (!use_default) {
+        if(DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ){
+            int fc = colour;
+            unsigned char fcolour = RGB121(fc);
+            fcolour |= (fcolour << 4);
+            memset((void *)WriteBuf, fcolour, ScreenSize);
+        } else {
+            ClearScreen(colour);
+        }
+        return;
+    }
+    if((WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ) && LayerBuf!=DisplayBuf)
+    || (WriteBuf==SecondLayer && (DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ) && SecondLayer!=DisplayBuf)){
+        uint8_t colourv=(WriteBuf==LayerBuf ? transparent|(transparent<<4) :  transparents|(transparents<<4)) ;
+        memset((void *)WriteBuf,colourv,HRes*VRes/2);
+#ifdef HDMI
+    } else if(WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE5 ) && LayerBuf!=DisplayBuf){
+        memset((void *)WriteBuf,transparent,HRes*VRes);
+    } else if((void *)WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE4 ) && LayerBuf!=DisplayBuf){
+        uint16_t *p=(uint16_t *)WriteBuf;
+        for(int i=0;i<HRes*VRes;i++)*p++=RGBtransparent;
+#endif
+    } else {
+        ClearScreen(gui_bcolour);
+    }
+#else
+    if (use_default) ClearScreen(gui_bcolour);
+    else ClearScreen(colour);
+#endif
+}
+
+static int draw_text_get_int(void *ctx) {
+    return getinteger((unsigned char *)ctx);
+}
+
+static char *draw_text_get_str(void *ctx) {
+    return (char *)getCstring((unsigned char *)ctx);
+}
+
+static void draw_text_get_defaults(void *ctx, int *font, int *scale, int *fc, int *bc) {
+    (void)ctx;
+    *font = (gui_font >> 4) + 1;
+    *scale = gui_font & 0x0F;
+    *fc = gui_fcolour;
+    *bc = gui_bcolour;
+}
+
+static int draw_text_font_valid(void *ctx, int font) {
+    (void)ctx;
+    if (font < 1 || font > FONT_TABLE_SIZE) return 0;
+    return FontTable[font - 1] != NULL;
+}
+
+static void draw_text_render(void *ctx, int x, int y, int font, int scale,
+                             int jh, int jv, int jo, int fc, int bc, char *s) {
+    (void)ctx;
+    GUIPrintString(x, y, ((font - 1) << 4) | scale, jh, jv, jo, fc, bc, s);
+}
+
+static void draw_text_fail_msg(void *ctx, const char *msg) {
+    (void)ctx;
+    error((char *)msg);
+}
+
+static void draw_text_fail_range(void *ctx, int value, int min, int max) {
+    (void)ctx;
+    error("% is invalid (valid is % to %)", value, min, max);
 }
 
 /****************************************************************************************************
@@ -1566,32 +1733,31 @@ int GetJustification(char *p, int *jh, int *jv, int *jo) {
 
 /*  @endcond */
 void cmd_text(void) {
-    int x, y, font, scale, fc, bc;
-    char *s;
-    int jh = 0, jv = 0, jo = 0;
+    GfxTextArg args[GFX_TEXT_ARG_COUNT] = {0};
+    GfxTextOps ops;
 
     getargs(&cmdline, 17, (unsigned char *)",");                                     // this is a macro and must be the first executable stmt
     if(Option.DISPLAY_TYPE == 0) error("Display not configured");
     if(!(argc & 1) || argc < 5) error("Argument count");
-    x = getinteger(argv[0]);
-    y = getinteger(argv[2]);
-    s = (char *)getCstring(argv[4]);
-
-    if(argc > 5 && *argv[6])
-        if(!GetJustification((char *)argv[6], &jh, &jv, &jo))
-            if(!GetJustification((char *)getCstring(argv[6]), &jh, &jv, &jo))
-                error("Justification");;
-
-    font = (gui_font >> 4) + 1; scale = (gui_font & 0b1111); fc = gui_fcolour; bc = gui_bcolour;        // the defaults
+    args[0].present = 1; args[0].ctx = argv[0]; args[0].get_int = draw_text_get_int;
+    args[1].present = 1; args[1].ctx = argv[2]; args[1].get_int = draw_text_get_int;
+    args[2].present = 1; args[2].ctx = argv[4]; args[2].get_str = draw_text_get_str;
+    if(argc > 5 && *argv[6]) { args[3].present = 1; args[3].ctx = argv[6]; args[3].get_str = draw_text_get_str; }
     if(argc > 7 && *argv[8]) {
         if(*argv[8] == '#') argv[8]++;
-        font = getint(argv[8], 1, FONT_TABLE_SIZE);
+        args[4].present = 1; args[4].ctx = argv[8]; args[4].get_int = draw_text_get_int;
     }
-    if(FontTable[font - 1] == NULL) error("Invalid font #%", font);
-    if(argc > 9 && *argv[10]) scale = getint(argv[10], 1, 15);
-    if(argc > 11 && *argv[12]) fc = getint(argv[12], 0, WHITE);
-    if(argc ==15) bc = getint(argv[14], -1, WHITE);
-    GUIPrintString(x, y, ((font - 1) << 4) | scale, jh, jv, jo, fc, bc, s);
+    if(argc > 9 && *argv[10]) { args[5].present = 1; args[5].ctx = argv[10]; args[5].get_int = draw_text_get_int; }
+    if(argc > 11 && *argv[12]) { args[6].present = 1; args[6].ctx = argv[12]; args[6].get_int = draw_text_get_int; }
+    if(argc == 15 && *argv[14]) { args[7].present = 1; args[7].ctx = argv[14]; args[7].get_int = draw_text_get_int; }
+
+    ops.ctx = NULL;
+    ops.get_defaults = draw_text_get_defaults;
+    ops.font_valid = draw_text_font_valid;
+    ops.render = draw_text_render;
+    ops.fail_msg = draw_text_fail_msg;
+    ops.fail_range = draw_text_fail_range;
+    gfx_text_execute(args, (argc + 1) / 2, &ops);
     if(Option.Refresh)Display_Refresh();
 }
 
@@ -1610,50 +1776,45 @@ void cmd_pixel(void) {
 		value = getColour((char *)cmdline,0);
 		DrawPixel(x, y, value);
 		lastx = x; lasty = y;
-	} else {
-        int x1, y1, c=0, n=0 ,i, nc=0;
-        long long int *x1ptr, *y1ptr, *cptr;
-        MMFLOAT *x1fptr, *y1fptr, *cfptr;
-        getargs(&cmdline, 5,(unsigned char *)",");
-        if(!(argc == 3 || argc == 5)) error("Argument count");
-        getargaddress(argv[0], &x1ptr, &x1fptr, &n);
-        if(n != 1) getargaddress(argv[2], &y1ptr, &y1fptr, &n);
-        if(n==1){ //just a single point
-            c = gui_fcolour;                                    // setup the defaults
-            x1 = getinteger(argv[0]);
-            y1 = getinteger(argv[2]);
-            if(argc == 5)
-                c = getint(argv[4], -1, WHITE);
-            else
-                c = gui_fcolour;
-            if(c!=-1)DrawPixel(x1, y1, c);
-            else {
-                CurrentX=x1;
-                CurrentY=y1;
-            }
-        } else {
-            c = gui_fcolour;                                        // setup the defaults
-            if(argc == 5){
-                getargaddress(argv[4], &cptr, &cfptr, &nc); 
-                if(nc == 1) c = getint(argv[4], 0, WHITE);
-                else if(nc>1) {
-                    if(nc < n) n=nc; //adjust the dimensionality
-                    for(i=0;i<nc;i++){
-                        c = (cfptr == NULL ? cptr[i] : (int)cfptr[i]);
-                        if(c < 0 || c > WHITE) error("% is invalid (valid is % to %)", (int)c, 0, WHITE);
-                    }
-                }
-            }
-            for(i=0;i<n;i++){
-                x1 = (x1fptr == NULL ? x1ptr[i] : (int)x1fptr[i]);
-                y1 = (y1fptr == NULL ? y1ptr[i] : (int)y1fptr[i]);
-                if(nc > 1) c = (cfptr == NULL ? cptr[i] : (int)cfptr[i]);
-                DrawPixel(x1, y1, c);
-            }
-        }
-    }
-    if(Option.Refresh)Display_Refresh();
-}
+		} else {
+	        GfxPixelArg args[GFX_PIXEL_ARG_COUNT] = {0};
+	        DrawBoxArgCtx arg_ctx[GFX_PIXEL_ARG_COUNT] = {0};
+	        GfxPixelErrorSink errors;
+	        int n = 0;
+	        getargs(&cmdline, 5,(unsigned char *)",");
+	        if(!(argc == 3 || argc == 5)) error("Argument count");
+	        errors.ctx = NULL;
+	        errors.fail_msg = draw_pixel_fail_msg;
+	        errors.fail_range = draw_pixel_fail_range;
+
+	        arg_ctx[0].expr = argv[0];
+	        getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+	        args[0].present = 1;
+	        args[0].count = n;
+	        args[0].ctx = &arg_ctx[0];
+	        args[0].get_int = draw_box_arg_get_int;
+
+	        arg_ctx[1].expr = argv[2];
+	        if(n != 1) getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+	        else n = 1;
+	        args[1].present = 1;
+	        args[1].count = n;
+	        args[1].ctx = &arg_ctx[1];
+	        args[1].get_int = draw_box_arg_get_int;
+
+	        if(argc == 5 && *argv[4]) {
+	            arg_ctx[2].expr = argv[4];
+	            getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+	            args[2].present = 1;
+	            args[2].ctx = &arg_ctx[2];
+	            args[2].get_int = draw_box_arg_get_int;
+	        }
+
+	        gfx_pixel_execute((n == 1) ? GFX_PIXEL_MODE_SCALAR : GFX_PIXEL_MODE_VECTOR,
+	                          args, (argc + 1) / 2, &errors);
+	    }
+	    if(Option.Refresh)Display_Refresh();
+	}
 
 
 void cmd_circle(void) {
@@ -1682,88 +1843,84 @@ void cmd_circle(void) {
 
 		DrawCircle(x, y, radius, (fill ? 0:1), colour, (fill ? colour : -1), aspect);
 		lastx = x; lasty = y;
-	} else {
-        int x, y, r, w=0, c=0, f=0, n=0 ,i, nc=0, nw=0, nf=0, na=0;
-        MMFLOAT a;
-        long long int *xptr, *yptr, *rptr, *fptr, *wptr, *cptr, *aptr;
-        MMFLOAT *xfptr, *yfptr, *rfptr, *ffptr, *wfptr, *cfptr, *afptr;
-        getargs(&cmdline, 13,(unsigned char *)",");
-        if(!(argc & 1) || argc < 5) error("Argument count");
-        getargaddress(argv[0], &xptr, &xfptr, &n);
-        if(n != 1) {
-            getargaddress(argv[2], &yptr, &yfptr, &n);
-            getargaddress(argv[4], &rptr, &rfptr, &n);
-        }
-        if(n==1){
-            w = 1; c = gui_fcolour; f = -1; a = 1;                          // setup the defaults
-            x = getinteger(argv[0]);
-            y = getinteger(argv[2]);
-            r = getinteger(argv[4]);
-            if(argc > 5 && *argv[6]) w = getint(argv[6], 0, 100);
-            if(argc > 7 && *argv[8]) a = getnumber(argv[8]);
-            if(argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-            if(argc > 11) f = getint(argv[12], -1, WHITE);
-            int save_refresh=Option.Refresh;
-            Option.Refresh=0;
-            DrawCircle(x, y, r, w, c, f, a);
-            Option.Refresh=save_refresh;
-        } else {
-            w = 1; c = gui_fcolour; f = -1; a = 1;                          // setup the defaults
-            if(argc > 5 && *argv[6]) {
-                getargaddress(argv[6], &wptr, &wfptr, &nw); 
-                if(nw == 1) w = getint(argv[6], 0, 100);
-                else if(nw>1) {
-                    if(nw > 1 && nw < n) n=nw; //adjust the dimensionality
-                    for(i=0;i<nw;i++){
-                        w = (wfptr == NULL ? wptr[i] : (int)wfptr[i]);
-                        if(w < 0 || w > 100) error("% is invalid (valid is % to %)", (int)w, 0, 100);
-                    }
-                }
-            }
-            if(argc > 7 && *argv[8]){
-                getargaddress(argv[8], &aptr, &afptr, &na); 
-                if(na == 1) a = getnumber(argv[8]);
-                if(na > 1 && na < n) n=na; //adjust the dimensionality
-            }
-            if(argc > 9 && *argv[10]){
-                getargaddress(argv[10], &cptr, &cfptr, &nc); 
-                if(nc == 1) c = getint(argv[10], 0, WHITE);
-                else if(nc>1) {
-                    if(nc > 1 && nc < n) n=nc; //adjust the dimensionality
-                    for(i=0;i<nc;i++){
-                        c = (cfptr == NULL ? cptr[i] : (int)cfptr[i]);
-                        if(c < 0 || c > WHITE) error("% is invalid (valid is % to %)", (int)c, 0, WHITE);
-                    }
-                }
-            }
-            if(argc > 11){
-                getargaddress(argv[12], &fptr, &ffptr, &nf); 
-                if(nf == 1) f = getint(argv[12], -1, WHITE);
-                else if(nf>1) {
-                    if(nf > 1 && nf < n) n=nf; //adjust the dimensionality
-                    for(i=0;i<nf;i++){
-                        f = (ffptr == NULL ? fptr[i] : (int)ffptr[i]);
-                        if(f < 0 || f > WHITE) error("% is invalid (valid is % to %)", (int)f, 0, WHITE);
-                    }
-                }
-            }
-            int save_refresh=Option.Refresh;
-            Option.Refresh=0;
-            for(i=0;i<n;i++){
-                x = (xfptr==NULL ? xptr[i] : (int)xfptr[i]);
-                y = (yfptr==NULL ? yptr[i] : (int)yfptr[i]);
-                r = (rfptr==NULL ? rptr[i] : (int)rfptr[i])-1;
-                if(nw > 1) w = (wfptr==NULL ? wptr[i] : (int)wfptr[i]);
-                if(nc > 1) c = (cfptr==NULL ? cptr[i] : (int)cfptr[i]);
-                if(nf > 1) f = (ffptr==NULL ? fptr[i] : (int)ffptr[i]);
-                if(na > 1) a = (afptr==NULL ? (MMFLOAT)aptr[i] : afptr[i]);
-                DrawCircle(x, y, r, w, c, f, a);
-            }
-            Option.Refresh=save_refresh;
-        }
-    }
-    if(Option.Refresh)Display_Refresh();
-}
+	    } else {
+	        GfxCircleArg args[GFX_CIRCLE_ARG_COUNT] = {0};
+	        DrawBoxArgCtx arg_ctx[GFX_CIRCLE_ARG_COUNT] = {0};
+	        GfxCircleErrorSink errors;
+	        int n = 0;
+	        getargs(&cmdline, 13,(unsigned char *)",");
+	        if(!(argc & 1) || argc < 5) error("Argument count");
+	        errors.ctx = NULL;
+	        errors.fail_msg = draw_circle_fail_msg;
+	        errors.fail_range = draw_circle_fail_range;
+
+	        arg_ctx[0].expr = argv[0];
+	        getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+	        args[0].present = 1;
+	        args[0].count = n;
+	        args[0].ctx = &arg_ctx[0];
+	        args[0].get_int = draw_circle_arg_get_int;
+	        args[0].get_float = draw_circle_arg_get_float;
+
+	        arg_ctx[1].expr = argv[2];
+	        if(n != 1) getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+	        else n = 1;
+	        args[1].present = 1;
+	        args[1].count = n;
+	        args[1].ctx = &arg_ctx[1];
+	        args[1].get_int = draw_circle_arg_get_int;
+	        args[1].get_float = draw_circle_arg_get_float;
+
+	        arg_ctx[2].expr = argv[4];
+	        if(n != 1) getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &n);
+	        else n = 1;
+	        args[2].present = 1;
+	        args[2].count = n;
+	        args[2].ctx = &arg_ctx[2];
+	        args[2].get_int = draw_circle_arg_get_int;
+	        args[2].get_float = draw_circle_arg_get_float;
+
+	        if(argc > 5 && *argv[6]) {
+	            arg_ctx[3].expr = argv[6];
+	            getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+	            args[3].present = 1;
+	            args[3].ctx = &arg_ctx[3];
+	            args[3].get_int = draw_circle_arg_get_int;
+	            args[3].get_float = draw_circle_arg_get_float;
+	        }
+
+	        if(argc > 7 && *argv[8]) {
+	            arg_ctx[4].expr = argv[8];
+	            getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+	            args[4].present = 1;
+	            args[4].ctx = &arg_ctx[4];
+	            args[4].get_int = draw_circle_arg_get_int;
+	            args[4].get_float = draw_circle_arg_get_float;
+	        }
+
+	        if(argc > 9 && *argv[10]) {
+	            arg_ctx[5].expr = argv[10];
+	            getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+	            args[5].present = 1;
+	            args[5].ctx = &arg_ctx[5];
+	            args[5].get_int = draw_circle_arg_get_int;
+	            args[5].get_float = draw_circle_arg_get_float;
+	        }
+
+	        if(argc > 11 && *argv[12]) {
+	            arg_ctx[6].expr = argv[12];
+	            getargaddress(argv[12], &arg_ctx[6].ip, &arg_ctx[6].fp, &args[6].count);
+	            args[6].present = 1;
+	            args[6].ctx = &arg_ctx[6];
+	            args[6].get_int = draw_circle_arg_get_int;
+	            args[6].get_float = draw_circle_arg_get_float;
+	        }
+
+	        gfx_circle_execute((n == 1) ? GFX_CIRCLE_MODE_SCALAR : GFX_CIRCLE_MODE_VECTOR,
+	                           args, (argc + 1) / 2, &errors);
+	    }
+	    if(Option.Refresh)Display_Refresh();
+	}
 /* 
  * @cond
  * The following section will be excluded from the documentation.
@@ -1982,8 +2139,8 @@ void cmd_line(void) {
             pp[1]=',';
             polygon(pp,0);
             return;
-		} else if((p=checkstring(cmdline,(unsigned char *)"AA"))){
-			MMFLOAT x1, y1, x2, y2;
+	        } else if((p=checkstring(cmdline,(unsigned char *)"AA"))){
+				MMFLOAT x1, y1, x2, y2;
 			getargs(&p, 11,(unsigned char *)",");
 			c = gui_fcolour;  ;  w = 1;                                         // setup the defaults
 			x1 = getnumber(argv[0]);
@@ -1995,172 +2152,140 @@ void cmd_line(void) {
 			}
             if(argc == 11) c = getint(argv[10], 0, WHITE);
             if(x1==x2 || y1==y2)DrawLine(x1, y1, x2, y2, w, c);
-			else drawAALine(x1, y1, x2, y2, c, w);
-			return;
-        } else {
-            long long int *x1ptr, *y1ptr, *x2ptr, *y2ptr, *wptr, *cptr;
-            MMFLOAT *x1fptr, *y1fptr, *x2fptr, *y2fptr, *wfptr, *cfptr;
-            getargs(&cmdline, 11,(unsigned char *)",");
-            if(!(argc & 1) || argc < 3) error("Argument count");
-            getargaddress(argv[0], &x1ptr, &x1fptr, &n);
-            if(n != 1) {
-                if(argc<7)error("Argument count");
-                getargaddress(argv[2], &y1ptr, &y1fptr, &n);
-                getargaddress(argv[4], &x2ptr, &x2fptr, &n);
-                getargaddress(argv[6], &y2ptr, &y2fptr, &n);
-            }
-            if(n==1){
-                c = gui_fcolour;  w = 1;                                        // setup the defaults
-                x1 = getinteger(argv[0]);
-                y1 = getinteger(argv[2]);
-                if(argc>=5 && *argv[4])x2 = getinteger(argv[4]);
-                else {
-                    x2=CurrentX;CurrentX=x1;
-                }
-                if(argc>=7 && *argv[6])y2 = getinteger(argv[6]);
-                else {
-                    y2=CurrentY;CurrentY=y1;
-                }
-                if(x1==CurrentX && y1==CurrentY){
-                    CurrentX=x2;
-                    CurrentY=y2;
-                }
-                if(argc > 7 && *argv[8]){
-                    w = getint(argv[8], -100, 100);
-                    if(!w)return;
-                }
-                if(argc == 11) c = getint(argv[10], 0, WHITE);
-                DrawLine(x1, y1, x2, y2, w, c);        
-            } else {
-                c = gui_fcolour;  w = 1;                                        // setup the defaults
-                if(argc > 7 && *argv[8]){
-                    getargaddress(argv[8], &wptr, &wfptr, &nw); 
-                    if(nw == 1) w = getint(argv[8], -100, 100);
-                    else if(nw>1) {
-                        if(nw > 1 && nw < n) n=nw; //adjust the dimensionality
-                        for(i=0;i<nw;i++){
-                            w = (wfptr == NULL ? wptr[i] : (int)wfptr[i]);
-                            if(w < -100 || w > 100) error("% is invalid (valid is % to %)", (int)w, 0, 100);
-                        }
-                    }
-                }
-                if(argc == 11){
-                    getargaddress(argv[10], &cptr, &cfptr, &nc); 
-                    if(nc == 1) c = getint(argv[10], 0, WHITE);
-                    else if(nc>1) {
-                        if(nc > 1 && nc < n) n=nc; //adjust the dimensionality
-                        for(i=0;i<nc;i++){
-                            c = (cfptr == NULL ? cptr[i] : (int)cfptr[i]);
-                            if(c < 0 || c > WHITE) error("% is invalid (valid is % to %)", (int)c, 0, WHITE);
-                        }
-                    }
-                }
-                for(i=0;i<n;i++){
-                    x1 = (x1fptr==NULL ? x1ptr[i] : (int)x1fptr[i]);
-                    y1 = (y1fptr==NULL ? y1ptr[i] : (int)y1fptr[i]);
-                    x2 = (x2fptr==NULL ? x2ptr[i] : (int)x2fptr[i]);
-                    y2 = (y2fptr==NULL ? y2ptr[i] : (int)y2fptr[i]);
-                    if(nw > 1) w = (wfptr==NULL ? wptr[i] : (int)wfptr[i]);
-                    if(nc > 1) c = (cfptr==NULL ? cptr[i] : (int)cfptr[i]);
-                    if(w)DrawLine(x1, y1, x2, y2, w, c);
-                }
-            }
-        }
-    }
-    if(Option.Refresh)Display_Refresh();
-}
+				else drawAALine(x1, y1, x2, y2, c, w);
+				return;
+	        } else {
+	            GfxLineArg args[GFX_LINE_ARG_COUNT] = {0};
+	            DrawBoxArgCtx arg_ctx[GFX_LINE_ARG_COUNT] = {0};
+	            GfxLineErrorSink errors;
+	            getargs(&cmdline, 11,(unsigned char *)",");
+	            if(!(argc & 1) || argc < 3) error("Argument count");
+	            errors.ctx = NULL;
+	            errors.fail_msg = draw_line_fail_msg;
+	            errors.fail_range = draw_line_fail_range;
+
+	            arg_ctx[0].expr = argv[0];
+	            getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+	            args[0].present = 1;
+	            args[0].count = n;
+	            args[0].ctx = &arg_ctx[0];
+	            args[0].get_int = draw_box_arg_get_int;
+
+	            arg_ctx[1].expr = argv[2];
+	            if(n != 1) getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+	            else n = 1;
+	            args[1].present = 1;
+	            args[1].count = n;
+	            args[1].ctx = &arg_ctx[1];
+	            args[1].get_int = draw_box_arg_get_int;
+
+	            if(argc >= 5 && *argv[4]) {
+	                arg_ctx[2].expr = argv[4];
+	                getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+	                args[2].present = 1;
+	                args[2].ctx = &arg_ctx[2];
+	                args[2].get_int = draw_box_arg_get_int;
+	            }
+
+	            if(argc >= 7 && *argv[6]) {
+	                arg_ctx[3].expr = argv[6];
+	                getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+	                args[3].present = 1;
+	                args[3].ctx = &arg_ctx[3];
+	                args[3].get_int = draw_box_arg_get_int;
+	            }
+
+	            if(argc > 7 && *argv[8]) {
+	                arg_ctx[4].expr = argv[8];
+	                getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+	                args[4].present = 1;
+	                args[4].ctx = &arg_ctx[4];
+	                args[4].get_int = draw_box_arg_get_int;
+	            }
+
+	            if(argc == 11 && *argv[10]) {
+	                arg_ctx[5].expr = argv[10];
+	                getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+	                args[5].present = 1;
+	                args[5].ctx = &arg_ctx[5];
+	                args[5].get_int = draw_box_arg_get_int;
+	            }
+
+	            gfx_line_execute((n == 1) ? GFX_LINE_MODE_SCALAR : GFX_LINE_MODE_VECTOR,
+	                             args, (argc + 1) / 2, &errors);
+	        }
+	    }
+	    if(Option.Refresh)Display_Refresh();
+	}
 
 
 void cmd_box(void) {
-    int x1, y1, w=0, c=0, f=0,  n=0 ,i, nc=0, nw=0, nf=0,hmod,wmod, nwidth=0, nheight=0, width=0, height=0;
-    long long int *x1ptr, *y1ptr, *wiptr, *hptr, *wptr, *cptr, *fptr;
-    MMFLOAT *x1fptr, *y1fptr, *wifptr, *hfptr, *wfptr, *cfptr, *ffptr;
+    GfxBoxIntArg args[GFX_BOX_ARG_COUNT] = {0};
+    DrawBoxArgCtx arg_ctx[GFX_BOX_ARG_COUNT] = {0};
+    GfxBoxErrorSink errors;
+    int n = 0;
+
     getargs(&cmdline, 13,(unsigned char *)",");
     if(Option.DISPLAY_TYPE == 0) error("Display not configured");
     if(!(argc & 1) || argc < 7) error("Argument count");
-    getargaddress(argv[0], &x1ptr, &x1fptr, &n);
-    if(n != 1) {
-        getargaddress(argv[2], &y1ptr, &y1fptr, &n);
-    }
-    if(n == 1){
-        c = gui_fcolour; w = 1; f = -1;                                 // setup the defaults
-        x1 = getinteger(argv[0]);
-        y1 = getinteger(argv[2]);
-        width = getinteger(argv[4]) ;
-        height = getinteger(argv[6]) ;
-        wmod=(width > 0 ? -1 : 1);
-        hmod=(height > 0 ? -1 : 1);
-        if(argc > 7 && *argv[8]) w = getint(argv[8], 0, 100);
-        if(argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-        if(argc == 13) f = getint(argv[12], -1, WHITE);
-        if(width != 0 && height != 0) DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
-    } else {
-        getargaddress(argv[4], &wiptr, &wifptr, &nwidth);
-        if(nwidth==1) width= getint(argv[4], 1, HRes);
-        else if(nwidth>1) {
-            if(nwidth > 1 && nwidth < n) n=nwidth; //adjust the dimensionality
-            for(i=0;i<nwidth;i++){
-                width = (wifptr == NULL ? wiptr[i] : (int)wifptr[i]);
-                if(width <1 || width > HRes) error("Width % is invalid (valid is % to %)", (int)width, 1, HRes);
-            }
-        }
-        getargaddress(argv[6], &hptr, &hfptr, &nheight);
-        if(nheight==1) height= getint(argv[6], 1, VRes);
-        else if(nheight>1) {
-            if(nheight > 1 && nheight < n) n=nheight; //adjust the dimensionality
-            for(i=0;i<nheight;i++){
-                height = (hfptr == NULL ? hptr[i] : (int)hfptr[i]);
-                if(height <1 || height > VRes) error("Height % is invalid (valid is % to %)", (int)height, 1, VRes);
-            }
-        }
-        c = gui_fcolour;  w = 1;                                        // setup the defaults
-        if(argc > 7 && *argv[8]){
-            getargaddress(argv[8], &wptr, &wfptr, &nw); 
-            if(nw == 1) w = getint(argv[8], 0, 100);
-            else if(nw>1) {
-                if(nw > 1 && nw < n) n=nw; //adjust the dimensionality
-                for(i=0;i<nw;i++){
-                    w = (wfptr == NULL ? wptr[i] : (int)wfptr[i]);
-                    if(w < 0 || w > 100) error("% is invalid (valid is % to %)", (int)w, 0, 100);
-                }
-            }
-        }
-        if(argc > 9 && *argv[10]) {
-            getargaddress(argv[10], &cptr, &cfptr, &nc); 
-            if(nc == 1) c = getint(argv[10], 0, WHITE);
-            else if(nc>1) {
-                if(nc > 1 && nc < n) n=nc; //adjust the dimensionality
-                for(i=0;i<nc;i++){
-                    c = (cfptr == NULL ? cptr[i] : (int)cfptr[i]);
-                    if(c < 0 || c > WHITE) error("% is invalid (valid is % to %)", (int)c, 0, WHITE);
-                }
-            }
-        }
-        if(argc == 13){
-            getargaddress(argv[12], &fptr, &ffptr, &nf); 
-            if(nf == 1) f = getint(argv[12], 0, WHITE);
-            else if(nf>1) {
-                if(nf > 1 && nf < n) n=nf; //adjust the dimensionality
-                for(i=0;i<nf;i++){
-                    f = (ffptr == NULL ? fptr[i] : (int)ffptr[i]);
-                    if(f < -1 || f > WHITE) error("% is invalid (valid is % to %)", (int)f, -1, WHITE);
-                }
-            }
-        }
-        for(i=0;i<n;i++){
-            x1 = (x1fptr==NULL ? x1ptr[i] : (int)x1fptr[i]);
-            y1 = (y1fptr==NULL ? y1ptr[i] : (int)y1fptr[i]);
-            if(nwidth > 1) width = (wifptr==NULL ? wiptr[i] : (int)wifptr[i]);
-            if(nheight > 1) height =  (hfptr==NULL ? hptr[i] : (int)hfptr[i]);
-            wmod=(width > 0 ? -1 : 1);
-            hmod=(height > 0 ? -1 : 1);
-            if(nw > 1) w = (wfptr==NULL ? wptr[i] : (int)wfptr[i]);
-            if(nc > 1) c = (cfptr==NULL ? cptr[i] : (int)cfptr[i]);
-            if(nf > 1) f = (ffptr==NULL ? fptr[i] : (int)ffptr[i]);
-            if(width != 0 && height != 0) DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
 
-        }
+    errors.ctx = NULL;
+    errors.fail_msg = draw_box_fail_msg;
+    errors.fail_range = draw_box_fail_range;
+
+    arg_ctx[0].expr = argv[0];
+    getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
+    args[0].present = 1;
+    args[0].count = n;
+    args[0].ctx = &arg_ctx[0];
+    args[0].get_int = draw_box_arg_get_int;
+
+    arg_ctx[1].expr = argv[2];
+    if(n != 1) getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
+    else n = 1;
+    args[1].present = 1;
+    args[1].count = n;
+    args[1].ctx = &arg_ctx[1];
+    args[1].get_int = draw_box_arg_get_int;
+
+    arg_ctx[2].expr = argv[4];
+    getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
+    args[2].present = 1;
+    args[2].ctx = &arg_ctx[2];
+    args[2].get_int = draw_box_arg_get_int;
+
+    arg_ctx[3].expr = argv[6];
+    getargaddress(argv[6], &arg_ctx[3].ip, &arg_ctx[3].fp, &args[3].count);
+    args[3].present = 1;
+    args[3].ctx = &arg_ctx[3];
+    args[3].get_int = draw_box_arg_get_int;
+
+    if(argc > 7 && *argv[8]) {
+        arg_ctx[4].expr = argv[8];
+        getargaddress(argv[8], &arg_ctx[4].ip, &arg_ctx[4].fp, &args[4].count);
+        args[4].present = 1;
+        args[4].ctx = &arg_ctx[4];
+        args[4].get_int = draw_box_arg_get_int;
     }
+
+    if(argc > 9 && *argv[10]) {
+        arg_ctx[5].expr = argv[10];
+        getargaddress(argv[10], &arg_ctx[5].ip, &arg_ctx[5].fp, &args[5].count);
+        args[5].present = 1;
+        args[5].ctx = &arg_ctx[5];
+        args[5].get_int = draw_box_arg_get_int;
+    }
+
+    if(argc == 13 && *argv[12]) {
+        arg_ctx[6].expr = argv[12];
+        getargaddress(argv[12], &arg_ctx[6].ip, &arg_ctx[6].fp, &args[6].count);
+        args[6].present = 1;
+        args[6].ctx = &arg_ctx[6];
+        args[6].get_int = draw_box_arg_get_int;
+    }
+
+    gfx_box_execute((n == 1) ? GFX_BOX_MODE_SCALAR : GFX_BOX_MODE_VECTOR,
+                    args, (argc + 1) / 2, &errors);
     if(Option.Refresh)Display_Refresh();
 }
 /* 
@@ -3438,42 +3563,20 @@ if ((p = checkstring(cmdline, (unsigned char*)"COMPRESSED"))) {
 }
 /*  @endcond */
 void cmd_cls(void) {
+    GfxClsArg arg = {0};
+    GfxClsOps ops;
     if(Option.DISPLAY_TYPE == 0) error("Display not configured");
 #ifdef GUICONTROLS
     HideAllControls();
 #endif
     skipspace(cmdline);
-    if(!(*cmdline == 0 || *cmdline == '\'')){ //Colour specified
-#ifdef PICOMITEVGA
-        if(DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ){
-            int fc=getint(cmdline, 0, WHITE);
-            unsigned char fcolour = RGB121(fc);
-            fcolour|=(fcolour<<4);
-            memset((void *)WriteBuf,fcolour,ScreenSize);
-        } else {
-            ClearScreen(getint(cmdline, 0, WHITE));
-        }
-#else
-        ClearScreen(getint(cmdline, 0, WHITE));
-#endif
-    } else { //Default colour
-#ifdef PICOMITEVGA
-        if((WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ) && LayerBuf!=DisplayBuf)
-        || (WriteBuf==SecondLayer && (DISPLAY_TYPE==SCREENMODE2 || DISPLAY_TYPE==SCREENMODE3 ) && SecondLayer!=DisplayBuf)){
-            uint8_t colour=(WriteBuf==LayerBuf ? transparent|(transparent<<4) :  transparents|(transparents<<4)) ;
-            memset((void *)WriteBuf,colour,HRes*VRes/2);
-#ifdef HDMI
-        } else if(WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE5 ) && LayerBuf!=DisplayBuf){
-            memset((void *)WriteBuf,transparent,HRes*VRes);
-        } else if((void *)WriteBuf==LayerBuf && (DISPLAY_TYPE==SCREENMODE4 ) && LayerBuf!=DisplayBuf){
-            uint16_t *p=(uint16_t *)WriteBuf;
-            for(int i=0;i<HRes*VRes;i++)*p++=RGBtransparent;
-#endif
-        } else
-#endif
-        ClearScreen(gui_bcolour);
-    }
-    CurrentX = CurrentY = 0;
+    arg.ctx = cmdline;
+    arg.get_int = draw_cls_get_int;
+    ops.ctx = cmdline;
+    ops.do_clear = draw_cls_do_clear;
+    ops.fail_msg = draw_cls_fail_msg;
+    ops.fail_range = draw_cls_fail_range;
+    gfx_cls_execute(!(*cmdline == 0 || *cmdline == '\''), &arg, &ops);
     if(Option.Refresh)Display_Refresh();
 }
 
@@ -5802,47 +5905,8 @@ void bc_fastgfx_sync(void) {
     while (!fastgfx_done) { __dmb(); }
 }
 
-void cmd_fastgfx(void) {
-    unsigned char *p = NULL;
-    if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
-        if (fastgfx_active) {
-            // Auto-close previous session (e.g. after Ctrl+C)
-            while (!fastgfx_done) { __dmb(); }
-            if (fastgfx_dma_chan >= 0) {
-                dma_channel_unclaim(fastgfx_dma_chan);
-                fastgfx_dma_chan = -1;
-            }
-            FreeMemory(FastGFXBackBuf);
-            FreeMemory(FastGFXFrontBuf);
-            FastGFXBackBuf = NULL;
-            FastGFXFrontBuf = NULL;
-            fastgfx_active = false;
-            restorepanel();
-        }
-        if (FrameBuf || LayerBuf) error("FRAMEBUFFER is active");
-        FastGFXBackBuf = GetMemory(HRes * VRes / 2);
-        FastGFXFrontBuf = GetMemory(HRes * VRes / 2);
-        memset(FastGFXBackBuf, 0, HRes * VRes / 2);
-        memset(FastGFXFrontBuf, 0, HRes * VRes / 2);
-        fastgfx_dma_chan = dma_claim_unused_channel(true);
-        WriteBuf = FastGFXBackBuf;
-        setframebuffer();
-        fastgfx_active = true;
-        fastgfx_done = true;
-        fastgfx_frame_us = 0;
-        fastgfx_last_swap_us = 0;
-    } else if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
-        bc_fastgfx_swap();
-    } else if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
-        bc_fastgfx_sync();
-    } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
-        int fps = getint(p, 0, 120);
-        if (fps == 0)
-            fastgfx_frame_us = 0;
-        else
-            fastgfx_frame_us = 1000000 / fps;
-    } else if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
-        if (!fastgfx_active) error("FASTGFX not active");
+void bc_fastgfx_create(void) {
+    if (fastgfx_active) {
         while (!fastgfx_done) { __dmb(); }
         if (fastgfx_dma_chan >= 0) {
             dma_channel_unclaim(fastgfx_dma_chan);
@@ -5854,6 +5918,60 @@ void cmd_fastgfx(void) {
         FastGFXFrontBuf = NULL;
         fastgfx_active = false;
         restorepanel();
+    }
+    if (FrameBuf || LayerBuf) error("FRAMEBUFFER is active");
+    FastGFXBackBuf = GetMemory(HRes * VRes / 2);
+    FastGFXFrontBuf = GetMemory(HRes * VRes / 2);
+    memset(FastGFXBackBuf, 0, HRes * VRes / 2);
+    memset(FastGFXFrontBuf, 0, HRes * VRes / 2);
+    fastgfx_dma_chan = dma_claim_unused_channel(true);
+    WriteBuf = FastGFXBackBuf;
+    setframebuffer();
+    fastgfx_active = true;
+    fastgfx_done = true;
+    fastgfx_frame_us = 0;
+    fastgfx_last_swap_us = 0;
+}
+
+void bc_fastgfx_close(void) {
+    if (!fastgfx_active) error("FASTGFX not active");
+    while (!fastgfx_done) { __dmb(); }
+    if (fastgfx_dma_chan >= 0) {
+        dma_channel_unclaim(fastgfx_dma_chan);
+        fastgfx_dma_chan = -1;
+    }
+    FreeMemory(FastGFXBackBuf);
+    FreeMemory(FastGFXFrontBuf);
+    FastGFXBackBuf = NULL;
+    FastGFXFrontBuf = NULL;
+    fastgfx_active = false;
+    restorepanel();
+}
+
+void bc_fastgfx_set_fps(int fps) {
+    if (fps < 0 || fps > 120) error("Number out of bounds");
+    if (fps == 0)
+        fastgfx_frame_us = 0;
+    else
+        fastgfx_frame_us = 1000000 / fps;
+}
+
+void cmd_fastgfx(void) {
+    unsigned char *p = NULL;
+    if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
+        checkend(p);
+        bc_fastgfx_create();
+    } else if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
+        checkend(p);
+        bc_fastgfx_swap();
+    } else if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
+        checkend(p);
+        bc_fastgfx_sync();
+    } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
+        bc_fastgfx_set_fps(getint(p, 0, 120));
+    } else if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
+        checkend(p);
+        bc_fastgfx_close();
     } else {
         error("Syntax");
     }

@@ -260,7 +260,16 @@ static void compile_for(BCCompiler *cs, unsigned char **pp) {
     uint8_t vtype = 0; int is_arr = 0;
     int namelen = bc_parse_varname(p, &vtype, &is_arr);
     if (namelen == 0) { bc_set_error(cs, "Expected variable after FOR"); *pp = p; return; }
-    if (vtype == 0) vtype = T_NBR;
+    if (vtype == 0) {
+        int loc = bc_find_local(cs, (const char *)p, namelen);
+        if (loc >= 0) {
+            vtype = cs->locals[loc].type;
+        } else {
+            uint16_t existing = bc_find_slot(cs, (const char *)p, namelen);
+            if (existing != 0xFFFF) vtype = cs->slots[existing].type;
+            else vtype = T_NBR;
+        }
+    }
 
     int is_local = 0;
     uint16_t var_slot = resolve_var(cs, (const char *)p, namelen, vtype, 0, &is_local);
@@ -577,14 +586,23 @@ static int parse_params(BCCompiler *cs, unsigned char **pp, int sf_idx) {
         skipspace(p);
         if (*p == ')' || *p == '\0') break;
         uint8_t ptype = 0; int pa = 0;
+        unsigned char *name_start = p;
         int plen = bc_parse_varname(p, &ptype, &pa);
         if (plen == 0) break;
+        p += plen;
+        if (pa && *p == '(') {
+            int depth = 0;
+            do { if (*p == '(') depth++; else if (*p == ')') depth--;
+                 else if (*p == '\0') break; p++; } while (depth > 0);
+        }
+        uint8_t as_type = bc_parse_as_type_clause(&p);
+        if (as_type != 0) ptype = as_type;
         if (ptype == 0) ptype = T_NBR;
-        bc_add_local(cs, (const char *)p, plen, ptype, pa);
+        bc_add_local(cs, (const char *)name_start, plen, ptype, pa);
         cs->subfuns[sf_idx].param_types[nparams] = ptype;
         cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)pa;
         nparams++;
-        p += plen; skipspace(p);
+        skipspace(p);
         if (*p == ',') p++;
     }
     if (*p == ')') p++;
@@ -690,14 +708,8 @@ static void compile_function(BCCompiler *cs, unsigned char **pp) {
        assignments like "Double = x%" can find it via bc_find_local. */
     bc_add_local(cs, (const char *)name_start, has_suffix ? namelen : sf_namelen, ret_type, 0);
 
-    /* Skip past AS clause if present */
     cs->subfuns[sf_idx].nparams = (uint8_t)parse_params(cs, &p, sf_idx);
-    skipspace(p);
-    if (*p == tokenAS) {
-        p++;  /* skip tokenAS byte */
-        skipspace(p);
-        while (isnamechar(*p)) p++;  /* skip INTEGER/FLOAT/STRING */
-    }
+    (void)bc_parse_as_type_clause(&p);
 
     bc_emit_byte(cs, OP_ENTER_FRAME);
     uint32_t nlocals_patch = cs->code_len;
@@ -751,17 +763,20 @@ static void compile_local(BCCompiler *cs, unsigned char **pp) {
     while (1) {
         skipspace(p);
         if (!isnamestart(*p)) break;
+        unsigned char *name_start = p;
         uint8_t vtype = 0; int is_arr = 0;
         int namelen = bc_parse_varname(p, &vtype, &is_arr);
         if (namelen == 0) break;
-        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
-        bc_add_local(cs, (const char *)p, namelen, vtype, is_arr);
         p += namelen;
         if (is_arr && *p == '(') {
             int depth = 0;
             do { if (*p == '(') depth++; else if (*p == ')') depth--;
                  else if (*p == '\0') break; p++; } while (depth > 0);
         }
+        uint8_t as_type = bc_parse_as_type_clause(&p);
+        if (as_type != 0) vtype = as_type;
+        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
+        bc_add_local(cs, (const char *)name_start, namelen, vtype, is_arr);
         skipspace(p);
         if (*p == ',') p++; else break;
     }
@@ -1066,10 +1081,18 @@ static void compile_read(BCCompiler *cs, unsigned char **pp) {
                 case T_STR: bc_emit_byte(cs, OP_READ_S); break;
                 default:    bc_emit_byte(cs, OP_READ_F); break;
             }
-            switch (vtype & (T_INT | T_NBR | T_STR)) {
-                case T_INT: bc_emit_byte(cs, OP_STORE_ARR_I); break;
-                case T_STR: bc_emit_byte(cs, OP_STORE_ARR_S); break;
-                default:    bc_emit_byte(cs, OP_STORE_ARR_F); break;
+            if (is_local) {
+                switch (vtype & (T_INT | T_NBR | T_STR)) {
+                    case T_INT: bc_emit_byte(cs, OP_STORE_LOCAL_ARR_I); break;
+                    case T_STR: bc_emit_byte(cs, OP_STORE_LOCAL_ARR_S); break;
+                    default:    bc_emit_byte(cs, OP_STORE_LOCAL_ARR_F); break;
+                }
+            } else {
+                switch (vtype & (T_INT | T_NBR | T_STR)) {
+                    case T_INT: bc_emit_byte(cs, OP_STORE_ARR_I); break;
+                    case T_STR: bc_emit_byte(cs, OP_STORE_ARR_S); break;
+                    default:    bc_emit_byte(cs, OP_STORE_ARR_F); break;
+                }
             }
             bc_emit_u16(cs, slot);
             bc_emit_byte(cs, (uint8_t)ndim);
@@ -1232,19 +1255,21 @@ static void compile_clear(BCCompiler *cs, unsigned char **pp) {
 }
 
 static int cmdline_matches_exact(unsigned char *p, const char *kw) {
-    static unsigned short kw_swap = 0;
-    static unsigned short kw_sync = 0;
+    unsigned short want = 0;
     unsigned char *rest;
 
     skipspace(p);
     if (bc_is_cmd_token(p)) {
-        uint16_t want = 0;
         if (strcmp(kw, "SWAP") == 0) {
-            if (!kw_swap) kw_swap = (unsigned short)GetCommandValue((unsigned char *)"Swap");
-            want = kw_swap;
+            want = (unsigned short)GetCommandValue((unsigned char *)"Swap");
         } else if (strcmp(kw, "SYNC") == 0) {
-            if (!kw_sync) kw_sync = (unsigned short)GetCommandValue((unsigned char *)"Sync");
-            want = kw_sync;
+            want = (unsigned short)GetCommandValue((unsigned char *)"Sync");
+        } else if (strcmp(kw, "CREATE") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Create");
+        } else if (strcmp(kw, "CLOSE") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Close");
+        } else if (strcmp(kw, "FPS") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"FPS");
         }
         if (want && bc_decode_cmd(p) == want) {
             p += 2;
@@ -1259,12 +1284,497 @@ static int cmdline_matches_exact(unsigned char *p, const char *kw) {
     return *rest == 0;
 }
 
+static unsigned char *cmdline_match_prefix(unsigned char *p, const char *kw) {
+    unsigned short want = 0;
+    unsigned char *rest;
+
+    skipspace(p);
+    if (bc_is_cmd_token(p)) {
+        if (strcmp(kw, "SWAP") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Swap");
+        } else if (strcmp(kw, "SYNC") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Sync");
+        } else if (strcmp(kw, "CREATE") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Create");
+        } else if (strcmp(kw, "CLOSE") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"Close");
+        } else if (strcmp(kw, "FPS") == 0) {
+            want = (unsigned short)GetCommandValue((unsigned char *)"FPS");
+        }
+        if (want && bc_decode_cmd(p) == want) {
+            p += 2;
+            skipspace(p);
+            return p;
+        }
+    }
+
+    rest = checkstring(p, (unsigned char *)kw);
+    if (!rest) return NULL;
+    skipspace(rest);
+    return rest;
+}
+
+typedef struct {
+    unsigned char *start;
+    unsigned char *end;
+    uint8_t kind;
+    uint16_t slot;
+    uint8_t type;
+    uint8_t present;
+} BCBoxArgSpec;
+
+static unsigned char *skipspace_to(unsigned char *p, unsigned char *end) {
+    while (p < end && *p == ' ') p++;
+    return p;
+}
+
+static unsigned char *trim_end_space(unsigned char *start, unsigned char *end) {
+    while (end > start && end[-1] == ' ') end--;
+    return end;
+}
+
+static int parse_box_args(unsigned char *p, BCBoxArgSpec *args, int max_fields,
+                          int *field_count_out, unsigned char **end_out) {
+    int field = 0;
+
+    while (1) {
+        unsigned char *start = p;
+        unsigned char *end = p;
+        int depth = 0;
+        int in_string = 0;
+
+        while (*end) {
+            if (*end == '"') {
+                in_string = !in_string;
+            } else if (!in_string) {
+                if (*end == '(') depth++;
+                else if (*end == ')' && depth > 0) depth--;
+                else if (*end == ',' && depth == 0) break;
+            }
+            end++;
+        }
+
+        if (field >= max_fields) return -1;
+
+        args[field].start = skipspace_to(start, end);
+        args[field].end = trim_end_space(args[field].start, end);
+        args[field].present = (args[field].start < args[field].end);
+        args[field].kind = BC_BOX_ARG_EMPTY;
+        args[field].slot = 0;
+        args[field].type = 0;
+        field++;
+
+        if (*end != ',') {
+            *field_count_out = field;
+            *end_out = end;
+            return 0;
+        }
+        p = end + 1;
+    }
+}
+
+static int try_parse_box_array_ref(BCCompiler *cs, BCBoxArgSpec *arg, const char *cmd_name) {
+    unsigned char tmp[STRINGSIZE];
+    unsigned char *p = tmp;
+    unsigned char *end;
+    uint8_t type_hint = 0;
+    int is_array_hint = 0;
+    int seg_len;
+    int name_len;
+    int is_local = 0;
+    int loc;
+    uint16_t slot;
+    uint8_t type = 0;
+    int symbol_is_array = 0;
+
+    if (!arg->present || !isnamestart(*arg->start)) return 0;
+
+    seg_len = (int)(arg->end - arg->start);
+    if (seg_len <= 0 || seg_len >= STRINGSIZE) return 0;
+    memcpy(tmp, arg->start, seg_len);
+    tmp[seg_len] = 0;
+    end = tmp + seg_len;
+    if (!isnamestart(*p)) return 0;
+
+    name_len = bc_parse_varname(p, &type_hint, &is_array_hint);
+    if (name_len == 0) return 0;
+    p += name_len;
+    p = skipspace_to(p, end);
+    if (p < end) {
+        if (*p != '(') return 0;
+        p++;
+        p = skipspace_to(p, end);
+        if (p >= end || *p != ')') return 0;
+        p++;
+        p = skipspace_to(p, end);
+        if (p != end) return 0;
+    }
+
+    if (cs->current_subfun >= 0) {
+        loc = bc_find_local(cs, (const char *)tmp, name_len);
+        if (loc >= 0) {
+            is_local = 1;
+            slot = (uint16_t)loc;
+            type = cs->locals[loc].type;
+            symbol_is_array = cs->locals[loc].is_array;
+        }
+    }
+
+    if (!is_local) {
+        slot = bc_find_slot(cs, (const char *)tmp, name_len);
+        if (slot == 0xFFFF) {
+            if (type_hint == 0) return 0;
+            slot = bc_add_slot(cs, (const char *)tmp, name_len, type_hint, 1);
+            if (slot == 0xFFFF) return -1;
+        }
+        type = cs->slots[slot].type;
+        symbol_is_array = cs->slots[slot].is_array;
+    }
+
+    if (!symbol_is_array) return 0;
+    if ((type & (T_INT | T_NBR)) == 0 || (type & T_STR)) {
+        bc_set_error(cs, "%s requires numeric array arguments", cmd_name);
+        return -1;
+    }
+
+    arg->slot = slot;
+    arg->type = type;
+    if (is_local)
+        arg->kind = (type == T_INT) ? BC_BOX_ARG_LOCAL_ARR_I : BC_BOX_ARG_LOCAL_ARR_F;
+    else
+        arg->kind = (type == T_INT) ? BC_BOX_ARG_GLOBAL_ARR_I : BC_BOX_ARG_GLOBAL_ARR_F;
+    return 1;
+}
+
+static int compile_box_native(BCCompiler *cs, unsigned char **pp) {
+    BCBoxArgSpec args[BC_BOX_ARG_COUNT];
+    unsigned char *p = *pp;
+    unsigned char *end = p;
+    int field_count = 0;
+    int i;
+
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++)
+        args[i].kind = BC_BOX_ARG_EMPTY;
+
+    if (parse_box_args(p, args, BC_BOX_ARG_COUNT, &field_count, &end) != 0) return 0;
+    if (field_count < 4 || field_count > BC_BOX_ARG_COUNT) return 0;
+
+    for (i = 0; i < field_count; i++) {
+        int rc = try_parse_box_array_ref(cs, &args[i], "BOX");
+        if (rc < 0) return 1;
+        if (rc > 0) continue;
+        if (!args[i].present) continue;
+        p = args[i].start;
+        args[i].type = bc_compile_expression(cs, &p);
+        p = skipspace_to(p, args[i].end);
+        if (p != args[i].end) {
+            bc_set_error(cs, "Invalid BOX argument");
+            return 1;
+        }
+        if ((args[i].type & (T_INT | T_NBR)) == 0 || (args[i].type & T_STR)) {
+            bc_set_error(cs, "BOX requires numeric arguments");
+            return 1;
+        }
+        args[i].kind = BC_BOX_ARG_STACK;
+    }
+
+    bc_emit_byte(cs, OP_BOX);
+    bc_emit_byte(cs, (uint8_t)field_count);
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
+        bc_emit_byte(cs, args[i].kind);
+        if (args[i].kind == BC_BOX_ARG_GLOBAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_GLOBAL_ARR_F ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_F) {
+            bc_emit_u16(cs, args[i].slot);
+        }
+    }
+
+    while (*end) end++;
+    *pp = end;
+    return 1;
+}
+
+static int compile_circle_native(BCCompiler *cs, unsigned char **pp) {
+    BCBoxArgSpec args[BC_BOX_ARG_COUNT];
+    unsigned char *p = *pp;
+    unsigned char *end = p;
+    int field_count = 0;
+    int i;
+
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++)
+        args[i].kind = BC_BOX_ARG_EMPTY;
+
+    if (parse_box_args(p, args, BC_BOX_ARG_COUNT, &field_count, &end) != 0) return 0;
+    if (field_count < 3 || field_count > BC_BOX_ARG_COUNT) return 0;
+
+    for (i = 0; i < field_count; i++) {
+        int rc = try_parse_box_array_ref(cs, &args[i], "CIRCLE");
+        if (rc < 0) return 1;
+        if (rc > 0) continue;
+        if (!args[i].present) continue;
+        p = args[i].start;
+        args[i].type = bc_compile_expression(cs, &p);
+        p = skipspace_to(p, args[i].end);
+        if (p != args[i].end) {
+            bc_set_error(cs, "Invalid CIRCLE argument");
+            return 1;
+        }
+        if ((args[i].type & (T_INT | T_NBR)) == 0 || (args[i].type & T_STR)) {
+            bc_set_error(cs, "CIRCLE requires numeric arguments");
+            return 1;
+        }
+        args[i].kind = BC_BOX_ARG_STACK;
+    }
+
+    bc_emit_byte(cs, OP_CIRCLE);
+    bc_emit_byte(cs, (uint8_t)field_count);
+    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
+        bc_emit_byte(cs, args[i].kind);
+        if (args[i].kind == BC_BOX_ARG_GLOBAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_GLOBAL_ARR_F ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_F) {
+            bc_emit_u16(cs, args[i].slot);
+        }
+    }
+
+    while (*end) end++;
+    *pp = end;
+    return 1;
+}
+
+static int compile_line_native(BCCompiler *cs, unsigned char **pp) {
+    BCBoxArgSpec args[BC_LINE_ARG_COUNT];
+    unsigned char *p = *pp;
+    unsigned char *end = p;
+    int field_count = 0;
+    int i;
+
+    if (checkstring(p, (unsigned char *)"AA") != NULL) return 0;
+    if (checkstring(p, (unsigned char *)"GRAPH") != NULL) return 0;
+
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < BC_LINE_ARG_COUNT; i++)
+        args[i].kind = BC_BOX_ARG_EMPTY;
+
+    if (parse_box_args(p, args, BC_LINE_ARG_COUNT, &field_count, &end) != 0) return 0;
+    if (field_count < 2 || field_count > BC_LINE_ARG_COUNT) return 0;
+
+    for (i = 0; i < field_count; i++) {
+        int rc = try_parse_box_array_ref(cs, &args[i], "LINE");
+        if (rc < 0) return 1;
+        if (rc > 0) continue;
+        if (!args[i].present) continue;
+        p = args[i].start;
+        args[i].type = bc_compile_expression(cs, &p);
+        p = skipspace_to(p, args[i].end);
+        if (p != args[i].end) {
+            bc_set_error(cs, "Invalid LINE argument");
+            return 1;
+        }
+        if ((args[i].type & (T_INT | T_NBR)) == 0 || (args[i].type & T_STR)) {
+            bc_set_error(cs, "LINE requires numeric arguments");
+            return 1;
+        }
+        args[i].kind = BC_BOX_ARG_STACK;
+    }
+
+    bc_emit_byte(cs, OP_DRAW_LINE);
+    bc_emit_byte(cs, (uint8_t)field_count);
+    for (i = 0; i < BC_LINE_ARG_COUNT; i++) {
+        bc_emit_byte(cs, args[i].kind);
+        if (args[i].kind == BC_BOX_ARG_GLOBAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_GLOBAL_ARR_F ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_F) {
+            bc_emit_u16(cs, args[i].slot);
+        }
+    }
+
+    while (*end) end++;
+    *pp = end;
+    return 1;
+}
+
+static int try_compile_text_justification_literal(BCCompiler *cs, BCBoxArgSpec *arg) {
+    unsigned char buf[STRINGSIZE];
+    int len, i;
+    uint16_t idx;
+
+    if (!arg->present) return 0;
+    len = (int)(arg->end - arg->start);
+    if (len <= 0 || len >= STRINGSIZE) return 0;
+    for (i = 0; i < len; i++) {
+        unsigned char ch = arg->start[i];
+        if (!(isalpha((unsigned char)ch) || ch == ' ')) return 0;
+        buf[i] = ch;
+    }
+    buf[len] = 0;
+    idx = bc_add_constant_string(cs, buf, len);
+    if (idx == 0xFFFF) return -1;
+    bc_emit_byte(cs, OP_PUSH_STR);
+    bc_emit_u16(cs, idx);
+    arg->kind = BC_BOX_ARG_STACK;
+    arg->type = T_STR;
+    return 1;
+}
+
+static int compile_text_native(BCCompiler *cs, unsigned char **pp) {
+    BCBoxArgSpec args[BC_TEXT_ARG_COUNT];
+    unsigned char *p = *pp;
+    unsigned char *end = p;
+    int field_count = 0;
+    int i;
+
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < BC_TEXT_ARG_COUNT; i++)
+        args[i].kind = BC_BOX_ARG_EMPTY;
+
+    if (parse_box_args(p, args, BC_TEXT_ARG_COUNT, &field_count, &end) != 0) return 0;
+    if (field_count < 3 || field_count > BC_TEXT_ARG_COUNT) return 0;
+
+    for (i = 0; i < field_count; i++) {
+        if (!args[i].present) continue;
+        if (i == 3) {
+            int rc = try_compile_text_justification_literal(cs, &args[i]);
+            if (rc < 0) return 1;
+            if (rc > 0) continue;
+        }
+        p = args[i].start;
+        args[i].type = bc_compile_expression(cs, &p);
+        p = skipspace_to(p, args[i].end);
+        if (p != args[i].end) {
+            bc_set_error(cs, "Invalid TEXT argument");
+            return 1;
+        }
+        if ((i == 0 || i == 1 || i >= 4) &&
+            (((args[i].type & (T_INT | T_NBR)) == 0) || (args[i].type & T_STR))) {
+            bc_set_error(cs, "TEXT requires numeric arguments");
+            return 1;
+        }
+        if ((i == 2 || i == 3) && args[i].type != T_STR) {
+            bc_set_error(cs, "TEXT requires string arguments");
+            return 1;
+        }
+        args[i].kind = BC_BOX_ARG_STACK;
+    }
+
+    bc_emit_byte(cs, OP_TEXT);
+    bc_emit_byte(cs, (uint8_t)field_count);
+    for (i = 0; i < BC_TEXT_ARG_COUNT; i++)
+        bc_emit_byte(cs, args[i].kind);
+
+    while (*end) end++;
+    *pp = end;
+    return 1;
+}
+
+static int compile_cls_native(BCCompiler *cs, unsigned char **pp) {
+    unsigned char *p = *pp;
+    int has_arg = 0;
+    uint8_t type;
+
+    skipspace(p);
+    if (*p && *p != '\'') {
+        has_arg = 1;
+        type = bc_compile_expression(cs, &p);
+        skipspace(p);
+        if (*p != 0) {
+            bc_set_error(cs, "Invalid CLS argument");
+            return 1;
+        }
+        if (((type & (T_INT | T_NBR)) == 0) || (type & T_STR)) {
+            bc_set_error(cs, "CLS requires numeric arguments");
+            return 1;
+        }
+    }
+
+    bc_emit_byte(cs, OP_CLS);
+    bc_emit_byte(cs, (uint8_t)has_arg);
+    while (*p) p++;
+    *pp = p;
+    return 1;
+}
+
+static int compile_pixel_native(BCCompiler *cs, unsigned char **pp) {
+    BCBoxArgSpec args[BC_PIXEL_ARG_COUNT];
+    unsigned char *p = *pp;
+    unsigned char *end = p;
+    int field_count = 0;
+    int i;
+
+    memset(args, 0, sizeof(args));
+    for (i = 0; i < BC_PIXEL_ARG_COUNT; i++)
+        args[i].kind = BC_BOX_ARG_EMPTY;
+
+    if (parse_box_args(p, args, BC_PIXEL_ARG_COUNT, &field_count, &end) != 0) return 0;
+    if (field_count < 2 || field_count > BC_PIXEL_ARG_COUNT) return 0;
+
+    for (i = 0; i < field_count; i++) {
+        int rc = try_parse_box_array_ref(cs, &args[i], "PIXEL");
+        if (rc < 0) return 1;
+        if (rc > 0) continue;
+        if (!args[i].present) continue;
+        p = args[i].start;
+        args[i].type = bc_compile_expression(cs, &p);
+        p = skipspace_to(p, args[i].end);
+        if (p != args[i].end) {
+            bc_set_error(cs, "Invalid PIXEL argument");
+            return 1;
+        }
+        if ((args[i].type & (T_INT | T_NBR)) == 0 || (args[i].type & T_STR)) {
+            bc_set_error(cs, "PIXEL requires numeric arguments");
+            return 1;
+        }
+        args[i].kind = BC_BOX_ARG_STACK;
+    }
+
+    bc_emit_byte(cs, OP_PIXEL);
+    bc_emit_byte(cs, (uint8_t)field_count);
+    for (i = 0; i < BC_PIXEL_ARG_COUNT; i++) {
+        bc_emit_byte(cs, args[i].kind);
+        if (args[i].kind == BC_BOX_ARG_GLOBAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_GLOBAL_ARR_F ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_I ||
+            args[i].kind == BC_BOX_ARG_LOCAL_ARR_F) {
+            bc_emit_u16(cs, args[i].slot);
+        }
+    }
+
+    while (*end) end++;
+    *pp = end;
+    return 1;
+}
+
 static int compile_fastgfx_native(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp;
-    if (cmdline_matches_exact(p, "SWAP")) {
+    unsigned char *rest;
+    uint8_t type;
+
+    if (cmdline_matches_exact(p, "CREATE")) {
+        bc_emit_byte(cs, OP_FASTGFX_CREATE);
+    } else if (cmdline_matches_exact(p, "CLOSE")) {
+        bc_emit_byte(cs, OP_FASTGFX_CLOSE);
+    } else if (cmdline_matches_exact(p, "SWAP")) {
         bc_emit_byte(cs, OP_FASTGFX_SWAP);
     } else if (cmdline_matches_exact(p, "SYNC")) {
         bc_emit_byte(cs, OP_FASTGFX_SYNC);
+    } else if ((rest = cmdline_match_prefix(p, "FPS")) != NULL) {
+        if (*rest == 0) return 0;
+        type = bc_compile_expression(cs, &rest);
+        skipspace(rest);
+        if (*rest != 0) {
+            bc_set_error(cs, "Invalid FASTGFX FPS argument");
+            return 1;
+        }
+        if ((type & (T_INT | T_NBR)) == 0 || (type & T_STR)) {
+            bc_set_error(cs, "FASTGFX FPS requires a numeric argument");
+            return 1;
+        }
+        bc_emit_byte(cs, OP_FASTGFX_FPS);
     } else {
         return 0;
     }
@@ -1331,10 +1841,18 @@ void bc_compile_assignment(BCCompiler *cs, unsigned char **pp) {
         if ((vtype & T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
         else if ((vtype & T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
         uint8_t op;
-        switch (vtype & (T_INT | T_NBR | T_STR)) {
-            case T_INT: op = OP_STORE_ARR_I; break;
-            case T_STR: op = OP_STORE_ARR_S; break;
-            default:    op = OP_STORE_ARR_F; break;
+        if (is_local) {
+            switch (vtype & (T_INT | T_NBR | T_STR)) {
+                case T_INT: op = OP_STORE_LOCAL_ARR_I; break;
+                case T_STR: op = OP_STORE_LOCAL_ARR_S; break;
+                default:    op = OP_STORE_LOCAL_ARR_F; break;
+            }
+        } else {
+            switch (vtype & (T_INT | T_NBR | T_STR)) {
+                case T_INT: op = OP_STORE_ARR_I; break;
+                case T_STR: op = OP_STORE_ARR_S; break;
+                default:    op = OP_STORE_ARR_F; break;
+            }
         }
         bc_emit_byte(cs, op);
         bc_emit_u16(cs, slot);
@@ -1393,8 +1911,7 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
 
     /* Comments, CSUB, IRET, OPTION — skip (compile-time directives) */
     {
-        static unsigned short cmdOPTION = 0;
-        if (!cmdOPTION) cmdOPTION = (unsigned short)GetCommandValue((unsigned char *)"Option");
+        unsigned short cmdOPTION = (unsigned short)GetCommandValue((unsigned char *)"Option");
         if (cmd_token == cmdComment || cmd_token == cmdEndComment ||
             cmd_token == cmdCSUB || cmd_token == cmdIRET ||
             cmd_token == cmdOPTION) {
@@ -1405,35 +1922,33 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
 
     /* Commands not available as pre-cached globals: use static cache */
     {
-        static unsigned short cGOTO, cGOSUB, cRETURN, cPRINT;
-        static unsigned short cDIM, cEND, cEXIT, cEXITFOR, cEXITDO, cEXITFUN, cEXITSUB, cLET;
-        static unsigned short cDATA, cREAD, cRESTORE;
-        static unsigned short cINC, cCONST, cRANDOMIZE, cERROR, cCLEAR, cFASTGFX;
-        static int cached = 0;
-        if (!cached) {
-            cGOTO    = (unsigned short)GetCommandValue((unsigned char *)"GoTo");
-            cGOSUB   = (unsigned short)GetCommandValue((unsigned char *)"GoSub");
-            cRETURN  = (unsigned short)GetCommandValue((unsigned char *)"Return");
-            cPRINT   = (unsigned short)GetCommandValue((unsigned char *)"Print");
-            cDIM     = (unsigned short)GetCommandValue((unsigned char *)"Dim");
-            cEND     = (unsigned short)GetCommandValue((unsigned char *)"End");
-            cEXIT    = (unsigned short)GetCommandValue((unsigned char *)"Exit");
-            cEXITFOR = (unsigned short)GetCommandValue((unsigned char *)"Exit For");
-            cEXITDO  = (unsigned short)GetCommandValue((unsigned char *)"Exit Do");
-            cEXITFUN = (unsigned short)GetCommandValue((unsigned char *)"Exit Function");
-            cEXITSUB = (unsigned short)GetCommandValue((unsigned char *)"Exit Sub");
-            cLET     = (unsigned short)GetCommandValue((unsigned char *)"Let");
-            cDATA    = (unsigned short)GetCommandValue((unsigned char *)"Data");
-            cREAD    = (unsigned short)GetCommandValue((unsigned char *)"Read");
-            cRESTORE = (unsigned short)GetCommandValue((unsigned char *)"Restore");
-            cINC       = (unsigned short)GetCommandValue((unsigned char *)"Inc");
-            cCONST     = (unsigned short)GetCommandValue((unsigned char *)"Const");
-            cRANDOMIZE = (unsigned short)GetCommandValue((unsigned char *)"Randomize");
-            cERROR     = (unsigned short)GetCommandValue((unsigned char *)"Error");
-            cCLEAR     = (unsigned short)GetCommandValue((unsigned char *)"Clear");
-            cFASTGFX   = (unsigned short)GetCommandValue((unsigned char *)"FASTGFX");
-            cached   = 1;
-        }
+        unsigned short cGOTO    = (unsigned short)GetCommandValue((unsigned char *)"GoTo");
+        unsigned short cGOSUB   = (unsigned short)GetCommandValue((unsigned char *)"GoSub");
+        unsigned short cRETURN  = (unsigned short)GetCommandValue((unsigned char *)"Return");
+        unsigned short cPRINT   = (unsigned short)GetCommandValue((unsigned char *)"Print");
+        unsigned short cDIM     = (unsigned short)GetCommandValue((unsigned char *)"Dim");
+        unsigned short cEND     = (unsigned short)GetCommandValue((unsigned char *)"End");
+        unsigned short cEXIT    = (unsigned short)GetCommandValue((unsigned char *)"Exit");
+        unsigned short cEXITFOR = (unsigned short)GetCommandValue((unsigned char *)"Exit For");
+        unsigned short cEXITDO  = (unsigned short)GetCommandValue((unsigned char *)"Exit Do");
+        unsigned short cEXITFUN = (unsigned short)GetCommandValue((unsigned char *)"Exit Function");
+        unsigned short cEXITSUB = (unsigned short)GetCommandValue((unsigned char *)"Exit Sub");
+        unsigned short cLET     = (unsigned short)GetCommandValue((unsigned char *)"Let");
+        unsigned short cDATA    = (unsigned short)GetCommandValue((unsigned char *)"Data");
+        unsigned short cREAD    = (unsigned short)GetCommandValue((unsigned char *)"Read");
+        unsigned short cRESTORE = (unsigned short)GetCommandValue((unsigned char *)"Restore");
+        unsigned short cINC       = (unsigned short)GetCommandValue((unsigned char *)"Inc");
+        unsigned short cCONST     = (unsigned short)GetCommandValue((unsigned char *)"Const");
+        unsigned short cRANDOMIZE = (unsigned short)GetCommandValue((unsigned char *)"Randomize");
+        unsigned short cERROR     = (unsigned short)GetCommandValue((unsigned char *)"Error");
+        unsigned short cCLEAR     = (unsigned short)GetCommandValue((unsigned char *)"Clear");
+        unsigned short cCLS       = (unsigned short)GetCommandValue((unsigned char *)"CLS");
+        unsigned short cFASTGFX   = (unsigned short)GetCommandValue((unsigned char *)"FASTGFX");
+        unsigned short cBOX       = (unsigned short)GetCommandValue((unsigned char *)"Box");
+        unsigned short cCIRCLE    = (unsigned short)GetCommandValue((unsigned char *)"Circle");
+        unsigned short cLINE      = (unsigned short)GetCommandValue((unsigned char *)"Line");
+        unsigned short cTEXT      = (unsigned short)GetCommandValue((unsigned char *)"Text");
+        unsigned short cPIXEL     = (unsigned short)GetCommandValue((unsigned char *)"Pixel");
         if (cmd_token == cGOTO)    { compile_goto(cs, pp);   return; }
         if (cmd_token == cGOSUB)   { compile_gosub(cs, pp);  return; }
         if (cmd_token == cRETURN)  { bc_emit_byte(cs, OP_RETURN); return; }
@@ -1454,7 +1969,13 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         if (cmd_token == cRANDOMIZE) { compile_randomize(cs, pp); return; }
         if (cmd_token == cERROR)     { compile_error(cs, pp);     return; }
         if (cmd_token == cCLEAR)     { compile_clear(cs, pp);     return; }
+        if (cmd_token == cCLS && compile_cls_native(cs, pp)) { return; }
         if (cmd_token == cFASTGFX && compile_fastgfx_native(cs, pp)) { return; }
+        if (cmd_token == cBOX && compile_box_native(cs, pp)) { return; }
+        if (cmd_token == cCIRCLE && compile_circle_native(cs, pp)) { return; }
+        if (cmd_token == cLINE && compile_line_native(cs, pp)) { return; }
+        if (cmd_token == cTEXT && compile_text_native(cs, pp)) { return; }
+        if (cmd_token == cPIXEL && compile_pixel_native(cs, pp)) { return; }
     }
 
     /* Default: bridge to built-in command */
