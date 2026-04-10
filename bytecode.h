@@ -461,6 +461,7 @@ typedef struct {
     uint8_t    *return_pc;
     int         frame_base;     /* index into locals[] */
     int         locals_top;     /* caller's live local extent */
+    int         for_sp;         /* caller's FOR stack depth */
     int         saved_sp;
     uint16_t    nlocals;        /* number of locals in this frame */
     uint16_t    subfun_idx;     /* active SUB/FUNCTION metadata */

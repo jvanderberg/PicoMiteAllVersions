@@ -1,0 +1,17 @@
+OPTION EXPLICIT
+
+CONST COL_BG% = RGB(BLACK)
+
+FUNCTION GetBlockColor(blockType%) AS INTEGER
+  BOX 0, 0, 4, 4, 0, , COL_BG%
+  SELECT CASE blockType%
+    CASE 30
+      GetBlockColor = RGB(RED)
+    CASE ELSE
+      GetBlockColor = RGB(CYAN)
+  END SELECT
+END FUNCTION
+
+FASTGFX CREATE
+CLS COL_BG%
+PRINT GetBlockColor(30)

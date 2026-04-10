@@ -49,8 +49,9 @@ extern int  check_interrupt(void);
  * Helper: get next rotating string temp buffer
  * ====================================================================== */
 static uint8_t *vm_get_str_temp(BCVMState *vm) {
-    uint8_t *p = vm->str_temp[vm->str_temp_idx];
-    vm->str_temp_idx = (vm->str_temp_idx + 1) & 3;
+    int idx = vm->str_temp_idx & 3;
+    uint8_t *p = vm->str_temp[idx];
+    vm->str_temp_idx = (idx + 1) & 3;
     return p;
 }
 
@@ -135,6 +136,14 @@ int bc_vm_alloc(BCVMState *vm) {
 }
 
 void bc_vm_free(BCVMState *vm) {
+    if (vm->globals && vm->global_types) {
+        for (int i = 0; i < BC_MAX_SLOTS; i++) {
+            if (vm->global_types[i] == T_STR && vm->globals[i].s) {
+                BC_FREE(vm->globals[i].s);
+                vm->globals[i].s = NULL;
+            }
+        }
+    }
     if (vm->globals)      BC_FREE(vm->globals);
     if (vm->global_types) BC_FREE(vm->global_types);
     if (vm->arrays)       BC_FREE(vm->arrays);
@@ -222,6 +231,20 @@ void bc_vm_error(BCVMState *vm, const char *msg, ...) {
     char errbuf[320];
     snprintf(errbuf, sizeof(errbuf), "[FRUN line %d] %s", (int)vm->current_line, buf);
     error(errbuf);
+}
+
+static inline BCValue bc_vm_coerce_arg_value(BCValue value, uint8_t from_type, uint8_t to_type) {
+    BCValue out = value;
+
+    if (to_type == T_INT) {
+        if (from_type == T_NBR) out.i = (int64_t)value.f;
+        else if (from_type == T_STR) out.i = 0;
+    } else if (to_type == T_NBR) {
+        if (from_type == T_INT) out.f = (MMFLOAT)value.i;
+        else if (from_type == T_STR) out.f = 0;
+    }
+
+    return out;
 }
 
 /* ======================================================================
@@ -540,7 +563,8 @@ op_store_s: {
     uint8_t *src = POP_S();
     /* Allocate persistent storage for this global string if needed */
     if (!vm->globals[slot].s) {
-        vm->globals[slot].s = GetTempMemory(STRINGSIZE);
+        vm->globals[slot].s = BC_ALLOC(STRINGSIZE);
+        if (!vm->globals[slot].s) bc_vm_error(vm, "Out of memory for string");
     }
     Mstrcpy(vm->globals[slot].s, src);
     DISPATCH();
@@ -1168,6 +1192,7 @@ op_call_sub: {
     cf->return_pc  = vm->pc;
     cf->frame_base = vm->frame_base;
     cf->locals_top = vm->locals_top;
+    cf->for_sp     = vm->fsp;
     cf->saved_sp   = vm->sp - nargs;  /* SP after popping args */
     cf->nlocals    = sf->nlocals;
     cf->subfun_idx = idx;
@@ -1182,10 +1207,13 @@ op_call_sub: {
     for (int i = nargs - 1; i >= 0; i--) {
         if (new_base + i >= VM_MAX_LOCALS)
             bc_vm_error(vm, "Local variable overflow");
-        vm->locals[new_base + i] = vm->stack[vm->sp];
-        vm->local_types[new_base + i] = vm->stack_types[vm->sp];
+        uint8_t arg_type = vm->stack_types[vm->sp];
+        uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
+        if (param_type == 0) param_type = arg_type;
+        vm->locals[new_base + i] = bc_vm_coerce_arg_value(vm->stack[vm->sp], arg_type, param_type);
+        vm->local_types[new_base + i] = param_type;
         /* Deep-copy strings so they survive temp buffer rotation */
-        if (vm->stack_types[vm->sp] == T_STR && vm->stack[vm->sp].s) {
+        if (param_type == T_STR && vm->stack[vm->sp].s) {
             uint8_t *copy = GetTempMemory(STRINGSIZE);
             Mstrcpy(copy, vm->stack[vm->sp].s);
             vm->locals[new_base + i].s = copy;
@@ -1218,6 +1246,7 @@ op_call_fun: {
     cf->return_pc  = vm->pc;
     cf->frame_base = vm->frame_base;
     cf->locals_top = vm->locals_top;
+    cf->for_sp     = vm->fsp;
     cf->saved_sp   = vm->sp - nargs;  /* Where SP should be after popping args (return val goes here+1) */
     cf->nlocals    = sf->nlocals;
     cf->subfun_idx = idx;
@@ -1231,10 +1260,13 @@ op_call_fun: {
         int slot = new_base + 1 + i;
         if (slot >= VM_MAX_LOCALS)
             bc_vm_error(vm, "Local variable overflow");
-        vm->locals[slot] = vm->stack[vm->sp];
-        vm->local_types[slot] = vm->stack_types[vm->sp];
+        uint8_t arg_type = vm->stack_types[vm->sp];
+        uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
+        if (param_type == 0) param_type = arg_type;
+        vm->locals[slot] = bc_vm_coerce_arg_value(vm->stack[vm->sp], arg_type, param_type);
+        vm->local_types[slot] = param_type;
         /* Deep-copy strings so they survive temp buffer rotation */
-        if (vm->stack_types[vm->sp] == T_STR && vm->stack[vm->sp].s) {
+        if (param_type == T_STR && vm->stack[vm->sp].s) {
             uint8_t *copy = GetTempMemory(STRINGSIZE);
             Mstrcpy(copy, vm->stack[vm->sp].s);
             vm->locals[slot].s = copy;
@@ -1303,6 +1335,7 @@ op_ret_sub: {
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     vm->frame_base = cf->frame_base;
     vm->locals_top = cf->locals_top;
+    vm->fsp = cf->for_sp;
     vm->sp = cf->saved_sp;
     vm->pc = cf->return_pc;
     DISPATCH();
@@ -1319,6 +1352,7 @@ op_ret_fun: {
     BCCallFrame *cf = &vm->call_stack[vm->csp];
     vm->frame_base = cf->frame_base;
     vm->locals_top = cf->locals_top;
+    vm->fsp = cf->for_sp;
     vm->sp = cf->saved_sp;
     vm->pc = cf->return_pc;
 

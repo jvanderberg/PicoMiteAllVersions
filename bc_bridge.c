@@ -115,9 +115,10 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
             v->val.f = vm->globals[i].f;
         } else if (slot->type == T_STR) {
             if (vm->globals[i].s) {
-                if (!v->val.s) {
-                    v->val.s = GetTempMemory(STRINGSIZE);
-                }
+                /* Bridge-call temp memory is cleared after every command/function,
+                 * so cached vartbl string pointers become stale. Refresh them
+                 * on every sync instead of reusing the old pointer. */
+                v->val.s = GetTempMemory(STRINGSIZE);
                 Mstrcpy(v->val.s, vm->globals[i].s);
             }
         }
@@ -214,12 +215,17 @@ static int sync_vm_locals_to_mmbasic(BCVMState *vm, int *local_map) {
         memcpy(namebuf, meta->name, nlen);
         namebuf[nlen] = 0;
 
+        int action = V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK | meta->type;
+        if (sf->return_type != 0 && i == 0) {
+            action |= V_FUNCT;
+        }
+
         if (meta->is_array) {
             BCArray *arr = &vm->local_arrays[slot];
             namebuf[nlen] = '(';
             namebuf[nlen + 1] = ')';
             namebuf[nlen + 2] = 0;
-            findvar(namebuf, V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK | meta->type);
+            findvar(namebuf, action);
             local_map[slot] = g_VarIndex;
 
             if (arr->data) {
@@ -234,7 +240,7 @@ static int sync_vm_locals_to_mmbasic(BCVMState *vm, int *local_map) {
             continue;
         }
 
-        findvar(namebuf, V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK | meta->type);
+        findvar(namebuf, action);
         local_map[slot] = g_VarIndex;
         struct s_vartbl *v = &g_vartbl[g_VarIndex];
         if (meta->type == T_INT) {
@@ -242,6 +248,7 @@ static int sync_vm_locals_to_mmbasic(BCVMState *vm, int *local_map) {
         } else if (meta->type == T_NBR) {
             v->val.f = vm->locals[slot].f;
         } else if (meta->type == T_STR && vm->locals[slot].s) {
+            v->val.s = GetTempMemory(STRINGSIZE);
             Mstrcpy(v->val.s, vm->locals[slot].s);
         }
     }
@@ -303,11 +310,12 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
             vm->globals[i].f = v->val.f;
         } else if (slot->type == T_STR) {
             if (v->val.s) {
-                /* Copy string back to VM's temp storage */
-                uint8_t *temp = &vm->str_temp[vm->str_temp_idx % 4][0];
-                vm->str_temp_idx++;
-                Mstrcpy(temp, v->val.s);
-                vm->globals[i].s = temp;
+                if (!vm->globals[i].s) {
+                    vm->globals[i].s = BC_ALLOC(STRINGSIZE);
+                }
+                if (vm->globals[i].s) {
+                    Mstrcpy(vm->globals[i].s, v->val.s);
+                }
             }
         }
     }
