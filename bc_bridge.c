@@ -87,8 +87,11 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
         /* Skip slots with invalid names (e.g. tokenized keywords) */
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
 
-        /* Skip actual arrays (have allocated data) — they're handled separately below */
-        if (vm->arrays[i].data) continue;
+        /* Skip arrays — they're handled in the array sync loop below.
+         * Check both allocated data (already DIMmed) and the is_array flag
+         * (not yet DIMmed but will be).  Without this, findvar would create
+         * a scalar entry that later conflicts with the array dimensions. */
+        if (vm->arrays[i].data || slot->is_array) continue;
 
         /* Build the name string findvar() expects (already includes suffix) */
         unsigned char namebuf[MAXVARLEN + 2];
@@ -127,26 +130,50 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
         if (!slot->is_array) continue;
         if (!vm->arrays[i].data) continue;
 
-        unsigned char namebuf[MAXVARLEN + 2];
+        /* Resolve the MMBasic vartbl entry for this array.
+         *
+         * findvar("name%", V_FIND) fails if the variable already exists
+         * with dimensions (e.g. from a prior RUN) because dnbr=0 != i.
+         * findvar("name%()", V_FIND|V_EMPTY_OK) fails if the variable is
+         * new because dnbr=-1 and i=0.
+         *
+         * Strategy: try V_EMPTY_OK first (handles existing arrays).
+         * If that longjmps with an error, fall back to plain V_FIND
+         * (handles new variables), then set dims manually. */
+        unsigned char namebuf[MAXVARLEN + 4];
         int nlen = strlen(slot->name);
         memcpy(namebuf, slot->name, nlen);
         namebuf[nlen] = 0;
 
-        /* For arrays, we need to DIM them in MMBasic's table too */
+        BCArray *arr = &vm->arrays[i];
+
         if (!slot_map_initialized || slot_to_vartbl[i] < 0) {
-            /* Create the variable first (non-array, findvar handles it) */
-            findvar(namebuf, V_FIND);
-            slot_to_vartbl[i] = g_VarIndex;
+            /* Try with empty parens first — works for existing arrays.
+             * V_NOFIND_NULL avoids emitting a recoverable "... is not declared"
+             * error when the variable is new and we need to create the bridge
+             * entry ourselves. */
+            namebuf[nlen] = '(';
+            namebuf[nlen + 1] = ')';
+            namebuf[nlen + 2] = 0;
+            if (findvar(namebuf, V_FIND | V_EMPTY_OK | V_NOFIND_NULL) != NULL) {
+                slot_to_vartbl[i] = g_VarIndex;
+            } else {
+                /* Variable is new. Create it as a scalar shell and then
+                 * attach the VM-owned array dimensions/data below. */
+                namebuf[nlen] = 0;
+                findvar(namebuf, V_FIND);
+                slot_to_vartbl[i] = g_VarIndex;
+            }
+
+            /* Set/update dimensions */
+            struct s_vartbl *v = &g_vartbl[slot_to_vartbl[i]];
+            for (int d = 0; d < MAXDIM; d++) {
+                v->dims[d] = (d < arr->ndims) ? arr->dims[d] : 0;
+            }
         }
 
         int vi = slot_to_vartbl[i];
         struct s_vartbl *v = &g_vartbl[vi];
-
-        /* Sync array dimensions and data pointer */
-        BCArray *arr = &vm->arrays[i];
-        for (int d = 0; d < MAXDIM; d++) {
-            v->dims[d] = (d < arr->ndims) ? arr->dims[d] : 0;
-        }
 
         /* Point MMBasic's array data to VM's array data */
         if (slot->type == T_INT) {
@@ -159,6 +186,99 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
     }
 
     slot_map_initialized = 1;
+}
+
+static int sync_vm_locals_to_mmbasic(BCVMState *vm, int *local_map) {
+    BCCompiler *cs = vm->compiler;
+    if (!cs || vm->csp <= 0) return 0;
+
+    BCCallFrame *cf = &vm->call_stack[vm->csp - 1];
+    if (cf->subfun_idx >= cs->subfun_count) return 0;
+
+    BCSubFun *sf = &cs->subfuns[cf->subfun_idx];
+    uint16_t locals_base = cs->subfun_locals_base[cf->subfun_idx];
+    if (sf->nlocals == 0) return 0;
+
+    g_LocalIndex++;
+    for (int i = 0; i < VM_MAX_LOCALS; i++) local_map[i] = -1;
+
+    for (uint16_t i = 0; i < sf->nlocals; i++) {
+        int slot = vm->frame_base + i;
+        if (slot < 0 || slot >= VM_MAX_LOCALS) continue;
+
+        BCLocalMeta *meta = &cs->local_meta[locals_base + i];
+        if (!meta->name[0] || !isnamestart((unsigned char)meta->name[0])) continue;
+
+        unsigned char namebuf[MAXVARLEN + 4];
+        int nlen = strlen(meta->name);
+        memcpy(namebuf, meta->name, nlen);
+        namebuf[nlen] = 0;
+
+        if (meta->is_array) {
+            BCArray *arr = &vm->local_arrays[slot];
+            namebuf[nlen] = '(';
+            namebuf[nlen + 1] = ')';
+            namebuf[nlen + 2] = 0;
+            findvar(namebuf, V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK | meta->type);
+            local_map[slot] = g_VarIndex;
+
+            if (arr->data) {
+                struct s_vartbl *v = &g_vartbl[g_VarIndex];
+                for (int d = 0; d < MAXDIM; d++) {
+                    v->dims[d] = (d < arr->ndims) ? arr->dims[d] : 0;
+                }
+                if (meta->type == T_INT) v->val.ia = (long long int *)arr->data;
+                else if (meta->type == T_NBR) v->val.fa = (MMFLOAT *)arr->data;
+                else if (meta->type == T_STR) v->val.s = (unsigned char *)arr->data;
+            }
+            continue;
+        }
+
+        findvar(namebuf, V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK | meta->type);
+        local_map[slot] = g_VarIndex;
+        struct s_vartbl *v = &g_vartbl[g_VarIndex];
+        if (meta->type == T_INT) {
+            v->val.i = vm->locals[slot].i;
+        } else if (meta->type == T_NBR) {
+            v->val.f = vm->locals[slot].f;
+        } else if (meta->type == T_STR && vm->locals[slot].s) {
+            Mstrcpy(v->val.s, vm->locals[slot].s);
+        }
+    }
+
+    return g_LocalIndex;
+}
+
+static void sync_mmbasic_locals_to_vm(BCVMState *vm, const int *local_map) {
+    BCCompiler *cs = vm->compiler;
+    if (!cs || vm->csp <= 0) return;
+
+    BCCallFrame *cf = &vm->call_stack[vm->csp - 1];
+    if (cf->subfun_idx >= cs->subfun_count) return;
+
+    BCSubFun *sf = &cs->subfuns[cf->subfun_idx];
+    uint16_t locals_base = cs->subfun_locals_base[cf->subfun_idx];
+    for (uint16_t i = 0; i < sf->nlocals; i++) {
+        int slot = vm->frame_base + i;
+        if (slot < 0 || slot >= VM_MAX_LOCALS) continue;
+        if (local_map[slot] < 0) continue;
+
+        BCLocalMeta *meta = &cs->local_meta[locals_base + i];
+        if (meta->is_array) continue;
+
+        struct s_vartbl *v = &g_vartbl[local_map[slot]];
+        vm->local_types[slot] = meta->type;
+        if (meta->type == T_INT) {
+            vm->locals[slot].i = v->val.i;
+        } else if (meta->type == T_NBR) {
+            vm->locals[slot].f = v->val.f;
+        } else if (meta->type == T_STR && v->val.s) {
+            uint8_t *temp = &vm->str_temp[vm->str_temp_idx % 4][0];
+            vm->str_temp_idx++;
+            Mstrcpy(temp, v->val.s);
+            vm->locals[slot].s = temp;
+        }
+    }
 }
 
 /*
@@ -229,9 +349,13 @@ void bc_bridge_call_cmd(BCVMState *vm, uint16_t cmd_idx) {
     int saved_cmdtoken = cmdtoken;
     unsigned char *saved_cmdline = cmdline;
     unsigned char *saved_nextstmt = nextstmt;
+    int saved_local_index = g_LocalIndex;
+    int local_map[VM_MAX_LOCALS];
+    int bridge_level = 0;
 
     /* Sync VM variables to MMBasic table so the command can see them */
     sync_vm_to_mmbasic(vm);
+    bridge_level = sync_vm_locals_to_mmbasic(vm, local_map);
 
     /* Set up globals for the command handler */
     cmdtoken = cmd_idx;
@@ -245,7 +369,10 @@ void bc_bridge_call_cmd(BCVMState *vm, uint16_t cmd_idx) {
     commandtbl[cmd_idx].fptr();
 
     /* Sync any modified variables back to VM */
+    sync_mmbasic_locals_to_vm(vm, local_map);
     sync_mmbasic_to_vm(vm);
+    if (bridge_level) ClearVars(bridge_level, true);
+    g_LocalIndex = saved_local_index;
 
     /* Restore VM context */
     cmdtoken = saved_cmdtoken;
@@ -276,9 +403,13 @@ void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t 
     MMFLOAT saved_fret = fret;
     long long int saved_iret = iret;
     unsigned char *saved_sret = sret;
+    int saved_local_index = g_LocalIndex;
+    int local_map[VM_MAX_LOCALS];
+    int bridge_level = 0;
 
     /* Sync VM variables to MMBasic table so the function can see them */
     sync_vm_to_mmbasic(vm);
+    bridge_level = sync_vm_locals_to_mmbasic(vm, local_map);
 
     /* Set up globals for the function handler */
     ep = (unsigned char *)ptr_val;
@@ -289,7 +420,10 @@ void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t 
     tokentbl[fun_idx].fptr();
 
     /* Sync any modified variables back to VM */
+    sync_mmbasic_locals_to_vm(vm, local_map);
     sync_mmbasic_to_vm(vm);
+    if (bridge_level) ClearVars(bridge_level, true);
+    g_LocalIndex = saved_local_index;
 
     /* Push result onto VM stack */
     if (targ & T_INT) {
@@ -331,9 +465,20 @@ void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t 
  *
  * Compiles the current program to bytecode and executes it on the VM.
  */
+#ifdef MMBASIC_HOST
+#define FRUN_DBG(s)       ((void)0)
+#define FRUN_DBGF(fmt...) ((void)0)
+#else
+#define FRUN_DBG(s)       MMPrintString(s)
+#define FRUN_DBGF(fmt...) do { char _b[80]; snprintf(_b, sizeof(_b), fmt); MMPrintString(_b); } while(0)
+#endif
+
 void cmd_frun(void) {
     int err;
-
+#ifndef MMBASIC_HOST
+    bc_debug_enabled = 1;  /* enable line/cmd tracing on device */
+    FRUN_DBG("FRUN: entry\r\n");
+#endif
     bc_crash_checkpoint(BC_CK_FRUN_ENTRY, "entry");
 
     /* Heap-allocate the compiler and VM structs themselves.
@@ -349,6 +494,7 @@ void cmd_frun(void) {
     memset(cs, 0, sizeof(BCCompiler));
     memset(vm, 0, sizeof(BCVMState));
 
+    FRUN_DBG("FRUN: structs allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_ALLOC_CS, "structs ok");
 
     if (bc_compiler_alloc(cs) != 0) {
@@ -358,6 +504,7 @@ void cmd_frun(void) {
         return;
     }
 
+    FRUN_DBG("FRUN: compiler allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_COMP_ALLOC, "compiler alloc");
 
     if (bc_vm_alloc(vm) != 0) {
@@ -368,6 +515,7 @@ void cmd_frun(void) {
         return;
     }
 
+    FRUN_DBG("FRUN: vm allocated\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_VM_ALLOC, "vm alloc");
 
     /* Compile the program */
@@ -395,6 +543,7 @@ void cmd_frun(void) {
         compile_size = (int)(ep - ProgMemory) + 2;  /* include double-null */
     }
 
+    FRUN_DBGF("FRUN: compiling %d bytes...\r\n", compile_size);
     bc_crash_checkpoint(BC_CK_FRUN_COMPILE, "compiling");
     err = bc_compile(cs, ProgMemory, compile_size);
     if (err) {
@@ -410,6 +559,9 @@ void cmd_frun(void) {
         return;
     }
 
+    FRUN_DBGF("FRUN: compiled OK, %d bytes code, %d slots\r\n",
+              (int)cs->code_len, (int)cs->slot_count);
+
     if (bc_debug_enabled) {
         bc_dump_stats(cs);
         bc_disassemble(cs);
@@ -420,6 +572,7 @@ void cmd_frun(void) {
     bc_vm_init(vm, cs);
     bc_bridge_reset_sync();
 
+    FRUN_DBG("FRUN: executing...\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_EXECUTE, "executing");
 
     /* Save the main loop's mark jmp_buf.  cmd_frun returns to the caller
@@ -433,10 +586,13 @@ void cmd_frun(void) {
         bc_vm_execute(vm);
     } else {
         /* VM exited via error/longjmp — fall through to cleanup */
+        FRUN_DBGF("FRUN: VM exited via longjmp at line %d\r\n",
+                  (int)vm->current_line);
     }
 
     memcpy(mark, saved_mark, sizeof(jmp_buf));
 
+    FRUN_DBG("FRUN: cleanup\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_CLEANUP, "cleanup");
 
     /* Clean up */
@@ -459,6 +615,7 @@ void cmd_frun(void) {
     BC_FREE(cs);
     BC_FREE(vm);
 
+    FRUN_DBG("FRUN: done\r\n");
     bc_crash_checkpoint(BC_CK_FRUN_CLEANUP + 4, "cleanup:done");
     /* Successful completion — clear crash breadcrumb */
     bc_crash_clear();

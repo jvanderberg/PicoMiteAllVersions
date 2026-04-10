@@ -1161,6 +1161,7 @@ op_call_sub: {
     cf->frame_base = vm->frame_base;
     cf->saved_sp   = vm->sp - nargs;  /* SP after popping args */
     cf->nlocals    = sf->nlocals;
+    cf->subfun_idx = idx;
     vm->csp++;
 
     /* Set new frame base */
@@ -1209,6 +1210,7 @@ op_call_fun: {
     cf->frame_base = vm->frame_base;
     cf->saved_sp   = vm->sp - nargs;  /* Where SP should be after popping args (return val goes here+1) */
     cf->nlocals    = sf->nlocals;
+    cf->subfun_idx = idx;
     vm->csp++;
 
     int new_base = vm->locals_top;
@@ -1453,6 +1455,13 @@ op_store_local_arr_i: {
 
 op_builtin_cmd: {
     uint16_t idx = READ_U16();
+#ifndef MMBASIC_HOST
+    if (bc_debug_enabled) {
+        char cbuf[64];
+        snprintf(cbuf, sizeof(cbuf), "[CMD %d @ L%d]\r\n", (int)idx, (int)vm->current_line);
+        MMPrintString(cbuf);
+    }
+#endif
     bc_bridge_call_cmd(vm, idx);
     DISPATCH();
 }
@@ -2164,6 +2173,13 @@ op_clear: {
 op_line: {
     uint16_t lineno = READ_U16();
     vm->current_line = lineno;
+#ifndef MMBASIC_HOST
+    if (bc_debug_enabled) {
+        char lbuf[32];
+        snprintf(lbuf, sizeof(lbuf), "[L%d]\r\n", (int)lineno);
+        MMPrintString(lbuf);
+    }
+#endif
     DISPATCH();
 }
 

@@ -1997,7 +1997,7 @@ void cmd_line(void) {
             if(x1==x2 || y1==y2)DrawLine(x1, y1, x2, y2, w, c);
 			else drawAALine(x1, y1, x2, y2, c, w);
 			return;
-		} else {
+        } else {
             long long int *x1ptr, *y1ptr, *x2ptr, *y2ptr, *wptr, *cptr;
             MMFLOAT *x1fptr, *y1fptr, *x2fptr, *y2fptr, *wfptr, *cfptr;
             getargs(&cmdline, 11,(unsigned char *)",");

@@ -893,6 +893,52 @@ static void cleanup_vm(BCVMState *vm, BCCompiler *cs) {
     }
 }
 
+static int run_compiler_selftests(char *msg, size_t msglen) {
+    int i;
+    BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
+    if (!cs) {
+        snprintf(msg, msglen, "compiler self-test OOM");
+        return -1;
+    }
+    memset(cs, 0, sizeof(BCCompiler));
+
+    if (bc_compiler_alloc(cs) != 0) {
+        BC_FREE(cs);
+        snprintf(msg, msglen, "compiler self-test alloc failed");
+        return -1;
+    }
+
+    bc_compiler_init(cs);
+    for (i = 0; i < BC_MAX_LINEMAP; i++) {
+        if (bc_add_linemap_entry(cs, (uint16_t)(i + 1), (uint32_t)(i * 3)) != 0) {
+            snprintf(msg, msglen, "line-map fill failed early at %d/%d: %s",
+                     i + 1, BC_MAX_LINEMAP, cs->error_msg);
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            return -1;
+        }
+    }
+
+    if (bc_add_linemap_entry(cs, (uint16_t)(BC_MAX_LINEMAP + 1), 0) == 0) {
+        snprintf(msg, msglen, "line-map overflow was accepted");
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    if (!cs->has_error || strstr(cs->error_msg, "Too many line map entries") == NULL) {
+        snprintf(msg, msglen, "line-map overflow reported wrong error: %s", cs->error_msg);
+        bc_compiler_free(cs);
+        BC_FREE(cs);
+        return -1;
+    }
+
+    bc_compiler_free(cs);
+    BC_FREE(cs);
+    snprintf(msg, msglen, "compiler self-tests passed");
+    return 0;
+}
+
 
 /* ======================================================================
  * bc_run_tests — main entry point called by cmd_ftest()
@@ -914,6 +960,13 @@ void bc_run_tests(void) {
     MMPrintString("=== FTEST: Bytecode VM Test Suite ===\r\n");
     snprintf(msg, sizeof(msg), "Running %d tests...\r\n\r\n", NUM_TESTS);
     MMPrintString(msg);
+
+    if (run_compiler_selftests(msg, sizeof(msg)) != 0) {
+        MMPrintString("SELFTEST FAIL: ");
+        MMPrintString(msg);
+        MMPrintString("\r\n\r\n");
+        errors++;
+    }
 
     for (i = 0; i < NUM_TESTS; i++) {
         const BCTestCase *tc = &test_cases[i];

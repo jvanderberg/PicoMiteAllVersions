@@ -19,6 +19,12 @@
 #include "bytecode.h"
 
 /* All needed externs come from Hardware_Includes.h / MMBasic.h */
+extern char MMErrMsg[];
+extern int MMerrno;
+void host_runtime_configure(int timeout_ms, const char *screenshot_path);
+void host_runtime_begin(void);
+void host_runtime_finish(void);
+int host_runtime_timed_out(void);
 
 /* flash_progmemory is NULL on host -- we need to allocate backing storage */
 extern const uint8_t *flash_progmemory;
@@ -28,6 +34,7 @@ static uint8_t flash_prog_buf[256 * 1024];
 #define CAPTURE_SIZE (64 * 1024)
 static char interp_output[CAPTURE_SIZE];
 static char vm_output[CAPTURE_SIZE];
+static char *capture_buf = NULL;
 static char *capture_ptr = NULL;
 static int capture_remaining = 0;
 
@@ -47,7 +54,26 @@ void host_capture_hook(const char *text, int len) {
     }
 }
 
+static void strip_ansi_sequences(char *buf) {
+    char *src = buf;
+    char *dst = buf;
+
+    while (*src) {
+        if ((unsigned char)src[0] == 0x1B && src[1] == '[') {
+            src += 2;
+            while (*src && ((*src >= '0' && *src <= '9') || *src == ';' || *src == '?')) {
+                src++;
+            }
+            if (*src) src++;
+            continue;
+        }
+        *dst++ = *src++;
+    }
+    *dst = '\0';
+}
+
 static void start_capture(char *buf, int size) {
+    capture_buf = buf;
     capture_ptr = buf;
     capture_remaining = size - 1;  /* leave room for null terminator */
     buf[0] = '\0';
@@ -59,6 +85,7 @@ static void stop_capture(void) {
     if (capture_ptr) *capture_ptr = '\0';
     host_output_hook = NULL;
     capturing = 0;
+    if (capture_buf) strip_ansi_sequences(capture_buf);
 }
 
 /*
@@ -151,13 +178,19 @@ static int run_interpreter(char *output, int outsize) {
     start_capture(output, outsize);
     int result = 0;
 
+    ClearRuntime(true);
+    MMErrMsg[0] = '\0';
+    MMerrno = 0;
+    host_runtime_begin();
     PrepareProgram(1);
     if (setjmp(mark) == 0) {
         ExecuteProgram(ProgMemory);
+        result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
-        result = 1;  /* error or END */
+        result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     }
 
+    host_runtime_finish();
     stop_capture();
     return result;
 }
@@ -170,19 +203,27 @@ static int run_bytecode_vm(char *output, int outsize) {
     start_capture(output, outsize);
     int result = 0;
 
+    ClearRuntime(true);
+    MMErrMsg[0] = '\0';
+    MMerrno = 0;
+    host_runtime_begin();
     PrepareProgram(1);
     if (setjmp(mark) == 0) {
         cmd_frun();
+        result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
-        result = 1;  /* error or END */
+        result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     }
 
+    host_runtime_finish();
     stop_capture();
     return result;
 }
 
 int main(int argc, char **argv) {
     int mode = 0;  /* 0=compare, 1=interp only, 2=vm only, 3=debug */
+    int timeout_ms = 0;
+    const char *screenshot_path = NULL;
 
     if (argc < 2) {
         printf("MMBasic Host Test Build\n");
@@ -192,15 +233,24 @@ int main(int argc, char **argv) {
         printf("  %s program.bas --interp Run interpreter only\n", argv[0]);
         printf("  %s program.bas --vm     Run bytecode VM only\n", argv[0]);
         printf("  %s program.bas --debug  Compile + show stats/disassembly\n", argv[0]);
+        printf("  %s program.bas --interp --timeout-ms 100 --screenshot out.ppm\n", argv[0]);
         return 0;
     }
 
     const char *filename = argv[1];
 
-    if (argc > 2) {
-        if (strcmp(argv[2], "--interp") == 0) mode = 1;
-        else if (strcmp(argv[2], "--vm") == 0) mode = 2;
-        else if (strcmp(argv[2], "--debug") == 0) mode = 3;
+    for (int i = 2; i < argc; ++i) {
+        if (strcmp(argv[i], "--interp") == 0) mode = 1;
+        else if (strcmp(argv[i], "--vm") == 0) mode = 2;
+        else if (strcmp(argv[i], "--debug") == 0) mode = 3;
+        else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
+            timeout_ms = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            screenshot_path = argv[++i];
+        } else {
+            fprintf(stderr, "Unknown option: %s\n", argv[i]);
+            return 2;
+        }
     }
 
     /* Allocate backing storage for flash_progmemory (normally in flash on device).
@@ -212,6 +262,7 @@ int main(int argc, char **argv) {
 
     /* Initialize the MMBasic runtime */
     InitBasic();
+    host_runtime_configure(timeout_ms, screenshot_path);
 
     /* Load the program */
     if (load_basic_file(filename) != 0) return 1;
@@ -219,19 +270,21 @@ int main(int argc, char **argv) {
     if (mode == 1) {
         /* Interpreter only */
         printf("--- Interpreter ---\n");
-        run_interpreter(interp_output, CAPTURE_SIZE);
+        int rc = run_interpreter(interp_output, CAPTURE_SIZE);
         printf("%s", interp_output);
-        printf("\n--- Done ---\n");
-        return 0;
+        if (rc == 2) printf("\n--- Timed Out ---\n");
+        else printf("\n--- Done ---\n");
+        return rc == 2 ? 124 : rc;
     }
 
     if (mode == 2) {
         /* Bytecode VM only */
         printf("--- Bytecode VM ---\n");
-        run_bytecode_vm(vm_output, CAPTURE_SIZE);
+        int rc = run_bytecode_vm(vm_output, CAPTURE_SIZE);
         printf("%s", vm_output);
-        printf("\n--- Done ---\n");
-        return 0;
+        if (rc == 2) printf("\n--- Timed Out ---\n");
+        else printf("\n--- Done ---\n");
+        return rc == 2 ? 124 : rc;
     }
 
     if (mode == 3) {
@@ -276,8 +329,14 @@ int main(int argc, char **argv) {
 
     /* Compare */
     printf("\n--- Results ---\n");
-    printf("Interpreter: %s\n", r1 ? "ERROR" : "OK");
-    printf("Bytecode VM: %s\n", r2 ? "ERROR" : "OK");
+    printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
+    printf("Bytecode VM: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
+
+    if (r1 != 0 || r2 != 0) {
+        printf("\nInterpreter output:\n---\n%s\n---\n\n", interp_output);
+        printf("Bytecode VM output:\n---\n%s\n---\n\n", vm_output);
+        return 1;
+    }
 
     if (strcmp(interp_output, vm_output) == 0) {
         printf("Output: MATCH\n");

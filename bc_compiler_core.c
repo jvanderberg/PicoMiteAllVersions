@@ -33,13 +33,17 @@ int bc_compiler_alloc(BCCompiler *cs) {
     cs->constants  = (BCConstant *)BC_ALLOC(BC_MAX_CONSTANTS * sizeof(BCConstant));
     cs->slots      = (BCSlot *)BC_ALLOC(BC_MAX_SLOTS * sizeof(BCSlot));
     cs->subfuns    = (BCSubFun *)BC_ALLOC(BC_MAX_SUBFUNS * sizeof(BCSubFun));
+    cs->subfun_locals_base = (uint16_t *)BC_ALLOC(BC_MAX_SUBFUNS * sizeof(uint16_t));
     cs->fixups     = (BCFixup *)BC_ALLOC(BC_MAX_FIXUPS * sizeof(BCFixup));
     cs->linemap    = (BCLineMap *)BC_ALLOC(BC_MAX_LINEMAP * sizeof(BCLineMap));
     cs->nest_stack = (BCNestEntry *)BC_ALLOC(BC_MAX_NEST * sizeof(BCNestEntry));
     cs->locals     = (BCLocalVar *)BC_ALLOC(BC_MAX_LOCALS * sizeof(BCLocalVar));
+    cs->local_meta = (BCLocalMeta *)BC_ALLOC(BC_MAX_LOCAL_META * sizeof(BCLocalMeta));
     cs->data_pool  = (BCDataItem *)BC_ALLOC(BC_MAX_DATA_ITEMS * sizeof(BCDataItem));
     if (!cs->code || !cs->constants || !cs->slots || !cs->subfuns ||
+        !cs->subfun_locals_base ||
         !cs->fixups || !cs->linemap || !cs->nest_stack || !cs->locals ||
+        !cs->local_meta ||
         !cs->data_pool) {
         bc_compiler_free(cs);
         return -1;
@@ -53,10 +57,12 @@ void bc_compiler_free(BCCompiler *cs) {
     if (cs->constants)  BC_FREE(cs->constants);
     if (cs->slots)      BC_FREE(cs->slots);
     if (cs->subfuns)    BC_FREE(cs->subfuns);
+    if (cs->subfun_locals_base) BC_FREE(cs->subfun_locals_base);
     if (cs->fixups)     BC_FREE(cs->fixups);
     if (cs->linemap)    BC_FREE(cs->linemap);
     if (cs->nest_stack) BC_FREE(cs->nest_stack);
     if (cs->locals)     BC_FREE(cs->locals);
+    if (cs->local_meta) BC_FREE(cs->local_meta);
     if (cs->data_pool)  BC_FREE(cs->data_pool);
     memset(cs, 0, sizeof(*cs));
 }
@@ -71,12 +77,14 @@ void bc_compiler_init(BCCompiler *cs) {
     cs->slot_count       = 0;
     cs->next_hidden_slot = 0;
     cs->subfun_count     = 0;
+    if (cs->subfun_locals_base) memset(cs->subfun_locals_base, 0, BC_MAX_SUBFUNS * sizeof(uint16_t));
     cs->fixup_count      = 0;
     cs->linemap_count    = 0;
     cs->nest_depth       = 0;
     cs->current_subfun   = -1;
     cs->current_line     = 0;
     cs->local_count      = 0;
+    cs->local_meta_count = 0;
     cs->data_count       = 0;
     cs->error_line       = 0;
     cs->error_msg[0]     = '\0';
@@ -238,6 +246,23 @@ int bc_add_local(BCCompiler *cs, const char *name, int name_len, uint8_t type, i
     return idx;
 }
 
+int bc_commit_locals(BCCompiler *cs, int sf_idx) {
+    if (sf_idx < 0 || sf_idx >= (int)cs->subfun_count) {
+        bc_set_error(cs, "Invalid SUB/FUNCTION local metadata");
+        return -1;
+    }
+    if ((uint32_t)cs->local_meta_count + (uint32_t)cs->local_count > BC_MAX_LOCAL_META) {
+        bc_set_error(cs, "Too many local metadata entries (max %d)", BC_MAX_LOCAL_META);
+        return -1;
+    }
+    cs->subfun_locals_base[sf_idx] = cs->local_meta_count;
+    for (int i = 0; i < (int)cs->local_count; i++) {
+        memcpy(&cs->local_meta[cs->local_meta_count + i], &cs->locals[i], sizeof(BCLocalMeta));
+    }
+    cs->local_meta_count += cs->local_count;
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Constant pool                                                     */
 /* ------------------------------------------------------------------ */
@@ -282,6 +307,17 @@ int bc_find_subfun(BCCompiler *cs, const char *name, int name_len) {
 /* ------------------------------------------------------------------ */
 /*  Line map                                                          */
 /* ------------------------------------------------------------------ */
+
+int bc_add_linemap_entry(BCCompiler *cs, uint16_t lineno, uint32_t offset) {
+    if (cs->linemap_count >= BC_MAX_LINEMAP) {
+        bc_set_error(cs, "Too many line map entries (max %d)", BC_MAX_LINEMAP);
+        return -1;
+    }
+    cs->linemap[cs->linemap_count].lineno = lineno;
+    cs->linemap[cs->linemap_count].offset = offset;
+    cs->linemap_count++;
+    return 0;
+}
 
 uint32_t bc_linemap_lookup(BCCompiler *cs, uint16_t lineno) {
     /* Linear search — linemap is in program order, not sorted by line number

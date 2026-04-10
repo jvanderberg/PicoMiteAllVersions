@@ -229,10 +229,10 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
             cs->current_line = lineno;
 
             /* Add to line map */
-            if (cs->linemap_count < BC_MAX_LINEMAP) {
-                cs->linemap[cs->linemap_count].lineno = lineno;
-                cs->linemap[cs->linemap_count].offset = cs->code_len;
-                cs->linemap_count++;
+            if (bc_add_linemap_entry(cs, lineno, cs->code_len) != 0) {
+                p += 3;
+                skipspace(p);
+                continue;
             }
 
             /* Emit OP_LINE for error reporting */

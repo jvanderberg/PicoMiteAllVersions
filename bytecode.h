@@ -223,8 +223,9 @@ typedef enum {
 /*
  * Compiler limits — platform-conditional
  *
- * Host build uses full limits for comprehensive testing.
- * Device build uses reduced limits to fit in GetMemory() heap (~58 KB).
+ * Host build uses generous limits for comprehensive testing.
+ * RP2350 device builds get a larger compiler budget to match their larger heap.
+ * Other device builds keep reduced limits to fit comfortably in the RP2040 heap.
  * Compiler arrays are dynamically allocated via bc_compiler_alloc().
  */
 #ifdef MMBASIC_HOST
@@ -235,7 +236,25 @@ typedef enum {
   #define BC_MAX_FIXUPS     2048
   #define BC_MAX_LINEMAP    4096
   #define BC_MAX_LOCALS     64
+  #define BC_MAX_LOCAL_META 4096
   #define BC_MAX_NEST       64
+  #define BC_MAX_DATA_ITEMS 1024
+#elif defined(rp2350)
+  /*
+   * The RP2350 firmware has a substantially larger heap than RP2040 builds,
+   * but host-sized compiler tables would still be wasteful on-device.
+   * These limits keep the compiler/VM metadata comfortably below the RP2350
+   * heap budget while removing several host/device mismatches.
+   */
+  #define BC_MAX_CODE       (32 * 1024)
+  #define BC_MAX_CONSTANTS  128
+  #define BC_MAX_SLOTS      256
+  #define BC_MAX_SUBFUNS    128
+  #define BC_MAX_FIXUPS     1024
+  #define BC_MAX_LINEMAP    2048
+  #define BC_MAX_LOCALS     64
+  #define BC_MAX_LOCAL_META 1024
+  #define BC_MAX_NEST       32
   #define BC_MAX_DATA_ITEMS 1024
 #else
   #define BC_MAX_CODE       (16 * 1024)
@@ -245,6 +264,7 @@ typedef enum {
   #define BC_MAX_FIXUPS     256
   #define BC_MAX_LINEMAP    512
   #define BC_MAX_LOCALS     64
+  #define BC_MAX_LOCAL_META 256
   #define BC_MAX_NEST       16
   #define BC_MAX_DATA_ITEMS 512
 #endif
@@ -348,6 +368,15 @@ typedef struct {
 } BCDataItem;
 
 /*
+ * Persisted local variable metadata for bridged command/function evaluation.
+ */
+typedef struct {
+    char    name[MAXVARLEN + 1];
+    uint8_t type;
+    uint8_t is_array;
+} BCLocalMeta;
+
+/*
  * Local variable record (used during compilation)
  */
 typedef struct {
@@ -379,6 +408,7 @@ typedef struct {
     /* SUB/FUNCTION table (allocated: BC_MAX_SUBFUNS entries) */
     BCSubFun   *subfuns;
     uint16_t   subfun_count;
+    uint16_t   *subfun_locals_base;
 
     /* Forward reference fixups (allocated: BC_MAX_FIXUPS entries) */
     BCFixup    *fixups;
@@ -399,6 +429,10 @@ typedef struct {
     /* Local variable tracking (allocated: BC_MAX_LOCALS entries) */
     BCLocalVar *locals;
     uint16_t   local_count;
+
+    /* Persisted local metadata for all compiled SUB/FUNCTIONs */
+    BCLocalMeta *local_meta;
+    uint16_t    local_meta_count;
 
     /* DATA pool (allocated: BC_MAX_DATA_ITEMS entries) */
     BCDataItem *data_pool;
@@ -428,6 +462,7 @@ typedef struct {
     int         frame_base;     /* index into locals[] */
     int         saved_sp;
     uint16_t    nlocals;        /* number of locals in this frame */
+    uint16_t    subfun_idx;     /* active SUB/FUNCTION metadata */
 } BCCallFrame;
 
 /*
@@ -564,6 +599,8 @@ uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);
 uint16_t bc_add_slot(BCCompiler *cs, const char *name, int name_len, uint8_t type, int is_array);
 int      bc_find_subfun(BCCompiler *cs, const char *name, int name_len);
 uint16_t bc_add_constant_string(BCCompiler *cs, const uint8_t *data, int len);
+int      bc_add_linemap_entry(BCCompiler *cs, uint16_t lineno, uint32_t offset);
+int      bc_commit_locals(BCCompiler *cs, int sf_idx);
 uint32_t bc_linemap_lookup(BCCompiler *cs, uint16_t lineno);
 
 /* Output capture API (for FTEST comparison) */

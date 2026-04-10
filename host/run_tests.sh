@@ -37,6 +37,8 @@ if [ $# -ge 1 ]; then
     fi
 fi
 
+TEST_TIMEOUT=${TEST_TIMEOUT:-10}
+
 run_one_test() {
     local testfile="$1"
     local mode="$2"
@@ -45,9 +47,34 @@ run_one_test() {
 
     printf "  %-30s " "$name"
 
-    # Capture output and exit code
+    # Run with timeout to catch infinite loops (polls every 0.1s)
+    local tmpfile
+    tmpfile=$(mktemp)
+    $BINARY "$testfile" $mode > "$tmpfile" 2>&1 &
+    local PID=$!
+    local elapsed=0
+    while kill -0 $PID 2>/dev/null; do
+        sleep 0.1
+        elapsed=$((elapsed + 1))
+        if [ $elapsed -ge $((TEST_TIMEOUT * 10)) ]; then
+            kill -9 $PID 2>/dev/null
+            wait $PID 2>/dev/null
+            local output
+            output=$(cat "$tmpfile")
+            rm -f "$tmpfile"
+            echo "HUNG (timeout ${TEST_TIMEOUT}s)"
+            FAILED=$((FAILED + 1))
+            ERRORS="${ERRORS}\n--- $name ($mode) --- HUNG after ${TEST_TIMEOUT}s\n"
+            return 1
+        fi
+    done
+    wait $PID
+    local ec=$?
     local output
-    if output=$($BINARY "$testfile" $mode 2>&1); then
+    output=$(cat "$tmpfile")
+    rm -f "$tmpfile"
+
+    if [ $ec -eq 0 ]; then
         echo "PASS"
         PASSED=$((PASSED + 1))
         return 0

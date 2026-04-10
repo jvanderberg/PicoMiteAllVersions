@@ -1833,9 +1833,12 @@ void PFlt(MMFLOAT flt){
 void PFltComma(MMFLOAT n) {
     MMPrintString(", "); PFlt(n);
 }
+extern void bc_crash_save_fault(void);
+extern void bc_crash_dump_if_any(void);
 void sigbus(void){
+    bc_crash_save_fault();
     MMPrintString("Error: Invalid address - resetting\r\n");
-	uSec(250000);
+	uSec(5000000);
 	disable_interrupts_pico();
 //	flash_range_erase(PROGSTART, MAX_PROG_SIZE);
     LoadOptions();
@@ -4512,6 +4515,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
             }
         }
     }
+    bc_crash_dump_if_any();
     memset(inpbuf,0,STRINGSIZE);
     WatchdogSet = false;
     if(_excep_code == INVALID_CLOCKSPEED) {

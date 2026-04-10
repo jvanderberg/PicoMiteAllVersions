@@ -9,11 +9,37 @@
 
 #include "Hardware_Includes.h"
 #include "bytecode.h"
+#include <ctype.h>
+#include <errno.h>
+#include <time.h>
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
 static void host_print(const char *s, int len);
 static void host_prints(const char *s);
+
+static uint64_t host_now_us(void);
+static void host_sync_msec_timer(void);
+static void host_fb_reset(int colour);
+static void host_write_screenshot(const char *path);
+static void host_runtime_check_timeout(void);
+static int host_parse_escaped_char(const char **src);
+
+static uint32_t *host_framebuffer = NULL;
+static int host_fb_width = 320;
+static int host_fb_height = 240;
+static int host_runtime_timeout_ms = 0;
+static uint64_t host_runtime_deadline_us = 0;
+static int host_runtime_timed_out_flag = 0;
+static int host_screenshot_written = 0;
+static char host_screenshot_path[1024] = {0};
+static char host_key_script[512] = {0};
+static size_t host_key_script_len = 0;
+static size_t host_key_script_pos = 0;
+static int host_fastgfx_active = 0;
+static int host_fastgfx_fps = 0;
+static uint64_t host_fastgfx_next_sync_us = 0;
+static unsigned char host_font_metrics[2] = {6, 8};
 
 /* =========================================================================
  *  Global Variables — definitions (declared as extern in headers)
@@ -49,10 +75,10 @@ int GPSchannel = 0;
 int gui_bcolour = 0;
 int gui_fcolour = 0xFFFFFF;
 short gui_font = 0;
-short gui_font_height = 0;
-short gui_font_width = 0;
-short HRes = 80;
-short VRes = 24;
+short gui_font_height = 8;
+short gui_font_width = 6;
+short HRes = 320;
+short VRes = 240;
 uint8_t I2C0locked = 0;
 uint8_t I2C1locked = 0;
 unsigned char IgnorePIN = 0;
@@ -109,6 +135,8 @@ unsigned char *CFunctionLibrary = NULL;
 
 /* Timer/system variables */
 volatile long long int mSecTimer = 0;
+uint64_t timeroffset = 0;
+int64_t TimeOffsetToUptime = 1704067200;
 volatile unsigned int PauseTimer = 0;
 volatile unsigned int IntPauseTimer = 0;
 volatile unsigned int Timer1 = 0, Timer2 = 0, Timer3 = 0, Timer4 = 0, Timer5 = 0;
@@ -275,6 +303,310 @@ static watchdog_hw_t _wdog_hw_store = {0};
 dma_hw_t *dma_hw = &_dma_hw_store;
 watchdog_hw_t *watchdog_hw = &_wdog_hw_store;
 
+static void host_sync_msec_timer_value(uint64_t now_us) {
+    mSecTimer = (long long)(now_us / 1000ULL);
+}
+
+static uint64_t host_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+static void host_sync_msec_timer(void) {
+    host_sync_msec_timer_value(host_now_us());
+}
+
+uint64_t host_time_us_64(void) {
+    uint64_t now = host_now_us();
+    host_sync_msec_timer_value(now);
+    return now;
+}
+
+void host_sleep_us(uint64_t us) {
+    if (us == 0) {
+        host_sync_msec_timer();
+        return;
+    }
+
+    struct timespec req;
+    req.tv_sec = (time_t)(us / 1000000ULL);
+    req.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
+    while (nanosleep(&req, &req) != 0 && errno == EINTR) {
+    }
+    host_sync_msec_timer();
+}
+
+static void host_fb_ensure(void) {
+    size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
+    if (!host_framebuffer) {
+        host_framebuffer = calloc(pixels, sizeof(*host_framebuffer));
+    }
+}
+
+static inline int host_clamp_int(int value, int lo, int hi) {
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+static inline uint32_t host_colour24(int c) {
+    return (uint32_t)c & 0x00FFFFFFu;
+}
+
+static inline void host_put_pixel(int x, int y, int c) {
+    if (!host_framebuffer) host_fb_ensure();
+    if (!host_framebuffer) return;
+    if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return;
+    host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
+}
+
+static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
+    if (!host_framebuffer) host_fb_ensure();
+    if (!host_framebuffer) return;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    x1 = host_clamp_int(x1, 0, host_fb_width - 1);
+    x2 = host_clamp_int(x2, 0, host_fb_width - 1);
+    y1 = host_clamp_int(y1, 0, host_fb_height - 1);
+    y2 = host_clamp_int(y2, 0, host_fb_height - 1);
+    if (x1 > x2 || y1 > y2) return;
+
+    uint32_t colour = host_colour24(c);
+    for (int y = y1; y <= y2; ++y) {
+        uint32_t *row = host_framebuffer + (size_t)y * (size_t)host_fb_width;
+        for (int x = x1; x <= x2; ++x) {
+            row[x] = colour;
+        }
+    }
+}
+
+static void host_draw_line_pixels(int x1, int y1, int x2, int y2, int width, int c) {
+    if (width < 0) width = -width;
+    if (width == 0) width = 1;
+    int radius = width / 2;
+
+    int dx = abs(x2 - x1);
+    int sx = x1 < x2 ? 1 : -1;
+    int dy = -abs(y2 - y1);
+    int sy = y1 < y2 ? 1 : -1;
+    int err = dx + dy;
+
+    while (1) {
+        host_fill_rect_pixels(x1 - radius, y1 - radius, x1 + radius, y1 + radius, c);
+        if (x1 == x2 && y1 == y2) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) {
+            err += dy;
+            x1 += sx;
+        }
+        if (e2 <= dx) {
+            err += dx;
+            y1 += sy;
+        }
+    }
+}
+
+static void host_glyph_rows(char ch, uint8_t rows[7]) {
+    memset(rows, 0, 7);
+    switch (toupper((unsigned char)ch)) {
+        case '0': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x13; rows[3]=0x15; rows[4]=0x19; rows[5]=0x11; rows[6]=0x0E; break;
+        case '1': rows[0]=0x04; rows[1]=0x0C; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x0E; break;
+        case '2': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x01; rows[3]=0x02; rows[4]=0x04; rows[5]=0x08; rows[6]=0x1F; break;
+        case '3': rows[0]=0x1E; rows[1]=0x01; rows[2]=0x01; rows[3]=0x0E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
+        case '4': rows[0]=0x02; rows[1]=0x06; rows[2]=0x0A; rows[3]=0x12; rows[4]=0x1F; rows[5]=0x02; rows[6]=0x02; break;
+        case '5': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
+        case '6': rows[0]=0x0E; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
+        case '7': rows[0]=0x1F; rows[1]=0x01; rows[2]=0x02; rows[3]=0x04; rows[4]=0x08; rows[5]=0x08; rows[6]=0x08; break;
+        case '8': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
+        case '9': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0F; rows[4]=0x01; rows[5]=0x01; rows[6]=0x0E; break;
+        case 'A': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
+        case 'C': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x11; rows[6]=0x0E; break;
+        case 'E': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
+        case 'F': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
+        case 'G': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x17; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0F; break;
+        case 'H': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
+        case 'I': rows[0]=0x0E; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x0E; break;
+        case 'K': rows[0]=0x11; rows[1]=0x12; rows[2]=0x14; rows[3]=0x18; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
+        case 'L': rows[0]=0x10; rows[1]=0x10; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
+        case 'O': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
+        case 'P': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
+        case 'R': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
+        case 'S': rows[0]=0x0F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x0E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
+        case 'T': rows[0]=0x1F; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
+        case 'V': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x0A; rows[6]=0x04; break;
+        case 'Y': rows[0]=0x11; rows[1]=0x11; rows[2]=0x0A; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
+        case '!': rows[0]=0x04; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x00; rows[6]=0x04; break;
+        case ':': rows[0]=0x00; rows[1]=0x04; rows[2]=0x00; rows[3]=0x00; rows[4]=0x00; rows[5]=0x04; rows[6]=0x00; break;
+        case '.': rows[0]=0x00; rows[1]=0x00; rows[2]=0x00; rows[3]=0x00; rows[4]=0x00; rows[5]=0x00; rows[6]=0x04; break;
+        case '-': rows[0]=0x00; rows[1]=0x00; rows[2]=0x00; rows[3]=0x1F; rows[4]=0x00; rows[5]=0x00; rows[6]=0x00; break;
+        case ' ': break;
+        default:  rows[0]=0x1F; rows[1]=0x11; rows[2]=0x15; rows[3]=0x15; rows[4]=0x15; rows[5]=0x11; rows[6]=0x1F; break;
+    }
+}
+
+static void host_draw_char(int x, int y, int scale, int fc, int bc, char ch) {
+    uint8_t rows[7];
+    if (scale < 1) scale = 1;
+    host_glyph_rows(ch, rows);
+
+    if (bc >= 0) {
+        host_fill_rect_pixels(x, y, x + 6 * scale - 1, y + 8 * scale - 1, bc);
+    }
+
+    for (int row = 0; row < 7; ++row) {
+        for (int col = 0; col < 5; ++col) {
+            if (rows[row] & (1u << (4 - col))) {
+                host_fill_rect_pixels(
+                    x + col * scale,
+                    y + row * scale,
+                    x + (col + 1) * scale - 1,
+                    y + (row + 1) * scale - 1,
+                    fc
+                );
+            }
+        }
+    }
+}
+
+static void host_draw_text(int x, int y, int scale, int jh, int jv, int fc, int bc, const char *str) {
+    size_t len = str ? strlen(str) : 0;
+    int char_w = 6 * scale;
+    int char_h = 8 * scale;
+    int text_w = (int)len * char_w;
+    int text_h = char_h;
+
+    if (jh == JUSTIFY_CENTER) x -= text_w / 2;
+    else if (jh == JUSTIFY_RIGHT) x -= text_w;
+
+    if (jv == JUSTIFY_MIDDLE) y -= text_h / 2;
+    else if (jv == JUSTIFY_BOTTOM) y -= text_h;
+
+    for (size_t i = 0; i < len; ++i) {
+        host_draw_char(x + (int)i * char_w, y, scale, fc, bc, str[i]);
+    }
+}
+
+static void host_fb_reset(int colour) {
+    host_fb_ensure();
+    host_fill_rect_pixels(0, 0, host_fb_width - 1, host_fb_height - 1, colour);
+}
+
+static void host_write_screenshot(const char *path) {
+    if (!path || !*path || host_screenshot_written) return;
+    host_fb_ensure();
+    if (!host_framebuffer) return;
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return;
+
+    fprintf(fp, "P6\n%d %d\n255\n", host_fb_width, host_fb_height);
+    for (int y = 0; y < host_fb_height; ++y) {
+        for (int x = 0; x < host_fb_width; ++x) {
+            uint32_t pixel = host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
+            unsigned char rgb[3] = {
+                (unsigned char)((pixel >> 16) & 0xFF),
+                (unsigned char)((pixel >> 8) & 0xFF),
+                (unsigned char)(pixel & 0xFF),
+            };
+            fwrite(rgb, 1, 3, fp);
+        }
+    }
+    fclose(fp);
+    host_screenshot_written = 1;
+}
+
+static int host_parse_escaped_char(const char **src) {
+    const char *p = *src;
+    if (*p != '\\') {
+        int ch = (unsigned char)*p;
+        if (*p) p++;
+        *src = p;
+        return ch;
+    }
+
+    p++;
+    switch (*p) {
+        case 'n': *src = p + 1; return '\n';
+        case 'r': *src = p + 1; return '\r';
+        case 't': *src = p + 1; return '\t';
+        case '\\': *src = p + 1; return '\\';
+        case 'x':
+            if (isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+                char hex[3] = {p[1], p[2], 0};
+                *src = p + 3;
+                return (int)strtol(hex, NULL, 16);
+            }
+            break;
+        default:
+            break;
+    }
+
+    *src = p;
+    return '\\';
+}
+
+static void host_load_key_script(void) {
+    const char *env = getenv("MMBASIC_HOST_KEYS");
+    host_key_script_len = 0;
+    host_key_script_pos = 0;
+    if (!env || !*env) return;
+
+    const char *p = env;
+    while (*p && host_key_script_len + 1 < sizeof(host_key_script)) {
+        host_key_script[host_key_script_len++] = (char)host_parse_escaped_char(&p);
+    }
+    host_key_script[host_key_script_len] = '\0';
+}
+
+void host_runtime_configure(int timeout_ms, const char *screenshot_path) {
+    host_runtime_timeout_ms = timeout_ms;
+    host_screenshot_written = 0;
+    host_runtime_timed_out_flag = 0;
+    host_screenshot_path[0] = '\0';
+    if (screenshot_path && *screenshot_path) {
+        snprintf(host_screenshot_path, sizeof(host_screenshot_path), "%s", screenshot_path);
+    }
+}
+
+void host_runtime_begin(void) {
+    host_runtime_timed_out_flag = 0;
+    host_screenshot_written = 0;
+    host_fastgfx_active = 0;
+    host_fastgfx_fps = 0;
+    host_fastgfx_next_sync_us = 0;
+    host_load_key_script();
+    timeroffset = host_time_us_64();
+    host_runtime_deadline_us = 0;
+    if (host_runtime_timeout_ms > 0) {
+        host_runtime_deadline_us = timeroffset + (uint64_t)host_runtime_timeout_ms * 1000ULL;
+    }
+    host_fb_reset(gui_bcolour);
+    FontTable[0] = host_font_metrics;
+}
+
+void host_runtime_finish(void) {
+    if (host_screenshot_path[0]) {
+        host_write_screenshot(host_screenshot_path);
+    }
+}
+
+int host_runtime_timed_out(void) {
+    return host_runtime_timed_out_flag;
+}
+
+static void host_runtime_check_timeout(void) {
+    if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
+    uint64_t now = host_time_us_64();
+    if (now < host_runtime_deadline_us) return;
+
+    host_runtime_timed_out_flag = 1;
+    if (host_screenshot_path[0]) {
+        host_write_screenshot(host_screenshot_path);
+    }
+    longjmp(mark, 1);
+}
+
 /* =========================================================================
  *  Stub Functions -- cmd_* (hardware commands): void cmd_xxx(void) {}
  * ========================================================================= */
@@ -286,14 +618,50 @@ void cmd_autosave(void) {}
 void cmd_backlight(void) {}
 void cmd_blit(void) {}
 void cmd_blitmemory(void) {}
-void cmd_box(void) {}
+void cmd_box(void) {
+    int x1, y1, width, height, w = 1, c = gui_fcolour, f = -1;
+    int wmod, hmod;
+    getargs(&cmdline, 13, (unsigned char *)",");
+    if (!(argc & 1) || argc < 7) error("Argument count");
+    x1 = getinteger(argv[0]);
+    y1 = getinteger(argv[2]);
+    width = getinteger(argv[4]);
+    height = getinteger(argv[6]);
+    wmod = (width > 0) ? -1 : 1;
+    hmod = (height > 0) ? -1 : 1;
+    if (argc > 7 && *argv[8]) w = getint(argv[8], 0, 100);
+    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
+    if (argc == 13 && *argv[12]) f = getint(argv[12], -1, WHITE);
+    if (width != 0 && height != 0) {
+        DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
+    }
+}
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
 void cmd_chdir(void) {}
-void cmd_circle(void) {}
+void cmd_circle(void) {
+    int x, y, r, w = 1, c = gui_fcolour, f = -1;
+    MMFLOAT a = 1.0;
+    getargs(&cmdline, 13, (unsigned char *)",");
+    if (!(argc & 1) || argc < 5) error("Argument count");
+    x = getinteger(argv[0]);
+    y = getinteger(argv[2]);
+    r = getinteger(argv[4]);
+    if (argc > 5 && *argv[6]) w = getint(argv[6], 0, 100);
+    if (argc > 7 && *argv[8]) a = getnumber(argv[8]);
+    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
+    if (argc > 11 && *argv[12]) f = getint(argv[12], -1, WHITE);
+    DrawCircle(x, y, r, w, c, f, a);
+}
 void cmd_Classic(void) {}
 void cmd_close(void) {}
-void cmd_cls(void) {}
+void cmd_cls(void) {
+    int colour = gui_bcolour;
+    if (cmdline && *cmdline) colour = getint(cmdline, 0, WHITE);
+    ClearScreen(colour);
+    CurrentX = 0;
+    CurrentY = 0;
+}
 void cmd_colour(void) {}
 void cmd_configure(void) {}
 void cmd_copy(void) {}
@@ -307,7 +675,43 @@ void cmd_ds18b20(void) {}
 void cmd_edit(void) {}
 void cmd_editfile(void) {}
 void cmd_endprogram(void) {}
-void cmd_fastgfx(void) {}
+void cmd_fastgfx(void) {
+    unsigned char *p;
+
+    if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
+        checkend(p);
+        host_fastgfx_active = 1;
+        host_fastgfx_next_sync_us = 0;
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
+        checkend(p);
+        host_fastgfx_active = 0;
+        host_fastgfx_next_sync_us = 0;
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"SWAP"))) {
+        checkend(p);
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
+        checkend(p);
+        if (!host_fastgfx_active || host_fastgfx_fps <= 0) return;
+        uint64_t frame_us = 1000000ULL / (uint64_t)host_fastgfx_fps;
+        uint64_t now = host_time_us_64();
+        if (host_fastgfx_next_sync_us == 0) host_fastgfx_next_sync_us = now + frame_us;
+        if (now < host_fastgfx_next_sync_us) host_sleep_us(host_fastgfx_next_sync_us - now);
+        host_fastgfx_next_sync_us += frame_us;
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
+        host_fastgfx_fps = getint(p, 1, 1000);
+        host_fastgfx_next_sync_us = 0;
+        return;
+    }
+
+    error("Syntax");
+}
 void cmd_files(void) {}
 void cmd_flash(void) {}
 void cmd_flush(void) {}
@@ -330,7 +734,21 @@ void cmd_kill(void) {}
 void cmd_label(void) {}
 void cmd_lcd(void) {}
 void cmd_library(void) {}
-void cmd_line(void) {}
+void cmd_line(void) {
+    int x1, y1, x2, y2, w = 1, c = gui_fcolour;
+    getargs(&cmdline, 11, (unsigned char *)",");
+    if (!(argc & 1) || argc < 7) error("Argument count");
+    x1 = getinteger(argv[0]);
+    y1 = getinteger(argv[2]);
+    x2 = getinteger(argv[4]);
+    y2 = getinteger(argv[6]);
+    if (argc > 7 && *argv[8]) {
+        w = getint(argv[8], -100, 100);
+        if (!w) return;
+    }
+    if (argc == 11 && *argv[10]) c = getint(argv[10], 0, WHITE);
+    DrawLine(x1, y1, x2, y2, w, c);
+}
 void cmd_load(void) {}
 void cmd_longString(void) {}
 void cmd_mkdir(void) {}
@@ -343,7 +761,12 @@ void cmd_onewire(void) {}
 void cmd_open(void) {}
 void cmd_option(void) {}
 void cmd_out(void) {}
-void cmd_pause(void) {}
+void cmd_pause(void) {
+    MMFLOAT f = getnumber(cmdline) * 1000.0;
+    if (f < 0) error("Number out of bounds");
+    if (f < 2) return;
+    host_sleep_us((uint64_t)f);
+}
 void cmd_pin(void) {}
 void cmd_pio(void) {}
 void cmd_PIOline(void) {}
@@ -373,9 +796,70 @@ void cmd_spi(void) {}
 void cmd_spi2(void) {}
 void cmd_sprite(void) {}
 void cmd_sync(void) {}
-void cmd_text(void) {}
+int GetJustification(char *p, int *jh, int *jv, int *jo) {
+    switch (toupper((unsigned char)*p++)) {
+        case 'L': *jh = JUSTIFY_LEFT; break;
+        case 'C': *jh = JUSTIFY_CENTER; break;
+        case 'R': *jh = JUSTIFY_RIGHT; break;
+        case 0: return true;
+        default: p--;
+    }
+    skipspace(p);
+    switch (toupper((unsigned char)*p++)) {
+        case 'T': *jv = JUSTIFY_TOP; break;
+        case 'M': *jv = JUSTIFY_MIDDLE; break;
+        case 'B': *jv = JUSTIFY_BOTTOM; break;
+        case 0: return true;
+        default: p--;
+    }
+    skipspace(p);
+    switch (toupper((unsigned char)*p++)) {
+        case 'N': *jo = ORIENT_NORMAL; break;
+        case 0: return true;
+        default: return false;
+    }
+    return *p == 0;
+}
+
+void cmd_text(void) {
+    int x, y, font, scale, fc, bc;
+    char *s;
+    int jh = JUSTIFY_LEFT, jv = JUSTIFY_TOP, jo = ORIENT_NORMAL;
+
+    getargs(&cmdline, 17, (unsigned char *)",");
+    if (!(argc & 1) || argc < 5) error("Argument count");
+    x = getinteger(argv[0]);
+    y = getinteger(argv[2]);
+    s = (char *)getCstring(argv[4]);
+
+    if (argc > 5 && *argv[6]) {
+        if (!GetJustification((char *)argv[6], &jh, &jv, &jo)) {
+            if (!GetJustification((char *)getCstring(argv[6]), &jh, &jv, &jo)) {
+                error("Justification");
+            }
+        }
+    }
+
+    font = (gui_font >> 4) + 1;
+    scale = gui_font & 0x0F;
+    if (scale == 0) scale = 1;
+    fc = gui_fcolour;
+    bc = gui_bcolour;
+    if (argc > 7 && *argv[8]) font = getint(argv[8], 1, FONT_TABLE_SIZE);
+    if (argc > 9 && *argv[10]) scale = getint(argv[10], 1, 15);
+    if (argc > 11 && *argv[12]) fc = getint(argv[12], 0, WHITE);
+    if (argc == 15 && *argv[14]) bc = getint(argv[14], -1, WHITE);
+    (void)font;
+    (void)jo;
+    GUIPrintString(x, y, scale, jh, jv, jo, fc, bc, s);
+}
 void cmd_time(void) {}
-void cmd_timer(void) {}
+void cmd_timer(void) {
+    uint64_t mytime = host_time_us_64();
+    while (*cmdline && tokenfunction(*cmdline) != op_equal) cmdline++;
+    if (!*cmdline) error("Syntax");
+    timeroffset = mytime - (uint64_t)getint(++cmdline, 0, (int)(mytime / 1000ULL)) * 1000ULL;
+}
 void cmd_triangle(void) {}
 void cmd_update(void) {}
 void cmd_var(void) {}
@@ -419,12 +903,59 @@ void fun_pio(void) {}
 void fun_pixel(void) {}
 void fun_port(void) {}
 void fun_pulsin(void) {}
-void fun_rgb(void) {}
+void fun_rgb(void) {
+    getargs(&ep, 5, (unsigned char *)",");
+    if (argc == 5) {
+        iret = rgb(getint(argv[0], 0, 255), getint(argv[2], 0, 255), getint(argv[4], 0, 255));
+    } else if (argc == 1) {
+        if(checkstring(argv[0], (unsigned char *)"WHITE"))        iret = WHITE;
+        else if(checkstring(argv[0], (unsigned char *)"YELLOW"))  iret = YELLOW;
+        else if(checkstring(argv[0], (unsigned char *)"LILAC"))   iret = LILAC;
+        else if(checkstring(argv[0], (unsigned char *)"BROWN"))   iret = BROWN;
+        else if(checkstring(argv[0], (unsigned char *)"FUCHSIA")) iret = FUCHSIA;
+        else if(checkstring(argv[0], (unsigned char *)"RUST"))    iret = RUST;
+        else if(checkstring(argv[0], (unsigned char *)"MAGENTA")) iret = MAGENTA;
+        else if(checkstring(argv[0], (unsigned char *)"RED"))     iret = RED;
+        else if(checkstring(argv[0], (unsigned char *)"CYAN"))    iret = CYAN;
+        else if(checkstring(argv[0], (unsigned char *)"GREEN"))   iret = GREEN;
+        else if(checkstring(argv[0], (unsigned char *)"CERULEAN"))iret = CERULEAN;
+        else if(checkstring(argv[0], (unsigned char *)"MIDGREEN"))iret = MIDGREEN;
+        else if(checkstring(argv[0], (unsigned char *)"COBALT"))  iret = COBALT;
+        else if(checkstring(argv[0], (unsigned char *)"MYRTLE"))  iret = MYRTLE;
+        else if(checkstring(argv[0], (unsigned char *)"BLUE"))    iret = BLUE;
+        else if(checkstring(argv[0], (unsigned char *)"BLACK"))   iret = BLACK;
+        else if(checkstring(argv[0], (unsigned char *)"GRAY"))    iret = GRAY;
+        else if(checkstring(argv[0], (unsigned char *)"GREY"))    iret = GRAY;
+        else if(checkstring(argv[0], (unsigned char *)"LIGHTGRAY")) iret = LITEGRAY;
+        else if(checkstring(argv[0], (unsigned char *)"LIGHTGREY")) iret = LITEGRAY;
+        else if(checkstring(argv[0], (unsigned char *)"ORANGE"))  iret = ORANGE;
+        else if(checkstring(argv[0], (unsigned char *)"PINK"))    iret = PINK;
+        else if(checkstring(argv[0], (unsigned char *)"GOLD"))    iret = GOLD;
+        else if(checkstring(argv[0], (unsigned char *)"SALMON"))  iret = SALMON;
+        else if(checkstring(argv[0], (unsigned char *)"BEIGE"))   iret = BEIGE;
+        else error("Invalid colour: $", argv[0]);
+    } else {
+        error("Syntax");
+    }
+    targ = T_INT;
+}
 void fun_spi(void) {}
 void fun_spi2(void) {}
 void fun_sprite(void) {}
-void fun_time(void) {}
-void fun_timer(void) {}
+void fun_time(void) {
+    time_t now = (time_t)(host_time_us_64() / 1000000ULL);
+    struct tm tm_buf;
+    struct tm *tm = localtime_r(&now, &tm_buf);
+    sret = GetTempMemory(STRINGSIZE);
+    if (!tm) strcpy((char *)sret, "00:00:00");
+    else snprintf((char *)sret, STRINGSIZE, "%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec);
+    CtoM(sret);
+    targ = T_STR;
+}
+void fun_timer(void) {
+    fret = (MMFLOAT)(host_time_us_64() - timeroffset) / 1000.0;
+    targ = T_NBR;
+}
 void fun_touch(void) {}
 
 /* =========================================================================
@@ -432,10 +963,10 @@ void fun_touch(void) {}
  * ========================================================================= */
 
 /* Hardware interaction */
-void CheckAbort(void) {}
+void CheckAbort(void) { host_runtime_check_timeout(); }
 int check_interrupt(void) { return 0; }
 void ClearExternalIO(void) {}
-void ClearScreen(int c) { (void)c; }
+void ClearScreen(int c) { host_fb_reset(c); }
 void CloseAllFiles(void) {}
 void CloseAudio(int all) { (void)all; }
 void closeframebuffer(char layer) { (void)layer; }
@@ -443,10 +974,10 @@ void clear320(void) {}
 void DisplayPutC(char c) { host_print(&c, 1); }
 void enable_interrupts_pico(void) {}
 void disable_interrupts_pico(void) {}
-void initFonts(void) {}
+void initFonts(void) { FontTable[0] = host_font_metrics; }
 void initMouse0(int sensitivity) { (void)sensitivity; }
 void restorepanel(void) {}
-void routinechecks(void) {}
+void routinechecks(void) { host_runtime_check_timeout(); }
 void SoftReset(void) {}
 void uSec(int us) { (void)us; }
 uint32_t __get_MSP(void) { return 0xFFFFFFFF; }  /* always pass stack overflow check */
@@ -463,7 +994,13 @@ static void host_prints(const char *s) {
     if (s) host_print(s, strlen(s));
 }
 
-int MMInkey(void) { return -1; }
+int MMInkey(void) {
+    host_runtime_check_timeout();
+    if (host_key_script_pos < host_key_script_len) {
+        return (unsigned char)host_key_script[host_key_script_pos++];
+    }
+    return -1;
+}
 int MMgetchar(void) { return getchar(); }
 char MMputchar(char c, int flush) {
     if (host_output_hook) host_output_hook(&c, 1);
@@ -559,18 +1096,60 @@ int pattern_matching(const TCHAR *pat, const TCHAR *nam, int skip, int inf) {
 }
 
 /* Drawing stubs */
-void SetFont(int f) { (void)f; }
+void SetFont(int f) {
+    int scale = f & 0x0F;
+    if (scale == 0) scale = 1;
+    gui_font = f;
+    gui_font_width = (short)(6 * scale);
+    gui_font_height = (short)(8 * scale);
+    FontTable[0] = host_font_metrics;
+}
 void UnloadFont(int f) { (void)f; }
 void ResetDisplay(void) {}
-int GetFontWidth(int fnt) { (void)fnt; return 8; }
-int GetFontHeight(int fnt) { (void)fnt; return 16; }
-int GetJustification(char *p, int *jh, int *jv, int *jo) { (void)p; (void)jh; (void)jv; (void)jo; return 0; }
-void DrawLine(int x1, int y1, int x2, int y2, int w, int c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)w; (void)c; }
-void DrawBox(int x1, int y1, int x2, int y2, int w, int c, int fill) { (void)x1; (void)y1; (void)x2; (void)y2; (void)w; (void)c; (void)fill; }
+int GetFontWidth(int fnt) { (void)fnt; return 6; }
+int GetFontHeight(int fnt) { (void)fnt; return 8; }
+void DrawLine(int x1, int y1, int x2, int y2, int w, int c) { host_draw_line_pixels(x1, y1, x2, y2, w, c); }
+void DrawBox(int x1, int y1, int x2, int y2, int w, int c, int fill) {
+    if (fill >= 0) host_fill_rect_pixels(x1, y1, x2, y2, fill);
+    if (w > 0) {
+        for (int i = 0; i < w; ++i) {
+            host_draw_line_pixels(x1 + i, y1 + i, x2 - i, y1 + i, 1, c);
+            host_draw_line_pixels(x1 + i, y2 - i, x2 - i, y2 - i, 1, c);
+            host_draw_line_pixels(x1 + i, y1 + i, x1 + i, y2 - i, 1, c);
+            host_draw_line_pixels(x2 - i, y1 + i, x2 - i, y2 - i, 1, c);
+        }
+    }
+}
 void DrawRBox(int x1, int y1, int x2, int y2, int radius, int c, int fill) { (void)x1; (void)y1; (void)x2; (void)y2; (void)radius; (void)c; (void)fill; }
-void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect) { (void)x; (void)y; (void)radius; (void)w; (void)c; (void)fill; (void)aspect; }
+void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect) {
+    if (radius <= 0) return;
+    if (w < 0) w = -w;
+    if (aspect <= 0) aspect = 1.0;
+
+    int ry = (int)ceil(radius * aspect);
+    MMFLOAT outer = (MMFLOAT)radius + (w > 0 ? (MMFLOAT)w / 2.0 : 0.5);
+    MMFLOAT inner = (MMFLOAT)radius - (w > 0 ? (MMFLOAT)w / 2.0 : 0.5);
+    MMFLOAT outer2 = outer * outer;
+    MMFLOAT inner2 = inner * inner;
+    MMFLOAT fill2 = (MMFLOAT)radius * (MMFLOAT)radius;
+
+    for (int py = y - ry - w - 1; py <= y + ry + w + 1; ++py) {
+        MMFLOAT dy = ((MMFLOAT)py - (MMFLOAT)y) / aspect;
+        for (int px = x - radius - w - 1; px <= x + radius + w + 1; ++px) {
+            MMFLOAT dx = (MMFLOAT)px - (MMFLOAT)x;
+            MMFLOAT dist2 = dx * dx + dy * dy;
+            if (fill >= 0 && dist2 <= fill2) host_put_pixel(px, py, fill);
+            if (w > 0 && dist2 <= outer2 && dist2 >= inner2) host_put_pixel(px, py, c);
+        }
+    }
+}
 void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, int c, int fill) { (void)x0; (void)y0; (void)x1; (void)y1; (void)x2; (void)y2; (void)c; (void)fill; }
-void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, char *str) { (void)x; (void)y; (void)fnt; (void)jh; (void)jv; (void)jo; (void)fc; (void)bc; (void)str; }
+void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, char *str) {
+    int scale = fnt & 0x0F;
+    if (scale == 0) scale = 1;
+    (void)jo;
+    host_draw_text(x, y, scale, jh, jv, fc, bc, str);
+}
 void ShowCursor(int show) { (void)show; }
 int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }
 void setmode(int mode, bool clear) { (void)mode; (void)clear; }
@@ -641,7 +1220,7 @@ volatile unsigned int GetPinStatus(int pin) { (void)pin; return 0; }
 int GetPinBit(int pin) { (void)pin; return 0; }
 void WriteCoreTimer(unsigned long timeset) { (void)timeset; }
 unsigned long ReadCoreTimer(void) { return 0; }
-uint64_t readusclock(void) { return 0; }
+uint64_t readusclock(void) { return host_time_us_64(); }
 void writeusclock(uint64_t timeset) { (void)timeset; }
 uint64_t readIRclock(void) { return 0; }
 void writeIRclock(uint64_t timeset) { (void)timeset; }

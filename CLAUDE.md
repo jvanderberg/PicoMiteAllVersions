@@ -1,0 +1,1 @@
+- Never dismiss failing tests as "pre-existing." All tests must pass. If a test fails, investigate and fix it before moving on.

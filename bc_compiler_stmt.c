@@ -466,9 +466,9 @@ static void compile_print(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp; skipspace(p);
     int suppress_newline = 0;
 
-    while (*p && *p != '\'' && *p != T_NEWLINE) {
+    while (*p && *p != '\'' && *p != T_NEWLINE && *p != tokenELSE) {
         skipspace(p);
-        if (*p == '\0' || *p == '\'' || *p == T_NEWLINE) break;
+        if (*p == '\0' || *p == '\'' || *p == T_NEWLINE || *p == tokenELSE) break;
         if (*p == ';') { suppress_newline = 1; p++; continue; }
         if (*p == ',') { bc_emit_byte(cs, OP_PRINT_TAB); suppress_newline = 1; p++; continue; }
 
@@ -518,7 +518,7 @@ static void compile_dim(BCCompiler *cs, unsigned char **pp) {
         if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
 
         uint16_t slot = bc_find_slot(cs, (const char *)p, namelen);
-        if (slot == 0xFFFF) slot = bc_add_slot(cs, (const char *)p, namelen, vtype, 1);
+        if (slot == 0xFFFF) slot = bc_add_slot(cs, (const char *)p, namelen, vtype, is_arr);
         p += namelen; skipspace(p);
 
         if (*p == '(') {
@@ -639,8 +639,10 @@ static void compile_end_sub(BCCompiler *cs, unsigned char **pp) {
     BCNestEntry *ne = bc_nest_top(cs);
     if (!ne || ne->type != NEST_SUB) { bc_set_error(cs, "END SUB without matching SUB"); return; }
     bc_patch_u16(cs, ne->addr2, cs->local_count);
-    if (cs->current_subfun >= 0)
+    if (cs->current_subfun >= 0) {
         cs->subfuns[cs->current_subfun].nlocals = cs->local_count;
+        bc_commit_locals(cs, cs->current_subfun);
+    }
     bc_emit_byte(cs, OP_LEAVE_FRAME);
     bc_emit_byte(cs, OP_RET_SUB);
     patch_jmp_here(cs, ne->addr1);
@@ -714,8 +716,10 @@ static void compile_end_function(BCCompiler *cs, unsigned char **pp) {
         bc_set_error(cs, "END FUNCTION without matching FUNCTION"); return;
     }
     bc_patch_u16(cs, ne->addr2, cs->local_count);
-    if (cs->current_subfun >= 0)
+    if (cs->current_subfun >= 0) {
         cs->subfuns[cs->current_subfun].nlocals = cs->local_count;
+        bc_commit_locals(cs, cs->current_subfun);
+    }
     bc_emit_load_var(cs, ne->var_slot, ne->var_type, 1);
     bc_emit_byte(cs, OP_LEAVE_FRAME);
     bc_emit_byte(cs, OP_RET_FUN);
@@ -926,9 +930,9 @@ static void compile_data(BCCompiler *cs, unsigned char **pp) {
         tokPlus  = (unsigned char)GetTokenValue((unsigned char *)"+");
     }
 
-    while (*p && *p != '\'' && *p != T_NEWLINE) {
+    while (*p && *p != '\'' && *p != T_NEWLINE && *p != tokenELSE) {
         skipspace(p);
-        if (!*p || *p == '\'' || *p == T_NEWLINE) break;
+        if (!*p || *p == '\'' || *p == T_NEWLINE || *p == tokenELSE) break;
 
         if (cs->data_count >= BC_MAX_DATA_ITEMS) {
             bc_set_error(cs, "Too many DATA items");
@@ -1025,9 +1029,9 @@ static void compile_read(BCCompiler *cs, unsigned char **pp) {
     unsigned char *p = *pp;
     skipspace(p);
 
-    while (*p && *p != '\'' && *p != T_NEWLINE) {
+    while (*p && *p != '\'' && *p != T_NEWLINE && *p != tokenELSE) {
         skipspace(p);
-        if (!*p || *p == '\'' || *p == T_NEWLINE) break;
+        if (!*p || *p == '\'' || *p == T_NEWLINE || *p == tokenELSE) break;
 
         /* Parse variable name */
         uint8_t vtype = 0;
@@ -1345,11 +1349,16 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
     if (cmd_token == cmdCASE_ELSE)   { compile_case_else(cs, pp);   return; }
     if (cmd_token == cmdEND_SELECT)  { compile_end_select(cs, pp);  return; }
 
-    /* Comments, CSUB, IRET — skip */
-    if (cmd_token == cmdComment || cmd_token == cmdEndComment ||
-        cmd_token == cmdCSUB || cmd_token == cmdIRET) {
-        unsigned char *p = *pp; while (*p) p++; *pp = p;
-        return;
+    /* Comments, CSUB, IRET, OPTION — skip (compile-time directives) */
+    {
+        static unsigned short cmdOPTION = 0;
+        if (!cmdOPTION) cmdOPTION = (unsigned short)GetCommandValue((unsigned char *)"Option");
+        if (cmd_token == cmdComment || cmd_token == cmdEndComment ||
+            cmd_token == cmdCSUB || cmd_token == cmdIRET ||
+            cmd_token == cmdOPTION) {
+            unsigned char *p = *pp; while (*p) p++; *pp = p;
+            return;
+        }
     }
 
     /* Commands not available as pre-cached globals: use static cache */
