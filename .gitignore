@@ -1,1 +1,8 @@
 build/
+build2350/
+host/*.o
+host/mmbasic_test
+host/mmbasic_legacy_test
+*.uf2
+.DS_Store
+hardcopy.*
