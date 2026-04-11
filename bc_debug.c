@@ -2,7 +2,7 @@
  * bc_debug.c -- Bytecode disassembler and diagnostic tools
  *
  * Provides human-readable dump of compiled bytecode and compiler statistics.
- * Used for debugging when FRUN produces incorrect output or crashes.
+ * Used for debugging when VM execution produces incorrect output or crashes.
  *
  * Works on both host (printf to stdout) and device (MMPrintString to console).
  * On device, costs ~8 KB flash via XIP (zero RAM when not running).
@@ -14,7 +14,7 @@
 #include "MMBasic.h"
 #include "bytecode.h"
 
-/* Global debug flag — when set, cmd_frun dumps stats + disassembly */
+/* Global debug flag - when set, VM execution dumps stats + disassembly */
 int bc_debug_enabled = 0;
 
 /* Output helper: works on both host and device */
@@ -137,11 +137,6 @@ static const char *opcode_name(uint8_t op) {
         case OP_STORE_LOCAL_ARR_I: return "ST_LARR_I";
         case OP_STORE_LOCAL_ARR_F: return "ST_LARR_F";
         case OP_STORE_LOCAL_ARR_S: return "ST_LARR_S";
-
-        case OP_BUILTIN_CMD:  return "BUILTIN_CMD";
-        case OP_BUILTIN_FUN_I:return "BUILTIN_FUN_I";
-        case OP_BUILTIN_FUN_F:return "BUILTIN_FUN_F";
-        case OP_BUILTIN_FUN_S:return "BUILTIN_FUN_S";
 
         case OP_PRINT_INT:    return "PRINT_INT";
         case OP_PRINT_FLT:    return "PRINT_FLT";
@@ -376,23 +371,6 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_ENTER_FRAME: {
             uint16_t n = rd16(code + pc); pc += 2;
             dbg_print("  %04X: %-16s nlocals=%d\r\n", start, name, n);
-            break;
-        }
-
-        /* BUILTIN_CMD: idx:16 + embedded pointer */
-        case OP_BUILTIN_CMD: {
-            uint16_t idx = rd16(code + pc); pc += 2;
-            pc += sizeof(uintptr_t);
-            dbg_print("  %04X: %-16s cmd=%d\r\n", start, name, idx);
-            break;
-        }
-
-        /* BUILTIN_FUN: idx:16, nargs:8 + embedded pointer */
-        case OP_BUILTIN_FUN_I: case OP_BUILTIN_FUN_F: case OP_BUILTIN_FUN_S: {
-            uint16_t idx = rd16(code + pc); pc += 2;
-            uint8_t nargs = code[pc++];
-            pc += sizeof(uintptr_t);
-            dbg_print("  %04X: %-16s fun=%d nargs=%d\r\n", start, name, idx, nargs);
             break;
         }
 
@@ -765,7 +743,7 @@ void bc_crash_checkpoint(int stage, const char *label) {
     /* Print checkpoint only when debug is enabled — otherwise the output
      * floods the small PicoCalc screen and hides program output. */
     if (bc_debug_enabled) {
-        dbg_print("FRUN[%d] %s  SP=0x%08X\r\n", stage, label,
+        dbg_print("VMRUN[%d] %s  SP=0x%08X\r\n", stage, label,
                   (unsigned)bc_crash_info.sp);
     }
 }
@@ -792,7 +770,7 @@ void bc_crash_dump_if_any(void) {
 
     dbg_print("\r\n");
     dbg_print("==================================\r\n");
-    dbg_print("   FRUN CRASH REPORT\r\n");
+    dbg_print("   VM CRASH REPORT\r\n");
     dbg_print("==================================\r\n");
     dbg_print("  Last checkpoint: %d\r\n", (int)bc_crash_info.checkpoint);
     dbg_print("  Label:  %s\r\n", bc_crash_info.label);
@@ -841,7 +819,7 @@ void bc_crash_dump_if_any(void) {
 }
 
 /*
- * Explicitly clear the breadcrumb (called on successful FRUN completion).
+ * Explicitly clear the breadcrumb (called on successful VM completion).
  */
 void bc_crash_clear(void) {
     bc_crash_info.magic = 0;

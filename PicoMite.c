@@ -58,7 +58,7 @@ extern void start_vga_i2s(void);
 #endif
 #define COPYRIGHT   "Copyright " YEAR " Geoff Graham\r\n"\
                     "Copyright " YEAR2 " Peter Mather\r\n"\
-                    "FRUN bytecode VM by Josh V\r\n\r\n"
+                    "Bytecode VM by Josh V\r\n\r\n"
 
 #ifdef USBKEYBOARD
     #include "tusb.h"
@@ -4117,6 +4117,43 @@ static void MIPS16 transform_star_command(char *input) {
 
     ClearSpecificTempMemory(tmp);
 }
+
+static bool MIPS16 prompt_shell_command_allowed(CommandToken tkn) {
+    static bool initialised = false;
+    static CommandToken allowed[20];
+
+    if (!initialised) {
+        int i = 0;
+        allowed[i++] = GetCommandValue((unsigned char *)"RUN");
+        allowed[i++] = GetCommandValue((unsigned char *)"EDIT");
+        allowed[i++] = GetCommandValue((unsigned char *)"AUTOSAVE");
+        allowed[i++] = GetCommandValue((unsigned char *)"LIST");
+        allowed[i++] = GetCommandValue((unsigned char *)"LOAD");
+        allowed[i++] = GetCommandValue((unsigned char *)"SAVE");
+        allowed[i++] = GetCommandValue((unsigned char *)"FILES");
+        allowed[i++] = GetCommandValue((unsigned char *)"NEW");
+        allowed[i++] = GetCommandValue((unsigned char *)"OPTION");
+        allowed[i++] = GetCommandValue((unsigned char *)"KILL");
+        allowed[i++] = GetCommandValue((unsigned char *)"RMDIR");
+        allowed[i++] = GetCommandValue((unsigned char *)"CHDIR");
+        allowed[i++] = GetCommandValue((unsigned char *)"MKDIR");
+        allowed[i++] = GetCommandValue((unsigned char *)"COPY");
+        allowed[i++] = GetCommandValue((unsigned char *)"RENAME");
+        allowed[i++] = GetCommandValue((unsigned char *)"DRIVE");
+        allowed[i++] = GetCommandValue((unsigned char *)"HELP");
+        allowed[i++] = GetCommandValue((unsigned char *)"CONFIGURE");
+#ifdef rp2350
+        allowed[i++] = GetCommandValue((unsigned char *)"CMM2 LOAD");
+        allowed[i++] = GetCommandValue((unsigned char *)"CMM2 RUN");
+#endif
+        initialised = true;
+    }
+
+    for (unsigned int i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
+        if (allowed[i] != 0 && tkn == allowed[i]) return true;
+    }
+    return false;
+}
 #ifdef PICOMITEWEB
 void WebConnect(void){
     if(*Option.SSID){
@@ -4156,7 +4193,6 @@ void WebConnect(void){
 #endif
 
 int MIPS16 main(){
-    static int ErrorInPrompt;
     int i=0;
     char savewatchdog=false;
         i=watchdog_caused_reboot();
@@ -4425,7 +4461,6 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
     if(Option.BackLightLevel)setBacklight(Option.BackLightLevel);
 #endif
 #endif
-    ErrorInPrompt = false;
     exception_set_exclusive_handler(HARDFAULT_EXCEPTION,sigbus);
     exception_set_exclusive_handler(SVCALL_EXCEPTION,sigbus);
     exception_set_exclusive_handler(PENDSV_EXCEPTION,sigbus);
@@ -4676,15 +4711,8 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         }
         if(_excep_code!=POSSIBLE_WATCHDOG)_excep_code = 0;
         PrepareProgram(false);
-        if(!ErrorInPrompt && FindSubFun((unsigned char *)"MM.PROMPT", 0) >= 0) {
-            ErrorInPrompt = true;
-            ExecuteProgram((unsigned char *)"MM.PROMPT\0");
-            MMPromptPos=MMCharPos-1;    //Save length of prompt
-        } else{
-            MMPrintString("> ");                                    // print the prompt
-            MMPromptPos=2;    //Save length of prompt
-        }    
-        ErrorInPrompt = false;
+        MMPrintString("> ");                                        // shell prompt
+        MMPromptPos=2;                                              // save length of prompt
         EditInputLine();
         //InsertLastcmd(inpbuf);                                  // save in case we want to edit it later
         if(!*inpbuf) continue;                                      // ignore an empty line
@@ -4705,6 +4733,11 @@ autorun:
         i=0;
         WatchdogSet=savewatchdog;
         CommandToken tkn=commandtbl_decode(tknbuf);
+        if(!prompt_shell_command_allowed(tkn)) {
+            MMPrintString("Immediate BASIC disabled\r\n");
+            memset(inpbuf,0,STRINGSIZE);
+            continue;
+        }
         if(tkn==GetCommandValue((unsigned char *)"RUN") || tkn==GetCommandValue((unsigned char *)"EDIT") || tkn==GetCommandValue((unsigned char *)"AUTOSAVE"))i=1;
         if (setjmp(jmprun) != 0) {
             PrepareProgram(false);

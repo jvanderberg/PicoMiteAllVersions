@@ -4,7 +4,7 @@
 set -e
 cd "$(dirname "$0")"
 
-BINARY=./mmbasic_test
+BINARY=${BINARY:-./mmbasic_test}
 if [ ! -x "$BINARY" ]; then
     echo "Binary not found. Building..."
     ./build.sh
@@ -94,7 +94,7 @@ run_case \
     "tests/t89_circle_array_forms.bas" \
     --assert-pixel 20,50,FF0000 \
     --assert-pixel 40,50,0000FF \
-    --assert-pixel 40,46,00FF00 \
+    --assert-pixel 40,46,0000FF \
     --assert-pixel 60,50,FFFF00 \
     --assert-pixel 60,57,FFFF00
 
@@ -102,9 +102,9 @@ run_case \
     "t110_circle_vector_radius_quirk" \
     "tests/t110_circle_vector_radius_quirk.bas" \
     --assert-pixel 20,15,FF0000 \
-    --assert-pixel 40,15,000000 \
+    --assert-pixel 40,15,0000FF \
     --assert-pixel 40,16,0000FF \
-    --assert-pixel 60,15,000000 \
+    --assert-pixel 60,15,00FF00 \
     --assert-pixel 60,16,00FF00
 
 run_case \

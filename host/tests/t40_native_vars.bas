@@ -1,5 +1,4 @@
-' Test bridge variable sync: bridged functions reading VM variables
-' SPACE$() is not natively compiled, goes through bridge
+' Test native functions reading VM variables
 DIM n%
 n% = 3
 PRINT "|"; SPACE$(n%); "|"
@@ -7,7 +6,7 @@ n% = 0
 PRINT "|"; SPACE$(n%); "|"
 n% = 7
 PRINT "|"; SPACE$(n%); "|"
-' STRING$() is also bridged
+' STRING$() with VM variables
 DIM c%
 c% = 42
 PRINT STRING$(5, c%)

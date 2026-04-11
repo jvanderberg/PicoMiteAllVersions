@@ -1,5 +1,5 @@
-' Test bridge math functions (ASIN, ACOS, ATAN2, RND)
-' Inverse trig (bridge)
+' Test native math functions (ASIN, ACOS, ATAN2, RND)
+' Inverse trig
 PRINT ASIN(0)
 PRINT ASIN(0.5)
 PRINT ASIN(1)

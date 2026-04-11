@@ -262,7 +262,7 @@ static int run_bytecode_vm(char *output, int outsize) {
     host_runtime_begin();
     PrepareProgram(1);
     if (setjmp(mark) == 0) {
-        cmd_frun();
+        bc_run_current_program();
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);

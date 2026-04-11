@@ -682,7 +682,7 @@ static const char T33_expected[] =
     " 9223372036854775807 \r\n"
     "-1 \r\n";
 
-/* ----- T34: Math Functions (via bridge) ----- */
+/* ----- T34: Math Functions ----- */
 static const char T34_source[] =
     "PRINT ABS(-42)\n"
     "PRINT ABS(-3.14)\n"

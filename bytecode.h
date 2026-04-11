@@ -1,5 +1,5 @@
 /*
- * bytecode.h - Bytecode VM definitions for FRUN command
+ * bytecode.h - Bytecode VM definitions
  *
  * Defines the instruction set, compiler state, and VM state for the
  * MMBasic bytecode compiler and virtual machine.
@@ -134,12 +134,6 @@ typedef enum {
     OP_STORE_LOCAL_ARR_F = 0x84, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_S = 0x85, /* offset:16, ndim:8 */
 
-    /* Built-in Bridge */
-    OP_BUILTIN_CMD  = 0x80,  /* idx:16 */
-    OP_BUILTIN_FUN_I= 0x81,  /* idx:16, nargs:8 */
-    OP_BUILTIN_FUN_F= 0x82,  /* idx:16, nargs:8 */
-    OP_BUILTIN_FUN_S= 0x83,  /* idx:16, nargs:8 */
-
     /* PRINT */
     OP_PRINT_INT    = 0x88,  /* flags:8 (bit0=no newline, bit1=tab after) */
     OP_PRINT_FLT    = 0x89,  /* flags:8 */
@@ -152,7 +146,7 @@ typedef enum {
     OP_DIM_ARR_F    = 0x91,  /* slot:16, ndim:8 */
     OP_DIM_ARR_S    = 0x92,  /* slot:16, ndim:8 */
 
-    /* Native string functions (compiled arguments, no bridge) */
+    /* Native string functions (compiled arguments) */
     OP_STR_LEN      = 0xA0,  /* pop str, push int len */
     OP_STR_LEFT     = 0xA1,  /* pop int n, pop str, push str LEFT$(s,n) */
     OP_STR_RIGHT    = 0xA2,  /* pop int n, pop str, push str RIGHT$(s,n) */
@@ -169,7 +163,7 @@ typedef enum {
     OP_STR_OCT      = 0xAD,  /* pop int, push str OCT$(n) */
     OP_STR_BIN      = 0xAE,  /* pop int, push str BIN$(n) */
 
-    /* Native math functions (compiled arguments, no bridge) */
+    /* Native math functions (compiled arguments) */
     OP_MATH_SIN     = 0xB0,  /* pop float, push float SIN(x) */
     OP_MATH_COS     = 0xB1,  /* pop float, push float COS(x) */
     OP_MATH_TAN     = 0xB2,  /* pop float, push float TAN(x) */
@@ -221,6 +215,15 @@ typedef enum {
     OP_FASTGFX_CREATE = 0xD8, /* — FASTGFX CREATE */
     OP_FASTGFX_CLOSE  = 0xD9, /* — FASTGFX CLOSE */
     OP_FASTGFX_FPS    = 0xDA, /* — pop int fps, FASTGFX FPS */
+    OP_MATH_ASIN      = 0xDB, /* pop float, push float ASIN(x) */
+    OP_MATH_ACOS      = 0xDC, /* pop float, push float ACOS(x) */
+    OP_MATH_ATAN2     = 0xDD, /* pop float y, pop float x, push float ATAN2(y,x) */
+    OP_TIMER          = 0xDE, /* — push float TIMER */
+    OP_MM_HRES        = 0xDF, /* — push int MM.HRES */
+    OP_MM_VRES        = 0xE0, /* — push int MM.VRES */
+    OP_STR_FIELD3     = 0xE1, /* pop delim str, pop field int, pop source str, push FIELD$ */
+    OP_COLOUR         = 0xE2, /* native COLOR/COLOUR */
+    OP_PAUSE          = 0xE3, /* pop numeric ms, PAUSE */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -395,7 +398,7 @@ typedef struct {
 } BCDataItem;
 
 /*
- * Persisted local variable metadata for bridged command/function evaluation.
+ * Persisted local variable metadata for native VM call frames.
  */
 typedef struct {
     char    name[MAXVARLEN + 1];
@@ -624,13 +627,8 @@ void bc_vm_init(BCVMState *vm, BCCompiler *cs);
 void bc_vm_execute(BCVMState *vm);
 void bc_vm_error(BCVMState *vm, const char *msg, ...);
 
-/* Bridge */
-void bc_bridge_call_cmd(BCVMState *vm, uint16_t cmd_idx);
-void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, uint8_t nargs, uint8_t ret_type);
-void bc_bridge_reset_sync(void);
-
 /* Commands */
-void cmd_frun(void);
+void bc_run_current_program(void);
 void cmd_ftest(void);
 
 /* Helpers */
@@ -661,7 +659,7 @@ void bc_patch_i16(BCCompiler *cs, uint32_t addr, int16_t v);
 void bc_patch_u32(BCCompiler *cs, uint32_t addr, uint32_t v);
 
 /* Debug / diagnostic tools */
-extern int bc_debug_enabled;       /* set to 1 to dump stats+disassembly on FRUN */
+extern int bc_debug_enabled;       /* set to 1 to dump stats+disassembly on VM run */
 void bc_disassemble(BCCompiler *cs);
 
 /* Native FASTGFX helpers implemented by the platform runtime. */
@@ -690,16 +688,16 @@ typedef struct {
     char     label[32];     /* checkpoint description string */
 } BCCrashInfo;
 
-/* Checkpoint stage IDs for cmd_frun() */
-#define BC_CK_FRUN_ENTRY       1
-#define BC_CK_FRUN_ALLOC_CS    2
-#define BC_CK_FRUN_ALLOC_VM    3
-#define BC_CK_FRUN_COMP_ALLOC  4
-#define BC_CK_FRUN_VM_ALLOC    5
-#define BC_CK_FRUN_COMPILE     6
-#define BC_CK_FRUN_VM_INIT     7
-#define BC_CK_FRUN_EXECUTE     8
-#define BC_CK_FRUN_CLEANUP     9
+/* Checkpoint stage IDs for VM program execution */
+#define BC_CK_VM_ENTRY       1
+#define BC_CK_VM_ALLOC_CS    2
+#define BC_CK_VM_ALLOC_VM    3
+#define BC_CK_VM_COMP_ALLOC  4
+#define BC_CK_VM_ALLOC       5
+#define BC_CK_VM_COMPILE     6
+#define BC_CK_VM_INIT        7
+#define BC_CK_VM_EXECUTE     8
+#define BC_CK_VM_CLEANUP     9
 
 void bc_crash_checkpoint(int stage, const char *label);
 void bc_crash_save_fault(void);    /* called from sigbus() to capture ARM regs */

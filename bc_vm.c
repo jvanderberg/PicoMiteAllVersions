@@ -1,8 +1,8 @@
 /*
- * bc_vm.c - Bytecode VM for MMBasic's FRUN command
+ * bc_vm.c - Bytecode VM for MMBasic
  *
  * Implements a stack-based virtual machine that executes the bytecode
- * produced by the FRUN compiler.  Uses computed goto (GCC extension)
+ * produced by the bytecode compiler.  Uses computed goto (GCC extension)
  * for fast dispatch on RP2040.
  */
 
@@ -36,6 +36,8 @@ extern void FreeMemory(unsigned char *addr);
 #define BC_ALLOC(sz)   GetMemory((sz))
 #define BC_FREE(p)     FreeMemory((unsigned char *)(p))
 #endif
+extern uint64_t readusclock(void);
+extern uint64_t timeroffset;
 
 extern void *GetTempMemory(int NbrBytes);
 extern void *GetTempStrMemory(void);
@@ -113,8 +115,8 @@ static uint32_t calc_array_offset(BCVMState *vm, BCArray *arr,
                                   int64_t *indices, int ndim) {
     /* MMBasic uses column-major (Fortran) ordering: first index varies
      * fastest.  offset = idx[0] + idx[1]*stride1 + idx[2]*stride1*stride2 …
-     * This must match the interpreter's findvar() so that the bridge can
-     * point MMBasic at VM array data and get correct element lookups. */
+     * This must match the interpreter's array layout so the VM can be
+     * compared directly against the host oracle. */
     for (int d = 0; d < ndim; d++) {
         int dim_size = arr->dims[d] + 1;   /* 0..N inclusive = N+1 elements */
         if (indices[d] < 0 || indices[d] >= dim_size)
@@ -291,8 +293,8 @@ void bc_vm_error(BCVMState *vm, const char *msg, ...) {
 
     /* Format with line number and call MMBasic's error() which longjmps */
     char errbuf[320];
-    snprintf(errbuf, sizeof(errbuf), "[FRUN line %d] %s", (int)vm->current_line, buf);
-    error(errbuf);
+    snprintf(errbuf, sizeof(errbuf), "[VM line %d] %s", (int)vm->current_line, buf);
+    error("$", errbuf);
 }
 
 static inline BCValue bc_vm_coerce_arg_value(BCValue value, uint8_t from_type, uint8_t to_type) {
@@ -682,13 +684,6 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_STORE_LOCAL_ARR_I] = &&op_store_local_arr_i,
         [OP_STORE_LOCAL_ARR_F] = &&op_store_local_arr_f,
         [OP_STORE_LOCAL_ARR_S] = &&op_store_local_arr_s,
-
-        /* Built-in Bridge */
-        [OP_BUILTIN_CMD]    = &&op_builtin_cmd,
-        [OP_BUILTIN_FUN_I]  = &&op_builtin_fun_i,
-        [OP_BUILTIN_FUN_F]  = &&op_builtin_fun_f,
-        [OP_BUILTIN_FUN_S]  = &&op_builtin_fun_s,
-
         /* PRINT */
         [OP_PRINT_INT]      = &&op_print_int,
         [OP_PRINT_FLT]      = &&op_print_flt,
@@ -733,6 +728,9 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_MATH_CINT]      = &&op_math_cint,
         [OP_MATH_RAD]       = &&op_math_rad,
         [OP_MATH_DEG]       = &&op_math_deg,
+        [OP_MATH_ASIN]      = &&op_math_asin,
+        [OP_MATH_ACOS]      = &&op_math_acos,
+        [OP_MATH_ATAN2]     = &&op_math_atan2,
         [OP_MATH_PI]        = &&op_math_pi,
         [OP_MATH_MAX]       = &&op_math_max,
         [OP_MATH_MIN]       = &&op_math_min,
@@ -746,10 +744,14 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         /* Additional string functions */
         [OP_STR_SPACE]      = &&op_str_space,
         [OP_STR_STRING]     = &&op_str_string,
+        [OP_STR_FIELD3]     = &&op_str_field3,
         [OP_STR_INKEY]      = &&op_str_inkey,
 
         /* Additional numeric functions */
         [OP_RND]            = &&op_rnd,
+        [OP_TIMER]          = &&op_timer,
+        [OP_MM_HRES]        = &&op_mm_hres,
+        [OP_MM_VRES]        = &&op_mm_vres,
 
         /* Additional statements */
         [OP_RANDOMIZE]      = &&op_randomize,
@@ -768,6 +770,8 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_FASTGFX_CREATE] = &&op_fastgfx_create,
         [OP_FASTGFX_CLOSE]  = &&op_fastgfx_close,
         [OP_FASTGFX_FPS]    = &&op_fastgfx_fps,
+        [OP_COLOUR]         = &&op_colour,
+        [OP_PAUSE]          = &&op_pause,
 
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
@@ -1887,37 +1891,6 @@ op_store_local_arr_s: {
 }
 
     /* ==================================================================
-     * Built-in Bridge
-     * ================================================================== */
-
-op_builtin_cmd: {
-    uint16_t idx = READ_U16();
-    bc_bridge_call_cmd(vm, idx);
-    DISPATCH();
-}
-
-op_builtin_fun_i: {
-    uint16_t idx   = READ_U16();
-    uint8_t  nargs = *vm->pc++;
-    bc_bridge_call_fun(vm, idx, nargs, T_INT);
-    DISPATCH();
-}
-
-op_builtin_fun_f: {
-    uint16_t idx   = READ_U16();
-    uint8_t  nargs = *vm->pc++;
-    bc_bridge_call_fun(vm, idx, nargs, T_NBR);
-    DISPATCH();
-}
-
-op_builtin_fun_s: {
-    uint16_t idx   = READ_U16();
-    uint8_t  nargs = *vm->pc++;
-    bc_bridge_call_fun(vm, idx, nargs, T_STR);
-    DISPATCH();
-}
-
-    /* ==================================================================
      * PRINT
      *
      * MMBasic PRINT behaviour:
@@ -2326,6 +2299,25 @@ op_math_atn: {
     DISPATCH();
 }
 
+op_math_asin: {
+    MMFLOAT v = POP_F();
+    PUSH_F(asin(v));
+    DISPATCH();
+}
+
+op_math_acos: {
+    MMFLOAT v = POP_F();
+    PUSH_F(acos(v));
+    DISPATCH();
+}
+
+op_math_atan2: {
+    MMFLOAT x = POP_F();
+    MMFLOAT y = POP_F();
+    PUSH_F(atan2(y, x));
+    DISPATCH();
+}
+
 op_math_sqr: {
     MMFLOAT v = POP_F();
     if (v < 0.0) bc_vm_error(vm, "SQR of negative number");
@@ -2529,6 +2521,56 @@ op_str_string: {
     DISPATCH();
 }
 
+op_str_field3: {
+    /* FIELD$(source$, field%, delims$), matching the common 3-arg form. */
+    uint8_t *delims = POP_S();
+    int64_t field = POP_I();
+    uint8_t *src = POP_S();
+    uint8_t *out = STR_TEMP();
+    int start = 1;
+    int end;
+
+    out[0] = 0;
+    if (!src || !delims || field < 1) {
+        PUSH_S(out);
+        DISPATCH();
+    }
+
+    while (--field > 0) {
+        while (start <= src[0]) {
+            int is_delim = 0;
+            for (int d = 1; d <= delims[0]; d++) {
+                if (src[start] == delims[d]) { is_delim = 1; break; }
+            }
+            if (is_delim) break;
+            start++;
+        }
+        if (start > src[0]) {
+            PUSH_S(out);
+            DISPATCH();
+        }
+        start++;
+    }
+
+    while (start <= src[0] && src[start] == ' ') start++;
+    end = start;
+    while (end <= src[0]) {
+        int is_delim = 0;
+        for (int d = 1; d <= delims[0]; d++) {
+            if (src[end] == delims[d]) { is_delim = 1; break; }
+        }
+        if (is_delim) break;
+        end++;
+    }
+    while (end > start && src[end - 1] == ' ') end--;
+    int len = end - start;
+    if (len > MAXSTRLEN) len = MAXSTRLEN;
+    out[0] = (uint8_t)len;
+    if (len > 0) memcpy(out + 1, src + start, len);
+    PUSH_S(out);
+    DISPATCH();
+}
+
 op_str_inkey: {
     /* INKEY$ -> str$ (0 or 1 char) */
     uint8_t *buf = STR_TEMP();
@@ -2551,6 +2593,21 @@ op_rnd: {
     /* RND -> float 0.0 <= x < 1.0 */
     MMFLOAT f = (MMFLOAT)rand() / ((MMFLOAT)RAND_MAX + (MMFLOAT)RAND_MAX / 1000000);
     PUSH_F(f);
+    DISPATCH();
+}
+
+op_timer: {
+    PUSH_F((MMFLOAT)(readusclock() - timeroffset) / 1000.0);
+    DISPATCH();
+}
+
+op_mm_hres: {
+    PUSH_I(HRes);
+    DISPATCH();
+}
+
+op_mm_vres: {
+    PUSH_I(VRes);
     DISPATCH();
 }
 
@@ -2580,7 +2637,7 @@ op_error_s: {
     int len = s ? s[0] : 0;
     if (len > 0) memcpy(buf, s + 1, len);
     buf[len] = 0;
-    error(buf);
+    error("$", buf);
     DISPATCH();  /* unreachable, error() longjmps */
 }
 
@@ -2710,6 +2767,20 @@ op_fastgfx_close:
 op_fastgfx_fps:
     bc_fastgfx_set_fps((int)POP_NUMERIC_I());
     DISPATCH();
+
+op_colour:
+    /* COLOR/COLOUR is currently only needed to preserve legacy tokenisation
+     * around names such as GetBlockColor on the standalone VM path. */
+    DISPATCH();
+
+op_pause: {
+    int64_t ms = POP_NUMERIC_I();
+    if (ms < 0) bc_vm_error(vm, "Number out of bounds");
+    if (ms < 1) DISPATCH();
+    uint64_t until = readusclock() + (uint64_t)ms * 1000ULL;
+    while (readusclock() < until) CheckAbort();
+    DISPATCH();
+}
 
 op_box: {
     uint8_t field_count = *vm->pc++;

@@ -83,7 +83,7 @@ add_executable(PicoMite
 	bc_compiler_expr.c
 	bc_compiler_stmt.c
 	bc_vm.c
-	bc_bridge.c
+	bc_runtime.c
 	bc_test.c
 	bc_debug.c
 )

@@ -1137,8 +1137,8 @@ static void compile_inc(BCCompiler *cs, unsigned char **pp) {
     if (namelen == 0) { bc_set_error(cs, "Expected variable in INC"); return; }
     if (vtype == 0) vtype = T_NBR;
     if (vtype & T_STR) {
-        /* String INC (concatenation) — bridge it, not worth native opcode */
-        *pp = p; return;  /* caller will fall through to bridge */
+        /* String INC (concatenation) is not native yet. */
+        *pp = p; return;  /* caller will report unsupported command */
     }
 
     int is_local = 0;
@@ -1784,16 +1784,14 @@ static int compile_fastgfx_native(BCCompiler *cs, unsigned char **pp) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Bridge: default handler for unrecognised commands                  */
+/*  Unsupported built-in command handler                               */
 /* ------------------------------------------------------------------ */
 
 static void compile_builtin_cmd(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token) {
-    bc_emit_byte(cs, OP_BUILTIN_CMD);
-    bc_emit_u16(cs, cmd_token);
-    bc_emit_ptr(cs, *pp);
     unsigned char *p = *pp;
     while (*p) p++;
     *pp = p;
+    bc_set_error(cs, "Unsupported VM command: %s", commandname(cmd_token));
 }
 
 /* ------------------------------------------------------------------ */
@@ -1949,6 +1947,9 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         unsigned short cLINE      = (unsigned short)GetCommandValue((unsigned char *)"Line");
         unsigned short cTEXT      = (unsigned short)GetCommandValue((unsigned char *)"Text");
         unsigned short cPIXEL     = (unsigned short)GetCommandValue((unsigned char *)"Pixel");
+        unsigned short cCOLOR     = (unsigned short)GetCommandValue((unsigned char *)"Color");
+        unsigned short cCOLOUR    = (unsigned short)GetCommandValue((unsigned char *)"Colour");
+        unsigned short cPAUSE     = (unsigned short)GetCommandValue((unsigned char *)"Pause");
         if (cmd_token == cGOTO)    { compile_goto(cs, pp);   return; }
         if (cmd_token == cGOSUB)   { compile_gosub(cs, pp);  return; }
         if (cmd_token == cRETURN)  { bc_emit_byte(cs, OP_RETURN); return; }
@@ -1976,8 +1977,23 @@ void bc_compile_statement(BCCompiler *cs, unsigned char **pp, uint16_t cmd_token
         if (cmd_token == cLINE && compile_line_native(cs, pp)) { return; }
         if (cmd_token == cTEXT && compile_text_native(cs, pp)) { return; }
         if (cmd_token == cPIXEL && compile_pixel_native(cs, pp)) { return; }
+        if (cmd_token == cCOLOR || cmd_token == cCOLOUR) {
+            while (**pp) (*pp)++;
+            bc_emit_byte(cs, OP_COLOUR);
+            return;
+        }
+        if (cmd_token == cPAUSE) {
+            uint8_t type = bc_compile_expression(cs, pp);
+            if (cs->has_error) return;
+            if ((type & (T_INT | T_NBR)) == 0 || (type & T_STR)) {
+                bc_set_error(cs, "PAUSE requires a numeric argument");
+                return;
+            }
+            bc_emit_byte(cs, OP_PAUSE);
+            return;
+        }
     }
 
-    /* Default: bridge to built-in command */
+    /* Default: unsupported built-in command */
     compile_builtin_cmd(cs, pp, cmd_token);
 }

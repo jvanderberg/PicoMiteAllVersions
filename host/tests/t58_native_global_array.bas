@@ -1,5 +1,5 @@
-' VM bridge regression:
-' A bridged command should be able to read a top-level global array expression
+' VM native call regression:
+' A native command should be able to read a top-level global array expression
 ' without emitting a recoverable interpreter error.
 
 DIM INTEGER a%(1,1)

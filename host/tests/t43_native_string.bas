@@ -1,4 +1,4 @@
-' Test bridge string functions (SPACE$, STRING$, FIELD$)
+' Test native string functions (SPACE$, STRING$, FIELD$)
 ' SPACE$ with various lengths
 PRINT "|"; SPACE$(0); "|"
 PRINT "|"; SPACE$(1); "|"

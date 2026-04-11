@@ -1,5 +1,5 @@
-' VM bridge regression:
-' A bridged command should see the current VM local bx%,
+' VM native call regression:
+' A native command should see the current VM local bx%,
 ' not collide with the global bx! in the interpreter vartable.
 
 DIM FLOAT bx!

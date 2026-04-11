@@ -68,6 +68,24 @@ cmake ..
 make
 ```
 
+LOCAL VM PROTOTYPE BUILD/TEST LOOP
+----------------------------------
+This workspace currently uses a host oracle plus bytecode VM harness for BASIC regression testing.
+
+```bash
+cd ~/picocalc/PicoMiteAllVersions
+make -C host
+./host/run_tests.sh
+./host/run_pixel_tests.sh
+bash host/run_unsupported_tests.sh
+make -C build2350 -j8
+arm-none-eabi-size build2350/PicoMite.elf
+```
+
+The host binary is `host/mmbasic_test`. Its default mode compares the legacy host interpreter against the bytecode VM. Use `--interp` for the interpreter oracle only and `--vm` for the VM only.
+
+The current prototype direction is VM-only BASIC program execution on device: `RUN` compiles to bytecode and runs on the VM. `FRUN` and the interpreter bridge fallback are removed from the user-facing VM path. The device prompt is a reduced shell for OS/file operations, not a full immediate BASIC REPL.
+
 (_original readme follows..._)
 
 # PicoMiteRP2350
@@ -102,4 +120,3 @@ Rename the current build directory - e.g. build -> buildrp2040<br>
 Rename the inactive build directory - e.g. buildrp2350 -> build<br>
 edit CMakeLists.txt to choose a setting for the other chip and save it - e.g.  set(COMPILE PICO) -> set(COMPILE PICORP2350)<br>
 Restart VSCode<br>
-

@@ -22,10 +22,10 @@ CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_sh
 
 # Bytecode VM sources
 BC_SRCS = bc_compiler.c bc_compiler_core.c bc_compiler_expr.c \
-          bc_compiler_stmt.c bc_vm.c bc_bridge.c bc_test.c bc_debug.c
+          bc_compiler_stmt.c bc_vm.c bc_runtime.c bc_test.c bc_debug.c
 
 # Host-specific sources
-HOST_SRCS = host_stubs.c host_main.c
+HOST_SRCS = host_stubs_legacy.c host_main.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)
@@ -38,7 +38,7 @@ $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
 # Host sources compile from current directory
-host_stubs.o: host_stubs.c
+host_stubs_legacy.o: host_stubs_legacy.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 host_main.o: host_main.c

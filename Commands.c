@@ -46,6 +46,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include <math.h>
 void flist(int, int, int);
 //void clearprog(void);
+extern void bc_run_current_program(void);
 char *KeyInterrupt=NULL;
 unsigned char* SaveNextDataLine = NULL;
 void execute_one_command(unsigned char *p);
@@ -721,8 +722,6 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
 //    memcpy(cmdlinebuff, pcmd_args, *pcmd_args + 1); // *** THW 16/4/23
 	Mstrcpy(cmdlinebuff, pcmd_args);
     IgnorePIN = false;
-//	uint8_t *dummy __attribute((unused))=GetMemory(STRINGSIZE);
-	if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(LibMemory );       // run anything that might be in the library
     if(*ProgMemory != T_NEWLINE) return;                             // no program to run
 #ifdef PICOMITEWEB
 	cleanserver();
@@ -730,7 +729,7 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
 #ifndef USBKEYBOARD
     if(mouse0==false && Option.MOUSE_CLOCK)initMouse0(0);  //see if there is a mouse to initialise 
 #endif
-	nextstmt = ProgMemory;
+    bc_run_current_program();
 }
 /** @endcond */
 void MIPS16 cmd_list(void) {

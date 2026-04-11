@@ -1,4 +1,4 @@
-' Test type coercion across native and bridge functions
+' Test type coercion across native functions
 ' INT/FIX/CINT edge cases
 PRINT INT(2.5)
 PRINT INT(3.5)

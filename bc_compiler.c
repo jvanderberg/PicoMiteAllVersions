@@ -1,5 +1,5 @@
 /*
- * bc_compiler.c — Top-level bytecode compiler for FRUN command
+ * bc_compiler.c - Top-level bytecode compiler
  *
  * Implements bc_compile(): two-pass compilation from tokenized ProgMemory
  * to bytecode.

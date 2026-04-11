@@ -86,10 +86,6 @@ static uint8_t get_function_return_type(unsigned char tok) {
     return T_NBR;
 }
 
-static uint16_t get_token_index(unsigned char tok) {
-    return (uint16_t)(tok - C_BASETOKEN);
-}
-
 /* ------------------------------------------------------------------ */
 /*  Expression terminator check                                        */
 /* ------------------------------------------------------------------ */
@@ -281,7 +277,7 @@ static void skip_balanced_parens(unsigned char **pp) {
 /*                                                                     */
 /*  For common built-in functions, compile arguments as bytecode       */
 /*  expressions and emit a native opcode instead of bridging.          */
-/*  Returns 1 if handled natively, 0 if the bridge should be used.    */
+/*  Returns 1 if handled natively, 0 if the VM should reject it.      */
 /* ------------------------------------------------------------------ */
 
 /* External function declarations from AllCommands.h */
@@ -300,6 +296,9 @@ extern void fun_sin(void);
 extern void fun_cos(void);
 extern void fun_tan(void);
 extern void fun_atn(void);
+extern void fun_asin(void);
+extern void fun_acos(void);
+extern void fun_atan2(void);
 extern void fun_sqr(void);
 extern void fun_log(void);
 extern void fun_exp(void);
@@ -318,8 +317,11 @@ extern void fun_oct(void);
 extern void fun_bin(void);
 extern void fun_space(void);
 extern void fun_string(void);
+extern void fun_field(void);
 extern void fun_rnd(void);
 extern void fun_inkey(void);
+extern void fun_timer(void);
+extern void fun_tilde(void);
 
 /*
  * Try to compile a built-in function natively.
@@ -470,7 +472,7 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
          * Only handle natively:
          *   2 args (1 comma): INSTR(haystack$, needle$)
          *   3 args (2 commas) with numeric first arg: INSTR(start%, haystack$, needle$)
-         * All other forms (regex with matchlen) fall to bridge. */
+         * All other forms (regex with matchlen) are not implemented yet. */
         int comma_count = 0;
         {
             unsigned char *scan = p;
@@ -483,7 +485,7 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
                 scan++;
             }
         }
-        /* 4 args (3 commas) is always regex form — bridge it */
+        /* 4 args (3 commas) is always regex form. */
         if (comma_count > 2) return 0;
         if (comma_count == 1) {
             /* 2-arg: INSTR(haystack$, needle$) */
@@ -498,13 +500,12 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
         }
         /* comma_count == 2: could be INSTR(start%, haystack$, needle$) or
          * INSTR(haystack$, regex$, matchlen).
-         * Compile first arg speculatively; save bytecode position to rewind if needed. */
+         * Compile first arg speculatively; rewind if it is the unsupported regex form. */
         uint32_t saved_code_len = cs->code_len;
-        unsigned char *saved_p = p;
         uint8_t arg1_type = bc_compile_expression(cs, &p);
         skipspace(p); if (*p == ',') p++;
         if (arg1_type & T_STR) {
-            /* String first arg + 3 args = regex form — rewind and bridge */
+            /* String first arg + 3 args = regex form. */
             cs->code_len = saved_code_len;
             return 0;
         }
@@ -540,6 +541,20 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
         else if (at2 == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
         if (*p == ')') p++;
         bc_emit_byte(cs, OP_STR_STRING);
+        *pp = p;
+        return T_STR;
+    }
+
+    if (fptr == fun_field) {
+        /* FIELD$(source$, field%, delims$) */
+        bc_compile_expression(cs, &p);
+        skipspace(p); if (*p == ',') p++;
+        uint8_t at = bc_compile_expression(cs, &p);
+        if (at == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
+        skipspace(p); if (*p == ',') p++;
+        bc_compile_expression(cs, &p);
+        skipspace(p); if (*p == ')') p++;
+        bc_emit_byte(cs, OP_STR_FIELD3);
         *pp = p;
         return T_STR;
     }
@@ -646,6 +661,8 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
     NATIVE_FLOAT_FUN(fun_cos, OP_MATH_COS)
     NATIVE_FLOAT_FUN(fun_tan, OP_MATH_TAN)
     NATIVE_FLOAT_FUN(fun_atn, OP_MATH_ATN)
+    NATIVE_FLOAT_FUN(fun_asin, OP_MATH_ASIN)
+    NATIVE_FLOAT_FUN(fun_acos, OP_MATH_ACOS)
     NATIVE_FLOAT_FUN(fun_sqr, OP_MATH_SQR)
     NATIVE_FLOAT_FUN(fun_log, OP_MATH_LOG)
     NATIVE_FLOAT_FUN(fun_exp, OP_MATH_EXP)
@@ -653,6 +670,37 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
     NATIVE_FLOAT_FUN(fun_deg, OP_MATH_DEG)
 
 #undef NATIVE_FLOAT_FUN
+
+    if (fptr == fun_atan2) {
+        uint8_t at1 = bc_compile_expression(cs, &p);
+        if (at1 == T_INT) bc_emit_byte(cs, OP_CVT_I2F);
+        skipspace(p); if (*p == ',') p++;
+        uint8_t at2 = bc_compile_expression(cs, &p);
+        if (at2 == T_INT) bc_emit_byte(cs, OP_CVT_I2F);
+        if (*p == ')') p++;
+        bc_emit_byte(cs, OP_MATH_ATAN2);
+        *pp = p;
+        return T_NBR;
+    }
+
+    if (fptr == fun_tilde) {
+        skipspace(p);
+        if (*p == (unsigned char)('A' + MMHRES)) {
+            p++;
+            skipspace(p); if (*p == ')') p++;
+            bc_emit_byte(cs, OP_MM_HRES);
+            *pp = p;
+            return T_INT;
+        }
+        if (*p == (unsigned char)('A' + MMVRES)) {
+            p++;
+            skipspace(p); if (*p == ')') p++;
+            bc_emit_byte(cs, OP_MM_VRES);
+            *pp = p;
+            return T_INT;
+        }
+        return 0;
+    }
 
     /* INT/FIX/CINT: take float, return float or int */
     if (fptr == fun_int) {
@@ -1054,7 +1102,6 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
         /* ---- Built-in function token (T_FUN / T_FNA) ---- */
         if (expect_value && *p >= C_BASETOKEN && is_function_token(*p)) {
             unsigned char fun_tok = *p;
-            uint16_t fun_idx = get_token_index(fun_tok);
             uint8_t ret_type = get_function_return_type(fun_tok);
             int has_args = (tokentype(fun_tok) & T_FUN) != 0;
 
@@ -1067,23 +1114,18 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
                     ret_type = native_ret;
                     goto fun_done;
                 }
-                /* Not handled natively — fall back to bridge.
-                 * p was already advanced past the token. Back up and use
-                 * skip_balanced_parens to skip the args for the bridge. */
-                unsigned char *orig_ep = p;
                 skip_balanced_parens(&p);
-
-                uint8_t bop = (ret_type == T_INT) ? OP_BUILTIN_FUN_I :
-                              (ret_type == T_STR) ? OP_BUILTIN_FUN_S :
-                                                    OP_BUILTIN_FUN_F;
-                bc_emit_byte(cs, bop);
-                bc_emit_u16(cs, fun_idx);
-                bc_emit_byte(cs, 0);  /* nargs placeholder for bridge */
-                bc_emit_ptr(cs, orig_ep);
+                bc_set_error(cs, "Unsupported VM function: %s", tokenname(fun_tok));
+                break;
             } else {
                 /* No-arg function (T_FNA) — check for native handling */
                 void (*fptr)(void) = get_token_fptr(fun_tok);
                 p++;
+                if (fptr == fun_timer) {
+                    bc_emit_byte(cs, OP_TIMER);
+                    ret_type = T_NBR;
+                    goto fun_done;
+                }
                 if (fptr == fun_pi) {
                     bc_emit_byte(cs, OP_MATH_PI);
                     ret_type = T_NBR;
@@ -1099,14 +1141,8 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
                     ret_type = T_STR;
                     goto fun_done;
                 }
-                unsigned char *orig_ep = p;
-                uint8_t bop = (ret_type == T_INT) ? OP_BUILTIN_FUN_I :
-                              (ret_type == T_STR) ? OP_BUILTIN_FUN_S :
-                                                    OP_BUILTIN_FUN_F;
-                bc_emit_byte(cs, bop);
-                bc_emit_u16(cs, fun_idx);
-                bc_emit_byte(cs, 0);
-                bc_emit_ptr(cs, orig_ep);
+                bc_set_error(cs, "Unsupported VM function: %s", tokenname(fun_tok));
+                break;
             }
 
         fun_done:
