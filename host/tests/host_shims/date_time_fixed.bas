@@ -1,0 +1,1 @@
+PRINT DATE$ + " " + TIME$

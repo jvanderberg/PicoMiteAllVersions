@@ -209,6 +209,16 @@ static const char *opcode_name(uint8_t op) {
         case OP_TEXT:         return "TEXT";
         case OP_CLS:          return "CLS";
         case OP_PIXEL:        return "PIXEL";
+        case OP_COLOUR:       return "COLOUR";
+        case OP_PAUSE:        return "PAUSE";
+        case OP_STR_DATE:     return "STR_DATE";
+        case OP_STR_TIME:     return "STR_TIME";
+        case OP_KEYDOWN:      return "KEYDOWN";
+        case OP_PLAY_STOP:    return "PLAY_STOP";
+        case OP_PLAY_TONE:    return "PLAY_TONE";
+        case OP_SETPIN:       return "SETPIN";
+        case OP_PIN_READ:     return "PIN_READ";
+        case OP_PIN_WRITE:    return "PIN_WRITE";
 
         case OP_LINE:         return "LINE";
         case OP_CHECKINT:     return "CHECKINT";
@@ -401,8 +411,34 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_FASTGFX_CLOSE:
         case OP_FASTGFX_FPS:
         case OP_RGB:
+        case OP_COLOUR:
+        case OP_PAUSE:
+        case OP_STR_DATE:
+        case OP_STR_TIME:
+        case OP_KEYDOWN:
+        case OP_PLAY_STOP:
+        case OP_PIN_READ:
+        case OP_PIN_WRITE:
             dbg_print("  %04X: %-16s\r\n", start, name);
             break;
+
+        case OP_PLAY_TONE: {
+            uint8_t argc = code[pc++];
+            dbg_print("  %04X: %-16s argc=%u\r\n", start, name, (unsigned)argc);
+            break;
+        }
+
+        case OP_SETPIN: {
+            uint16_t mode = rd16(code + pc); pc += 2;
+            dbg_print("  %04X: %-16s mode=%u\r\n", start, name, (unsigned)mode);
+            break;
+        }
+
+        case OP_FONT: {
+            uint8_t argc = code[pc++];
+            dbg_print("  %04X: %-16s argc=%u\r\n", start, name, (unsigned)argc);
+            break;
+        }
 
         case OP_BOX: {
             int i;
@@ -443,6 +479,74 @@ void bc_disassemble(BCCompiler *cs) {
             uint8_t field_count = code[pc++];
             dbg_print("  %04X: %-16s argc=%u", start, name, (unsigned)field_count);
             for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
+                uint8_t kind = code[pc++];
+                dbg_print("%s", i == 0 ? " " : ", ");
+                switch (kind) {
+                    case BC_BOX_ARG_EMPTY:
+                        dbg_print("-");
+                        break;
+                    case BC_BOX_ARG_STACK:
+                        dbg_print("stack");
+                        break;
+                    case BC_BOX_ARG_GLOBAL_ARR_I:
+                    case BC_BOX_ARG_GLOBAL_ARR_F:
+                    case BC_BOX_ARG_LOCAL_ARR_I:
+                    case BC_BOX_ARG_LOCAL_ARR_F: {
+                        uint16_t slot = rd16(code + pc);
+                        pc += 2;
+                        dbg_print("%s[%u]",
+                                  (kind == BC_BOX_ARG_GLOBAL_ARR_I || kind == BC_BOX_ARG_GLOBAL_ARR_F) ? "garr" : "larr",
+                                  (unsigned)slot);
+                        break;
+                    }
+                    default:
+                        dbg_print("kind=%u", (unsigned)kind);
+                        break;
+                }
+            }
+            dbg_print("\r\n");
+            break;
+        }
+
+        case OP_TRIANGLE: {
+            int i;
+            uint8_t field_count = code[pc++];
+            dbg_print("  %04X: %-16s argc=%u", start, name, (unsigned)field_count);
+            for (i = 0; i < BC_TRIANGLE_ARG_COUNT; i++) {
+                uint8_t kind = code[pc++];
+                dbg_print("%s", i == 0 ? " " : ", ");
+                switch (kind) {
+                    case BC_BOX_ARG_EMPTY:
+                        dbg_print("-");
+                        break;
+                    case BC_BOX_ARG_STACK:
+                        dbg_print("stack");
+                        break;
+                    case BC_BOX_ARG_GLOBAL_ARR_I:
+                    case BC_BOX_ARG_GLOBAL_ARR_F:
+                    case BC_BOX_ARG_LOCAL_ARR_I:
+                    case BC_BOX_ARG_LOCAL_ARR_F: {
+                        uint16_t slot = rd16(code + pc);
+                        pc += 2;
+                        dbg_print("%s[%u]",
+                                  (kind == BC_BOX_ARG_GLOBAL_ARR_I || kind == BC_BOX_ARG_GLOBAL_ARR_F) ? "garr" : "larr",
+                                  (unsigned)slot);
+                        break;
+                    }
+                    default:
+                        dbg_print("kind=%u", (unsigned)kind);
+                        break;
+                }
+            }
+            dbg_print("\r\n");
+            break;
+        }
+
+        case OP_POLYGON: {
+            int i;
+            uint8_t field_count = code[pc++];
+            dbg_print("  %04X: %-16s argc=%u", start, name, (unsigned)field_count);
+            for (i = 0; i < BC_POLYGON_ARG_COUNT; i++) {
                 uint8_t kind = code[pc++];
                 dbg_print("%s", i == 0 ? " " : ", ");
                 switch (kind) {

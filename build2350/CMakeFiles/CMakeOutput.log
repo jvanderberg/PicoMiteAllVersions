@@ -1,0 +1,360 @@
+The target system is: PICO -  - cortex-m33
+The host system is: Darwin - 24.4.0 - arm64
+Compiling the C compiler identification source file "CMakeCCompilerId.c" succeeded.
+Compiler: /Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc 
+Build flags: ;-mcpu=cortex-m33;-mthumb;-march=armv8-m.main+fp+dsp;-mfloat-abi=softfp;-mcmse
+Id flags: -c 
+
+The output was:
+0
+
+
+Compilation of the C compiler identification source "CMakeCCompilerId.c" produced "CMakeCCompilerId.o"
+
+The C compiler identification is GNU, found in "/Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/3.25.2/CompilerIdC/CMakeCCompilerId.o"
+
+Compiling the CXX compiler identification source file "CMakeCXXCompilerId.cpp" succeeded.
+Compiler: /Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++ 
+Build flags: ;-mcpu=cortex-m33;-mthumb;-march=armv8-m.main+fp+dsp;-mfloat-abi=softfp;-mcmse
+Id flags: -c 
+
+The output was:
+0
+
+
+Compilation of the CXX compiler identification source "CMakeCXXCompilerId.cpp" produced "CMakeCXXCompilerId.o"
+
+The CXX compiler identification is GNU, found in "/Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/3.25.2/CompilerIdCXX/CMakeCXXCompilerId.o"
+
+Checking whether the ASM compiler is GNU using "--version" matched "(GNU assembler)|(GCC)|(Free Software Foundation)":
+arm-none-eabi-gcc (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 14.2.1 20241119
+Copyright (C) 2024 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+Detecting C compiler ABI info compiled with the following output:
+Change Dir: /Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/CMakeScratch/TryCompile-lxJ8Dr
+
+Run Build Command(s):/usr/bin/make -f Makefile cmTC_04447/fast && /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_04447.dir/build.make CMakeFiles/cmTC_04447.dir/build
+Building C object CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o
+/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc   -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse    -v -o CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o -c /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCCompilerABI.c
+Using built-in specs.
+COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc
+Target: arm-none-eabi
+Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)'
+Thread model: single
+Supported LTO compression algorithms: zlib
+gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/cc1 -quiet -v -imultilib thumb/v8-m.main+fp/softfp -iprefix /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/ -isysroot /Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -D__USES_INITFINI__ /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCCompilerABI.c -quiet -dumpdir CMakeFiles/cmTC_04447.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mcmse -mlibarch=armv8-m.main+dsp+fp -march=armv8-m.main+dsp+fp -version -o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNTNgcg.s
+GNU C17 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) version 14.2.1 20241119 (arm-none-eabi)
+	compiled by GNU C version Apple LLVM 13.0.0 (clang-1300.0.29.30), GMP version 6.2.1, MPFR version 3.1.6, MPC version 1.0.3, isl version isl-0.15-1-g835ea3a-GMP
+
+GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include"
+ignoring nonexistent directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/usr/local/include"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include-fixed"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/include"
+#include "..." search starts here:
+#include <...> search starts here:
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include
+End of search list.
+Compiler executable checksum: 37d23b2e3347d18c1231e07805cbe085
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/as -v -march=armv8-m.main+dsp+fp -mfloat-abi=softfp -meabi=5 -o CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNTNgcg.s
+GNU assembler version 2.43.1 (arm-none-eabi) using BFD version (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119
+COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/
+LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.'
+Linking C executable cmTC_04447.elf
+/opt/homebrew/Cellar/cmake/3.25.2/bin/cmake -E cmake_link_script CMakeFiles/cmTC_04447.dir/link.txt --verbose=1
+/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse  -Wl,--build-id=none -nostdlib  -v CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o -o cmTC_04447.elf 
+Using built-in specs.
+COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc
+COLLECT_LTO_WRAPPER=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper
+Target: arm-none-eabi
+Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)'
+Thread model: single
+Supported LTO compression algorithms: zlib
+gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 
+COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/
+LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_04447.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_04447.elf.'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2 -plugin /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so -plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper -plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNNLLjS.res --sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -X -o cmTC_04447.elf -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1 -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib --build-id=none CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o
+/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/ld: warning: cannot find entry symbol _start; defaulting to 00008000
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_04447.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_04447.elf.'
+
+
+
+Parsed C implicit include dir info from above output: rv=done
+  found start of include info
+  found start of implicit include info
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include]
+  end of search list found
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include]
+  implicit include dirs: [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include;/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include-fixed;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include]
+
+
+Parsed C implicit link information from above output:
+  link line regex: [^( *|.*[/\])(arm-none-eabi-ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\]+-)?ld|collect2)[^/\]*( |$)]
+  ignore line: [Change Dir: /Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/CMakeScratch/TryCompile-lxJ8Dr]
+  ignore line: []
+  ignore line: [Run Build Command(s):/usr/bin/make -f Makefile cmTC_04447/fast && /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_04447.dir/build.make CMakeFiles/cmTC_04447.dir/build]
+  ignore line: [Building C object CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o]
+  ignore line: [/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc   -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse    -v -o CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o -c /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCCompilerABI.c]
+  ignore line: [Using built-in specs.]
+  ignore line: [COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc]
+  ignore line: [Target: arm-none-eabi]
+  ignore line: [Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)']
+  ignore line: [Thread model: single]
+  ignore line: [Supported LTO compression algorithms: zlib]
+  ignore line: [gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) ]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/']
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/cc1 -quiet -v -imultilib thumb/v8-m.main+fp/softfp -iprefix /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/ -isysroot /Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -D__USES_INITFINI__ /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCCompilerABI.c -quiet -dumpdir CMakeFiles/cmTC_04447.dir/ -dumpbase CMakeCCompilerABI.c.c -dumpbase-ext .c -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mcmse -mlibarch=armv8-m.main+dsp+fp -march=armv8-m.main+dsp+fp -version -o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNTNgcg.s]
+  ignore line: [GNU C17 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) version 14.2.1 20241119 (arm-none-eabi)]
+  ignore line: [	compiled by GNU C version Apple LLVM 13.0.0 (clang-1300.0.29.30)  GMP version 6.2.1  MPFR version 3.1.6  MPC version 1.0.3  isl version isl-0.15-1-g835ea3a-GMP]
+  ignore line: []
+  ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include"]
+  ignore line: [ignoring nonexistent directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/usr/local/include"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include-fixed"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/include"]
+  ignore line: [#include "..." search starts here:]
+  ignore line: [#include <...> search starts here:]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include]
+  ignore line: [End of search list.]
+  ignore line: [Compiler executable checksum: 37d23b2e3347d18c1231e07805cbe085]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/']
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/as -v -march=armv8-m.main+dsp+fp -mfloat-abi=softfp -meabi=5 -o CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNTNgcg.s]
+  ignore line: [GNU assembler version 2.43.1 (arm-none-eabi) using BFD version (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119]
+  ignore line: [COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/]
+  ignore line: [LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.']
+  ignore line: [Linking C executable cmTC_04447.elf]
+  ignore line: [/opt/homebrew/Cellar/cmake/3.25.2/bin/cmake -E cmake_link_script CMakeFiles/cmTC_04447.dir/link.txt --verbose=1]
+  ignore line: [/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse  -Wl --build-id=none -nostdlib  -v CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o -o cmTC_04447.elf ]
+  ignore line: [Using built-in specs.]
+  ignore line: [COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-gcc]
+  ignore line: [COLLECT_LTO_WRAPPER=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper]
+  ignore line: [Target: arm-none-eabi]
+  ignore line: [Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)']
+  ignore line: [Thread model: single]
+  ignore line: [Supported LTO compression algorithms: zlib]
+  ignore line: [gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) ]
+  ignore line: [COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/]
+  ignore line: [LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_04447.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_04447.elf.']
+  link line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2 -plugin /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so -plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper -plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNNLLjS.res --sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -X -o cmTC_04447.elf -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1 -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib --build-id=none CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o]
+    arg [/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2] ==> ignore
+    arg [-plugin] ==> ignore
+    arg [/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so] ==> ignore
+    arg [-plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper] ==> ignore
+    arg [-plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccNNLLjS.res] ==> ignore
+    arg [--sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi] ==> ignore
+    arg [-X] ==> ignore
+    arg [-o] ==> ignore
+    arg [cmTC_04447.elf] ==> ignore
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib]
+    arg [--build-id=none] ==> ignore
+    arg [CMakeFiles/cmTC_04447.dir/CMakeCCompilerABI.c.o] ==> ignore
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  implicit libs: []
+  implicit objs: []
+  implicit dirs: [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp;/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1;/Users/joshv/git/toolchains/arm-gcc/lib/gcc;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  implicit fwks: []
+
+
+Detecting CXX compiler ABI info compiled with the following output:
+Change Dir: /Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/CMakeScratch/TryCompile-eYPT01
+
+Run Build Command(s):/usr/bin/make -f Makefile cmTC_b4618/fast && /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_b4618.dir/build.make CMakeFiles/cmTC_b4618.dir/build
+Building CXX object CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o
+/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++   -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse    -v -o CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCXXCompilerABI.cpp
+Using built-in specs.
+COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++
+Target: arm-none-eabi
+Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)'
+Thread model: single
+Supported LTO compression algorithms: zlib
+gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/cc1plus -quiet -v -imultilib thumb/v8-m.main+fp/softfp -iprefix /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/ -isysroot /Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -D__USES_INITFINI__ /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_b4618.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mcmse -mlibarch=armv8-m.main+dsp+fp -march=armv8-m.main+dsp+fp -version -o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccFOV6iC.s
+GNU C++17 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) version 14.2.1 20241119 (arm-none-eabi)
+	compiled by GNU C version Apple LLVM 13.0.0 (clang-1300.0.29.30), GMP version 6.2.1, MPFR version 3.1.6, MPC version 1.0.3, isl version isl-0.15-1-g835ea3a-GMP
+
+GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include"
+ignoring nonexistent directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/usr/local/include"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include-fixed"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include"
+ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/include"
+#include "..." search starts here:
+#include <...> search starts here:
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include
+End of search list.
+Compiler executable checksum: 27b9f5562618372de894011fc251f42d
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/as -v -march=armv8-m.main+dsp+fp -mfloat-abi=softfp -meabi=5 -o CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccFOV6iC.s
+GNU assembler version 2.43.1 (arm-none-eabi) using BFD version (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119
+COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/
+LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.'
+Linking CXX executable cmTC_b4618.elf
+/opt/homebrew/Cellar/cmake/3.25.2/bin/cmake -E cmake_link_script CMakeFiles/cmTC_b4618.dir/link.txt --verbose=1
+/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++ -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse  -Wl,--build-id=none -nostdlib  -v CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_b4618.elf 
+Using built-in specs.
+COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++
+COLLECT_LTO_WRAPPER=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper
+Target: arm-none-eabi
+Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)'
+Thread model: single
+Supported LTO compression algorithms: zlib
+gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 
+COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/
+LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_b4618.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_b4618.elf.'
+ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2 -plugin /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so -plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper -plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccak2svm.res --sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -X -o cmTC_b4618.elf -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1 -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib --build-id=none CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o
+/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/ld: warning: cannot find entry symbol _start; defaulting to 00008000
+COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_b4618.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_b4618.elf.'
+
+
+
+Parsed CXX implicit include dir info from above output: rv=done
+  found start of include info
+  found start of implicit include info
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+    add: [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include]
+  end of search list found
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1/backward]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+  collapse include dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include]
+  implicit include dirs: [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include/c++/14.2.1/backward;/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include;/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/include-fixed;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/include]
+
+
+Parsed CXX implicit link information from above output:
+  link line regex: [^( *|.*[/\])(arm-none-eabi-ld|CMAKE_LINK_STARTFILE-NOTFOUND|([^/\]+-)?ld|collect2)[^/\]*( |$)]
+  ignore line: [Change Dir: /Users/joshv/picocalc/PicoMiteAllVersions/build2350/CMakeFiles/CMakeScratch/TryCompile-eYPT01]
+  ignore line: []
+  ignore line: [Run Build Command(s):/usr/bin/make -f Makefile cmTC_b4618/fast && /Applications/Xcode.app/Contents/Developer/usr/bin/make  -f CMakeFiles/cmTC_b4618.dir/build.make CMakeFiles/cmTC_b4618.dir/build]
+  ignore line: [Building CXX object CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o]
+  ignore line: [/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++   -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse    -v -o CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o -c /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCXXCompilerABI.cpp]
+  ignore line: [Using built-in specs.]
+  ignore line: [COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++]
+  ignore line: [Target: arm-none-eabi]
+  ignore line: [Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)']
+  ignore line: [Thread model: single]
+  ignore line: [Supported LTO compression algorithms: zlib]
+  ignore line: [gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) ]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/']
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/cc1plus -quiet -v -imultilib thumb/v8-m.main+fp/softfp -iprefix /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/ -isysroot /Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -D__USES_INITFINI__ /opt/homebrew/Cellar/cmake/3.25.2/share/cmake/Modules/CMakeCXXCompilerABI.cpp -quiet -dumpdir CMakeFiles/cmTC_b4618.dir/ -dumpbase CMakeCXXCompilerABI.cpp.cpp -dumpbase-ext .cpp -mcpu=cortex-m33 -mthumb -mfloat-abi=softfp -mcmse -mlibarch=armv8-m.main+dsp+fp -march=armv8-m.main+dsp+fp -version -o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccFOV6iC.s]
+  ignore line: [GNU C++17 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) version 14.2.1 20241119 (arm-none-eabi)]
+  ignore line: [	compiled by GNU C version Apple LLVM 13.0.0 (clang-1300.0.29.30)  GMP version 6.2.1  MPFR version 3.1.6  MPC version 1.0.3  isl version isl-0.15-1-g835ea3a-GMP]
+  ignore line: []
+  ignore line: [GGC heuristics: --param ggc-min-expand=100 --param ggc-min-heapsize=131072]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include"]
+  ignore line: [ignoring nonexistent directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/usr/local/include"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/include-fixed"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/../../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include"]
+  ignore line: [ignoring duplicate directory "/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/include"]
+  ignore line: [#include "..." search starts here:]
+  ignore line: [#include <...> search starts here:]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/arm-none-eabi/thumb/v8-m.main+fp/softfp]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include/c++/14.2.1/backward]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/include-fixed]
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/include]
+  ignore line: [End of search list.]
+  ignore line: [Compiler executable checksum: 27b9f5562618372de894011fc251f42d]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/']
+  ignore line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/as -v -march=armv8-m.main+dsp+fp -mfloat-abi=softfp -meabi=5 -o CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o /var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccFOV6iC.s]
+  ignore line: [GNU assembler version 2.43.1 (arm-none-eabi) using BFD version (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) 2.43.1.20241119]
+  ignore line: [COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/]
+  ignore line: [LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-v' '-o' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o' '-c' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.']
+  ignore line: [Linking CXX executable cmTC_b4618.elf]
+  ignore line: [/opt/homebrew/Cellar/cmake/3.25.2/bin/cmake -E cmake_link_script CMakeFiles/cmTC_b4618.dir/link.txt --verbose=1]
+  ignore line: [/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++ -mcpu=cortex-m33 -mthumb -march=armv8-m.main+fp+dsp -mfloat-abi=softfp -mcmse  -Wl --build-id=none -nostdlib  -v CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o -o cmTC_b4618.elf ]
+  ignore line: [Using built-in specs.]
+  ignore line: [COLLECT_GCC=/Users/joshv/git/toolchains/arm-gcc/bin/arm-none-eabi-g++]
+  ignore line: [COLLECT_LTO_WRAPPER=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper]
+  ignore line: [Target: arm-none-eabi]
+  ignore line: [Configured with: /Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/src/gcc/configure --target=arm-none-eabi --prefix=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install --with-gmp=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpfr=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-mpc=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --with-isl=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/host-tools --disable-shared --disable-nls --disable-threads --disable-tls --enable-checking=release --enable-languages=c,c++,fortran --with-newlib --with-gnu-as --with-headers=yes --with-gnu-ld --with-native-system-header-dir=/include --with-sysroot=/Volumes/data/jenkins/workspace/GNU-toolchain/arm-14/build-arm-none-eabi/install/arm-none-eabi --with-bugurl=https://bugs.linaro.org/ --with-multilib-list=aprofile,rmprofile --with-pkgversion='Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)']
+  ignore line: [Thread model: single]
+  ignore line: [Supported LTO compression algorithms: zlib]
+  ignore line: [gcc version 14.2.1 20241119 (Arm GNU Toolchain 14.2.Rel1 (Build arm-14.52)) ]
+  ignore line: [COMPILER_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/bin/]
+  ignore line: [LIBRARY_PATH=/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/:/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/:/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/]
+  ignore line: [COLLECT_GCC_OPTIONS='-mcpu=cortex-m33' '-mthumb'  '-mfloat-abi=softfp' '-mcmse' '-nostdlib' '-v' '-o' 'cmTC_b4618.elf' '-mlibarch=armv8-m.main+dsp+fp' '-march=armv8-m.main+dsp+fp' '-dumpdir' 'cmTC_b4618.elf.']
+  link line: [ /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2 -plugin /Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so -plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper -plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccak2svm.res --sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi -X -o cmTC_b4618.elf -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1 -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc -L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib -L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib --build-id=none CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o]
+    arg [/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/collect2] ==> ignore
+    arg [-plugin] ==> ignore
+    arg [/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/liblto_plugin.so] ==> ignore
+    arg [-plugin-opt=/Users/joshv/git/toolchains/arm-gcc/bin/../libexec/gcc/arm-none-eabi/14.2.1/lto-wrapper] ==> ignore
+    arg [-plugin-opt=-fresolution=/var/folders/36/6wx272n93gg7vljg8j_8rkq00000gn/T//ccak2svm.res] ==> ignore
+    arg [--sysroot=/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi] ==> ignore
+    arg [-X] ==> ignore
+    arg [-o] ==> ignore
+    arg [cmTC_b4618.elf] ==> ignore
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib]
+    arg [-L/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib] ==> dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib]
+    arg [--build-id=none] ==> ignore
+    arg [CMakeFiles/cmTC_b4618.dir/CMakeCXXCompilerABI.cpp.o] ==> ignore
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib/thumb/v8-m.main+fp/softfp] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc] ==> [/Users/joshv/git/toolchains/arm-gcc/lib/gcc]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../lib/gcc/arm-none-eabi/14.2.1/../../../../arm-none-eabi/lib] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  collapse library dir [/Users/joshv/git/toolchains/arm-gcc/bin/../arm-none-eabi/lib] ==> [/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  implicit libs: []
+  implicit objs: []
+  implicit dirs: [/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1/thumb/v8-m.main+fp/softfp;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib/thumb/v8-m.main+fp/softfp;/Users/joshv/git/toolchains/arm-gcc/lib/gcc/arm-none-eabi/14.2.1;/Users/joshv/git/toolchains/arm-gcc/lib/gcc;/Users/joshv/git/toolchains/arm-gcc/arm-none-eabi/lib]
+  implicit fwks: []
+
+

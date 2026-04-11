@@ -1,0 +1,4 @@
+COLOUR RGB(RED), RGB(BLUE)
+CLS
+TEXT 10, 10, "X", "LT"
+PRINT "done"

@@ -1,0 +1,4 @@
+DO
+  k$ = INKEY$
+LOOP UNTIL k$ <> ""
+PRINT k$

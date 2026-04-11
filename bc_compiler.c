@@ -351,50 +351,6 @@ static void pass2_emit(BCCompiler *cs, unsigned char *prog, int prog_size) {
 
 
 /* ------------------------------------------------------------------ */
-/*  Fixup resolution                                                   */
-/* ------------------------------------------------------------------ */
-
-static void resolve_fixups(BCCompiler *cs) {
-    for (uint16_t i = 0; i < cs->fixup_count; i++) {
-        BCFixup *f = &cs->fixups[i];
-
-        uint32_t target;
-        if (f->target_line >= 0) {
-            target = bc_linemap_lookup(cs, (uint16_t)f->target_line);
-            if (target == 0xFFFFFFFF) {
-                bc_set_error(cs, "Undefined line number %d", f->target_line);
-                return;
-            }
-        } else {
-            /* Label-based fixup (not used yet) */
-            bc_set_error(cs, "Label fixup not implemented");
-            return;
-        }
-
-        if (f->is_relative) {
-            int32_t offset = (int32_t)target - (int32_t)(f->patch_addr + f->size);
-            if (f->size == 2) {
-                if (offset < -32768 || offset > 32767) {
-                    bc_set_error(cs, "Relative jump out of range (line %d)", f->target_line);
-                    return;
-                }
-                bc_patch_i16(cs, f->patch_addr, (int16_t)offset);
-            } else {
-                bc_patch_u32(cs, f->patch_addr, (uint32_t)offset);
-            }
-        } else {
-            /* Absolute address */
-            if (f->size == 4) {
-                bc_patch_u32(cs, f->patch_addr, target);
-            } else {
-                bc_patch_u16(cs, f->patch_addr, (uint16_t)target);
-            }
-        }
-    }
-}
-
-
-/* ------------------------------------------------------------------ */
 /*  Public API: bc_compile()                                           */
 /* ------------------------------------------------------------------ */
 
@@ -412,7 +368,7 @@ int bc_compile(BCCompiler *cs, unsigned char *prog_memory, int prog_size) {
     bc_emit_byte(cs, OP_END);
 
     /* Resolve forward references */
-    resolve_fixups(cs);
+    bc_resolve_fixups(cs);
     if (cs->has_error) return -1;
 
     return 0;  /* success */

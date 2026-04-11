@@ -1,0 +1,5 @@
+PRINT BlockX(3)
+
+FUNCTION BlockX(c%) AS INTEGER
+  BlockX = c% * 10 + 2
+END FUNCTION

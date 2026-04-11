@@ -1,0 +1,7 @@
+10 PRINT "main"
+20 GOSUB 100
+30 PRINT "after"
+40 GOTO 200
+100 PRINT "sub"
+110 RETURN
+200 PRINT "done"

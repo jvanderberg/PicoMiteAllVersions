@@ -105,7 +105,6 @@ void cmd_mode(void);
 void cmd_3D(void);
 void cmd_framebuffer(void);
 void cmd_fastgfx(void);
-void cmd_ftest(void);
 void cmd_edit(void);
 void cmd_editfile(void);
 void cmd_port(void);
@@ -572,7 +571,6 @@ void fun_map(void);
   	{ (unsigned char *)"Map(",            T_CMD | T_FUN  ,           0, cmd_map   },
 	{ (unsigned char *)"Map",            T_CMD,           0, cmd_map   },
 #endif
-{ (unsigned char *)"FTest",      T_CMD,                      0, cmd_ftest     },
 { (unsigned char *)"",   0,                  0, cmd_null,    }                   // this dummy entry is always at the end
 #endif
 /* ********************************************************************************
@@ -697,9 +695,9 @@ void fun_map(void);
 	{ (unsigned char *)"MM.Info(",		T_FUN | T_INT  | T_NBR| T_STR,		0, fun_info		},
 	{ (unsigned char *)"Format$(",	T_FUN  | T_STR,			0, fun_format	},
 	{ (unsigned char*)"~(",	    T_FUN | T_INT | T_NBR | T_STR ,		0, fun_tilde },
-	#ifdef USBKEYBOARD
+#if defined(USBKEYBOARD) || defined(MMBASIC_HOST) || defined(PICOCALC)
 	{ (unsigned char*)"KeyDown(",    T_FUN | T_INT,		0, fun_keydown	},
-#endif	
+#endif
 #ifdef PICOMITEVGA
 	{ (unsigned char*)"DRAW3D(",	    T_FUN | T_INT,		0, fun_3D, },
 	{ (unsigned char *)"GetScanLine",	    	T_FNA | T_INT,		0, fun_getscanline 	    },

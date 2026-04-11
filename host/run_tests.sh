@@ -43,14 +43,20 @@ run_one_test() {
     local testfile="$1"
     local mode="$2"
     local name
+    local run_args
+    local extra_args=()
     name=$(basename "$testfile" .bas)
+    run_args=$(sed -n '1s/^.*RUN_ARGS: //p' "$testfile")
+    if [ -n "$run_args" ]; then
+        read -r -a extra_args <<< "$run_args"
+    fi
 
     printf "  %-30s " "$name"
 
     # Run with timeout to catch infinite loops (polls every 0.1s)
     local tmpfile
     tmpfile=$(mktemp)
-    $BINARY "$testfile" $mode > "$tmpfile" 2>&1 &
+    $BINARY "$testfile" "${extra_args[@]}" $mode > "$tmpfile" 2>&1 &
     local PID=$!
     local elapsed=0
     while kill -0 $PID 2>/dev/null; do

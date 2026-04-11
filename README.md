@@ -77,14 +77,19 @@ cd ~/picocalc/PicoMiteAllVersions
 make -C host
 ./host/run_tests.sh
 ./host/run_pixel_tests.sh
+./host/run_host_shim_tests.sh
+./host/run_frontend_tests.sh
 bash host/run_unsupported_tests.sh
+./host/run_missing_syscall_tests.sh   # intentionally red syscall TODO inventory
 make -C build2350 -j8
 arm-none-eabi-size build2350/PicoMite.elf
 ```
 
-The host binary is `host/mmbasic_test`. Its default mode compares the legacy host interpreter against the bytecode VM. Use `--interp` for the interpreter oracle only and `--vm` for the VM only.
+The host binary is `host/mmbasic_test`. Its default mode compares the legacy host interpreter against the bytecode VM. Use `--interp` for the interpreter oracle only, `--vm` for the current VM path, `--vm-source` for the VM-owned raw-source frontend, and `--source-compare` to compare the legacy oracle against that frontend.
 
-The current prototype direction is VM-only BASIC program execution on device: `RUN` compiles to bytecode and runs on the VM. `FRUN` and the interpreter bridge fallback are removed from the user-facing VM path. The device prompt is a reduced shell for OS/file operations, not a full immediate BASIC REPL.
+For keyboard-driven host tests, `mmbasic_test` supports `--keys TEXT` and `--keys-after-ms MS TEXT`.
+
+The current prototype direction is VM-only BASIC program execution on device: `RUN` compiles source to bytecode with a VM-owned frontend and runs on the VM. `FRUN` and the interpreter bridge fallback are removed from the user-facing VM path. The device prompt is a reduced shell for OS/file operations, not a full immediate BASIC REPL.
 
 (_original readme follows..._)
 

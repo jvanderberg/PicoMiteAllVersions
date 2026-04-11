@@ -1,0 +1,4 @@
+FONT #1, 2
+FONT 1
+PRINT "done"
+END

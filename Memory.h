@@ -90,7 +90,9 @@ extern unsigned char *LayerBuf;
 extern uint32_t heap_memory_size;
 extern unsigned char *FRAMEBUFFER;
 extern uint32_t framebuffersize;
+#if !(defined(PICOCALC) && defined(rp2350))
 extern unsigned char __attribute__ ((aligned (256))) AllMemory[];
+#endif
 struct s_ctrl {
     short int x1, y1, x2, y2;           // the coordinates of the touch sensitive area
     int fc, bc;                         // foreground and background colours

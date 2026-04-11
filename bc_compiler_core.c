@@ -9,23 +9,7 @@
 #include <ctype.h>
 #include "bytecode.h"
 #include "bc_compiler_internal.h"
-
-/* ------------------------------------------------------------------ */
-/*  Dynamic allocation for compiler arrays                            */
-/*  Host: calloc/free (MMBasic heap uses 32-bit pointer math)         */
-/*  Device: GetMemory/FreeMemory (MMBasic heap)                       */
-/* ------------------------------------------------------------------ */
-
-#ifdef MMBASIC_HOST
-#include <stdlib.h>
-#define BC_ALLOC(sz)   calloc(1, (sz))
-#define BC_FREE(p)     free((p))
-#else
-extern void *GetMemory(int size);
-extern void FreeMemory(unsigned char *addr);
-#define BC_ALLOC(sz)   GetMemory((sz))
-#define BC_FREE(p)     FreeMemory((unsigned char *)(p))
-#endif
+#include "bc_alloc.h"
 
 int bc_compiler_alloc(BCCompiler *cs) {
     memset(cs, 0, sizeof(*cs));
@@ -427,6 +411,43 @@ void bc_add_fixup_line(BCCompiler *cs, uint32_t patch_addr, int target_line,
     f->target_label = -1;
     f->size         = size;
     f->is_relative  = is_relative;
+}
+
+void bc_resolve_fixups(BCCompiler *cs) {
+    for (uint16_t i = 0; i < cs->fixup_count; i++) {
+        BCFixup *f = &cs->fixups[i];
+
+        uint32_t target;
+        if (f->target_line >= 0) {
+            target = bc_linemap_lookup(cs, (uint16_t)f->target_line);
+            if (target == 0xFFFFFFFF) {
+                bc_set_error(cs, "Undefined line number %d", f->target_line);
+                return;
+            }
+        } else {
+            bc_set_error(cs, "Label fixup not implemented");
+            return;
+        }
+
+        if (f->is_relative) {
+            int32_t offset = (int32_t)target - (int32_t)(f->patch_addr + f->size);
+            if (f->size == 2) {
+                if (offset < -32768 || offset > 32767) {
+                    bc_set_error(cs, "Relative jump out of range (line %d)", f->target_line);
+                    return;
+                }
+                bc_patch_i16(cs, f->patch_addr, (int16_t)offset);
+            } else {
+                bc_patch_u32(cs, f->patch_addr, (uint32_t)offset);
+            }
+        } else {
+            if (f->size == 4) {
+                bc_patch_u32(cs, f->patch_addr, target);
+            } else {
+                bc_patch_u16(cs, f->patch_addr, (uint16_t)target);
+            }
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */

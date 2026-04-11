@@ -55,6 +55,7 @@ void CrunchData(unsigned char **p, int c);
 int FileEOF(int fnbr);
 void ClearSavedVars(void);
 int FileLoadProgram(unsigned char *fname, bool chain);
+int FileLoadSourceProgram(unsigned char *fname, char **source_out);
 int FileLoadCMM2Program(char *fname, bool message);
 void SaveOptions(void);
 void ResetAllFlash(void);

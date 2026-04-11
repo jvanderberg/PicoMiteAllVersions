@@ -224,6 +224,22 @@ typedef enum {
     OP_STR_FIELD3     = 0xE1, /* pop delim str, pop field int, pop source str, push FIELD$ */
     OP_COLOUR         = 0xE2, /* native COLOR/COLOUR */
     OP_PAUSE          = 0xE3, /* pop numeric ms, PAUSE */
+    OP_STR_DATE       = 0xE4, /* — push str DATE$ */
+    OP_STR_TIME       = 0xE5, /* — push str TIME$ */
+    OP_KEYDOWN        = 0xE6, /* pop int n, push int KEYDOWN(n) */
+    OP_PLAY_STOP      = 0xE7, /* — PLAY STOP */
+    OP_PLAY_TONE      = 0xE8, /* argc:8 — PLAY TONE left, right[, duration] */
+    OP_SETPIN         = 0xE9, /* mode:16 — pop pin, SETPIN pin, mode */
+    OP_PIN_READ       = 0xEA, /* pop pin, push int PIN(pin) */
+    OP_PIN_WRITE      = 0xEB, /* pop value, pop pin, PIN(pin)=value */
+    OP_FILE           = 0xEC, /* subop:8 — native file syscalls */
+    OP_PIXEL_READ     = 0xED, /* pop y, pop x, push int PIXEL(x,y) */
+    OP_MATH_MULSHR    = 0xEE, /* pop bits, pop b, pop a, push int trunc((a*b)/2^bits) */
+    OP_RBOX           = 0xEF, /* — native RBOX */
+    OP_ARC            = 0xF2, /* — native ARC */
+    OP_TRIANGLE       = 0xF3, /* — native TRIANGLE */
+    OP_FONT           = 0xF4, /* argc:8 — FONT [#]n[, scale] */
+    OP_POLYGON        = 0xF5, /* — native POLYGON */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -237,8 +253,20 @@ typedef enum {
 #define PRINT_TAB_AFTER   0x02
 #define PRINT_SEMICOLON   0x04
 
+/* Native file syscall sub-operations for OP_FILE */
+#define BC_FILE_OPEN          1  /* mode:8 fn:16, pop filename$ */
+#define BC_FILE_CLOSE         2  /* fn:16 */
+#define BC_FILE_PRINT_INT     3  /* fn:16, pop integer */
+#define BC_FILE_PRINT_FLT     4  /* fn:16, pop float */
+#define BC_FILE_PRINT_STR     5  /* fn:16, pop string */
+#define BC_FILE_PRINT_NEWLINE 6  /* fn:16 */
+#define BC_FILE_LINE_INPUT    7  /* is_local:8 slot:16 fn:16 */
+#define BC_FILE_FILES         8  /* no operands */
+
 /* Native BOX argument kinds */
 #define BC_BOX_ARG_COUNT         7
+#define BC_TRIANGLE_ARG_COUNT    8
+#define BC_POLYGON_ARG_COUNT     5
 #define BC_BOX_ARG_EMPTY         0
 #define BC_BOX_ARG_STACK         1
 #define BC_BOX_ARG_GLOBAL_ARR_I  2
@@ -419,7 +447,7 @@ typedef struct {
  * Compiler state
  *
  * All large arrays are dynamically allocated via bc_compiler_alloc().
- * On host: calloc/free.  On device: GetMemory/FreeMemory from MMBasic heap.
+ * On host: calloc/free.  On device: the VM-owned allocator in bc_alloc.c.
  */
 typedef struct {
     /* Output bytecode (allocated: BC_MAX_CODE bytes) */
@@ -618,7 +646,7 @@ int  bc_compiler_alloc(BCCompiler *cs);   /* allocate all dynamic arrays */
 void bc_compiler_free(BCCompiler *cs);    /* free all dynamic arrays */
 void bc_compiler_compact(BCCompiler *cs); /* shrink to actual size after compile */
 void bc_compiler_init(BCCompiler *cs);    /* reset state (arrays must be allocated) */
-int  bc_compile(BCCompiler *cs, unsigned char *prog_memory, int prog_size);
+int  bc_compile_source(BCCompiler *cs, const char *source, const char *source_name);
 
 /* VM */
 int  bc_vm_alloc(BCVMState *vm);    /* allocate dynamic arrays */
@@ -626,10 +654,10 @@ void bc_vm_free(BCVMState *vm);     /* free dynamic arrays */
 void bc_vm_init(BCVMState *vm, BCCompiler *cs);
 void bc_vm_execute(BCVMState *vm);
 void bc_vm_error(BCVMState *vm, const char *msg, ...);
+void bc_vm_release_arrays(BCVMState *vm);
 
 /* Commands */
-void bc_run_current_program(void);
-void cmd_ftest(void);
+void bc_run_source_string(const char *source, const char *source_name);
 
 /* Helpers */
 uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);
@@ -667,6 +695,7 @@ void bc_fastgfx_swap(void);
 void bc_fastgfx_sync(void);
 void bc_fastgfx_create(void);
 void bc_fastgfx_close(void);
+void bc_fastgfx_reset(void);
 void bc_fastgfx_set_fps(int fps);
 void bc_dump_stats(BCCompiler *cs);
 void bc_dump_vm_state(BCVMState *vm);

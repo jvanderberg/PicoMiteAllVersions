@@ -5,7 +5,10 @@
   - `make -C host`
   - `./host/run_tests.sh`
   - `./host/run_pixel_tests.sh`
+  - `./host/run_host_shim_tests.sh`
+  - `./host/run_frontend_tests.sh`
   - `bash host/run_unsupported_tests.sh`
+  - `./host/run_missing_syscall_tests.sh` (intentionally red syscall TODO inventory)
 - RP2350 firmware build:
   - `make -C build2350 -j8`
   - `arm-none-eabi-size build2350/PicoMite.elf`

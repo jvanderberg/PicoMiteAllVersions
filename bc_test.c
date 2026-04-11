@@ -13,19 +13,11 @@
 #include <setjmp.h>
 #include "MMBasic.h"
 #include "bytecode.h"
+#include "bc_alloc.h"
 
 /* External MMBasic globals */
 extern void MMPrintString(char *s);
 extern void error(char *msg, ...);
-#ifdef MMBASIC_HOST
-#define BC_ALLOC(sz)   calloc(1, (sz))
-#define BC_FREE(p)     free((p))
-#else
-extern void *GetMemory(int size);
-extern void FreeMemory(unsigned char *addr);
-#define BC_ALLOC(sz)   GetMemory((sz))
-#define BC_FREE(p)     FreeMemory((unsigned char *)(p))
-#endif
 extern void tokenise(int console);
 extern unsigned char inpbuf[];
 extern unsigned char tknbuf[];
@@ -874,23 +866,8 @@ static const BCTestCase test_cases[] = {
  * Helper: clean up VM arrays and string globals
  * ====================================================================== */
 static void cleanup_vm(BCVMState *vm, BCCompiler *cs) {
-    int i;
     (void)cs;
-    /* Free array data (allocated via GetMemory in OP_DIM_ARR).
-     * String element buffers were GetTempMemory — don't free individually. */
-    for (i = 0; i < BC_MAX_SLOTS; i++) {
-        if (vm->arrays[i].data) {
-            BC_FREE(vm->arrays[i].data);
-            vm->arrays[i].data = NULL;
-        }
-    }
-    /* Free local array data */
-    for (i = 0; i < VM_MAX_LOCALS; i++) {
-        if (vm->local_arrays[i].data) {
-            BC_FREE(vm->local_arrays[i].data);
-            vm->local_arrays[i].data = NULL;
-        }
-    }
+    bc_vm_release_arrays(vm);
 }
 
 static int run_compiler_selftests(char *msg, size_t msglen) {

@@ -147,6 +147,7 @@ int bc_add_local(BCCompiler *cs, const char *name, int name_len, uint8_t type, i
 
 /* Add a fixup for a forward reference */
 void bc_add_fixup_line(BCCompiler *cs, uint32_t patch_addr, int target_line, uint8_t size, uint8_t is_relative);
+void bc_resolve_fixups(BCCompiler *cs);
 
 /* Output capture API (from bc_runtime.c) */
 void bc_vm_start_capture(BCVMState *vm, char *buf, int capacity);

@@ -4334,7 +4334,7 @@ int MIPS16 main(){
 #ifndef rp2350
     if(Option.CPU_Speed<=200000)modclock(2);
 #else
-#if defined(PICOMITE) && defined(rp2350)
+#if defined(PICOMITE) && defined(rp2350) && !defined(PICOCALC)
     if(Option.DISPLAY_TYPE>=NEXTGEN){ //adjust the size of the heap
         framebuffersize=display_details[Option.DISPLAY_TYPE].horizontal*display_details[Option.DISPLAY_TYPE].vertical;
         heap_memory_size-=framebuffersize;

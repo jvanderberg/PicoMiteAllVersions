@@ -1,0 +1,5 @@
+DO
+  k% = KEYDOWN(1)
+LOOP UNTIL k% <> 0
+PRINT CHR$(k%)
+PRINT KEYDOWN(0)

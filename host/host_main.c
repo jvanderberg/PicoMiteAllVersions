@@ -1,14 +1,18 @@
 /*
  * host_main.c -- Host test driver for MMBasic interpreter + bytecode VM
  *
- * Loads a .bas file, runs it through both the old interpreter and the new
- * bytecode VM, captures output from each, and compares the results.
+ * Loads a .bas file, runs it through the untouched legacy interpreter oracle
+ * and the VM-owned raw-source frontend/bytecode VM, captures output from each,
+ * and compares the results.
  *
  * Usage:
- *   ./mmbasic_test program.bas          Compare both engines
- *   ./mmbasic_test program.bas --interp Run interpreter only
- *   ./mmbasic_test program.bas --vm     Run bytecode VM only
- *   ./mmbasic_test program.bas --debug  Compile-only: show stats + disassembly
+ *   ./mmbasic_test program.bas          Compare interpreter oracle vs source VM
+ *   ./mmbasic_test program.bas --interp Run interpreter oracle only
+ *   ./mmbasic_test program.bas --vm     Run raw-source VM only
+ *   ./mmbasic_test program.bas --vm-source
+ *                                      Alias for --vm
+ *   ./mmbasic_test program.bas --source-compare
+ *                                      Alias for default compare
  */
 
 #include <stdio.h>
@@ -17,11 +21,13 @@
 #include <setjmp.h>
 #include "Hardware_Includes.h"
 #include "bytecode.h"
+#include "vm_host_fat.h"
 
 /* All needed externs come from Hardware_Includes.h / MMBasic.h */
 extern char MMErrMsg[];
 extern int MMerrno;
 void host_runtime_configure(int timeout_ms, const char *screenshot_path);
+void host_runtime_configure_keys(const char *keys, int delay_ms);
 void host_runtime_begin(void);
 void host_runtime_finish(void);
 int host_runtime_timed_out(void);
@@ -49,6 +55,12 @@ typedef struct {
     int y;
     uint32_t rgb;
 } PixelAssert;
+
+typedef struct {
+    int width;
+    int height;
+    uint32_t *pixels;
+} FramebufferSnapshot;
 
 #define MAX_PIXEL_ASSERTS 64
 
@@ -141,33 +153,104 @@ static int check_pixel_assertions(const char *label, const PixelAssert *asserts,
     return failures;
 }
 
+static int capture_framebuffer(FramebufferSnapshot *snap) {
+    if (!snap) return -1;
+    snap->width = host_runtime_width();
+    snap->height = host_runtime_height();
+    snap->pixels = NULL;
+
+    if (snap->width <= 0 || snap->height <= 0) return -1;
+
+    size_t count = (size_t)snap->width * (size_t)snap->height;
+    snap->pixels = malloc(count * sizeof(*snap->pixels));
+    if (!snap->pixels) return -1;
+
+    for (int y = 0; y < snap->height; ++y) {
+        for (int x = 0; x < snap->width; ++x) {
+            snap->pixels[(size_t)y * (size_t)snap->width + (size_t)x] =
+                host_runtime_get_pixel(x, y);
+        }
+    }
+    return 0;
+}
+
+static void free_framebuffer_snapshot(FramebufferSnapshot *snap) {
+    if (!snap) return;
+    free(snap->pixels);
+    snap->pixels = NULL;
+    snap->width = 0;
+    snap->height = 0;
+}
+
+static int compare_framebuffer_snapshot(const FramebufferSnapshot *expected) {
+    if (!expected || !expected->pixels) {
+        printf("Framebuffer compare failed: no interpreter snapshot\n");
+        return 1;
+    }
+
+    int width = host_runtime_width();
+    int height = host_runtime_height();
+    if (width != expected->width || height != expected->height) {
+        printf("Framebuffer dimensions differ: interpreter %dx%d, VM %dx%d\n",
+               expected->width, expected->height, width, height);
+        return 1;
+    }
+
+    int failures = 0;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            uint32_t want = expected->pixels[(size_t)y * (size_t)width + (size_t)x];
+            uint32_t got = host_runtime_get_pixel(x, y);
+            if (want != got) {
+                if (failures < 8) {
+                    printf("Framebuffer mismatch at (%d,%d): interpreter 0x%06X VM 0x%06X\n",
+                           x, y, (unsigned)want, (unsigned)got);
+                }
+                failures++;
+            }
+        }
+    }
+
+    if (failures) {
+        printf("Framebuffer mismatches: %d\n", failures);
+    }
+    return failures;
+}
+
 /*
- * Load a .bas file and tokenize it into ProgMemory.
- * Returns 0 on success, -1 on error.
+ * Load a .bas file into a NUL-terminated source buffer.
+ * Caller must free the returned buffer.
  */
-static int load_basic_file(const char *filename) {
+static char *read_basic_source_file(const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f) {
         fprintf(stderr, "Cannot open %s\n", filename);
-        return -1;
+        return NULL;
     }
 
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *source = malloc(fsize + 1);
-    if (!source) { fclose(f); return -1; }
+    if (!source) { fclose(f); return NULL; }
     fread(source, 1, fsize, f);
     source[fsize] = '\0';
     fclose(f);
+    return source;
+}
 
+/*
+ * Tokenize source text into ProgMemory for the legacy interpreter path.
+ * Returns 0 on success, -1 on error.
+ */
+static int load_basic_source(const char *source) {
     /* Tokenize line by line into ProgMemory */
     unsigned char *pm = ProgMemory;
-    char *line = source;
+    const char *line = source;
     int lineno = 1;
 
     while (*line) {
-        char *eol = strchr(line, '\n');
+        const char *eol = strchr(line, '\n');
         int len = eol ? (int)(eol - line) : (int)strlen(line);
 
         /* Strip CR */
@@ -219,8 +302,15 @@ static int load_basic_file(const char *filename) {
     *pm++ = 0;
     PSize = (int)(pm - ProgMemory);
 
-    free(source);
     return 0;
+}
+
+static int load_basic_file(const char *filename) {
+    char *source = read_basic_source_file(filename);
+    if (!source) return -1;
+    int rc = load_basic_source(source);
+    free(source);
+    return rc;
 }
 
 /*
@@ -231,6 +321,7 @@ static int run_interpreter(char *output, int outsize) {
     start_capture(output, outsize);
     int result = 0;
 
+    vm_host_fat_reset();
     ClearRuntime(true);
     MMErrMsg[0] = '\0';
     MMerrno = 0;
@@ -252,17 +343,18 @@ static int run_interpreter(char *output, int outsize) {
  * Run via the bytecode VM with output capture.
  * Returns 0 on normal completion, non-zero on error.
  */
-static int run_bytecode_vm(char *output, int outsize) {
+static int run_bytecode_vm_source(const char *source, const char *source_name,
+                                  char *output, int outsize) {
     start_capture(output, outsize);
     int result = 0;
 
+    vm_host_fat_reset();
     ClearRuntime(true);
     MMErrMsg[0] = '\0';
     MMerrno = 0;
     host_runtime_begin();
-    PrepareProgram(1);
     if (setjmp(mark) == 0) {
-        bc_run_current_program();
+        bc_run_source_string(source, source_name);
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
@@ -273,36 +365,56 @@ static int run_bytecode_vm(char *output, int outsize) {
     return result;
 }
 
+typedef enum {
+    MODE_SOURCE_COMPARE = 0,
+    MODE_INTERP_ONLY,
+    MODE_VM_SOURCE_ONLY
+} HostMode;
+
 int main(int argc, char **argv) {
-    int mode = 0;  /* 0=compare, 1=interp only, 2=vm only, 3=debug */
+    HostMode mode = MODE_SOURCE_COMPARE;
     int timeout_ms = 0;
     const char *screenshot_path = NULL;
     PixelAssert pixel_asserts[MAX_PIXEL_ASSERTS];
     int pixel_assert_count = 0;
+    int compare_framebuffer = 0;
 
     if (argc < 2) {
         printf("MMBasic Host Test Build\n");
         printf("======================\n\n");
         printf("Usage:\n");
-        printf("  %s program.bas          Compare both engines\n", argv[0]);
-        printf("  %s program.bas --interp Run interpreter only\n", argv[0]);
-        printf("  %s program.bas --vm     Run bytecode VM only\n", argv[0]);
-        printf("  %s program.bas --debug  Compile + show stats/disassembly\n", argv[0]);
+        printf("  %s program.bas          Compare interpreter oracle vs raw-source VM\n", argv[0]);
+        printf("  %s program.bas --interp Run interpreter oracle only\n", argv[0]);
+        printf("  %s program.bas --vm     Run raw-source VM only\n", argv[0]);
+        printf("  %s program.bas --vm-source Alias for --vm\n", argv[0]);
+        printf("  %s program.bas --source-compare Alias for default compare\n", argv[0]);
         printf("  %s program.bas --interp --timeout-ms 100 --screenshot out.ppm\n", argv[0]);
         printf("  %s program.bas --vm --assert-pixel 10,20,FF0000\n", argv[0]);
+        printf("  %s program.bas --compare-framebuffer\n", argv[0]);
+        printf("  %s program.bas --interp --keys-after-ms 100 q\n", argv[0]);
         return 0;
     }
 
     const char *filename = argv[1];
+    const char *key_script = NULL;
+    int key_delay_ms = 0;
 
     for (int i = 2; i < argc; ++i) {
-        if (strcmp(argv[i], "--interp") == 0) mode = 1;
-        else if (strcmp(argv[i], "--vm") == 0) mode = 2;
-        else if (strcmp(argv[i], "--debug") == 0) mode = 3;
+        if (strcmp(argv[i], "--interp") == 0) mode = MODE_INTERP_ONLY;
+        else if (strcmp(argv[i], "--vm") == 0) mode = MODE_VM_SOURCE_ONLY;
+        else if (strcmp(argv[i], "--vm-source") == 0) mode = MODE_VM_SOURCE_ONLY;
+        else if (strcmp(argv[i], "--source-compare") == 0) mode = MODE_SOURCE_COMPARE;
+        else if (strcmp(argv[i], "--compare-framebuffer") == 0) compare_framebuffer = 1;
         else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
             timeout_ms = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
             screenshot_path = argv[++i];
+        } else if (strcmp(argv[i], "--keys") == 0 && i + 1 < argc) {
+            key_script = argv[++i];
+            key_delay_ms = 0;
+        } else if (strcmp(argv[i], "--keys-after-ms") == 0 && i + 2 < argc) {
+            key_delay_ms = atoi(argv[++i]);
+            key_script = argv[++i];
         } else if (strcmp(argv[i], "--assert-pixel") == 0 && i + 1 < argc) {
             if (pixel_assert_count >= MAX_PIXEL_ASSERTS) {
                 fprintf(stderr, "Too many --assert-pixel options (max %d)\n", MAX_PIXEL_ASSERTS);
@@ -329,11 +441,19 @@ int main(int argc, char **argv) {
     /* Initialize the MMBasic runtime */
     InitBasic();
     host_runtime_configure(timeout_ms, screenshot_path);
+    host_runtime_configure_keys(key_script, key_delay_ms);
 
-    /* Load the program */
-    if (load_basic_file(filename) != 0) return 1;
+    char *source_text = read_basic_source_file(filename);
+    if (!source_text) return 1;
 
-    if (mode == 1) {
+    if (mode != MODE_VM_SOURCE_ONLY) {
+        if (load_basic_source(source_text) != 0) {
+            free(source_text);
+            return 1;
+        }
+    }
+
+    if (mode == MODE_INTERP_ONLY) {
         /* Interpreter only */
         printf("--- Interpreter ---\n");
         int rc = run_interpreter(interp_output, CAPTURE_SIZE);
@@ -342,100 +462,80 @@ int main(int argc, char **argv) {
         if (rc == 2) printf("\n--- Timed Out ---\n");
         else if (pixel_failures) printf("\n--- Pixel Assertions Failed ---\n");
         else printf("\n--- Done ---\n");
+        free(source_text);
         if (rc == 2) return 124;
         return (rc != 0 || pixel_failures) ? 1 : 0;
     }
 
-    if (mode == 2) {
-        /* Bytecode VM only */
-        printf("--- Bytecode VM ---\n");
-        int rc = run_bytecode_vm(vm_output, CAPTURE_SIZE);
+    if (mode == MODE_VM_SOURCE_ONLY) {
+        printf("--- Bytecode VM Source Frontend ---\n");
+        int rc = run_bytecode_vm_source(source_text, filename, vm_output, CAPTURE_SIZE);
         printf("%s", vm_output);
-        int pixel_failures = (rc == 0) ? check_pixel_assertions("Bytecode VM", pixel_asserts, pixel_assert_count) : 0;
+        int pixel_failures = (rc == 0) ? check_pixel_assertions("Bytecode VM Source", pixel_asserts, pixel_assert_count) : 0;
         if (rc == 2) printf("\n--- Timed Out ---\n");
         else if (pixel_failures) printf("\n--- Pixel Assertions Failed ---\n");
         else printf("\n--- Done ---\n");
+        free(source_text);
         if (rc == 2) return 124;
         return (rc != 0 || pixel_failures) ? 1 : 0;
     }
 
-    if (mode == 3) {
-        /* Debug mode: compile only, show stats + disassembly */
-        printf("--- Debug: %s ---\n\n", filename);
+    if (mode == MODE_SOURCE_COMPARE) {
+        FramebufferSnapshot interp_frame = {0, 0, NULL};
+        int fb_compare_failures = 0;
+        printf("Running source frontend compare: %s\n\n", filename);
 
-        PrepareProgram(1);
+        printf("--- Interpreter ---\n");
+        int r1 = run_interpreter(interp_output, CAPTURE_SIZE);
+        int p1 = (r1 == 0) ? check_pixel_assertions("Interpreter", pixel_asserts, pixel_assert_count) : 0;
+        if (compare_framebuffer && r1 == 0) {
+            if (capture_framebuffer(&interp_frame) != 0) {
+                printf("Framebuffer compare failed: could not capture interpreter framebuffer\n");
+                fb_compare_failures = 1;
+            }
+        }
 
-        BCCompiler cs_local;
-        BCCompiler *cs = &cs_local;
-        if (bc_compiler_alloc(cs) != 0) {
-            printf("ERROR: Cannot allocate compiler\n");
+        printf("--- Bytecode VM Source Frontend ---\n");
+        int r2 = run_bytecode_vm_source(source_text, filename, vm_output, CAPTURE_SIZE);
+        int p2 = (r2 == 0) ? check_pixel_assertions("Bytecode VM Source", pixel_asserts, pixel_assert_count) : 0;
+        if (compare_framebuffer && r1 == 0 && r2 == 0 && fb_compare_failures == 0) {
+            fb_compare_failures = compare_framebuffer_snapshot(&interp_frame);
+        }
+
+        printf("\n--- Results ---\n");
+        printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
+        printf("Bytecode VM Source: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
+        if (pixel_assert_count > 0) {
+            printf("Interpreter pixels: %s\n", p1 == 0 ? "OK" : "FAIL");
+            printf("Bytecode VM Source pixels: %s\n", p2 == 0 ? "OK" : "FAIL");
+        }
+        if (compare_framebuffer) {
+            printf("Framebuffer compare: %s\n", fb_compare_failures == 0 ? "OK" : "FAIL");
+        }
+
+        if (r1 != 0 || r2 != 0 || p1 != 0 || p2 != 0 || fb_compare_failures != 0) {
+            printf("\nInterpreter output:\n---\n%s\n---\n\n", interp_output);
+            printf("Bytecode VM Source output:\n---\n%s\n---\n\n", vm_output);
+            free(source_text);
+            free_framebuffer_snapshot(&interp_frame);
             return 1;
         }
 
-        bc_compiler_init(cs);
-        int err = bc_compile(cs, ProgMemory, PSize);
-        if (err) {
-            printf("COMPILE ERROR at line %d: %s\n\n",
-                   cs->error_line, cs->error_msg);
+        if (strcmp(interp_output, vm_output) == 0) {
+            printf("Output: MATCH\n");
+            printf("\nOutput (%d chars):\n%s\n", (int)strlen(interp_output), interp_output);
+            free(source_text);
+            free_framebuffer_snapshot(&interp_frame);
+            return 0;
         }
 
-        bc_dump_stats(cs);
-        if (!err) {
-            bc_disassemble(cs);
-        }
-        bc_compiler_free(cs);
-        return err ? 1 : 0;
-    }
-
-    /* Comparison mode: run both and compare */
-    printf("Running: %s\n\n", filename);
-
-    printf("--- Interpreter ---\n");
-    int r1 = run_interpreter(interp_output, CAPTURE_SIZE);
-    int p1 = (r1 == 0) ? check_pixel_assertions("Interpreter", pixel_asserts, pixel_assert_count) : 0;
-
-    /* Re-load the program (interpreter may have modified ProgMemory) */
-    load_basic_file(filename);
-
-    printf("--- Bytecode VM ---\n");
-    int r2 = run_bytecode_vm(vm_output, CAPTURE_SIZE);
-    int p2 = (r2 == 0) ? check_pixel_assertions("Bytecode VM", pixel_asserts, pixel_assert_count) : 0;
-
-    /* Compare */
-    printf("\n--- Results ---\n");
-    printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
-    printf("Bytecode VM: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
-    if (pixel_assert_count > 0) {
-        printf("Interpreter pixels: %s\n", p1 == 0 ? "OK" : "FAIL");
-        printf("Bytecode VM pixels: %s\n", p2 == 0 ? "OK" : "FAIL");
-    }
-
-    if (r1 != 0 || r2 != 0 || p1 != 0 || p2 != 0) {
-        printf("\nInterpreter output:\n---\n%s\n---\n\n", interp_output);
-        printf("Bytecode VM output:\n---\n%s\n---\n\n", vm_output);
-        return 1;
-    }
-
-    if (strcmp(interp_output, vm_output) == 0) {
-        printf("Output: MATCH\n");
-        printf("\nOutput (%d chars):\n%s\n", (int)strlen(interp_output), interp_output);
-        return 0;
-    } else {
         printf("Output: MISMATCH!\n\n");
         printf("Interpreter output:\n---\n%s\n---\n\n", interp_output);
-        printf("Bytecode VM output:\n---\n%s\n---\n\n", vm_output);
-
-        /* Find first difference */
-        int pos = 0;
-        while (interp_output[pos] && vm_output[pos] && interp_output[pos] == vm_output[pos]) pos++;
-        printf("First difference at position %d\n", pos);
-        printf("  Interpreter: 0x%02X '%c'\n",
-               (unsigned char)interp_output[pos],
-               interp_output[pos] >= 32 ? interp_output[pos] : '.');
-        printf("  Bytecode VM: 0x%02X '%c'\n",
-               (unsigned char)vm_output[pos],
-               vm_output[pos] >= 32 ? vm_output[pos] : '.');
-
+        printf("Bytecode VM Source output:\n---\n%s\n---\n\n", vm_output);
+        free(source_text);
+        free_framebuffer_snapshot(&interp_frame);
         return 1;
     }
+    free(source_text);
+    return 1;
 }

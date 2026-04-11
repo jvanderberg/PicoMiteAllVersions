@@ -40,6 +40,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "gfx_pixel_shared.h"
 #include "gfx_cls_shared.h"
 #include "gfx_text_shared.h"
+#include "bc_alloc.h"
 #include "hardware/spi.h"
 #include "Memory.h"
 #ifndef PICOMITEWEB
@@ -5912,16 +5913,17 @@ void bc_fastgfx_create(void) {
             dma_channel_unclaim(fastgfx_dma_chan);
             fastgfx_dma_chan = -1;
         }
-        FreeMemory(FastGFXBackBuf);
-        FreeMemory(FastGFXFrontBuf);
+        BC_FREE(FastGFXBackBuf);
+        BC_FREE(FastGFXFrontBuf);
         FastGFXBackBuf = NULL;
         FastGFXFrontBuf = NULL;
         fastgfx_active = false;
         restorepanel();
     }
     if (FrameBuf || LayerBuf) error("FRAMEBUFFER is active");
-    FastGFXBackBuf = GetMemory(HRes * VRes / 2);
-    FastGFXFrontBuf = GetMemory(HRes * VRes / 2);
+    FastGFXBackBuf = BC_ALLOC(HRes * VRes / 2);
+    FastGFXFrontBuf = BC_ALLOC(HRes * VRes / 2);
+    if (!FastGFXBackBuf || !FastGFXFrontBuf) error("Not enough memory");
     memset(FastGFXBackBuf, 0, HRes * VRes / 2);
     memset(FastGFXFrontBuf, 0, HRes * VRes / 2);
     fastgfx_dma_chan = dma_claim_unused_channel(true);
@@ -5940,8 +5942,23 @@ void bc_fastgfx_close(void) {
         dma_channel_unclaim(fastgfx_dma_chan);
         fastgfx_dma_chan = -1;
     }
-    FreeMemory(FastGFXBackBuf);
-    FreeMemory(FastGFXFrontBuf);
+    BC_FREE(FastGFXBackBuf);
+    BC_FREE(FastGFXFrontBuf);
+    FastGFXBackBuf = NULL;
+    FastGFXFrontBuf = NULL;
+    fastgfx_active = false;
+    restorepanel();
+}
+
+void bc_fastgfx_reset(void) {
+    if (!fastgfx_active) return;
+    while (!fastgfx_done) { __dmb(); }
+    if (fastgfx_dma_chan >= 0) {
+        dma_channel_unclaim(fastgfx_dma_chan);
+        fastgfx_dma_chan = -1;
+    }
+    BC_FREE(FastGFXBackBuf);
+    BC_FREE(FastGFXFrontBuf);
     FastGFXBackBuf = NULL;
     FastGFXFrontBuf = NULL;
     fastgfx_active = false;
@@ -5949,7 +5966,7 @@ void bc_fastgfx_close(void) {
 }
 
 void bc_fastgfx_set_fps(int fps) {
-    if (fps < 0 || fps > 120) error("Number out of bounds");
+    if (fps < 0 || fps > 1000) error("Number out of bounds");
     if (fps == 0)
         fastgfx_frame_us = 0;
     else
@@ -5968,7 +5985,7 @@ void cmd_fastgfx(void) {
         checkend(p);
         bc_fastgfx_sync();
     } else if ((p = checkstring(cmdline, (unsigned char *)"FPS"))) {
-        bc_fastgfx_set_fps(getint(p, 0, 120));
+        bc_fastgfx_set_fps(getint(p, 0, 1000));
     } else if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
         checkend(p);
         bc_fastgfx_close();

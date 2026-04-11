@@ -78,13 +78,17 @@ add_executable(PicoMite
 	gfx_pixel_shared.c
 	gfx_cls_shared.c
 	gfx_text_shared.c
-	bc_compiler.c
+	bc_alloc.c
+	vm_sys_input.c
+	vm_sys_graphics.c
+	vm_sys_time.c
+	vm_sys_audio.c
+	vm_sys_pin.c
+	vm_sys_file.c
+	bc_source.c
 	bc_compiler_core.c
-	bc_compiler_expr.c
-	bc_compiler_stmt.c
 	bc_vm.c
 	bc_runtime.c
-	bc_test.c
 	bc_debug.c
 )
 if (COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "HDMIUSB"  OR COMPILE STREQUAL "VGARP2350"  OR COMPILE STREQUAL "VGAUSBRP2350"  OR COMPILE STREQUAL "PICORP2350"  OR COMPILE STREQUAL "PICOUSBRP2350" )

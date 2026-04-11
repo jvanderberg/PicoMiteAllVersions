@@ -46,7 +46,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include <math.h>
 void flist(int, int, int);
 //void clearprog(void);
-extern void bc_run_current_program(void);
+extern void bc_run_source_string(const char *source, const char *source_name);
 char *KeyInterrupt=NULL;
 unsigned char* SaveNextDataLine = NULL;
 void execute_one_command(unsigned char *p);
@@ -677,6 +677,8 @@ void MIPS16 ListProgram(unsigned char *p, int all) {
 void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     // RUN [ filename$ ] [, cmd_args$ ]
     unsigned char *filename = (unsigned char *)"", *cmd_args = (unsigned char *)"";
+    char source_name[MAXSTRLEN + 1];
+    char *source_text = NULL;
 	unsigned char *cmdbuf=GetMemory(256);
 	memcpy(cmdbuf,cmdline,STRINGSIZE);
     getargs(&cmdbuf, 3, (unsigned char *)",");
@@ -702,19 +704,20 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     if (snprintf((char *)buf, MAXSTRLEN + 1, "\"%s\",%s", filename, cmd_args) > MAXSTRLEN) {
         error("RUN command line too long");
     }
+    snprintf(source_name, sizeof(source_name), "%s", filename);
     unsigned char *pcmd_args = buf + strlen((char *)filename) + 3; // *** THW 16/4/23
 
+    if (!*filename) error("Syntax");
+    ClearRuntime(true);
 #ifdef rp2350
     if(CMM2mode){
-		if (*filename && !FileLoadCMM2Program((char *)buf,false)) return;
+		error("Syntax");
 	} else {
 #endif
-		if (*filename && !FileLoadProgram(buf, false)) return;
+		if (!FileLoadSourceProgram(buf, &source_text)) return;
 #ifdef rp2350
 	}
 #endif
-    ClearRuntime(true);
-    PrepareProgram(true);
     if(Option.DISPLAY_CONSOLE && (SPIREAD  || Option.NoScroll)){ClearScreen(gui_bcolour);CurrentX=0;CurrentY=0;}
     // Create a global constant MM.CMDLINE$ containing 'cmd_args'.
 //    void *ptr = findvar((unsigned char *)"MM.CMDLINE$", V_FIND | V_DIM_VAR | T_CONST);
@@ -722,14 +725,14 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
 //    memcpy(cmdlinebuff, pcmd_args, *pcmd_args + 1); // *** THW 16/4/23
 	Mstrcpy(cmdlinebuff, pcmd_args);
     IgnorePIN = false;
-    if(*ProgMemory != T_NEWLINE) return;                             // no program to run
 #ifdef PICOMITEWEB
 	cleanserver();
 #endif
 #ifndef USBKEYBOARD
     if(mouse0==false && Option.MOUSE_CLOCK)initMouse0(0);  //see if there is a mouse to initialise 
 #endif
-    bc_run_current_program();
+    bc_run_source_string(source_text, source_name);
+    FreeMemorySafe((void **)&source_text);
 }
 /** @endcond */
 void MIPS16 cmd_list(void) {

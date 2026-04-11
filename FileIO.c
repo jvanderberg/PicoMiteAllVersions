@@ -2486,6 +2486,53 @@ int FileLoadProgram(unsigned char *fname, bool chain)
     SaveProgramToFlash((unsigned char *)buf, false);
     return true;
 }
+
+// load a BASIC source file into RAM without tokenising it
+int FileLoadSourceProgram(unsigned char *fname, char **source_out)
+{
+    int fnbr;
+    char *p, *buf;
+    int c;
+    int fsize;
+
+    if (source_out) *source_out = NULL;
+    if (!source_out) error("Internal error");
+    if (!InitSDCard()) return false;
+
+    fnbr = FindFreeFileNbr();
+    p = (char *)getFstring(fname);
+    if (strchr((char *)p, '.') == NULL) strcat((char *)p, ".bas");
+
+    char q[FF_MAX_LFN] = {0};
+    FatFSFileSystemSave = FatFSFileSystem;
+    getfullfilename(p, q);
+    FatFSFileSystem = FatFSFileSystemSave;
+
+    if (!BasicFileOpen(p, fnbr, FA_READ)) return false;
+
+    if(filesource[fnbr] != FLASHFILE) fsize = (int)f_size(FileTable[fnbr].fptr);
+    else fsize = lfs_file_size(&lfs, FileTable[fnbr].lfsptr);
+    if (fsize < 0 || fsize >= EDIT_BUFFER_SIZE - 2048 - 512) {
+        FileClose(fnbr);
+        error("Not enough memory");
+    }
+
+    p = buf = GetMemory(fsize + 1);
+    while (!FileEOF(fnbr)) {
+        if ((p - buf) >= fsize)
+            error("Not enough memory");
+        c = FileGetChar(fnbr) & 0x7f;
+        if (isprint(c) || c == '\r' || c == '\n' || c == TAB) {
+            if (c == TAB) c = ' ';
+            *p++ = c;
+        }
+    }
+    *p = 0;
+    FileClose(fnbr);
+    ClearSavedVars();
+    *source_out = buf;
+    return true;
+}
 #ifdef rp2350
 volatile uint32_t realmempointer;
 void MemWriteBlock(void){

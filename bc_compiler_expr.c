@@ -321,6 +321,10 @@ extern void fun_field(void);
 extern void fun_rnd(void);
 extern void fun_inkey(void);
 extern void fun_timer(void);
+extern void fun_date(void);
+extern void fun_time(void);
+extern void fun_keydown(void);
+extern void fun_info(void);
 extern void fun_tilde(void);
 
 /*
@@ -641,6 +645,35 @@ static uint8_t try_compile_native_fun(BCCompiler *cs, void (*fptr)(void),
             *pp = p;
             return T_INT;
         }
+    }
+
+    if (fptr == fun_keydown) {
+        uint8_t at = bc_compile_expression(cs, &p);
+        if (at == T_NBR) bc_emit_byte(cs, OP_CVT_F2I);
+        if (*p == ')') p++;
+        bc_emit_byte(cs, OP_KEYDOWN);
+        *pp = p;
+        return T_INT;
+    }
+
+    if (fptr == fun_info) {
+        unsigned char *start = p;
+        unsigned char *end = p;
+        while (*end && *end != ')') end++;
+        if (*end != ')') return 0;
+        while (start < end && *start == ' ') start++;
+        while (end > start && end[-1] == ' ') end--;
+        if ((end - start) == 4 && strncasecmp((const char *)start, "HRES", 4) == 0) {
+            bc_emit_byte(cs, OP_MM_HRES);
+            *pp = end + 1;
+            return T_INT;
+        }
+        if ((end - start) == 4 && strncasecmp((const char *)start, "VRES", 4) == 0) {
+            bc_emit_byte(cs, OP_MM_VRES);
+            *pp = end + 1;
+            return T_INT;
+        }
+        return 0;
     }
 
     /* ---- Math functions (single-arg, float->float) ---- */
@@ -1138,6 +1171,16 @@ uint8_t bc_compile_expression(BCCompiler *cs, unsigned char **pp) {
                 }
                 if (fptr == fun_inkey) {
                     bc_emit_byte(cs, OP_STR_INKEY);
+                    ret_type = T_STR;
+                    goto fun_done;
+                }
+                if (fptr == fun_date) {
+                    bc_emit_byte(cs, OP_STR_DATE);
+                    ret_type = T_STR;
+                    goto fun_done;
+                }
+                if (fptr == fun_time) {
+                    bc_emit_byte(cs, OP_STR_TIME);
                     ret_type = T_STR;
                     goto fun_done;
                 }

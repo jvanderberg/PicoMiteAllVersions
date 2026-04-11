@@ -1,0 +1,7 @@
+CLS RGB(BLACK)
+FONT 1, 2
+TEXT 10, 10, "A"
+FONT #1
+TEXT 40, 10, "A"
+PRINT "done"
+END

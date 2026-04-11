@@ -15,6 +15,7 @@
 #include "gfx_pixel_shared.h"
 #include "gfx_cls_shared.h"
 #include "gfx_text_shared.h"
+#include "font1.h"
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
@@ -105,7 +106,7 @@ long long int *ds18b20Timers = NULL;
 volatile int ExtCurrentConfig[NBRPINS + 1] = {0};
 union uFileTable FileTable[MAXOPENFILES + 1] = {{0}};
 const uint8_t *flash_progmemory = NULL;
-unsigned char *FontTable[16] = {NULL};
+unsigned char *FontTable[16] = {(unsigned char *)font1};
 int FSerror = 0;
 int GPSchannel = 0;
 int gui_bcolour = 0;
@@ -462,6 +463,100 @@ static void host_draw_line_pixels(int x1, int y1, int x2, int y2, int width, int
     }
 }
 
+static void host_calc_triangle_edge(int x0, int y0, int x1, int y1, short *xmin, short *xmax) {
+    int absX, absY, offX, offY, err, x, y;
+    x = x0;
+    y = y0;
+    if (y >= 0 && y < host_fb_height) {
+        if (x < xmin[y]) xmin[y] = (short)x;
+        if (x > xmax[y]) xmax[y] = (short)x;
+    }
+    absX = abs(x1 - x0);
+    absY = abs(y1 - y0);
+    offX = x0 < x1 ? 1 : -1;
+    offY = y0 < y1 ? 1 : -1;
+    if (absX > absY) {
+        err = absX / 2;
+        while (x != x1) {
+            err -= absY;
+            if (err < 0) {
+                y += offY;
+                err += absX;
+            }
+            x += offX;
+            if (y >= 0 && y < host_fb_height) {
+                if (x < xmin[y]) xmin[y] = (short)x;
+                if (x > xmax[y]) xmax[y] = (short)x;
+            }
+        }
+    } else {
+        err = absY / 2;
+        while (y != y1) {
+            err -= absX;
+            if (err < 0) {
+                x += offX;
+                err += absY;
+            }
+            y += offY;
+            if (y >= 0 && y < host_fb_height) {
+                if (x < xmin[y]) xmin[y] = (short)x;
+                if (x > xmax[y]) xmax[y] = (short)x;
+            }
+        }
+    }
+}
+
+static void host_draw_triangle_pixels(int x0, int y0, int x1, int y1,
+                                      int x2, int y2, int c, int fill) {
+    if (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1) == 0) {
+        if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+        if (y1 > y2) { int t = y2; y2 = y1; y1 = t; t = x2; x2 = x1; x1 = t; }
+        if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+        host_draw_line_pixels(x0, y0, x2, y2, 1, c);
+        return;
+    }
+
+    if (fill == -1) {
+        host_draw_line_pixels(x0, y0, x1, y1, 1, c);
+        host_draw_line_pixels(x1, y1, x2, y2, 1, c);
+        host_draw_line_pixels(x2, y2, x0, y0, 1, c);
+        return;
+    }
+
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+    if (y1 > y2) { int t = y2; y2 = y1; y1 = t; t = x2; x2 = x1; x1 = t; }
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
+
+    if (host_fb_height <= 0) return;
+    short *xmin = calloc((size_t)host_fb_height, sizeof(short));
+    short *xmax = calloc((size_t)host_fb_height, sizeof(short));
+    if (!xmin || !xmax) {
+        free(xmin);
+        free(xmax);
+        return;
+    }
+
+    for (int y = y0; y <= y2; y++) {
+        if (y >= 0 && y < host_fb_height) {
+            xmin[y] = 32767;
+            xmax[y] = -1;
+        }
+    }
+    host_calc_triangle_edge(x0, y0, x1, y1, xmin, xmax);
+    host_calc_triangle_edge(x1, y1, x2, y2, xmin, xmax);
+    host_calc_triangle_edge(x2, y2, x0, y0, xmin, xmax);
+    for (int y = y0; y <= y2; y++) {
+        if (y >= 0 && y < host_fb_height && xmax[y] >= xmin[y]) {
+            host_fill_rect_pixels(xmin[y], y, xmax[y], y, fill);
+        }
+    }
+    host_draw_line_pixels(x0, y0, x1, y1, 1, c);
+    host_draw_line_pixels(x1, y1, x2, y2, 1, c);
+    host_draw_line_pixels(x2, y2, x0, y0, 1, c);
+    free(xmin);
+    free(xmax);
+}
+
 static void host_glyph_rows(char ch, uint8_t rows[7]) {
     memset(rows, 0, 7);
     switch (toupper((unsigned char)ch)) {
@@ -476,25 +571,40 @@ static void host_glyph_rows(char ch, uint8_t rows[7]) {
         case '8': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
         case '9': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x0F; rows[4]=0x01; rows[5]=0x01; rows[6]=0x0E; break;
         case 'A': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
+        case 'B': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x11; rows[5]=0x11; rows[6]=0x1E; break;
         case 'C': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x11; rows[6]=0x0E; break;
+        case 'D': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x1E; break;
         case 'E': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
         case 'F': rows[0]=0x1F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
         case 'G': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x10; rows[3]=0x17; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0F; break;
         case 'H': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1F; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
         case 'I': rows[0]=0x0E; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x0E; break;
+        case 'J': rows[0]=0x01; rows[1]=0x01; rows[2]=0x01; rows[3]=0x01; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
         case 'K': rows[0]=0x11; rows[1]=0x12; rows[2]=0x14; rows[3]=0x18; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
         case 'L': rows[0]=0x10; rows[1]=0x10; rows[2]=0x10; rows[3]=0x10; rows[4]=0x10; rows[5]=0x10; rows[6]=0x1F; break;
+        case 'M': rows[0]=0x11; rows[1]=0x1B; rows[2]=0x15; rows[3]=0x15; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
+        case 'N': rows[0]=0x11; rows[1]=0x19; rows[2]=0x15; rows[3]=0x13; rows[4]=0x11; rows[5]=0x11; rows[6]=0x11; break;
         case 'O': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
         case 'P': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x10; rows[5]=0x10; rows[6]=0x10; break;
+        case 'Q': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x15; rows[5]=0x12; rows[6]=0x0D; break;
         case 'R': rows[0]=0x1E; rows[1]=0x11; rows[2]=0x11; rows[3]=0x1E; rows[4]=0x14; rows[5]=0x12; rows[6]=0x11; break;
         case 'S': rows[0]=0x0F; rows[1]=0x10; rows[2]=0x10; rows[3]=0x0E; rows[4]=0x01; rows[5]=0x01; rows[6]=0x1E; break;
         case 'T': rows[0]=0x1F; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
+        case 'U': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x11; rows[6]=0x0E; break;
         case 'V': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x11; rows[4]=0x11; rows[5]=0x0A; rows[6]=0x04; break;
+        case 'W': rows[0]=0x11; rows[1]=0x11; rows[2]=0x11; rows[3]=0x15; rows[4]=0x15; rows[5]=0x15; rows[6]=0x0A; break;
+        case 'X': rows[0]=0x11; rows[1]=0x11; rows[2]=0x0A; rows[3]=0x04; rows[4]=0x0A; rows[5]=0x11; rows[6]=0x11; break;
         case 'Y': rows[0]=0x11; rows[1]=0x11; rows[2]=0x0A; rows[3]=0x04; rows[4]=0x04; rows[5]=0x04; rows[6]=0x04; break;
+        case 'Z': rows[0]=0x1F; rows[1]=0x01; rows[2]=0x02; rows[3]=0x04; rows[4]=0x08; rows[5]=0x10; rows[6]=0x1F; break;
         case '!': rows[0]=0x04; rows[1]=0x04; rows[2]=0x04; rows[3]=0x04; rows[4]=0x04; rows[5]=0x00; rows[6]=0x04; break;
+        case '(': rows[0]=0x02; rows[1]=0x04; rows[2]=0x08; rows[3]=0x08; rows[4]=0x08; rows[5]=0x04; rows[6]=0x02; break;
+        case ')': rows[0]=0x08; rows[1]=0x04; rows[2]=0x02; rows[3]=0x02; rows[4]=0x02; rows[5]=0x04; rows[6]=0x08; break;
         case ':': rows[0]=0x00; rows[1]=0x04; rows[2]=0x00; rows[3]=0x00; rows[4]=0x00; rows[5]=0x04; rows[6]=0x00; break;
         case '.': rows[0]=0x00; rows[1]=0x00; rows[2]=0x00; rows[3]=0x00; rows[4]=0x00; rows[5]=0x00; rows[6]=0x04; break;
+        case ',': rows[0]=0x00; rows[1]=0x00; rows[2]=0x00; rows[3]=0x00; rows[4]=0x00; rows[5]=0x04; rows[6]=0x08; break;
         case '-': rows[0]=0x00; rows[1]=0x00; rows[2]=0x00; rows[3]=0x1F; rows[4]=0x00; rows[5]=0x00; rows[6]=0x00; break;
+        case '/': rows[0]=0x01; rows[1]=0x01; rows[2]=0x02; rows[3]=0x04; rows[4]=0x08; rows[5]=0x10; rows[6]=0x10; break;
+        case '?': rows[0]=0x0E; rows[1]=0x11; rows[2]=0x01; rows[3]=0x02; rows[4]=0x04; rows[5]=0x00; rows[6]=0x04; break;
         case ' ': break;
         default:  rows[0]=0x1F; rows[1]=0x11; rows[2]=0x15; rows[3]=0x15; rows[4]=0x15; rows[5]=0x11; rows[6]=0x1F; break;
     }
@@ -524,21 +634,123 @@ static void host_draw_char(int x, int y, int scale, int fc, int bc, char ch) {
     }
 }
 
-static void host_draw_text(int x, int y, int scale, int jh, int jv, int fc, int bc, const char *str) {
+static int host_font_glyph_bit(const unsigned char *glyph, int width, int height, int col, int row) {
+    int bit_number = row * width + col;
+    return (glyph[bit_number / 8] >> (((height * width) - bit_number - 1) % 8)) & 1;
+}
+
+static void host_plot_text_pixel(int x, int y, int width, int height,
+                                 int scale, int orientation,
+                                 int col, int row, int sx, int sy, int colour) {
+    int px = x;
+    int py = y;
+
+    switch (orientation) {
+        case ORIENT_INVERTED:
+            px = x - (width * scale - 1) + (width - col - 1) * scale + sx;
+            py = y - (height * scale - 1) + (height - row - 1) * scale + sy;
+            break;
+        case ORIENT_CCW90DEG:
+            px = x + row * scale + sy;
+            py = y - width * scale + (width - col - 1) * scale + sx;
+            break;
+        case ORIENT_CW90DEG:
+            px = x - (height * scale - 1) + (height - row - 1) * scale + sy;
+            py = y + col * scale + sx;
+            break;
+        case ORIENT_VERT:
+        case ORIENT_NORMAL:
+        default:
+            px = x + col * scale + sx;
+            py = y + row * scale + sy;
+            break;
+    }
+
+    host_put_pixel(px, py, colour);
+}
+
+static void host_fill_text_cell(int x, int y, int width, int height,
+                                int scale, int orientation, int colour) {
+    for (int row = 0; row < height; row++) {
+        for (int col = 0; col < width; col++) {
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    host_plot_text_pixel(x, y, width, height, scale, orientation,
+                                         col, row, sx, sy, colour);
+                }
+            }
+        }
+    }
+}
+
+static void host_draw_font_char(int x, int y, int font_index, int scale,
+                                int orientation, int fc, int bc, int ch) {
+    unsigned char *font = FontTable[font_index];
+    if (!font) return;
+
+    int width = font[0];
+    int height = font[1];
+    if (bc >= 0) host_fill_text_cell(x, y, width, height, scale, orientation, bc);
+    if (ch < font[2] || ch >= font[2] + font[3]) return;
+
+    const unsigned char *glyph = font + 4 + (int)(((ch - font[2]) * height * width) / 8);
+    for (int row = 0; row < height; row++) {
+        for (int col = 0; col < width; col++) {
+            if (!host_font_glyph_bit(glyph, width, height, col, row)) continue;
+            for (int sy = 0; sy < scale; sy++) {
+                for (int sx = 0; sx < scale; sx++) {
+                    host_plot_text_pixel(x, y, width, height, scale, orientation,
+                                         col, row, sx, sy, fc);
+                }
+            }
+        }
+    }
+}
+
+static void host_draw_text(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, const char *str) {
     size_t len = str ? strlen(str) : 0;
-    int char_w = 6 * scale;
-    int char_h = 8 * scale;
-    int text_w = (int)len * char_w;
-    int text_h = char_h;
+    int font_index = fnt >> 4;
+    int scale = fnt & 0x0F;
+    if (scale == 0) scale = 1;
+    if (font_index < 0 || font_index >= FONT_TABLE_SIZE || !FontTable[font_index]) return;
 
-    if (jh == JUSTIFY_CENTER) x -= text_w / 2;
-    else if (jh == JUSTIFY_RIGHT) x -= text_w;
+    int char_w = FontTable[font_index][0] * scale;
+    int char_h = FontTable[font_index][1] * scale;
 
-    if (jv == JUSTIFY_MIDDLE) y -= text_h / 2;
-    else if (jv == JUSTIFY_BOTTOM) y -= text_h;
+    if (jo == ORIENT_NORMAL) {
+        if (jh == JUSTIFY_CENTER) x -= ((int)len * char_w) / 2;
+        if (jh == JUSTIFY_RIGHT) x -= (int)len * char_w;
+        if (jv == JUSTIFY_MIDDLE) y -= char_h / 2;
+        if (jv == JUSTIFY_BOTTOM) y -= char_h;
+    } else if (jo == ORIENT_VERT) {
+        if (jh == JUSTIFY_CENTER) x -= char_w / 2;
+        if (jh == JUSTIFY_RIGHT) x -= char_w;
+        if (jv == JUSTIFY_MIDDLE) y -= ((int)len * char_h) / 2;
+        if (jv == JUSTIFY_BOTTOM) y -= (int)len * char_h;
+    } else if (jo == ORIENT_INVERTED) {
+        if (jh == JUSTIFY_CENTER) x += ((int)len * char_w) / 2;
+        if (jh == JUSTIFY_RIGHT) x += (int)len * char_w;
+        if (jv == JUSTIFY_MIDDLE) y += char_h / 2;
+        if (jv == JUSTIFY_BOTTOM) y += char_h;
+    } else if (jo == ORIENT_CCW90DEG) {
+        if (jh == JUSTIFY_CENTER) x -= char_h / 2;
+        if (jh == JUSTIFY_RIGHT) x -= char_h;
+        if (jv == JUSTIFY_MIDDLE) y += ((int)len * char_w) / 2;
+        if (jv == JUSTIFY_BOTTOM) y += (int)len * char_w;
+    } else if (jo == ORIENT_CW90DEG) {
+        if (jh == JUSTIFY_CENTER) x += char_h / 2;
+        if (jh == JUSTIFY_RIGHT) x += char_h;
+        if (jv == JUSTIFY_MIDDLE) y -= ((int)len * char_w) / 2;
+        if (jv == JUSTIFY_BOTTOM) y -= (int)len * char_w;
+    }
 
     for (size_t i = 0; i < len; ++i) {
-        host_draw_char(x + (int)i * char_w, y, scale, fc, bc, str[i]);
+        host_draw_font_char(x, y, font_index, scale, jo, fc, bc, (unsigned char)str[i]);
+        if (jo == ORIENT_NORMAL) x += char_w;
+        else if (jo == ORIENT_VERT) y += char_h;
+        else if (jo == ORIENT_INVERTED) x -= char_w;
+        else if (jo == ORIENT_CCW90DEG) y -= char_w;
+        else if (jo == ORIENT_CW90DEG) y += char_w;
     }
 }
 
@@ -614,6 +826,13 @@ static void host_load_key_script(void) {
     host_key_script[host_key_script_len] = '\0';
 }
 
+int host_keydown(int n) {
+    if (host_key_script_pos >= host_key_script_len) return 0;
+    if (n == 0) return 1;
+    if (n >= 1 && n <= 6) return (unsigned char)host_key_script[host_key_script_pos];
+    return 0;
+}
+
 void host_runtime_configure(int timeout_ms, const char *screenshot_path) {
     host_runtime_timeout_ms = timeout_ms;
     host_screenshot_written = 0;
@@ -637,7 +856,7 @@ void host_runtime_begin(void) {
         host_runtime_deadline_us = timeroffset + (uint64_t)host_runtime_timeout_ms * 1000ULL;
     }
     host_fb_reset(gui_bcolour);
-    FontTable[0] = host_font_metrics;
+    FontTable[0] = (unsigned char *)font1;
     DrawPixel = host_draw_pixel_ptr;
 }
 
@@ -740,7 +959,6 @@ void cmd_box(void) {
 
     gfx_box_execute((n == 1) ? GFX_BOX_MODE_SCALAR : GFX_BOX_MODE_VECTOR,
                     args, (argc + 1) / 2, &errors);
-    if (Option.Refresh) Display_Refresh();
 }
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
@@ -1036,6 +1254,11 @@ void bc_fastgfx_close(void) {
     host_fastgfx_next_sync_us = 0;
 }
 
+void bc_fastgfx_reset(void) {
+    host_fastgfx_active = 0;
+    host_fastgfx_next_sync_us = 0;
+}
+
 void bc_fastgfx_set_fps(int fps) {
     if (fps < 1 || fps > 1000) error("Number out of bounds");
     host_fastgfx_fps = fps;
@@ -1075,7 +1298,16 @@ void cmd_fastgfx(void) {
 void cmd_files(void) {}
 void cmd_flash(void) {}
 void cmd_flush(void) {}
-void cmd_font(void) {}
+void cmd_font(void) {
+    getargs(&cmdline, 3, (unsigned char *)",");
+    if (argc < 1) error("Argument count");
+    if (*argv[0] == '#') ++argv[0];
+    if (argc == 3)
+        SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | getint(argv[2], 1, 15));
+    else
+        SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | 1);
+    PromptFont = gui_font;
+}
 void cmd_framebuffer(void) {}
 void cmd_guiMX170(void) {}
 void cmd_i2c(void) {}
@@ -1218,7 +1450,243 @@ void cmd_pixel(void) {
 }
 void cmd_play(void) {}
 void cmd_poke(void) {}
-void cmd_polygon(void) {}
+static void host_fill_polygon_edges(const float *poly_x, const float *poly_y,
+                                    int vertex_count, int count,
+                                    int ystart, int yend,
+                                    int c, int f) {
+    float *node_x = (float *)malloc((size_t)count * sizeof(float));
+    int y, i, j;
+
+    if (!node_x) error("Not enough memory");
+
+    for (y = ystart; y < yend; y++) {
+        int nodes = 0;
+        float temp;
+        j = vertex_count - 1;
+        for (i = 0; i < vertex_count; i++) {
+            if ((poly_y[i] < (float)y && poly_y[j] >= (float)y) ||
+                (poly_y[j] < (float)y && poly_y[i] >= (float)y)) {
+                node_x[nodes++] = (poly_x[i] +
+                                   ((float)y - poly_y[i]) /
+                                       (poly_y[j] - poly_y[i]) *
+                                       (poly_x[j] - poly_x[i]));
+            }
+            j = i;
+        }
+
+        for (i = 1; i < nodes; i++) {
+            temp = node_x[i];
+            for (j = i; j > 0 && temp < node_x[j - 1]; j--) node_x[j] = node_x[j - 1];
+            node_x[j] = temp;
+        }
+
+        for (i = 0; i + 1 < nodes; i += 2) {
+            int xstart = (int)floorf(node_x[i]) + 1;
+            int xend = (int)ceilf(node_x[i + 1]) - 1;
+            DrawLine(xstart, y, xend, y, 1, f);
+        }
+    }
+
+    for (i = 0; i < vertex_count; i++) {
+        int x0 = (int)roundf(poly_x[i]);
+        int y0 = (int)roundf(poly_y[i]);
+        int x1 = (int)roundf(poly_x[(i + 1) % vertex_count]);
+        int y1 = (int)roundf(poly_y[(i + 1) % vertex_count]);
+        DrawLine(x0, y0, x1, y1, 1, c);
+    }
+    free(node_x);
+}
+
+static void host_draw_polygon_points(const int *x_values, const int *y_values,
+                                     int point_count, int c, int f, int close) {
+    int ymax = 0;
+    int ymin = 1000000;
+    int vertex_count = 0;
+    float *poly_x;
+    float *poly_y;
+
+    if (point_count <= 0) return;
+    if (f < 0) {
+        int i;
+        for (i = 0; i < point_count - 1; i++)
+            DrawLine(x_values[i], y_values[i], x_values[i + 1], y_values[i + 1], 1, c);
+        if (close)
+            DrawLine(x_values[point_count - 1], y_values[point_count - 1], x_values[0], y_values[0], 1, c);
+        return;
+    }
+
+    poly_x = (float *)malloc((size_t)(point_count + 1) * sizeof(float));
+    poly_y = (float *)malloc((size_t)(point_count + 1) * sizeof(float));
+    if (!poly_x || !poly_y) {
+        if (poly_x) free(poly_x);
+        if (poly_y) free(poly_y);
+        error("Not enough memory");
+    }
+
+    for (int i = 0; i < point_count; i++) {
+        poly_x[vertex_count] = (float)x_values[i];
+        poly_y[vertex_count] = (float)y_values[i];
+        if (y_values[i] > ymax) ymax = y_values[i];
+        if (y_values[i] < ymin) ymin = y_values[i];
+        vertex_count++;
+    }
+
+    if (poly_y[vertex_count - 1] != poly_y[0] || poly_x[vertex_count - 1] != poly_x[0]) {
+        poly_x[vertex_count] = poly_x[0];
+        poly_y[vertex_count] = poly_y[0];
+        vertex_count++;
+    }
+
+    if (vertex_count > 5) {
+        host_fill_polygon_edges(poly_x, poly_y, vertex_count, point_count, ymin, ymax, c, f);
+    } else if (vertex_count == 5) {
+        DrawTriangle((int)poly_x[0], (int)poly_y[0], (int)poly_x[1], (int)poly_y[1],
+                     (int)poly_x[2], (int)poly_y[2], f, f);
+        DrawTriangle((int)poly_x[0], (int)poly_y[0], (int)poly_x[2], (int)poly_y[2],
+                     (int)poly_x[3], (int)poly_y[3], f, f);
+        if (f != c) {
+            DrawLine((int)poly_x[0], (int)poly_y[0], (int)poly_x[1], (int)poly_y[1], 1, c);
+            DrawLine((int)poly_x[1], (int)poly_y[1], (int)poly_x[2], (int)poly_y[2], 1, c);
+            DrawLine((int)poly_x[2], (int)poly_y[2], (int)poly_x[3], (int)poly_y[3], 1, c);
+            DrawLine((int)poly_x[3], (int)poly_y[3], (int)poly_x[4], (int)poly_y[4], 1, c);
+        }
+    } else {
+        DrawTriangle((int)poly_x[0], (int)poly_y[0], (int)poly_x[1], (int)poly_y[1],
+                     (int)poly_x[2], (int)poly_y[2], c, f);
+    }
+
+    free(poly_x);
+    free(poly_y);
+}
+
+void cmd_polygon(void) {
+    long long int *polycount = NULL, *xptr = NULL, *yptr = NULL, *cptr = NULL, *fptr = NULL;
+    MMFLOAT *polycountf = NULL, *xfptr = NULL, *yfptr = NULL, *cfptr = NULL, *ffptr = NULL;
+    int n = 0, nx = 0, ny = 0, nc = 0, nf = 0;
+    int c = gui_fcolour, f = -1;
+
+    getargs(&cmdline, 9, (unsigned char *)",");
+    host_getargaddress(argv[0], &polycount, &polycountf, &n);
+
+    if (n == 1) {
+        int xcount = getinteger(argv[0]);
+        int xtot = xcount;
+        int *x_values;
+        int *y_values;
+        int i;
+
+        if ((xcount < 3 || xcount > 9999) && xcount != 0) error("Invalid number of vertices");
+        host_getargaddress(argv[2], &xptr, &xfptr, &nx);
+        if (xcount == 0) xcount = xtot = nx;
+        if (nx < xtot) error("X Dimensions %", nx);
+        host_getargaddress(argv[4], &yptr, &yfptr, &ny);
+        if (ny < xtot) error("Y Dimensions %", ny);
+        if (argc > 5 && *argv[6]) c = getint(argv[6], 0, WHITE);
+        if (argc > 7 && *argv[8]) f = getint(argv[8], 0, WHITE);
+
+        x_values = (int *)malloc((size_t)xcount * sizeof(int));
+        y_values = (int *)malloc((size_t)xcount * sizeof(int));
+        if (!x_values || !y_values) {
+            if (x_values) free(x_values);
+            if (y_values) free(y_values);
+            error("Not enough memory");
+        }
+        for (i = 0; i < xcount; i++) {
+            x_values[i] = (xfptr == NULL ? (int)xptr[i] : (int)xfptr[i]);
+            y_values[i] = (yfptr == NULL ? (int)yptr[i] : (int)yfptr[i]);
+        }
+        host_draw_polygon_points(x_values, y_values, xcount, c, f, 1);
+        free(x_values);
+        free(y_values);
+        if (Option.Refresh) Display_Refresh();
+        return;
+    }
+
+    {
+        int *cc = (int *)malloc((size_t)n * sizeof(int));
+        int *ff = (int *)malloc((size_t)n * sizeof(int));
+        int xtot = 0;
+        int i, actual_n = 0;
+        int xstart = 0;
+
+        if (!cc || !ff) {
+            if (cc) free(cc);
+            if (ff) free(ff);
+            error("Not enough memory");
+        }
+
+        for (i = 0; i < n; i++) {
+            int count = (polycountf == NULL ? (int)polycount[i] : (int)polycountf[i]);
+            if (!count) break;
+            xtot += count;
+            if (count < 3 || count > 9999) error("Invalid number of vertices, polygon %", i);
+            actual_n++;
+        }
+        n = actual_n;
+        host_getargaddress(argv[2], &xptr, &xfptr, &nx);
+        if (nx < xtot) error("X Dimensions %", nx);
+        host_getargaddress(argv[4], &yptr, &yfptr, &ny);
+        if (ny < xtot) error("Y Dimensions %", ny);
+
+        if (argc > 5 && *argv[6]) {
+            host_getargaddress(argv[6], &cptr, &cfptr, &nc);
+            if (nc == 1) {
+                c = getint(argv[6], 0, WHITE);
+                for (i = 0; i < n; i++) cc[i] = c;
+            } else {
+                if (nc < n) error("Foreground colour Dimensions");
+                for (i = 0; i < n; i++) {
+                    cc[i] = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
+                    if (cc[i] < 0 || cc[i] > WHITE) error("% is invalid (valid is % to %)", cc[i], 0, WHITE);
+                }
+            }
+        } else {
+            for (i = 0; i < n; i++) cc[i] = gui_fcolour;
+        }
+
+        if (argc > 7 && *argv[8]) {
+            host_getargaddress(argv[8], &fptr, &ffptr, &nf);
+            if (nf == 1) {
+                f = getint(argv[8], 0, WHITE);
+                for (i = 0; i < n; i++) ff[i] = f;
+            } else {
+                if (nf < n) error("Background colour Dimensions");
+                for (i = 0; i < n; i++) {
+                    ff[i] = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
+                    if (ff[i] < 0 || ff[i] > WHITE) error("% is invalid (valid is % to %)", ff[i], 0, WHITE);
+                }
+            }
+        }
+
+        for (i = 0; i < n; i++) {
+            int xcount = (polycountf == NULL ? (int)polycount[i] : (int)polycountf[i]);
+            int fill_colour = (argc > 7 && *argv[8]) ? ff[i] : -1;
+            int *x_values = (int *)malloc((size_t)xcount * sizeof(int));
+            int *y_values = (int *)malloc((size_t)xcount * sizeof(int));
+            int j;
+
+            if (!x_values || !y_values) {
+                if (x_values) free(x_values);
+                if (y_values) free(y_values);
+                free(cc);
+                free(ff);
+                error("Not enough memory");
+            }
+            for (j = 0; j < xcount; j++) {
+                x_values[j] = (xfptr == NULL ? (int)xptr[xstart + j] : (int)xfptr[xstart + j]);
+                y_values[j] = (yfptr == NULL ? (int)yptr[xstart + j] : (int)yfptr[xstart + j]);
+            }
+            host_draw_polygon_points(x_values, y_values, xcount, cc[i], fill_colour, 1);
+            free(x_values);
+            free(y_values);
+            xstart += xcount;
+        }
+
+        free(cc);
+        free(ff);
+    }
+    if (Option.Refresh) Display_Refresh();
+}
 void cmd_port(void) {}
 void cmd_program(void) {}
 void cmd_pull(void) {}
@@ -1296,7 +1764,75 @@ void cmd_timer(void) {
     if (!*cmdline) error("Syntax");
     timeroffset = mytime - (uint64_t)getint(++cmdline, 0, (int)(mytime / 1000ULL)) * 1000ULL;
 }
-void cmd_triangle(void) {}
+void cmd_triangle(void) {
+    int x1, y1, x2, y2, x3, y3, c = gui_fcolour, f = -1, n = 0, i, nc = 0, nf = 0;
+    long long int *x1ptr = NULL, *y1ptr = NULL, *x2ptr = NULL, *y2ptr = NULL, *x3ptr = NULL, *y3ptr = NULL;
+    long long int *cptr = NULL, *fptr = NULL;
+    MMFLOAT *x1fptr = NULL, *y1fptr = NULL, *x2fptr = NULL, *y2fptr = NULL, *x3fptr = NULL, *y3fptr = NULL;
+    MMFLOAT *cfptr = NULL, *ffptr = NULL;
+
+    getargs(&cmdline, 15, (unsigned char *)",");
+    if (!(argc & 1) || argc < 11) error("Argument count");
+
+    getargaddress(argv[0], &x1ptr, &x1fptr, &n);
+    if (n != 1) {
+        int cn = n;
+        getargaddress(argv[2], &y1ptr, &y1fptr, &n); if (n < cn) cn = n;
+        getargaddress(argv[4], &x2ptr, &x2fptr, &n); if (n < cn) cn = n;
+        getargaddress(argv[6], &y2ptr, &y2fptr, &n); if (n < cn) cn = n;
+        getargaddress(argv[8], &x3ptr, &x3fptr, &n); if (n < cn) cn = n;
+        getargaddress(argv[10], &y3ptr, &y3fptr, &n); if (n < cn) cn = n;
+        n = cn;
+    }
+
+    if (n == 1) {
+        x1 = getinteger(argv[0]);
+        y1 = getinteger(argv[2]);
+        x2 = getinteger(argv[4]);
+        y2 = getinteger(argv[6]);
+        x3 = getinteger(argv[8]);
+        y3 = getinteger(argv[10]);
+        if (argc >= 13 && *argv[12]) c = getint(argv[12], BLACK, WHITE);
+        if (argc == 15) f = getint(argv[14], -1, WHITE);
+        DrawTriangle(x1, y1, x2, y2, x3, y3, c, f);
+    } else {
+        if (argc >= 13 && *argv[12]) {
+            getargaddress(argv[12], &cptr, &cfptr, &nc);
+            if (nc == 1) c = getint(argv[12], 0, WHITE);
+            else if (nc > 1) {
+                if (nc < n) n = nc;
+                for (i = 0; i < nc; i++) {
+                    c = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
+                    if (c < 0 || c > WHITE) error("% is invalid (valid is % to %)", c, 0, WHITE);
+                }
+            }
+        }
+        if (argc == 15) {
+            getargaddress(argv[14], &fptr, &ffptr, &nf);
+            if (nf == 1) f = getint(argv[14], -1, WHITE);
+            else if (nf > 1) {
+                if (nf < n) n = nf;
+                for (i = 0; i < nf; i++) {
+                    f = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
+                    if (f < -1 || f > WHITE) error("% is invalid (valid is % to %)", f, -1, WHITE);
+                }
+            }
+        }
+        for (i = 0; i < n; i++) {
+            x1 = (x1fptr == NULL ? (int)x1ptr[i] : (int)x1fptr[i]);
+            y1 = (y1fptr == NULL ? (int)y1ptr[i] : (int)y1fptr[i]);
+            x2 = (x2fptr == NULL ? (int)x2ptr[i] : (int)x2fptr[i]);
+            y2 = (y2fptr == NULL ? (int)y2ptr[i] : (int)y2fptr[i]);
+            x3 = (x3fptr == NULL ? (int)x3ptr[i] : (int)x3fptr[i]);
+            y3 = (y3fptr == NULL ? (int)y3ptr[i] : (int)y3fptr[i]);
+            if (x1 == -1 && y1 == -1 && x2 == -1 && y2 == -1 && x3 == -1 && y3 == -1) return;
+            if (nc > 1) c = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
+            if (nf > 1) f = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
+            DrawTriangle(x1, y1, x2, y2, x3, y3, c, f);
+        }
+    }
+    if (Option.Refresh) Display_Refresh();
+}
 void cmd_update(void) {}
 void cmd_var(void) {}
 void cmd_wait(void) {}
@@ -1324,7 +1860,20 @@ void fun_eof(void) {}
 void fun_epoch(void) {}
 void fun_format(void) {}
 void fun_GPS(void) {}
-void fun_info(void) {}
+void fun_info(void) {
+    if (checkstring(ep, (unsigned char *)"HRES")) {
+        iret = HRes;
+        targ = T_INT;
+        return;
+    }
+    if (checkstring(ep, (unsigned char *)"VRES")) {
+        iret = VRes;
+        targ = T_INT;
+        return;
+    }
+    iret = 0;
+    targ = T_INT;
+}
 void fun_inputstr(void) {}
 void fun_LCompare(void) {}
 void fun_LGetByte(void) {}
@@ -1410,7 +1959,7 @@ void clear320(void) {}
 void DisplayPutC(char c) { host_print(&c, 1); }
 void enable_interrupts_pico(void) {}
 void disable_interrupts_pico(void) {}
-void initFonts(void) { FontTable[0] = host_font_metrics; }
+void initFonts(void) { FontTable[0] = (unsigned char *)font1; }
 void initMouse0(int sensitivity) { (void)sensitivity; }
 void restorepanel(void) {}
 void routinechecks(void) { host_runtime_check_timeout(); }
@@ -1483,6 +2032,7 @@ void FileClose(int fnbr) { (void)fnbr; }
 int FileEOF(int fnbr) { (void)fnbr; return 1; }
 char FileGetChar(int fnbr) { (void)fnbr; return -1; }
 int FileLoadProgram(unsigned char *fname, bool chain) { (void)fname; (void)chain; return 0; }
+int FileLoadSourceProgram(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
 int FileLoadCMM2Program(char *fname, bool message) { (void)fname; (void)message; return 0; }
 void FilePutStr(int count, char *s, int fnbr) { (void)count; (void)s; (void)fnbr; }
 char FilePutChar(char c, int fnbr) { (void)c; (void)fnbr; return c; }
@@ -1525,25 +2075,30 @@ lfs_ssize_t lfs_fs_size(lfs_t *l) { (void)l; return 0; }
 int lfs_remove(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
 int lfs_stat(lfs_t *l, const char *path, struct lfs_info *info) { (void)l; (void)path; (void)info; return -1; }
 
-/* FatFS pattern_matching stub (declared as function in ff.h) */
-int pattern_matching(const TCHAR *pat, const TCHAR *nam, int skip, int inf) {
-    (void)pat; (void)nam; (void)skip; (void)inf;
-    return 0;
-}
-
 /* Drawing stubs */
 void SetFont(int f) {
     int scale = f & 0x0F;
     if (scale == 0) scale = 1;
     gui_font = f;
-    gui_font_width = (short)(6 * scale);
-    gui_font_height = (short)(8 * scale);
-    FontTable[0] = host_font_metrics;
+    unsigned char *font = FontTable[f >> 4];
+    gui_font_width = (short)((font ? font[0] : host_font_metrics[0]) * scale);
+    gui_font_height = (short)((font ? font[1] : host_font_metrics[1]) * scale);
+    FontTable[0] = (unsigned char *)font1;
 }
 void UnloadFont(int f) { (void)f; }
 void ResetDisplay(void) {}
-int GetFontWidth(int fnt) { (void)fnt; return 6; }
-int GetFontHeight(int fnt) { (void)fnt; return 8; }
+int GetFontWidth(int fnt) {
+    int scale = fnt & 0x0F;
+    if (scale == 0) scale = 1;
+    unsigned char *font = FontTable[fnt >> 4];
+    return (font ? font[0] : host_font_metrics[0]) * scale;
+}
+int GetFontHeight(int fnt) {
+    int scale = fnt & 0x0F;
+    if (scale == 0) scale = 1;
+    unsigned char *font = FontTable[fnt >> 4];
+    return (font ? font[1] : host_font_metrics[1]) * scale;
+}
 void DrawLine(int x1, int y1, int x2, int y2, int w, int c) {
     if (y1 == y2 && w > 0) {
         host_fill_rect_pixels(x1, y1, x2, y2 + w - 1, c);
@@ -1638,12 +2193,11 @@ void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect
         }
     }
 }
-void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, int c, int fill) { (void)x0; (void)y0; (void)x1; (void)y1; (void)x2; (void)y2; (void)c; (void)fill; }
+void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, int c, int fill) {
+    host_draw_triangle_pixels(x0, y0, x1, y1, x2, y2, c, fill);
+}
 void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, char *str) {
-    int scale = fnt & 0x0F;
-    if (scale == 0) scale = 1;
-    (void)jo;
-    host_draw_text(x, y, scale, jh, jv, fc, bc, str);
+    host_draw_text(x, y, fnt, jh, jv, jo, fc, bc, str);
 }
 void ShowCursor(int show) { (void)show; }
 int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }

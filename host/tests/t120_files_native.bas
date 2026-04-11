@@ -1,0 +1,2 @@
+FILES
+PRINT "files ok"
