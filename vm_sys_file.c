@@ -3,6 +3,7 @@
 #include "vm_sys_file.h"
 #include "bc_alloc.h"
 #include <string.h>
+#include <ctype.h>
 
 static void vm_file_line_append(uint8_t *dest, int *len, int ch) {
     if (ch == '\t') {
@@ -16,18 +17,167 @@ static void vm_file_line_append(uint8_t *dest, int *len, int ch) {
     dest[*len] = (uint8_t)ch;
 }
 
+static int vm_file_is_drive_spec(const char *s) {
+    return s && ((s[0] == 'A' || s[0] == 'a' || s[0] == 'B' || s[0] == 'b') && s[1] == ':');
+}
+
+static int vm_file_drive_index(const char *s) {
+    if (!vm_file_is_drive_spec(s)) error("Invalid disk");
+    return (s[0] == 'B' || s[0] == 'b') ? 1 : 0;
+}
+
+static int vm_file_match_pattern(const char *pattern, const char *name) {
+    while (*pattern) {
+        if (*pattern == '*') {
+            pattern++;
+            if (!*pattern) return 1;
+            while (*name) {
+                if (vm_file_match_pattern(pattern, name)) return 1;
+                name++;
+            }
+            return 0;
+        }
+        if (*pattern == '?') {
+            if (!*name) return 0;
+            pattern++;
+            name++;
+            continue;
+        }
+        if (toupper((unsigned char)*pattern) != toupper((unsigned char)*name))
+            return 0;
+        pattern++;
+        if (*name) name++;
+    }
+    return *name == '\0';
+}
+
+static void vm_file_normalize_resolved_path(char *path) {
+    char temp[FF_MAX_LFN] = {0};
+    char *parts[64];
+    int depth = 0;
+    int absolute = 0;
+    char *token;
+    char *saveptr = NULL;
+
+    if (!path || !*path) {
+        strcpy(path, "/");
+        return;
+    }
+
+    if (path[0] == '/') absolute = 1;
+    strncpy(temp, path, sizeof(temp) - 1);
+    token = strtok_r(temp, "/", &saveptr);
+    while (token) {
+        if (strcmp(token, ".") == 0) {
+        } else if (strcmp(token, "..") == 0) {
+            if (depth > 0) depth--;
+        } else if (*token) {
+            parts[depth++] = token;
+        }
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    path[0] = '\0';
+    if (absolute) strcat(path, "/");
+    for (int i = 0; i < depth; ++i) {
+        if (i > 0 || absolute) strcat(path, i == 0 && absolute ? "" : "/");
+        strcat(path, parts[i]);
+    }
+    if (path[0] == '\0') strcpy(path, absolute ? "/" : ".");
+}
+
 #ifdef MMBASIC_HOST
 #include "vm_host_fat.h"
 
 static FIL *vm_files[MAXOPENFILES + 1];
+static int vm_current_drive = 1;
+static char vm_cwd[2][FF_MAX_LFN] = {"/", "/"};
 
 static void vm_file_check_number(int fnbr) {
     if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
 }
 
+static void vm_file_resolve_path(const char *filename, int *fs_out, char *path) {
+    const char *name = filename;
+    int fs = vm_current_drive;
+
+    if (!filename || !*filename) error("File name");
+    if (vm_file_is_drive_spec(name)) {
+        fs = vm_file_drive_index(name);
+        name += 2;
+    }
+    if (*name == '\0') {
+        strcpy(path, vm_cwd[fs]);
+        *fs_out = fs;
+        return;
+    }
+
+    if (*name == '/') {
+        strncpy(path, name, FF_MAX_LFN - 1);
+        path[FF_MAX_LFN - 1] = '\0';
+    } else {
+        strncpy(path, vm_cwd[fs], FF_MAX_LFN - 1);
+        path[FF_MAX_LFN - 1] = '\0';
+        if (strcmp(path, "/") != 0)
+            strncat(path, "/", FF_MAX_LFN - strlen(path) - 1);
+        strncat(path, name, FF_MAX_LFN - strlen(path) - 1);
+    }
+    vm_file_normalize_resolved_path(path);
+    *fs_out = fs;
+}
+
+void vm_sys_file_host_resolve_path(const char *filename, char *path, int path_size) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    (void)path_size;
+    vm_file_resolve_path(filename, &fs, full);
+    (void)fs;
+    strncpy(path, full, FF_MAX_LFN - 1);
+    path[FF_MAX_LFN - 1] = '\0';
+}
+
+static void vm_file_resolve_dir_and_pattern(const char *spec, int *fs_out, char *dir, char *pattern) {
+    char full[FF_MAX_LFN] = {0};
+    char *slash;
+
+    vm_file_resolve_path(spec && *spec ? spec : "*", fs_out, full);
+    slash = strrchr(full, '/');
+    if (slash && slash != full) {
+        *slash = '\0';
+        strncpy(dir, full, FF_MAX_LFN - 1);
+        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
+    } else if (slash == full) {
+        strcpy(dir, "/");
+        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
+    } else {
+        strncpy(dir, vm_cwd[*fs_out], FF_MAX_LFN - 1);
+        strncpy(pattern, full, FF_MAX_LFN - 1);
+    }
+    if (pattern[0] == '\0') strcpy(pattern, "*");
+}
+
+static void vm_file_ensure_parent_exists(const char *path) {
+    char dir[FF_MAX_LFN] = {0};
+    char *slash;
+    FRESULT res;
+    DIR dj;
+
+    strncpy(dir, path, sizeof(dir) - 1);
+    slash = strrchr(dir, '/');
+    if (!slash || slash == dir) return;
+    *slash = '\0';
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_opendir(&dj, dir);
+    if (res != FR_OK) error("Directory does not exist");
+    f_closedir(&dj);
+}
+
 void vm_sys_file_open(const char *filename, int fnbr, int mode) {
     BYTE fmode = 0;
     FRESULT res;
+    int fs;
+    char path[FF_MAX_LFN] = {0};
 
     vm_file_check_number(fnbr);
     if (vm_files[fnbr]) error("File number already open");
@@ -39,12 +189,15 @@ void vm_sys_file_open(const char *filename, int fnbr, int mode) {
         default: error("File access mode");
     }
 
+    vm_file_resolve_path(filename, &fs, path);
+    (void)fs;
     res = vm_host_fat_mount();
     if (res != FR_OK) error("Host FAT init failed");
+    if (mode != VM_FILE_MODE_INPUT) vm_file_ensure_parent_exists(path);
 
     vm_files[fnbr] = (FIL *)BC_ALLOC(sizeof(FIL));
     if (!vm_files[fnbr]) error("Not enough memory");
-    res = f_open(vm_files[fnbr], vm_host_fat_path(filename), fmode);
+    res = f_open(vm_files[fnbr], vm_host_fat_path(path), fmode);
     if (res != FR_OK) {
         BC_FREE(vm_files[fnbr]);
         vm_files[fnbr] = NULL;
@@ -69,6 +222,9 @@ void vm_sys_file_reset(void) {
             vm_files[i] = NULL;
         }
     }
+    vm_current_drive = 1;
+    strcpy(vm_cwd[0], "/");
+    strcpy(vm_cwd[1], "/");
 }
 
 void vm_sys_file_print_buf(int fnbr, const char *buf, int len) {
@@ -108,7 +264,160 @@ void vm_sys_file_line_input(int fnbr, uint8_t *dest) {
     dest[0] = (uint8_t)len;
 }
 
-void vm_sys_file_files(void) {
+int vm_sys_file_eof(int fnbr) {
+    vm_file_check_number(fnbr);
+    if (!vm_files[fnbr]) error("File number is not open");
+    return f_eof(vm_files[fnbr]);
+}
+
+int vm_sys_file_getc(int fnbr) {
+    unsigned char c = 0;
+    UINT read = 0;
+    vm_file_check_number(fnbr);
+    if (!vm_files[fnbr]) error("File number is not open");
+    if (f_read(vm_files[fnbr], &c, 1, &read) != FR_OK) error("File error");
+    return read == 1 ? (int)c : -1;
+}
+
+void vm_sys_file_drive(const char *drive) {
+    vm_current_drive = vm_file_drive_index(drive);
+}
+
+void vm_sys_file_seek(int fnbr, int position) {
+    FRESULT res;
+    vm_file_check_number(fnbr);
+    if (!vm_files[fnbr]) error("File number is not open");
+    if (position < 1) position = 1;
+    res = f_lseek(vm_files[fnbr], (FSIZE_t)(position - 1));
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_mkdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    FRESULT res;
+    vm_file_resolve_path(path, &fs, full);
+    (void)fs;
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_mkdir(vm_host_fat_path(full));
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_chdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    DIR dj;
+    FRESULT res;
+
+    vm_file_resolve_path(path, &fs, full);
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_opendir(&dj, vm_host_fat_path(full));
+    if (res != FR_OK) error("File error");
+    f_closedir(&dj);
+    vm_current_drive = fs;
+    strncpy(vm_cwd[fs], full, FF_MAX_LFN - 1);
+    vm_cwd[fs][FF_MAX_LFN - 1] = '\0';
+}
+
+void vm_sys_file_rmdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    FRESULT res;
+    vm_file_resolve_path(path, &fs, full);
+    (void)fs;
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_unlink(vm_host_fat_path(full));
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_kill(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    FRESULT res;
+    vm_file_resolve_path(path, &fs, full);
+    (void)fs;
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_unlink(vm_host_fat_path(full));
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_rename(const char *old_name, const char *new_name) {
+    int old_fs, new_fs;
+    char old_full[FF_MAX_LFN] = {0};
+    char new_full[FF_MAX_LFN] = {0};
+    FRESULT res;
+
+    vm_file_resolve_path(old_name, &old_fs, old_full);
+    vm_file_resolve_path(new_name, &new_fs, new_full);
+    if (old_fs != new_fs) error("Only valid on current drive");
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_rename(old_full, new_full);
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
+    FIL src, dst;
+    char from_full[FF_MAX_LFN] = {0};
+    char to_full[FF_MAX_LFN] = {0};
+    int from_fs, to_fs;
+    FRESULT res;
+    BYTE buffer[512];
+
+    (void)mode;
+    vm_file_resolve_path(from_name, &from_fs, from_full);
+    vm_file_resolve_path(to_name, &to_fs, to_full);
+    (void)from_fs;
+    (void)to_fs;
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    vm_file_ensure_parent_exists(to_full);
+    res = f_open(&src, vm_host_fat_path(from_full), FA_READ);
+    if (res != FR_OK) error("File error");
+    res = f_open(&dst, vm_host_fat_path(to_full), FA_WRITE | FA_CREATE_ALWAYS);
+    if (res != FR_OK) {
+        f_close(&src);
+        error("File error");
+    }
+
+    while (1) {
+        UINT read = 0, wrote = 0;
+        res = f_read(&src, buffer, sizeof(buffer), &read);
+        if (res != FR_OK) break;
+        if (read == 0) break;
+        res = f_write(&dst, buffer, read, &wrote);
+        if (res != FR_OK || wrote != read) break;
+    }
+    f_close(&src);
+    f_close(&dst);
+    if (res != FR_OK) error("File error");
+}
+
+void vm_sys_file_files(const char *pattern) {
+    int fs;
+    char dir[FF_MAX_LFN] = {0};
+    char pat[FF_MAX_LFN] = {0};
+    DIR dj;
+    FILINFO info;
+    FRESULT res;
+
+    vm_file_resolve_dir_and_pattern(pattern && *pattern ? pattern : "*", &fs, dir, pat);
+    (void)fs;
+    res = vm_host_fat_mount();
+    if (res != FR_OK) error("Host FAT init failed");
+    res = f_opendir(&dj, vm_host_fat_path(dir));
+    if (res != FR_OK) error("File error");
+    while ((res = f_readdir(&dj, &info)) == FR_OK && info.fname[0]) {
+        if (!vm_file_match_pattern(pat, info.fname)) continue;
+        MMPrintString(info.fname);
+        MMPrintString("\r\n");
+    }
+    f_closedir(&dj);
+    if (res != FR_OK) error("File error");
 }
 
 #else
@@ -144,11 +453,9 @@ static void vm_file_resolve_path(const char *filename, int *fs_out, char *path) 
     int fs = vm_file_current_fs();
     const char *name = filename;
     const char *base;
-    size_t len;
 
-    if ((filename[0] == 'A' || filename[0] == 'a' ||
-         filename[0] == 'B' || filename[0] == 'b') && filename[1] == ':') {
-        fs = (filename[0] == 'B' || filename[0] == 'b') ? 1 : 0;
+    if (vm_file_is_drive_spec(filename)) {
+        fs = vm_file_drive_index(filename);
         name = filename + 2;
     }
     if (*name == '\0') error("File name");
@@ -161,17 +468,34 @@ static void vm_file_resolve_path(const char *filename, int *fs_out, char *path) 
     }
 
     base = filepath[fs];
-    if ((base[0] == 'A' || base[0] == 'B') && base[1] == ':')
-        base += 2;
     if (*base == '\0') base = "/";
-
-    len = strlen(base);
     strncpy(path, base, FF_MAX_LFN - 1);
     path[FF_MAX_LFN - 1] = '\0';
-    if (len > 0 && path[strlen(path) - 1] != '/')
+    if (strcmp(path, "/") != 0)
         strncat(path, "/", FF_MAX_LFN - strlen(path) - 1);
     strncat(path, name, FF_MAX_LFN - strlen(path) - 1);
+    vm_file_normalize_resolved_path(path);
     *fs_out = fs;
+}
+
+static void vm_file_resolve_dir_and_pattern(const char *spec, int *fs_out, char *dir, char *pattern) {
+    char full[FF_MAX_LFN] = {0};
+    char *slash;
+
+    vm_file_resolve_path(spec && *spec ? spec : "*", fs_out, full);
+    slash = strrchr(full, '/');
+    if (slash && slash != full) {
+        *slash = '\0';
+        strncpy(dir, full, FF_MAX_LFN - 1);
+        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
+    } else if (slash == full) {
+        strcpy(dir, "/");
+        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
+    } else {
+        strncpy(dir, filepath[*fs_out], FF_MAX_LFN - 1);
+        strncpy(pattern, full, FF_MAX_LFN - 1);
+    }
+    if (pattern[0] == '\0') strcpy(pattern, "*");
 }
 
 static int vm_file_lfs_mode(int mode) {
@@ -200,6 +524,19 @@ static int vm_file_fat_mode(int mode) {
             error("File access mode");
             return 0;
     }
+}
+
+static int vm_file_lfs_exists_dir(const char *path) {
+    lfs_dir_t dir;
+    int rc = lfs_dir_open(&lfs, &dir, path);
+    if (rc < 0) return 0;
+    lfs_dir_close(&lfs, &dir);
+    return 1;
+}
+
+static void vm_file_set_current_path(int fs, const char *path) {
+    strncpy(filepath[fs], path, FF_MAX_LFN - 1);
+    filepath[fs][FF_MAX_LFN - 1] = '\0';
 }
 
 void vm_sys_file_open(const char *filename, int fnbr, int mode) {
@@ -302,14 +639,14 @@ void vm_sys_file_print_newline(int fnbr) {
     vm_sys_file_print_buf(fnbr, "\r\n", 2);
 }
 
-static int vm_sys_file_eof(int fnbr) {
+int vm_sys_file_eof(int fnbr) {
     if (vm_files[fnbr].source == FATFSFILE)
         return f_eof(vm_files[fnbr].fat);
     return lfs_file_tell(&lfs, vm_files[fnbr].flash) >=
            lfs_file_size(&lfs, vm_files[fnbr].flash);
 }
 
-static int vm_sys_file_getc(int fnbr) {
+int vm_sys_file_getc(int fnbr) {
     char ch = 0;
     unsigned int read = 0;
     int rc;
@@ -342,7 +679,226 @@ void vm_sys_file_line_input(int fnbr, uint8_t *dest) {
     dest[0] = (uint8_t)len;
 }
 
-void vm_sys_file_files(void) {
+void vm_sys_file_drive(const char *drive) {
+    FatFSFileSystem = vm_file_drive_index(drive);
+}
+
+void vm_sys_file_seek(int fnbr, int position) {
+    vm_file_check_number(fnbr);
+    if (vm_files[fnbr].source == NONEFILE) error("File number is not open");
+    if (position < 1) position = 1;
+    if (vm_files[fnbr].source == FATFSFILE) {
+        FSerror = f_lseek(vm_files[fnbr].fat, (FSIZE_t)(position - 1));
+        if (FSerror) vm_file_error(FSerror, "File error");
+    } else {
+        FSerror = lfs_file_seek(&lfs, vm_files[fnbr].flash, position - 1, LFS_SEEK_SET);
+        if (FSerror < 0) vm_file_error(FSerror, "File error");
+    }
+}
+
+void vm_sys_file_mkdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    vm_file_resolve_path(path, &fs, full);
+    if (fs) {
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_mkdir(full);
+        if (FSerror) vm_file_error(FSerror, "File error");
+    } else {
+        FSerror = lfs_mkdir(&lfs, full);
+        if (FSerror < 0) vm_file_error(FSerror, "File error");
+    }
+}
+
+void vm_sys_file_chdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    vm_file_resolve_path(path, &fs, full);
+    if (fs) {
+        DIR dj;
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_opendir(&dj, full);
+        if (FSerror) vm_file_error(FSerror, "File error");
+        f_closedir(&dj);
+    } else {
+        if (!vm_file_lfs_exists_dir(full)) vm_file_error(-1, "File error");
+    }
+    FatFSFileSystem = fs;
+    vm_file_set_current_path(fs, full);
+}
+
+void vm_sys_file_rmdir(const char *path) {
+    int fs;
+    char full[FF_MAX_LFN] = {0};
+    vm_file_resolve_path(path, &fs, full);
+    if (fs) {
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_unlink(full);
+        if (FSerror) vm_file_error(FSerror, "File error");
+    } else {
+        FSerror = lfs_remove(&lfs, full);
+        if (FSerror < 0) vm_file_error(FSerror, "File error");
+    }
+}
+
+void vm_sys_file_kill(const char *path) {
+    vm_sys_file_rmdir(path);
+}
+
+void vm_sys_file_rename(const char *old_name, const char *new_name) {
+    int old_fs, new_fs;
+    char old_full[FF_MAX_LFN] = {0};
+    char new_full[FF_MAX_LFN] = {0};
+    vm_file_resolve_path(old_name, &old_fs, old_full);
+    vm_file_resolve_path(new_name, &new_fs, new_full);
+    if (old_fs != new_fs) error("Only valid on current drive");
+    if (old_fs) {
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_rename(old_full, new_full);
+        if (FSerror) vm_file_error(FSerror, "File error");
+    } else {
+        FSerror = lfs_rename(&lfs, old_full, new_full);
+        if (FSerror < 0) vm_file_error(FSerror, "File error");
+    }
+}
+
+void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
+    int from_fs, to_fs;
+    char from_full[FF_MAX_LFN] = {0};
+    char to_full[FF_MAX_LFN] = {0};
+    FIL fat_src, fat_dst;
+    lfs_file_t lfs_src, lfs_dst;
+    BYTE buffer[512];
+    int lrc;
+
+    (void)mode;
+    vm_file_resolve_path(from_name, &from_fs, from_full);
+    vm_file_resolve_path(to_name, &to_fs, to_full);
+
+    if (from_fs == FATFSFILE && to_fs == FATFSFILE) {
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_open(&fat_src, from_full, FA_READ);
+        if (FSerror) vm_file_error(FSerror, "File error");
+        FSerror = f_open(&fat_dst, to_full, FA_WRITE | FA_CREATE_ALWAYS);
+        if (FSerror) {
+            f_close(&fat_src);
+            vm_file_error(FSerror, "File error");
+        }
+        while (1) {
+            UINT read = 0, wrote = 0;
+            FSerror = f_read(&fat_src, buffer, sizeof(buffer), &read);
+            if (FSerror || read == 0) break;
+            FSerror = f_write(&fat_dst, buffer, read, &wrote);
+            if (FSerror || wrote != read) break;
+        }
+        f_close(&fat_src);
+        f_close(&fat_dst);
+        if (FSerror) vm_file_error(FSerror, "File error");
+        return;
+    }
+
+    if (from_fs == FLASHFILE && to_fs == FLASHFILE) {
+        lrc = lfs_file_open(&lfs, &lfs_src, from_full, LFS_O_RDONLY);
+        if (lrc < 0) vm_file_error(lrc, "File error");
+        lrc = lfs_file_open(&lfs, &lfs_dst, to_full, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC);
+        if (lrc < 0) {
+            lfs_file_close(&lfs, &lfs_src);
+            vm_file_error(lrc, "File error");
+        }
+        while (1) {
+            lrc = lfs_file_read(&lfs, &lfs_src, buffer, sizeof(buffer));
+            if (lrc < 0) break;
+            if (lrc == 0) break;
+            if (lfs_file_write(&lfs, &lfs_dst, buffer, lrc) != lrc) {
+                lrc = -5;
+                break;
+            }
+        }
+        lfs_file_close(&lfs, &lfs_src);
+        lfs_file_close(&lfs, &lfs_dst);
+        if (lrc < 0) vm_file_error(lrc, "File error");
+        return;
+    }
+
+    if (from_fs == FLASHFILE && to_fs == FATFSFILE) {
+        if (!InitSDCard()) error("SD Card not found");
+        lrc = lfs_file_open(&lfs, &lfs_src, from_full, LFS_O_RDONLY);
+        if (lrc < 0) vm_file_error(lrc, "File error");
+        FSerror = f_open(&fat_dst, to_full, FA_WRITE | FA_CREATE_ALWAYS);
+        if (FSerror) {
+            lfs_file_close(&lfs, &lfs_src);
+            vm_file_error(FSerror, "File error");
+        }
+        while (1) {
+            lrc = lfs_file_read(&lfs, &lfs_src, buffer, sizeof(buffer));
+            if (lrc < 0) break;
+            if (lrc == 0) break;
+            UINT wrote = 0;
+            FSerror = f_write(&fat_dst, buffer, (UINT)lrc, &wrote);
+            if (FSerror || wrote != (UINT)lrc) break;
+        }
+        lfs_file_close(&lfs, &lfs_src);
+        f_close(&fat_dst);
+        if (lrc < 0 || FSerror) vm_file_error(lrc < 0 ? lrc : FSerror, "File error");
+        return;
+    }
+
+    if (!InitSDCard()) error("SD Card not found");
+    FSerror = f_open(&fat_src, from_full, FA_READ);
+    if (FSerror) vm_file_error(FSerror, "File error");
+    lrc = lfs_file_open(&lfs, &lfs_dst, to_full, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC);
+    if (lrc < 0) {
+        f_close(&fat_src);
+        vm_file_error(lrc, "File error");
+    }
+    while (1) {
+        UINT read = 0;
+        FSerror = f_read(&fat_src, buffer, sizeof(buffer), &read);
+        if (FSerror || read == 0) break;
+        if (lfs_file_write(&lfs, &lfs_dst, buffer, read) != (int)read) {
+            lrc = -5;
+            break;
+        }
+    }
+    f_close(&fat_src);
+    lfs_file_close(&lfs, &lfs_dst);
+    if (lrc < 0 || FSerror) vm_file_error(lrc < 0 ? lrc : FSerror, "File error");
+}
+
+void vm_sys_file_files(const char *pattern) {
+    int fs;
+    char dir[FF_MAX_LFN] = {0};
+    char pat[FF_MAX_LFN] = {0};
+
+    vm_file_resolve_dir_and_pattern(pattern && *pattern ? pattern : "*", &fs, dir, pat);
+    if (fs == FATFSFILE) {
+        DIR dj;
+        FILINFO info;
+        if (!InitSDCard()) error("SD Card not found");
+        FSerror = f_opendir(&dj, dir);
+        if (FSerror) vm_file_error(FSerror, "File error");
+        while ((FSerror = f_readdir(&dj, &info)) == FR_OK && info.fname[0]) {
+            if (!vm_file_match_pattern(pat, info.fname)) continue;
+            MMPrintString(info.fname);
+            MMPrintString("\r\n");
+        }
+        f_closedir(&dj);
+        if (FSerror) vm_file_error(FSerror, "File error");
+        return;
+    }
+
+    lfs_dir_t dirh;
+    struct lfs_info info;
+    int rc = lfs_dir_open(&lfs, &dirh, dir);
+    if (rc < 0) vm_file_error(rc, "File error");
+    while ((rc = lfs_dir_read(&lfs, &dirh, &info)) > 0) {
+        if (!strcmp(info.name, ".") || !strcmp(info.name, "..")) continue;
+        if (!vm_file_match_pattern(pat, info.name)) continue;
+        MMPrintString(info.name);
+        MMPrintString("\r\n");
+    }
+    lfs_dir_close(&lfs, &dirh);
+    if (rc < 0) vm_file_error(rc, "File error");
 }
 
 #endif

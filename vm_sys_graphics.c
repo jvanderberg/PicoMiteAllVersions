@@ -11,6 +11,52 @@
 #include "SPI-LCD.h"
 #endif
 
+typedef struct VMGfxScratchBuffer {
+    void *ptr;
+    size_t bytes;
+} VMGfxScratchBuffer;
+
+static VMGfxScratchBuffer vm_gfx_short_a;
+static VMGfxScratchBuffer vm_gfx_short_b;
+static VMGfxScratchBuffer vm_gfx_float_a;
+static VMGfxScratchBuffer vm_gfx_float_b;
+static VMGfxScratchBuffer vm_gfx_float_c;
+static VMGfxScratchBuffer vm_gfx_int_a;
+static VMGfxScratchBuffer vm_gfx_int_b;
+static VMGfxScratchBuffer vm_gfx_int_c;
+static VMGfxScratchBuffer vm_gfx_int_d;
+static VMGfxScratchBuffer vm_gfx_mask_a;
+
+static void *vm_sys_graphics_reserve_scratch(VMGfxScratchBuffer *buffer, size_t bytes) {
+    void *new_ptr;
+
+    if (bytes == 0) return NULL;
+    if (buffer->ptr != NULL && buffer->bytes >= bytes) return buffer->ptr;
+
+    new_ptr = BC_ALLOC(bytes);
+    if (!new_ptr) error("Not enough memory");
+    if (buffer->ptr) BC_FREE(buffer->ptr);
+    buffer->ptr = new_ptr;
+    buffer->bytes = bytes;
+    return buffer->ptr;
+}
+
+void vm_sys_graphics_reset(void) {
+    VMGfxScratchBuffer *buffers[] = {
+        &vm_gfx_short_a, &vm_gfx_short_b,
+        &vm_gfx_float_a, &vm_gfx_float_b, &vm_gfx_float_c,
+        &vm_gfx_int_a, &vm_gfx_int_b, &vm_gfx_int_c, &vm_gfx_int_d,
+        &vm_gfx_mask_a
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++) {
+        if (buffers[i]->ptr) BC_FREE(buffers[i]->ptr);
+        buffers[i]->ptr = NULL;
+        buffers[i]->bytes = 0;
+    }
+}
+
 static int vm_sys_graphics_circle_arg_int(const GfxCircleArg *arg, int index) {
     if (!arg->present || arg->count <= 0 || arg->get_int == NULL) return 0;
     return arg->get_int(arg->ctx, (arg->count > 1) ? index : 0);
@@ -166,6 +212,9 @@ static void vm_sys_graphics_calc_triangle_edge(int x0, int y0, int x1, int y1,
 
 static void vm_sys_graphics_draw_triangle_pixels(int x0, int y0, int x1, int y1,
                                                  int x2, int y2, int c, int f) {
+    short *xmin;
+    short *xmax;
+
     if (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1) == 0) {
         if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
         if (y1 > y2) { int t = y2; y2 = y1; y1 = t; t = x2; x2 = x1; x1 = t; }
@@ -186,13 +235,8 @@ static void vm_sys_graphics_draw_triangle_pixels(int x0, int y0, int x1, int y1,
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; t = x0; x0 = x1; x1 = t; }
 
     if (VRes <= 0) return;
-    short *xmin = (short *)BC_ALLOC((size_t)VRes * sizeof(short));
-    short *xmax = (short *)BC_ALLOC((size_t)VRes * sizeof(short));
-    if (!xmin || !xmax) {
-        if (xmin) BC_FREE(xmin);
-        if (xmax) BC_FREE(xmax);
-        error("Not enough memory");
-    }
+    xmin = (short *)vm_sys_graphics_reserve_scratch(&vm_gfx_short_a, (size_t)VRes * sizeof(short));
+    xmax = (short *)vm_sys_graphics_reserve_scratch(&vm_gfx_short_b, (size_t)VRes * sizeof(short));
 
     for (int y = y0; y <= y2; y++) {
         if (y >= 0 && y < VRes) {
@@ -211,8 +255,6 @@ static void vm_sys_graphics_draw_triangle_pixels(int x0, int y0, int x1, int y1,
     DrawLine(x0, y0, x1, y1, 1, c);
     DrawLine(x1, y1, x2, y2, 1, c);
     DrawLine(x2, y2, x0, y0, 1, c);
-    BC_FREE(xmin);
-    BC_FREE(xmax);
 }
 
 static void vm_sys_graphics_fill_polygon_edges(const float *poly_x, const float *poly_y,
@@ -222,8 +264,7 @@ static void vm_sys_graphics_fill_polygon_edges(const float *poly_x, const float 
     float *node_x;
     int y, i, j;
 
-    node_x = (float *)BC_ALLOC((size_t)count * sizeof(float));
-    if (!node_x) error("Not enough memory");
+    node_x = (float *)vm_sys_graphics_reserve_scratch(&vm_gfx_float_c, (size_t)count * sizeof(float));
 
     for (y = ystart; y < yend; y++) {
         int nodes = 0;
@@ -262,7 +303,6 @@ static void vm_sys_graphics_fill_polygon_edges(const float *poly_x, const float 
         int y1 = (int)roundf(poly_y[(i + 1) % vertex_count]);
         DrawLine(x0, y0, x1, y1, 1, c);
     }
-    BC_FREE(node_x);
 }
 
 static void vm_sys_graphics_draw_polygon_points(const int *x_values, const int *y_values,
@@ -282,13 +322,8 @@ static void vm_sys_graphics_draw_polygon_points(const int *x_values, const int *
         return;
     }
 
-    poly_x = (float *)BC_ALLOC((size_t)(point_count + 1) * sizeof(float));
-    poly_y = (float *)BC_ALLOC((size_t)(point_count + 1) * sizeof(float));
-    if (!poly_x || !poly_y) {
-        if (poly_x) BC_FREE(poly_x);
-        if (poly_y) BC_FREE(poly_y);
-        error("Not enough memory");
-    }
+    poly_x = (float *)vm_sys_graphics_reserve_scratch(&vm_gfx_float_a, (size_t)(point_count + 1) * sizeof(float));
+    poly_y = (float *)vm_sys_graphics_reserve_scratch(&vm_gfx_float_b, (size_t)(point_count + 1) * sizeof(float));
 
     for (int i = 0; i < point_count; i++) {
         poly_x[vertex_count] = (float)x_values[i];
@@ -321,9 +356,6 @@ static void vm_sys_graphics_draw_polygon_points(const int *x_values, const int *
         vm_sys_graphics_draw_triangle_pixels((int)poly_x[0], (int)poly_y[0], (int)poly_x[1], (int)poly_y[1],
                                              (int)poly_x[2], (int)poly_y[2], c, f);
     }
-
-    BC_FREE(poly_x);
-    BC_FREE(poly_y);
 }
 
 static void vm_sys_graphics_mask_hline(int x0, int x1, int y, int fill, int ints_per_line, uint32_t *br) {
@@ -492,8 +524,7 @@ void vm_sys_graphics_arc_execute(int x, int y, int r1, int has_r2, int r2,
     x2 = x; y2 = y;
     ints_per_line = RoundUptoInt((r2 * 2) + 1) / 32;
     words = (size_t)(ints_per_line + 1) * (size_t)((r2 * 2) + 1);
-    br = (uint32_t *)BC_ALLOC(words * sizeof(uint32_t));
-    if (!br) error("Not enough memory");
+    br = (uint32_t *)vm_sys_graphics_reserve_scratch(&vm_gfx_mask_a, words * sizeof(uint32_t));
     memset(br, 0, words * sizeof(uint32_t));
 
     vm_sys_graphics_arc_fill_circle_mask(x, y, r2, r2, 1, ints_per_line, br, 1.0, 1.0);
@@ -538,7 +569,6 @@ void vm_sys_graphics_arc_execute(int x, int y, int r1, int has_r2, int r2,
         }
     }
     Option.Refresh = save_refresh;
-    BC_FREE(br);
 }
 
 void vm_sys_graphics_triangle_execute(GfxBoxMode mode, const GfxBoxIntArg *args, int field_count,
@@ -716,20 +746,13 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
             }
         }
 
-        x_values = (int *)BC_ALLOC((size_t)xcount * sizeof(int));
-        y_values = (int *)BC_ALLOC((size_t)xcount * sizeof(int));
-        if (!x_values || !y_values) {
-            if (x_values) BC_FREE(x_values);
-            if (y_values) BC_FREE(y_values);
-            error("Not enough memory");
-        }
+        x_values = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_a, (size_t)xcount * sizeof(int));
+        y_values = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_b, (size_t)xcount * sizeof(int));
         for (int i = 0; i < xcount; i++) {
             x_values[i] = vm_sys_graphics_box_arg_value(&args[1], i);
             y_values[i] = vm_sys_graphics_box_arg_value(&args[2], i);
         }
         vm_sys_graphics_draw_polygon_points(x_values, y_values, xcount, c, f, 1);
-        BC_FREE(x_values);
-        BC_FREE(y_values);
         return;
     }
 
@@ -762,29 +785,20 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
             return;
         }
 
-        cc = (int *)BC_ALLOC((size_t)((n > 0) ? n : 1) * sizeof(int));
-        ff = (int *)BC_ALLOC((size_t)((n > 0) ? n : 1) * sizeof(int));
-        if (!cc || !ff) {
-            if (cc) BC_FREE(cc);
-            if (ff) BC_FREE(ff);
-            error("Not enough memory");
-        }
+        cc = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_c, (size_t)((n > 0) ? n : 1) * sizeof(int));
+        ff = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_d, (size_t)((n > 0) ? n : 1) * sizeof(int));
 
         for (int i = 0; i < n; i++) cc[i] = gui_fcolour;
         if (field_count > 3 && args[3].present) {
             if (args[3].count == 1) {
                 c = vm_sys_graphics_box_arg_value(&args[3], 0);
                 if (c < 0 || c > max_colour) {
-                    BC_FREE(cc);
-                    BC_FREE(ff);
                     vm_sys_graphics_box_fail_range(errors, NULL, c, 0, max_colour);
                     return;
                 }
                 for (int i = 0; i < n; i++) cc[i] = c;
             } else {
                 if (args[3].count < n) {
-                    BC_FREE(cc);
-                    BC_FREE(ff);
                     vm_sys_graphics_box_fail_msg(errors, "Foreground colour Dimensions");
                     return;
                 }
@@ -792,8 +806,6 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
                     cc[i] = vm_sys_graphics_box_arg_value(&args[3], i);
                     if (cc[i] < 0 || cc[i] > max_colour) {
                         int value = cc[i];
-                        BC_FREE(cc);
-                        BC_FREE(ff);
                         vm_sys_graphics_box_fail_range(errors, NULL, value, 0, max_colour);
                         return;
                     }
@@ -805,16 +817,12 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
             if (args[4].count == 1) {
                 f = vm_sys_graphics_box_arg_value(&args[4], 0);
                 if (f < 0 || f > max_colour) {
-                    BC_FREE(cc);
-                    BC_FREE(ff);
                     vm_sys_graphics_box_fail_range(errors, NULL, f, 0, max_colour);
                     return;
                 }
                 for (int i = 0; i < n; i++) ff[i] = f;
             } else {
                 if (args[4].count < n) {
-                    BC_FREE(cc);
-                    BC_FREE(ff);
                     vm_sys_graphics_box_fail_msg(errors, "Background colour Dimensions");
                     return;
                 }
@@ -822,8 +830,6 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
                     ff[i] = vm_sys_graphics_box_arg_value(&args[4], i);
                     if (ff[i] < 0 || ff[i] > max_colour) {
                         int value = ff[i];
-                        BC_FREE(cc);
-                        BC_FREE(ff);
                         vm_sys_graphics_box_fail_range(errors, NULL, value, 0, max_colour);
                         return;
                     }
@@ -833,28 +839,17 @@ void vm_sys_graphics_polygon_execute(const GfxBoxIntArg *args, int field_count,
 
         for (int i = 0, xstart = 0; i < n; i++) {
             int xcount = vm_sys_graphics_box_arg_value(&args[0], i);
-            int *x_values = (int *)BC_ALLOC((size_t)xcount * sizeof(int));
-            int *y_values = (int *)BC_ALLOC((size_t)xcount * sizeof(int));
+            int *x_values = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_a, (size_t)xcount * sizeof(int));
+            int *y_values = (int *)vm_sys_graphics_reserve_scratch(&vm_gfx_int_b, (size_t)xcount * sizeof(int));
             int fill_colour = (field_count > 4 && args[4].present) ? ff[i] : -1;
 
-            if (!x_values || !y_values) {
-                if (x_values) BC_FREE(x_values);
-                if (y_values) BC_FREE(y_values);
-                BC_FREE(cc);
-                BC_FREE(ff);
-                error("Not enough memory");
-            }
             for (int j = 0; j < xcount; j++) {
                 x_values[j] = vm_sys_graphics_box_arg_value(&args[1], xstart + j);
                 y_values[j] = vm_sys_graphics_box_arg_value(&args[2], xstart + j);
             }
             vm_sys_graphics_draw_polygon_points(x_values, y_values, xcount, cc[i], fill_colour, 1);
-            BC_FREE(x_values);
-            BC_FREE(y_values);
             xstart += xcount;
         }
-        BC_FREE(cc);
-        BC_FREE(ff);
     }
 }
 
@@ -1858,10 +1853,13 @@ static void vm_sys_graphics_draw_circle(int x, int y, int radius, int w, int c, 
             vm_sys_graphics_draw_circle(x, y, radius - w, 0, fill, fill, aspect2);
         } else {
             int r1 = radius - w, r2 = radius, xs = -1, xi = 0, i, j, k, m, ll = radius;
+            size_t words;
             if (aspect > 1.0) ll = (int)((MMFLOAT)radius * aspect);
             int ints_per_line = RoundUptoInt((ll * 2) + 1) / 32;
-            uint32_t *br = (uint32_t *)BC_ALLOC(((ints_per_line + 1) * ((r2 * 2) + 1)) * 4);
-            if (!br) error("Not enough memory");
+            uint32_t *br;
+
+            words = (size_t)(ints_per_line + 1) * (size_t)((r2 * 2) + 1);
+            br = (uint32_t *)vm_sys_graphics_reserve_scratch(&vm_gfx_mask_a, words * sizeof(uint32_t));
             vm_sys_graphics_fill_circle_mask(x, y, r2, r2, 1, ints_per_line, br, aspect, aspect);
             aspect2 = ((aspect * (MMFLOAT)r2) - (MMFLOAT)w) / ((MMFLOAT)r1);
             vm_sys_graphics_fill_circle_mask(x, y, r1, r2, 0, ints_per_line, br, aspect, aspect2);
@@ -1888,7 +1886,6 @@ static void vm_sys_graphics_draw_circle(int x, int y, int radius, int w, int c, 
                     xs = -1;
                 }
             }
-            BC_FREE(br);
         }
     } else {
         int w1 = w, r1 = radius;

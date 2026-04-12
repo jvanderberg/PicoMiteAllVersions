@@ -1,0 +1,6 @@
+SETPIN 1, PWM
+SETPIN 2, PWM0B
+PWM 0, 1000, , 50, 1, 1
+PWM SYNC 0
+PWM 0, OFF
+PRINT "pwm sync ok"

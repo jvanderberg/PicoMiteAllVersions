@@ -1,0 +1,4 @@
+SETPIN 2, PWM0B
+SERVO 0, , 50
+SERVO 0, OFF
+PRINT "servo b ok"

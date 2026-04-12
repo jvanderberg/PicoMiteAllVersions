@@ -2,6 +2,11 @@
 
 Native macOS/Linux test harness for the legacy MMBasic interpreter and the bytecode VM.
 
+For the current architecture snapshot, see:
+
+- [docs/vm-architecture.md](../docs/vm-architecture.md)
+- [docs/vm-command-coverage.md](../docs/vm-command-coverage.md)
+
 The host binary is `mmbasic_test`. It has two execution engines:
 
 - `--interp`: legacy interpreter oracle.
@@ -22,7 +27,7 @@ cd host
 ./run_host_shim_tests.sh
 ./run_frontend_tests.sh
 ./run_unsupported_tests.sh
-./run_missing_syscall_tests.sh        # intentionally red syscall TODO inventory
+./run_missing_syscall_tests.sh
 ```
 
 Equivalent from the repo root:
@@ -34,7 +39,7 @@ make -C host
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
 bash host/run_unsupported_tests.sh
-./host/run_missing_syscall_tests.sh   # intentionally exits non-zero until TODOs are implemented
+./host/run_missing_syscall_tests.sh
 ```
 
 ## Running Programs
@@ -54,15 +59,15 @@ The default compare mode runs the legacy interpreter first, then the VM, and fai
 
 | Command | Purpose |
 |---------|---------|
-| `./run_tests.sh` | Runs all `tests/t*.bas` oracle tests in compare mode. Current count: 118. |
+| `./run_tests.sh` | Runs all `tests/t*.bas` oracle tests in compare mode. Current count: 162. |
 | `./run_tests.sh --interp` | Runs oracle tests through the legacy interpreter only. |
 | `./run_tests.sh --vm` | Runs oracle tests through the VM only. |
 | `./run_tests.sh tests/t01_print.bas --vm` | Runs one test through one engine. |
 | `./run_pixel_tests.sh` | Runs framebuffer assertions through both interpreter and VM. |
-| `./run_host_shim_tests.sh` | Runs deterministic host shim tests, including fixed date/time and delayed keyboard injection. Current count: 3. |
-| `./run_frontend_tests.sh` | Runs raw-source VM frontend oracle comparisons. Current count: 2. |
-| `./run_unsupported_tests.sh` | VM-only negative tests for unsupported syscalls. Current count: 2. |
-| `./run_missing_syscall_tests.sh` | Intentionally-red compare tests for missing VM syscall implementations. Current count: 4. |
+| `./run_host_shim_tests.sh` | Runs deterministic host shim tests, including fixed date/time and delayed keyboard injection. Current count: 4. |
+| `./run_frontend_tests.sh` | Runs raw-source VM frontend oracle comparisons. Current count: 27. |
+| `./run_unsupported_tests.sh` | VM-only negative tests for unsupported syscalls. Current count: 0. |
+| `./run_missing_syscall_tests.sh` | Inventory runner for missing VM syscall implementations. Current count: 0. |
 | `./run_bench.sh` | Runs host benchmarks. |
 
 `BINARY=...` can override the binary used by the scripts, but the supported default is `./mmbasic_test`.
@@ -79,7 +84,7 @@ Unsupported syscall tests belong in `tests/unsupported/*.bas`. Each file must fa
 ' EXPECT_ERROR: expected substring
 ```
 
-Missing syscall implementation tests belong in `tests/missing_syscalls/*.bas`. These are normal programs that should run under the interpreter oracle, but currently fail in compare mode because the VM has no native syscall implementation yet. This suite is expected to exit non-zero until those syscalls are implemented.
+Missing syscall implementation tests belong in `tests/missing_syscalls/*.bas`. These are normal programs that should run under the interpreter oracle but expose native VM syscall gaps. The suite is currently empty and exits cleanly when there are no pending missing-syscall cases.
 
 Host shim tests belong in `tests/host_shims/*.bas`. These are for host harness behavior rather than MMBasic semantic coverage.
 
@@ -116,8 +121,8 @@ Important compiled sources:
 |--------|---------|
 | `MMBasic.c`, `Commands.c`, `Functions.c`, `Operators.c`, `MATHS.c`, `Memory.c` | Legacy language runtime used by the host oracle and current prompt/tokenising paths. |
 | `gfx_*_shared.c` | Shared host/device graphics primitives used by native VM graphics ops. |
-| `bc_source.c`, `bc_compiler*.c`, `bc_vm.c`, `bc_runtime.c`, `bc_debug.c`, `bc_test.c` | VM-owned source frontend, legacy-tokenized compatibility compiler, VM, runtime entrypoints, diagnostics, and internal tests. |
-| `host_stubs_legacy.c` | Host shim for hardware, filesystem, display, timers, input, and VM support. |
+| `bc_source.c`, `bc_compiler*.c`, `bc_vm.c`, `bc_runtime.c`, `bc_debug.c`, `bc_test.c` | VM-owned source frontend, compiler/core metadata, VM, runtime entrypoints, diagnostics, and internal tests. |
+| `host_stubs_legacy.c` | Host shim for hardware, filesystem, display, timers, input, and interpreter support. Some oracle-independence cleanup is still pending here. |
 | `host_main.c` | Loads `.bas`, tokenises into `ProgMemory`, runs engines, compares/captures output. |
 
 The old bridge fallback is removed. The VM compiler must emit native bytecode for supported statements/functions; unsupported commands/functions must fail loudly.
@@ -126,9 +131,7 @@ The old bridge fallback is removed. The VM compiler must emit native bytecode fo
 
 Default compare mode still reads a `.bas` file as text, prepends generated line numbers when needed, calls `tokenise(0)`, copies tokenised data into `ProgMemory`, and terminates with the standard double-zero program terminator.
 
-This keeps host tests close to device `RUN`, where source is tokenised before VM compilation.
-
-The new frontend migration path uses `--vm-source` / `--source-compare`, which call `bc_compile_source()` directly on raw `.bas` text and do not use `tokenise()` for the VM side.
+The interpreter side still tokenises through the legacy path. The VM side uses `bc_compile_source()` directly on raw `.bas` text for `--vm` and `--source-compare`.
 
 ## Output And Framebuffer Capture
 
@@ -138,17 +141,17 @@ Graphics tests use the host framebuffer and `--assert-pixel x,y,RRGGBB` argument
 
 ## Current Verification Snapshot
 
-As of the VM bridge-removal checkpoint:
+Current snapshot:
 
 - `make -C host`: passes.
 - `make -C build2350 -j8`: passes.
-- `./host/run_host_shim_tests.sh`: `3 passed, 0 failed`.
-- `./host/run_frontend_tests.sh`: `2 passed, 0 failed`.
-- `bash host/run_unsupported_tests.sh`: `2 passed, 0 failed`.
-- `./host/run_missing_syscall_tests.sh`: intentionally red, currently 4 failing syscall TODOs.
-- `./host/run_tests.sh`: `118 passed, 0 failed`.
+- `./host/run_host_shim_tests.sh`: `4 passed, 0 failed`.
+- `./host/run_frontend_tests.sh`: `27 passed, 0 failed`.
+- `bash host/run_unsupported_tests.sh`: `0 passed, 0 failed`.
+- `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`.
+- `./host/run_tests.sh`: `162 passed, 0 failed`.
 - `./host/run_pixel_tests.sh`: passes.
-- `arm-none-eabi-size build2350/PicoMite.elf`: `text=942400`, `data=0`, `bss=314180`, `dec=1256580`.
+- `arm-none-eabi-size build2350/PicoMite.elf`: `text=976656`, `data=0`, `bss=296140`, `dec=1272796`.
 
 ## Known Build Note
 

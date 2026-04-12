@@ -1,5 +1,7 @@
 # VM Cutover Plan
 
+For the current architecture snapshot, see [vm-architecture.md](./vm-architecture.md).
+
 ## Goal
 
 Move to a prototype architecture with:
@@ -25,11 +27,39 @@ Move to a prototype architecture with:
 - **!!! DO NOT LINK, WRAP, OR DISPATCH BACK INTO LEGACY HANDLERS OR LEGACY DRAWING/FILE HELPER ENTRYPOINTS !!!**
 - **!!! NOVEL CODE SHOULD BE LIMITED TO VM FRONTEND/DISPATCH GLUE, REQUIRED ADAPTATION LAYERS, AND HOST MOCKS/SHIMS !!!**
 
+## Current Highest Priorities
+
+These are the current highest-priority architecture items. New syscall expansion is subordinate to these until they are tightened.
+
+1. Oracle independence
+   - The host legacy interpreter must remain a real semantic oracle.
+   - `host/host_stubs_legacy.c` must not call `vm_sys_*` code.
+   - Host oracle support must come from legacy interpreter code plus host hardware/environment shims only.
+   - If host support is missing for a legacy-safe feature, copy/adapt legacy logic into the host shim boundary rather than routing through VM-owned implementations.
+
+2. VM memory separation by lifetime
+   - Runtime heap, program image storage, compile scratch, and syscall scratch must not remain one monolithic allocator domain.
+   - The target model is explicit lifetime separation:
+     - compile arena
+     - compact program image
+     - runtime heap for mutable BASIC state
+     - fixed VM state and bounded syscall scratch
+   - Avoid transient syscall allocations from the same allocator pool used by long-lived BASIC runtime objects.
+
+3. Standardize the syscall ABI
+   - Move toward a standard generic VM syscall ABI instead of continuing to add bespoke per-command encodings.
+   - Default design:
+     - one generic syscall/intrinsic call format
+     - stable argument passing and return conventions
+     - one decoder/dispatch path in the VM
+   - Optional dedicated opcodes remain allowed only for proven hot paths where profiling or code-size measurements justify them.
+   - The generic ABI is the default. Dedicated opcodes are the exception.
+
 ## Plan
 
 ### 1. Freeze a host-only legacy interpreter
 
-Status: mostly complete.
+Status: in progress.
 
 - Create and preserve a dedicated host target that keeps the original interpreter semantics.
 - Keep the existing shared host backends for framebuffer, files, timers, input, and screenshots.
@@ -37,6 +67,7 @@ Status: mostly complete.
 - Use it as the correctness reference for language features and host-safe syscalls.
 - Current implementation uses `host/mmbasic_test` with `--interp` as the oracle path and `--vm` as the implementation path.
 - The active host shim is `host/host_stubs_legacy.c`.
+- Remaining gap: some host legacy shims still route through VM-owned syscall helpers. This breaks oracle independence and must be removed before the oracle can be treated as trustworthy for those families.
 
 ### 2. Remove interpreter execution from device firmware
 
@@ -79,8 +110,46 @@ Status: started.
   - `bc_vm_alloc()` now runs after successful compile and compiler compaction, removing VM runtime tables from compile-time peak memory.
   - RP2350 `bc_heap` is reduced from 256 KiB to 232 KiB.
   - `MEMORY` on PicoCalc RP2350 now reports VM arena capacity, current use, and high-water usage for device-driven sizing.
-  - Large compiler/runtime tables still allocate through `BC_ALLOC()`; compile/runtime arena separation remains future work.
+  - Compiler tables now allocate from a temporary compiler arena carved from the top of the same device heap, not from the general runtime allocator.
+  - Compiler compaction copies retained program-image structures from the temporary compiler arena into the runtime allocator, then releases the entire compiler arena before execution.
+  - This is not a rigid fixed pool split for runtime lifetimes; it is a temporary compile-time carve-out whose space returns to the runtime allocator before program execution.
+  - Hot graphics scratch no longer churns the general runtime allocator on each draw; `vm_sys_graphics.c` now owns reusable grow-on-demand scratch buffers that are reset between runs.
+  - Non-graphics syscall scratch still shares the same allocator domain as long-lived runtime objects; that remains the main correctness/supportability risk under memory pressure.
   - Rebuild and measure `.bss`/headroom after each slice.
+
+### 2C. Standardize the VM syscall ABI
+
+Status: started.
+
+- Replace continued growth of bespoke per-command operand layouts with a standard generic syscall/intrinsic ABI.
+- Default ABI target:
+  - generic syscall opcode
+  - syscall/intrinsic id
+  - standard argument count and ordering
+  - standard result convention
+  - one common VM-side decode/dispatch path
+- Keep dedicated opcodes only for:
+  - core arithmetic/control-flow primitives
+  - demonstrably hot builtins or syscalls where measurements justify specialization
+- Do not add new bespoke operand encodings unless they are explicitly treated as dedicated hot opcodes.
+- Compiler/frontend work should converge on emitting the generic ABI by default.
+- VM runtime work should converge on decoding through a shared dispatcher by default.
+- This is now the primary architecture direction for future syscall expansion.
+- Completed first implementation slice:
+  - `OP_SYSCALL` now exists as the standard VM syscall/intrinsic envelope.
+  - `bc_source.c` now emits the current implemented VM syscall surface through `OP_SYSCALL` by default instead of command-specific opcodes.
+  - The shared syscall path currently covers:
+    - graphics commands and graphics/query builtins
+    - `FASTGFX`
+    - `DATE$`, `TIME$`, `KEYDOWN()`, `PAUSE`
+    - `PLAY`
+    - `SETPIN`, `PIN()`, `PWM`, `SERVO`
+    - current file commands and file I/O operations
+  - Dedicated legacy-style opcodes still exist in the runtime as compatibility/hot-path candidates, but they are no longer the default compiler target for the implemented syscall surface.
+- Remaining ABI work:
+  - remove or quarantine obsolete dedicated syscall opcodes once the generic path is stable enough
+  - move any remaining current syscall implementations that still depend on bespoke sub-encodings onto cleaner shared metadata formats where practical
+  - decide which dedicated opcodes are actually justified by profiling and code-size measurements
 
 ### 2A. Build a VM-owned source frontend
 
@@ -168,13 +237,14 @@ Status: active.
 - Oracle tests must stay within the syntax and behavior accepted by the legacy host interpreter.
 - If the legacy interpreter rejects a construct, that test is not a valid oracle-comparison test until it is rewritten into a legacy-valid form.
 - Use device tests mainly for hardware-facing behavior, timing, and memory/resource validation.
+- Remaining gap: the host oracle is currently not fully independent for some file/pin/PWM paths because parts of the host legacy shim call VM-owned helpers. That must be corrected.
 - Current baseline:
-  - `./host/run_tests.sh`: 120 passing oracle comparison tests.
+  - `./host/run_tests.sh`: `162 passed, 0 failed`.
   - `./host/run_pixel_tests.sh`: passing framebuffer assertions.
-  - `./host/run_host_shim_tests.sh`: 3 passing host shim tests.
-  - `./host/run_frontend_tests.sh`: 27 passing source frontend tests.
-  - `bash host/run_unsupported_tests.sh`: 1 passing unsupported-syscall negative test.
-  - `./host/run_missing_syscall_tests.sh`: intentionally red, currently 2 failing syscall TODOs: `FILES` and file I/O.
+  - `./host/run_host_shim_tests.sh`: `4 passed, 0 failed`.
+  - `./host/run_frontend_tests.sh`: `27 passed, 0 failed`.
+  - `bash host/run_unsupported_tests.sh`: `0 passed, 0 failed`.
+  - `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`.
 
 ### 7. Separate language correctness from hardware validation
 
@@ -202,15 +272,15 @@ make -C host
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
 bash host/run_unsupported_tests.sh
-./host/run_missing_syscall_tests.sh   # intentionally red until syscall TODOs are implemented
+./host/run_missing_syscall_tests.sh
 make -C build2350 -j8
 arm-none-eabi-size build2350/PicoMite.elf
 ```
 
-Current firmware size snapshot after `PLAY` and digital `PIN`/`SETPIN` native syscall slices:
+Current firmware size snapshot:
 
 ```text
-text=929992  data=0  bss=295808  dec=1225800
+text=976656  data=0  bss=296140  dec=1272796
 bc_heap=232 KiB
 ```
 
@@ -223,6 +293,10 @@ bc_heap=232 KiB
 
 ## Remaining Work
 
+- Highest current architecture priorities:
+  - restore full host oracle independence by removing `vm_sys_*` calls from `host/host_stubs_legacy.c`
+  - finish memory separation by lifetime and remove transient syscall scratch from the general runtime heap
+  - standardize the syscall ABI around a generic call/dispatch path, with dedicated opcodes only for justified hot paths
 - Continue removing interpreter-only runtime from the device image where it is no longer needed by shell/tokenising/editor workflows.
 - Expand the VM-owned source frontend until the device `RUN` path no longer needs legacy tokenising.
 - After the frontend cut is in place, continue native VM syscall coverage only where the legacy interpreter supports the same BASIC semantics, implemented outside the legacy interpreter modules.
@@ -238,80 +312,12 @@ bc_heap=232 KiB
 
 ## Legacy Command Coverage Inventory
 
-Status terms in this section are strict:
+The authoritative command-coverage matrix now lives in [vm-command-coverage.md](./vm-command-coverage.md).
 
-- `implemented`: frontended and executable on the VM program path.
-- `partial`: frontended, but only a subset of the legacy command semantics is implemented.
-- `unimplemented`: not available on the VM program path yet. This includes commands that still exist only in legacy command handlers and commands with no VM frontend support.
+It is derived from `AllCommands.h` and uses only:
 
-This inventory is command-table driven from `AllCommands.h`. It is about the VM BASIC program path, not the prompt shell. Function-family gaps such as the wider `MM.INFO()` surface are tracked separately from command-table entries.
+- `implemented`
+- `partial`
+- `unimplemented`
 
-### Graphics Priority
-
-Graphics is the current highest-priority conversion area.
-
-- First priority is the drawing/syscall surface used by real programs and validation assets.
-- Each conversion must be VM-owned and must copy/adapt useful legacy code into `vm_sys_*` modules.
-- A conversion is not complete if the VM opcode reaches back into `cmd_*`, `fun_*`, old drawing helpers, or other legacy execution handlers.
-- `implemented`, `partial`, and `unimplemented` below are the only status terms for this inventory.
-
-### Implemented
-
-- Core language/control flow:
-  `DATA`, `DIM`, `DO`, `ELSE IF`, `ELSEIF`, `CASE ELSE`, `ELSE`, `SELECT CASE`, `END SELECT`, `CASE`, `END IF`, `ENDIF`, `END FUNCTION`, `END SUB`, `END`, `ERROR`, `EXIT DO`, `EXIT FOR`, `EXIT SUB`, `EXIT FUNCTION`, `EXIT`, `FOR`, `FUNCTION`, `GOSUB`, `GOTO`, `INC`, `IF`, `LINE INPUT`, `LET`, `LOCAL`, `LOOP`, `NEXT`, `PRINT`, `READ`, `RESTORE`, `RETURN`, `STATIC`, `SUB`, `CONST`, `RANDOMIZE`
-- VM graphics/display path:
-  `PIXEL`, `CIRCLE`, `LINE`, `BOX`, `RBOX`, `ARC`, `TRIANGLE`, `POLYGON`, `CLS`, `FASTGFX`, `TEXT`, `FONT`, `COLOUR`, `COLOR`
-- VM file/time/input path:
-  `PAUSE`, `DATE$`, `TIME$`
-
-### Partial
-
-- `OPTION`
-  Only the source forms already needed by the host/device VM path are handled, not the broad legacy `OPTION` command surface.
-- `SAVE`
-  Only `SAVE IMAGE` is frontended.
-- `OPEN`
-  Only sequential file forms are implemented: `INPUT`, `OUTPUT`, `APPEND`.
-  Random-access files, `COM`, `GPS`, and other legacy forms are unimplemented.
-- `CLOSE`
-  Only file-handle close is implemented.
-  Other legacy resource-family closes remain unimplemented because their owning command families are unimplemented.
-- `PLAY`
-  Only `PLAY TONE` and `PLAY STOP` are implemented.
-  The wider `PLAY` family (`WAV`, `FLAC`, `MP3`, `MODFILE`, `ARRAY`, `SOUND`, `PAUSE`, `RESUME`, `VOLUME`, etc.) is unimplemented.
-- `PIN(`
-  Basic digital read/write is implemented on the VM path.
-  The full legacy `PIN()` function family is not.
-- `SETPIN`
-  Only the basic digital slice is implemented: `OFF`, `DIN`, `DOUT`.
-  Analog, counters, interrupts, peripheral allocation, PWM, IR, SPI, I2C, serial, and other legacy modes are unimplemented.
-- `TIMER`
-  The function form is implemented.
-  The broader legacy command/form-family behavior is not fully matched.
-- `FILES`
-  Frontended, but the VM runtime implementation is still empty on device and host.
-- Graphics command family
-  The VM covers the current primitive subset plus the first copied/adapted shape/state commands: `PIXEL`, `CIRCLE`, `LINE`, `BOX`, `RBOX`, `ARC`, `TRIANGLE`, `POLYGON`, `CLS`, `FASTGFX`, `TEXT`, `FONT`, `COLOUR`, `COLOR`.
-  The broader legacy graphics/display surface remains unimplemented and is tracked explicitly below.
-
-### Unimplemented
-
-- Core/editor/program control:
-  `CALL`, `CLEAR`, `CONTINUE`, `ERASE`, `INPUT`, `LIST`, `LOAD`, `ON`, `RUN`, `TRACE`, `WHILE`, `EXECUTE`, `NEW`, `EDIT FILE`, `EDIT`, `AUTOSAVE`
-- File/OS/storage commands:
-  `KILL`, `RMDIR`, `CHDIR`, `MKDIR`, `COPY`, `RENAME`, `SEEK`, `FLASH`, `VAR`, `FLUSH`, `DRIVE`, `XMODEM`, `CAT`
-- Graphics/UI/display families:
-  `FRAMEBUFFER`, `SPRITE`, `BLIT`, `BLIT MEMORY`, `GUI`, `SYNC`, `DEVICE`, `LCD`, `REFRESH`, `BACKLIGHT`, `DRAW3D`, `TILE`, `MODE`, `MAP(`, `MAP`, `COLOUR MAP`, `CAMERA`, `CTRLVAL(`
-- Peripheral/comms/hardware families:
-  `ADC`, `PULSE`, `PORT(`, `IR`, `PWM`, `CSUB`, `END CSUB`, `I2C`, `I2C2`, `RTC`, `MATH`, `MEMORY`, `IRETURN`, `POKE`, `SETTICK`, `WATCHDOG`, `CPU`, `SORT`, `DEFINEFONT`, `END DEFINEFONT`, `LONGSTRING`, `INTERRUPT`, `LIBRARY`, `ONEWIRE`, `TEMPR START`, `SPI`, `SPI2`, `WS2812`, `KEYPAD`, `HUMID`, `WII CLASSIC`, `WII NUNCHUCK`, `WII`, `SERVO`, `MOUSE`, `CHAIN`, `WEB`, `GAMEPAD`, `UPDATE FIRMWARE`, `CONFIGURE`, `CMM2 LOAD`, `CMM2 RUN`, `RAM`
-- PIO/assembler families:
-  `PIO`, `_wrap target`, `_wrap`, `_line`, `_program`, `_end program`, `_side set`, `_label`, `Jmp`, `Wait`, `In`, `Out`, `Push`, `Pull`, `Mov`, `Nop`, `IRQ SET`, `IRQ WAIT`, `IRQ CLEAR`, `IRQ NOWAIT`, `IRQ`, `Set`
-- Command/function hybrids and utility families:
-  `BYTE(`, `FLAG(`, `FRAME`, `BIT(`, `FLAGS`, `HELP`, `ARRAY SLICE`, `ARRAY INSERT`, `ARRAY ADD`, `ARRAY SET`
-
-Notes:
-
-- `FILES` is the only command-table entry currently frontended into the VM and still implemented as a runtime no-op.
-- `WS2812` is unimplemented in the VM sense even though a legacy `cmd_WS2812()` exists in `External.c`; it has no VM frontend/runtime path yet.
-- The command table does not capture the full function backlog. For example, `MM.INFO()` has a large legacy surface, but only the current VM-required display-size subset is implemented.
-- Graphics is the first command-family expansion target from the `unimplemented` list, ahead of broader file/peripheral work.
+That document is about the VM BASIC program path, not the prompt shell.

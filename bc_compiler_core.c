@@ -13,17 +13,17 @@
 
 int bc_compiler_alloc(BCCompiler *cs) {
     memset(cs, 0, sizeof(*cs));
-    cs->code       = (uint8_t *)BC_ALLOC(BC_MAX_CODE);
-    cs->constants  = (BCConstant *)BC_ALLOC(BC_MAX_CONSTANTS * sizeof(BCConstant));
-    cs->slots      = (BCSlot *)BC_ALLOC(BC_MAX_SLOTS * sizeof(BCSlot));
-    cs->subfuns    = (BCSubFun *)BC_ALLOC(BC_MAX_SUBFUNS * sizeof(BCSubFun));
-    cs->subfun_locals_base = (uint16_t *)BC_ALLOC(BC_MAX_SUBFUNS * sizeof(uint16_t));
-    cs->fixups     = (BCFixup *)BC_ALLOC(BC_MAX_FIXUPS * sizeof(BCFixup));
-    cs->linemap    = (BCLineMap *)BC_ALLOC(BC_MAX_LINEMAP * sizeof(BCLineMap));
-    cs->nest_stack = (BCNestEntry *)BC_ALLOC(BC_MAX_NEST * sizeof(BCNestEntry));
-    cs->locals     = (BCLocalVar *)BC_ALLOC(BC_MAX_LOCALS * sizeof(BCLocalVar));
-    cs->local_meta = (BCLocalMeta *)BC_ALLOC(BC_MAX_LOCAL_META * sizeof(BCLocalMeta));
-    cs->data_pool  = (BCDataItem *)BC_ALLOC(BC_MAX_DATA_ITEMS * sizeof(BCDataItem));
+    cs->code       = (uint8_t *)BC_COMPILER_ALLOC(BC_MAX_CODE);
+    cs->constants  = (BCConstant *)BC_COMPILER_ALLOC(BC_MAX_CONSTANTS * sizeof(BCConstant));
+    cs->slots      = (BCSlot *)BC_COMPILER_ALLOC(BC_MAX_SLOTS * sizeof(BCSlot));
+    cs->subfuns    = (BCSubFun *)BC_COMPILER_ALLOC(BC_MAX_SUBFUNS * sizeof(BCSubFun));
+    cs->subfun_locals_base = (uint16_t *)BC_COMPILER_ALLOC(BC_MAX_SUBFUNS * sizeof(uint16_t));
+    cs->local_meta = (BCLocalMeta *)BC_COMPILER_ALLOC(BC_MAX_LOCAL_META * sizeof(BCLocalMeta));
+    cs->data_pool  = (BCDataItem *)BC_COMPILER_ALLOC(BC_MAX_DATA_ITEMS * sizeof(BCDataItem));
+    cs->fixups     = (BCFixup *)BC_COMPILER_ALLOC(BC_MAX_FIXUPS * sizeof(BCFixup));
+    cs->linemap    = (BCLineMap *)BC_COMPILER_ALLOC(BC_MAX_LINEMAP * sizeof(BCLineMap));
+    cs->nest_stack = (BCNestEntry *)BC_COMPILER_ALLOC(BC_MAX_NEST * sizeof(BCNestEntry));
+    cs->locals     = (BCLocalVar *)BC_COMPILER_ALLOC(BC_MAX_LOCALS * sizeof(BCLocalVar));
     if (!cs->code || !cs->constants || !cs->slots || !cs->subfuns ||
         !cs->subfun_locals_base ||
         !cs->fixups || !cs->linemap || !cs->nest_stack || !cs->locals ||
@@ -37,17 +37,17 @@ int bc_compiler_alloc(BCCompiler *cs) {
 }
 
 void bc_compiler_free(BCCompiler *cs) {
-    if (cs->code)       BC_FREE(cs->code);
-    if (cs->constants)  BC_FREE(cs->constants);
-    if (cs->slots)      BC_FREE(cs->slots);
-    if (cs->subfuns)    BC_FREE(cs->subfuns);
-    if (cs->subfun_locals_base) BC_FREE(cs->subfun_locals_base);
-    if (cs->fixups)     BC_FREE(cs->fixups);
-    if (cs->linemap)    BC_FREE(cs->linemap);
-    if (cs->nest_stack) BC_FREE(cs->nest_stack);
-    if (cs->locals)     BC_FREE(cs->locals);
-    if (cs->local_meta) BC_FREE(cs->local_meta);
-    if (cs->data_pool)  BC_FREE(cs->data_pool);
+    if (cs->code)       { if (bc_compile_owns(cs->code)) BC_COMPILER_FREE(cs->code); else BC_FREE(cs->code); }
+    if (cs->constants)  { if (bc_compile_owns(cs->constants)) BC_COMPILER_FREE(cs->constants); else BC_FREE(cs->constants); }
+    if (cs->slots)      { if (bc_compile_owns(cs->slots)) BC_COMPILER_FREE(cs->slots); else BC_FREE(cs->slots); }
+    if (cs->subfuns)    { if (bc_compile_owns(cs->subfuns)) BC_COMPILER_FREE(cs->subfuns); else BC_FREE(cs->subfuns); }
+    if (cs->subfun_locals_base) { if (bc_compile_owns(cs->subfun_locals_base)) BC_COMPILER_FREE(cs->subfun_locals_base); else BC_FREE(cs->subfun_locals_base); }
+    if (cs->fixups)     { if (bc_compile_owns(cs->fixups)) BC_COMPILER_FREE(cs->fixups); else BC_FREE(cs->fixups); }
+    if (cs->linemap)    { if (bc_compile_owns(cs->linemap)) BC_COMPILER_FREE(cs->linemap); else BC_FREE(cs->linemap); }
+    if (cs->nest_stack) { if (bc_compile_owns(cs->nest_stack)) BC_COMPILER_FREE(cs->nest_stack); else BC_FREE(cs->nest_stack); }
+    if (cs->locals)     { if (bc_compile_owns(cs->locals)) BC_COMPILER_FREE(cs->locals); else BC_FREE(cs->locals); }
+    if (cs->local_meta) { if (bc_compile_owns(cs->local_meta)) BC_COMPILER_FREE(cs->local_meta); else BC_FREE(cs->local_meta); }
+    if (cs->data_pool)  { if (bc_compile_owns(cs->data_pool)) BC_COMPILER_FREE(cs->data_pool); else BC_FREE(cs->data_pool); }
     memset(cs, 0, sizeof(*cs));
 }
 
@@ -61,10 +61,10 @@ void bc_compiler_free(BCCompiler *cs) {
  */
 void bc_compiler_compact(BCCompiler *cs) {
     /* 1. Free arrays only needed during compilation */
-    if (cs->fixups)     { BC_FREE(cs->fixups);     cs->fixups = NULL; }
-    if (cs->linemap)    { BC_FREE(cs->linemap);    cs->linemap = NULL; }
-    if (cs->nest_stack) { BC_FREE(cs->nest_stack);  cs->nest_stack = NULL; }
-    if (cs->locals)     { BC_FREE(cs->locals);      cs->locals = NULL; }
+    if (cs->fixups)     { BC_COMPILER_FREE(cs->fixups);     cs->fixups = NULL; }
+    if (cs->linemap)    { BC_COMPILER_FREE(cs->linemap);    cs->linemap = NULL; }
+    if (cs->nest_stack) { BC_COMPILER_FREE(cs->nest_stack); cs->nest_stack = NULL; }
+    if (cs->locals)     { BC_COMPILER_FREE(cs->locals);     cs->locals = NULL; }
 
     /* 2. Shrink runtime arrays to actual size.
      *    Alloc new right-sized buffer, copy, free oversized original.
@@ -73,16 +73,16 @@ void bc_compiler_compact(BCCompiler *cs) {
     if (cs->field && (count) > 0) { \
         size_t sz = (size_t)(count) * sizeof(type); \
         type *p = (type *)BC_ALLOC(sz); \
-        if (p) { memcpy(p, cs->field, sz); BC_FREE(cs->field); cs->field = p; } \
+        if (p) { memcpy(p, cs->field, sz); BC_COMPILER_FREE(cs->field); cs->field = p; } \
     } else if (cs->field && (count) == 0) { \
-        BC_FREE(cs->field); cs->field = NULL; \
+        BC_COMPILER_FREE(cs->field); cs->field = NULL; \
     } \
 } while(0)
 
     /* Shrink code buffer from BC_MAX_CODE to actual code_len */
     if (cs->code && cs->code_len > 0) {
         uint8_t *p = (uint8_t *)BC_ALLOC(cs->code_len);
-        if (p) { memcpy(p, cs->code, cs->code_len); BC_FREE(cs->code); cs->code = p; }
+        if (p) { memcpy(p, cs->code, cs->code_len); BC_COMPILER_FREE(cs->code); cs->code = p; }
     }
 
     COMPACT(constants, cs->const_count, BCConstant);

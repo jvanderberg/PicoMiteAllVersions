@@ -21,6 +21,8 @@
 #include <setjmp.h>
 #include "Hardware_Includes.h"
 #include "bytecode.h"
+#include "vm_sys_pin.h"
+#include "vm_sys_file.h"
 #include "vm_host_fat.h"
 
 /* All needed externs come from Hardware_Includes.h / MMBasic.h */
@@ -322,6 +324,8 @@ static int run_interpreter(char *output, int outsize) {
     int result = 0;
 
     vm_host_fat_reset();
+    vm_sys_file_reset();
+    vm_sys_pin_reset();
     ClearRuntime(true);
     MMErrMsg[0] = '\0';
     MMerrno = 0;
@@ -349,6 +353,8 @@ static int run_bytecode_vm_source(const char *source, const char *source_name,
     int result = 0;
 
     vm_host_fat_reset();
+    vm_sys_file_reset();
+    vm_sys_pin_reset();
     ClearRuntime(true);
     MMErrMsg[0] = '\0';
     MMerrno = 0;

@@ -219,6 +219,9 @@ static const char *opcode_name(uint8_t op) {
         case OP_SETPIN:       return "SETPIN";
         case OP_PIN_READ:     return "PIN_READ";
         case OP_PIN_WRITE:    return "PIN_WRITE";
+        case OP_PWM:          return "PWM";
+        case OP_SERVO:        return "SERVO";
+        case OP_SYSCALL:      return "SYSCALL";
 
         case OP_LINE:         return "LINE";
         case OP_CHECKINT:     return "CHECKINT";
@@ -422,9 +425,39 @@ void bc_disassemble(BCCompiler *cs) {
             dbg_print("  %04X: %-16s\r\n", start, name);
             break;
 
+        case OP_PWM: {
+            uint8_t subop = code[pc++];
+            dbg_print("  %04X: %-16s subop=%u", start, name, (unsigned)subop);
+            if (subop == BC_PWM_CONFIG) {
+                uint8_t present = code[pc++];
+                dbg_print(" present=0x%02X", (unsigned)present);
+            } else if (subop == BC_PWM_SYNC) {
+                uint16_t present = rd16(code + pc); pc += 2;
+                dbg_print(" present=0x%04X", (unsigned)present);
+            }
+            dbg_print("\r\n");
+            break;
+        }
+
+        case OP_SERVO: {
+            uint8_t present = code[pc++];
+            dbg_print("  %04X: %-16s present=0x%02X\r\n", start, name, (unsigned)present);
+            break;
+        }
+
         case OP_PLAY_TONE: {
             uint8_t argc = code[pc++];
             dbg_print("  %04X: %-16s argc=%u\r\n", start, name, (unsigned)argc);
+            break;
+        }
+
+        case OP_SYSCALL: {
+            uint16_t sysid = rd16(code + pc); pc += 2;
+            uint8_t argc = code[pc++];
+            uint8_t auxlen = code[pc++];
+            dbg_print("  %04X: %-16s id=%u argc=%u aux=%u\r\n",
+                      start, name, (unsigned)sysid, (unsigned)argc, (unsigned)auxlen);
+            pc += auxlen;
             break;
         }
 

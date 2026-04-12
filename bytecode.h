@@ -229,7 +229,7 @@ typedef enum {
     OP_KEYDOWN        = 0xE6, /* pop int n, push int KEYDOWN(n) */
     OP_PLAY_STOP      = 0xE7, /* — PLAY STOP */
     OP_PLAY_TONE      = 0xE8, /* argc:8 — PLAY TONE left, right[, duration] */
-    OP_SETPIN         = 0xE9, /* mode:16 — pop pin, SETPIN pin, mode */
+    OP_SETPIN         = 0xE9, /* mode:16 option:16 — pop pin, SETPIN pin, mode[, option] */
     OP_PIN_READ       = 0xEA, /* pop pin, push int PIN(pin) */
     OP_PIN_WRITE      = 0xEB, /* pop value, pop pin, PIN(pin)=value */
     OP_FILE           = 0xEC, /* subop:8 — native file syscalls */
@@ -240,6 +240,9 @@ typedef enum {
     OP_TRIANGLE       = 0xF3, /* — native TRIANGLE */
     OP_FONT           = 0xF4, /* argc:8 — FONT [#]n[, scale] */
     OP_POLYGON        = 0xF5, /* — native POLYGON */
+    OP_PWM            = 0xF6, /* subop:8 — native PWM */
+    OP_SERVO          = 0xF7, /* present:8 — native SERVO */
+    OP_SYSCALL        = 0xF8, /* sysid:16 argc:8 auxlen:8 aux... — generic VM syscall/intrinsic */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -261,7 +264,88 @@ typedef enum {
 #define BC_FILE_PRINT_STR     5  /* fn:16, pop string */
 #define BC_FILE_PRINT_NEWLINE 6  /* fn:16 */
 #define BC_FILE_LINE_INPUT    7  /* is_local:8 slot:16 fn:16 */
-#define BC_FILE_FILES         8  /* no operands */
+#define BC_FILE_FILES         8  /* has_pattern:8, pop optional pattern$ */
+#define BC_FILE_DRIVE         9  /* pop drive$ */
+#define BC_FILE_SEEK         10  /* fn:16, pop position */
+#define BC_FILE_MKDIR        11  /* pop path$ */
+#define BC_FILE_CHDIR        12  /* pop path$ */
+#define BC_FILE_RMDIR        13  /* pop path$ */
+#define BC_FILE_KILL         14  /* pop path$ */
+#define BC_FILE_RENAME       15  /* pop new$, pop old$ */
+#define BC_FILE_COPY         16  /* mode:8, pop to$, pop from$ */
+
+/* Native PWM sub-operations for OP_PWM */
+#define BC_PWM_CONFIG         1  /* present:8, pop defer/phase/dutyB/dutyA/freq/slice */
+#define BC_PWM_SYNC           2  /* present:16, pop optional counts[0..11] */
+#define BC_PWM_OFF            3  /* pop slice */
+
+/*
+ * Generic VM syscall/intrinsic ids for OP_SYSCALL.
+ *
+ * Arguments are pushed on the VM stack in source order using the standard VM
+ * expression rules.  OP_SYSCALL carries:
+ *   - syscall id
+ *   - argc (stack arguments consumed by the handler)
+ *   - aux length
+ *   - aux payload bytes (optional metadata such as presence masks, slots, or
+ *     argument-kind descriptors for array/vector forms)
+ *
+ * The generic syscall path is the default ABI. Dedicated opcodes remain
+ * available only for hot primitives where profiling or code-size measurements
+ * justify them.
+ */
+typedef enum {
+    BC_SYS_FASTGFX_CREATE = 1,
+    BC_SYS_FASTGFX_CLOSE,
+    BC_SYS_FASTGFX_SWAP,
+    BC_SYS_FASTGFX_SYNC,
+    BC_SYS_FASTGFX_FPS,
+    BC_SYS_GFX_BOX,
+    BC_SYS_GFX_RGB,
+    BC_SYS_GFX_CIRCLE,
+    BC_SYS_GFX_LINE,
+    BC_SYS_GFX_TEXT,
+    BC_SYS_GFX_CLS,
+    BC_SYS_GFX_PIXEL,
+    BC_SYS_GFX_PIXEL_READ,
+    BC_SYS_GFX_COLOUR,
+    BC_SYS_GFX_FONT,
+    BC_SYS_GFX_RBOX,
+    BC_SYS_GFX_ARC,
+    BC_SYS_GFX_TRIANGLE,
+    BC_SYS_GFX_POLYGON,
+    BC_SYS_MM_HRES,
+    BC_SYS_MM_VRES,
+    BC_SYS_PAUSE,
+    BC_SYS_DATE_STR,
+    BC_SYS_TIME_STR,
+    BC_SYS_KEYDOWN,
+    BC_SYS_PLAY_STOP,
+    BC_SYS_PLAY_TONE,
+    BC_SYS_SETPIN,
+    BC_SYS_PIN_READ,
+    BC_SYS_PIN_WRITE,
+    BC_SYS_PWM_CONFIG,
+    BC_SYS_PWM_SYNC,
+    BC_SYS_PWM_OFF,
+    BC_SYS_SERVO,
+    BC_SYS_FILE_OPEN,
+    BC_SYS_FILE_CLOSE,
+    BC_SYS_FILE_PRINT_INT,
+    BC_SYS_FILE_PRINT_FLT,
+    BC_SYS_FILE_PRINT_STR,
+    BC_SYS_FILE_PRINT_NEWLINE,
+    BC_SYS_FILE_LINE_INPUT,
+    BC_SYS_FILE_FILES,
+    BC_SYS_FILE_DRIVE,
+    BC_SYS_FILE_SEEK,
+    BC_SYS_FILE_MKDIR,
+    BC_SYS_FILE_CHDIR,
+    BC_SYS_FILE_RMDIR,
+    BC_SYS_FILE_KILL,
+    BC_SYS_FILE_RENAME,
+    BC_SYS_FILE_COPY,
+} BCSyscallId;
 
 /* Native BOX argument kinds */
 #define BC_BOX_ARG_COUNT         7

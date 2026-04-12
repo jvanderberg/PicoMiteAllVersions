@@ -21,6 +21,9 @@ static int source_compile_call_args(BCSourceFrontend *fe, BCCompiler *cs, const 
                                     int require_parens);
 static int source_parse_array_indices(BCSourceFrontend *fe, BCCompiler *cs, const char **pp);
 static void source_emit_int_conversion(BCCompiler *cs, uint8_t type);
+static void source_emit_syscall(BCCompiler *cs, uint16_t sysid, uint8_t argc,
+                                const uint8_t *aux, uint8_t auxlen);
+static void source_emit_syscall_noaux(BCCompiler *cs, uint16_t sysid, uint8_t argc);
 
 static void source_skip_space(const char **pp) {
     while (**pp == ' ' || **pp == '\t') (*pp)++;
@@ -225,6 +228,60 @@ static int source_parse_setpin_mode(const char **pp, int *mode) {
         *mode = VM_PIN_MODE_DIN;
     } else if (source_keyword(&p, "DOUT")) {
         *mode = VM_PIN_MODE_DOUT;
+    } else if (source_keyword(&p, "ARAW")) {
+        *mode = VM_PIN_MODE_ARAW;
+    } else if (source_keyword(&p, "PWM0A")) {
+        *mode = VM_PIN_MODE_PWM0A;
+    } else if (source_keyword(&p, "PWM0B")) {
+        *mode = VM_PIN_MODE_PWM0B;
+    } else if (source_keyword(&p, "PWM1A")) {
+        *mode = VM_PIN_MODE_PWM1A;
+    } else if (source_keyword(&p, "PWM1B")) {
+        *mode = VM_PIN_MODE_PWM1B;
+    } else if (source_keyword(&p, "PWM2A")) {
+        *mode = VM_PIN_MODE_PWM2A;
+    } else if (source_keyword(&p, "PWM2B")) {
+        *mode = VM_PIN_MODE_PWM2B;
+    } else if (source_keyword(&p, "PWM3A")) {
+        *mode = VM_PIN_MODE_PWM3A;
+    } else if (source_keyword(&p, "PWM3B")) {
+        *mode = VM_PIN_MODE_PWM3B;
+    } else if (source_keyword(&p, "PWM4A")) {
+        *mode = VM_PIN_MODE_PWM4A;
+    } else if (source_keyword(&p, "PWM4B")) {
+        *mode = VM_PIN_MODE_PWM4B;
+    } else if (source_keyword(&p, "PWM5A")) {
+        *mode = VM_PIN_MODE_PWM5A;
+    } else if (source_keyword(&p, "PWM5B")) {
+        *mode = VM_PIN_MODE_PWM5B;
+    } else if (source_keyword(&p, "PWM6A")) {
+        *mode = VM_PIN_MODE_PWM6A;
+    } else if (source_keyword(&p, "PWM6B")) {
+        *mode = VM_PIN_MODE_PWM6B;
+    } else if (source_keyword(&p, "PWM7A")) {
+        *mode = VM_PIN_MODE_PWM7A;
+    } else if (source_keyword(&p, "PWM7B")) {
+        *mode = VM_PIN_MODE_PWM7B;
+#ifdef rp2350
+    } else if (source_keyword(&p, "PWM8A")) {
+        *mode = VM_PIN_MODE_PWM8A;
+    } else if (source_keyword(&p, "PWM8B")) {
+        *mode = VM_PIN_MODE_PWM8B;
+    } else if (source_keyword(&p, "PWM9A")) {
+        *mode = VM_PIN_MODE_PWM9A;
+    } else if (source_keyword(&p, "PWM9B")) {
+        *mode = VM_PIN_MODE_PWM9B;
+    } else if (source_keyword(&p, "PWM10A")) {
+        *mode = VM_PIN_MODE_PWM10A;
+    } else if (source_keyword(&p, "PWM10B")) {
+        *mode = VM_PIN_MODE_PWM10B;
+    } else if (source_keyword(&p, "PWM11A")) {
+        *mode = VM_PIN_MODE_PWM11A;
+    } else if (source_keyword(&p, "PWM11B")) {
+        *mode = VM_PIN_MODE_PWM11B;
+#endif
+    } else if (source_keyword(&p, "PWM")) {
+        *mode = -1;
     } else if (*p == '0' && !isnamechar((unsigned char)p[1])) {
         *mode = VM_PIN_MODE_OFF;
         p++;
@@ -404,7 +461,10 @@ static uint8_t source_compile_rgb_call(BCSourceFrontend *fe, BCCompiler *cs, con
         *pp = p;
         return 0;
     }
-    bc_emit_byte(cs, OP_RGB);
+    bc_emit_byte(cs, OP_SYSCALL);
+    bc_emit_u16(cs, BC_SYS_GFX_RGB);
+    bc_emit_byte(cs, 3);
+    bc_emit_byte(cs, 0);
     *pp = p + 1;
     return T_INT;
 }
@@ -516,13 +576,13 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
     {
         const char *q = p;
         if (source_keyword(&q, "MM.HRES")) {
-            bc_emit_byte(cs, OP_MM_HRES);
+            source_emit_syscall_noaux(cs, BC_SYS_MM_HRES, 0);
             *pp = q;
             return T_INT;
         }
         q = p;
         if (source_keyword(&q, "MM.VRES")) {
-            bc_emit_byte(cs, OP_MM_VRES);
+            source_emit_syscall_noaux(cs, BC_SYS_MM_VRES, 0);
             *pp = q;
             return T_INT;
         }
@@ -539,9 +599,9 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         q++;
         source_skip_space(&q);
         if (source_keyword(&q, "HRES")) {
-            bc_emit_byte(cs, OP_MM_HRES);
+            source_emit_syscall_noaux(cs, BC_SYS_MM_HRES, 0);
         } else if (source_keyword(&q, "VRES")) {
-            bc_emit_byte(cs, OP_MM_VRES);
+            source_emit_syscall_noaux(cs, BC_SYS_MM_VRES, 0);
         } else {
             bc_set_error(cs, "Unsupported VM function: MM.INFO");
             *pp = q;
@@ -641,13 +701,13 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
 
         if (source_name_eq(name, name_len, "DATE$")) {
-            bc_emit_byte(cs, OP_STR_DATE);
+            source_emit_syscall_noaux(cs, BC_SYS_DATE_STR, 0);
             *pp = p;
             return T_STR;
         }
 
         if (source_name_eq(name, name_len, "TIME$")) {
-            bc_emit_byte(cs, OP_STR_TIME);
+            source_emit_syscall_noaux(cs, BC_SYS_TIME_STR, 0);
             *pp = p;
             return T_STR;
         }
@@ -831,7 +891,7 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             source_skip_space(&p);
             if (*p != ')') bc_set_error(cs, "Expected ')' after KEYDOWN");
             else p++;
-            bc_emit_byte(cs, OP_KEYDOWN);
+            source_emit_syscall_noaux(cs, BC_SYS_KEYDOWN, 1);
             *pp = p;
             return T_INT;
         }
@@ -840,7 +900,7 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             p = after_name + 1;
             source_compile_pin_operand(fe, cs, &p);
             if (!source_expect_char(cs, &p, ')', "Expected ')' after PIN")) return 0;
-            bc_emit_byte(cs, OP_PIN_READ);
+            source_emit_syscall_noaux(cs, BC_SYS_PIN_READ, 1);
             *pp = p;
             return T_INT;
         }
@@ -853,7 +913,7 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             uint8_t y_type = source_parse_expression(fe, cs, &p);
             source_emit_int_conversion(cs, y_type);
             if (!source_expect_char(cs, &p, ')', "Expected ')' after PIXEL")) return 0;
-            bc_emit_byte(cs, OP_PIXEL_READ);
+            source_emit_syscall_noaux(cs, BC_SYS_GFX_PIXEL_READ, 2);
             *pp = p;
             return T_INT;
         }
@@ -1652,20 +1712,21 @@ static int source_parse_file_number(BCCompiler *cs, const char **pp, int *fnbr) 
 static void source_emit_file_print_expr(BCSourceFrontend *fe, BCCompiler *cs,
                                         const char **pp, int fnbr) {
     uint8_t type = source_parse_expression(fe, cs, pp);
-    uint8_t subop;
+    uint16_t sysid;
+    uint8_t aux[2];
 
     if (cs->has_error) return;
     switch (type & (T_INT | T_NBR | T_STR)) {
-        case T_INT: subop = BC_FILE_PRINT_INT; break;
-        case T_NBR: subop = BC_FILE_PRINT_FLT; break;
-        case T_STR: subop = BC_FILE_PRINT_STR; break;
+        case T_INT: sysid = BC_SYS_FILE_PRINT_INT; break;
+        case T_NBR: sysid = BC_SYS_FILE_PRINT_FLT; break;
+        case T_STR: sysid = BC_SYS_FILE_PRINT_STR; break;
         default:
             bc_set_error(cs, "Invalid PRINT # expression");
             return;
     }
-    bc_emit_byte(cs, OP_FILE);
-    bc_emit_byte(cs, subop);
-    bc_emit_u16(cs, (uint16_t)fnbr);
+    aux[0] = (uint8_t)(fnbr & 0xFF);
+    aux[1] = (uint8_t)(fnbr >> 8);
+    source_emit_syscall(cs, sysid, 1, aux, 2);
 }
 
 static void source_compile_file_print(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
@@ -1692,9 +1753,10 @@ static void source_compile_file_print(BCSourceFrontend *fe, BCCompiler *cs, cons
             uint16_t tab = bc_add_constant_string(cs, (const uint8_t *)"\t", 1);
             bc_emit_byte(cs, OP_PUSH_STR);
             bc_emit_u16(cs, tab);
-            bc_emit_byte(cs, OP_FILE);
-            bc_emit_byte(cs, BC_FILE_PRINT_STR);
-            bc_emit_u16(cs, (uint16_t)fnbr);
+            {
+                uint8_t aux[2] = {(uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+                source_emit_syscall(cs, BC_SYS_FILE_PRINT_STR, 1, aux, 2);
+            }
             suppress_newline = 1;
             p++;
             continue;
@@ -1712,9 +1774,8 @@ static void source_compile_file_print(BCSourceFrontend *fe, BCCompiler *cs, cons
     }
 
     if (!suppress_newline) {
-        bc_emit_byte(cs, OP_FILE);
-        bc_emit_byte(cs, BC_FILE_PRINT_NEWLINE);
-        bc_emit_u16(cs, (uint16_t)fnbr);
+        uint8_t aux[2] = {(uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+        source_emit_syscall(cs, BC_SYS_FILE_PRINT_NEWLINE, 0, aux, 2);
     }
     *pp = p;
 }
@@ -2517,29 +2578,29 @@ static void source_compile_fastgfx(BCSourceFrontend *fe, BCCompiler *cs, const c
     source_skip_space(&p);
 
     if (source_keyword(&p, "CREATE")) {
-        bc_emit_byte(cs, OP_FASTGFX_CREATE);
+        source_emit_syscall_noaux(cs, BC_SYS_FASTGFX_CREATE, 0);
         *pp = p;
         return;
     }
     if (source_keyword(&p, "CLOSE")) {
-        bc_emit_byte(cs, OP_FASTGFX_CLOSE);
+        source_emit_syscall_noaux(cs, BC_SYS_FASTGFX_CLOSE, 0);
         *pp = p;
         return;
     }
     if (source_keyword(&p, "SWAP")) {
-        bc_emit_byte(cs, OP_FASTGFX_SWAP);
+        source_emit_syscall_noaux(cs, BC_SYS_FASTGFX_SWAP, 0);
         *pp = p;
         return;
     }
     if (source_keyword(&p, "SYNC")) {
-        bc_emit_byte(cs, OP_FASTGFX_SYNC);
+        source_emit_syscall_noaux(cs, BC_SYS_FASTGFX_SYNC, 0);
         *pp = p;
         return;
     }
     if (source_keyword(&p, "FPS")) {
         uint8_t type = source_parse_expression(fe, cs, &p);
         source_emit_int_conversion(cs, type);
-        bc_emit_byte(cs, OP_FASTGFX_FPS);
+        source_emit_syscall_noaux(cs, BC_SYS_FASTGFX_FPS, 1);
         *pp = p;
         return;
     }
@@ -2553,7 +2614,7 @@ static void source_compile_play(BCSourceFrontend *fe, BCCompiler *cs, const char
     source_skip_space(&p);
 
     if (source_keyword(&p, "STOP")) {
-        bc_emit_byte(cs, OP_PLAY_STOP);
+        source_emit_syscall_noaux(cs, BC_SYS_PLAY_STOP, 0);
         *pp = p;
         return;
     }
@@ -2578,8 +2639,7 @@ static void source_compile_play(BCSourceFrontend *fe, BCCompiler *cs, const char
             argc = 3;
         }
 
-        bc_emit_byte(cs, OP_PLAY_TONE);
-        bc_emit_byte(cs, argc);
+        source_emit_syscall_noaux(cs, BC_SYS_PLAY_TONE, argc);
         *pp = p;
         return;
     }
@@ -2588,9 +2648,116 @@ static void source_compile_play(BCSourceFrontend *fe, BCCompiler *cs, const char
     *pp = p;
 }
 
+static void source_compile_pwm(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    source_skip_space(&p);
+
+    if (source_keyword(&p, "SYNC")) {
+        uint16_t present = 0;
+        for (int i = 0; i < 12; i++) {
+            source_skip_space(&p);
+            if (*p != ',' && *p != '\0' && *p != '\'') {
+                uint8_t type = source_parse_expression(fe, cs, &p);
+                source_emit_float_conversion(cs, type);
+                present |= (uint16_t)(1u << i);
+            }
+            source_skip_space(&p);
+            if (*p == ',') {
+                p++;
+                continue;
+            }
+            break;
+        }
+        {
+            uint8_t aux[2] = {(uint8_t)(present & 0xFF), (uint8_t)(present >> 8)};
+            source_emit_syscall(cs, BC_SYS_PWM_SYNC, (uint8_t)__builtin_popcount((unsigned)present), aux, 2);
+        }
+        *pp = p;
+        return;
+    }
+
+    {
+        uint8_t type = source_parse_expression(fe, cs, &p);
+        uint8_t present = 0;
+        source_emit_int_conversion(cs, type);
+        if (!source_expect_char(cs, &p, ',', "Expected comma in PWM")) {
+            *pp = p;
+            return;
+        }
+        source_skip_space(&p);
+        if (source_keyword(&p, "OFF")) {
+            source_emit_syscall_noaux(cs, BC_SYS_PWM_OFF, 1);
+            *pp = p;
+            return;
+        }
+
+        type = source_parse_expression(fe, cs, &p);
+        source_emit_float_conversion(cs, type);
+        if (!source_expect_char(cs, &p, ',', "Expected duty cycle after PWM frequency")) {
+            *pp = p;
+            return;
+        }
+        for (int slot = 0; slot < 4; slot++) {
+            source_skip_space(&p);
+            if (*p != ',' && *p != '\0' && *p != '\'') {
+                type = source_parse_expression(fe, cs, &p);
+                if (slot < 2)
+                    source_emit_float_conversion(cs, type);
+                else
+                    source_emit_int_conversion(cs, type);
+                present |= (uint8_t)(1u << slot);
+            }
+            source_skip_space(&p);
+            if (slot == 3 || *p != ',')
+                break;
+            p++;
+        }
+        source_emit_syscall(cs, BC_SYS_PWM_CONFIG, (uint8_t)(2 + ((present & 0x01) ? 1 : 0) +
+                                                             ((present & 0x02) ? 1 : 0) +
+                                                             ((present & 0x04) ? 1 : 0) +
+                                                             ((present & 0x08) ? 1 : 0)),
+                            &present, 1);
+        *pp = p;
+    }
+}
+
+static void source_compile_servo(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    uint8_t present = 0;
+    uint8_t type = source_parse_expression(fe, cs, &p);
+    source_emit_int_conversion(cs, type);
+    if (!source_expect_char(cs, &p, ',', "Expected comma in SERVO")) {
+        *pp = p;
+        return;
+    }
+    source_skip_space(&p);
+    if (source_keyword(&p, "OFF")) {
+        source_emit_syscall_noaux(cs, BC_SYS_PWM_OFF, 1);
+        *pp = p;
+        return;
+    }
+    for (int slot = 0; slot < 2; slot++) {
+        source_skip_space(&p);
+        if (*p != ',' && *p != '\0' && *p != '\'') {
+            type = source_parse_expression(fe, cs, &p);
+            source_emit_float_conversion(cs, type);
+            present |= (uint8_t)(1u << slot);
+        }
+        source_skip_space(&p);
+        if (slot == 1 || *p != ',')
+            break;
+        p++;
+    }
+    source_emit_syscall(cs, BC_SYS_SERVO, (uint8_t)(1 + ((present & 0x01) ? 1 : 0) +
+                                                   ((present & 0x02) ? 1 : 0)),
+                        &present, 1);
+    *pp = p;
+}
+
 static void source_compile_setpin(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
     int mode = 0;
+    int option = VM_PIN_OPT_NONE;
 
     source_compile_pin_operand(fe, cs, &p);
     if (cs->has_error) {
@@ -2607,8 +2774,29 @@ static void source_compile_setpin(BCSourceFrontend *fe, BCCompiler *cs, const ch
         return;
     }
 
-    bc_emit_byte(cs, OP_SETPIN);
-    bc_emit_u16(cs, (uint16_t)mode);
+    source_skip_space(&p);
+    if (*p == ',') {
+        p++;
+        source_skip_space(&p);
+        if (source_keyword(&p, "PULLUP")) {
+            option = VM_PIN_OPT_PULLUP;
+        } else if (source_keyword(&p, "PULLDOWN")) {
+            option = VM_PIN_OPT_PULLDOWN;
+        } else {
+            bc_set_error(cs, "Unsupported SETPIN option");
+            *pp = p;
+            return;
+        }
+    }
+
+    {
+        uint8_t aux[4];
+        aux[0] = (uint8_t)(mode & 0xFF);
+        aux[1] = (uint8_t)(((uint16_t)mode >> 8) & 0xFF);
+        aux[2] = (uint8_t)(option & 0xFF);
+        aux[3] = (uint8_t)(((uint16_t)option >> 8) & 0xFF);
+        source_emit_syscall(cs, BC_SYS_SETPIN, 1, aux, 4);
+    }
     *pp = p;
 }
 
@@ -2659,10 +2847,10 @@ static void source_compile_open(BCSourceFrontend *fe, BCCompiler *cs, const char
         return;
     }
 
-    bc_emit_byte(cs, OP_FILE);
-    bc_emit_byte(cs, BC_FILE_OPEN);
-    bc_emit_byte(cs, (uint8_t)mode);
-    bc_emit_u16(cs, (uint16_t)fnbr);
+    {
+        uint8_t aux[3] = {(uint8_t)mode, (uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+        source_emit_syscall(cs, BC_SYS_FILE_OPEN, 1, aux, 3);
+    }
     *pp = p;
 }
 
@@ -2675,15 +2863,137 @@ static void source_compile_close(BCCompiler *cs, const char **pp) {
             *pp = p;
             return;
         }
-        bc_emit_byte(cs, OP_FILE);
-        bc_emit_byte(cs, BC_FILE_CLOSE);
-        bc_emit_u16(cs, (uint16_t)fnbr);
+        {
+            uint8_t aux[2] = {(uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+            source_emit_syscall(cs, BC_SYS_FILE_CLOSE, 0, aux, 2);
+        }
 
         source_skip_space(&p);
         if (*p != ',') break;
         p++;
     }
 
+    *pp = p;
+}
+
+static int source_parse_string_expression(BCSourceFrontend *fe, BCCompiler *cs, const char **pp,
+                                          const char *msg) {
+    uint8_t type = source_parse_expression(fe, cs, pp);
+    if (cs->has_error) return 0;
+    if (type != T_STR) {
+        bc_set_error(cs, "%s", msg);
+        return 0;
+    }
+    return 1;
+}
+
+static void source_compile_drive(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    if (!source_parse_string_expression(fe, cs, &p, "DRIVE requires string argument")) {
+        *pp = p;
+        return;
+    }
+    source_emit_syscall_noaux(cs, BC_SYS_FILE_DRIVE, 1);
+    *pp = p;
+}
+
+static void source_compile_seek(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    int fnbr = 0;
+    uint8_t type;
+
+    if (!source_parse_file_number(cs, &p, &fnbr)) {
+        *pp = p;
+        return;
+    }
+    if (!source_expect_char(cs, &p, ',', "Expected ',' in SEEK")) {
+        *pp = p;
+        return;
+    }
+    type = source_parse_expression(fe, cs, &p);
+    source_emit_int_conversion(cs, type);
+    {
+        uint8_t aux[2] = {(uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+        source_emit_syscall(cs, BC_SYS_FILE_SEEK, 1, aux, 2);
+    }
+    *pp = p;
+}
+
+static void source_compile_file_path_command(BCSourceFrontend *fe, BCCompiler *cs, const char **pp,
+                                             uint16_t sysid, const char *msg) {
+    const char *p = *pp;
+    if (!source_parse_string_expression(fe, cs, &p, msg)) {
+        *pp = p;
+        return;
+    }
+    source_emit_syscall_noaux(cs, sysid, 1);
+    *pp = p;
+}
+
+static void source_compile_rename(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    if (!source_parse_string_expression(fe, cs, &p, "RENAME requires string source")) {
+        *pp = p;
+        return;
+    }
+    source_skip_space(&p);
+    if (!source_keyword(&p, "AS")) {
+        bc_set_error(cs, "Expected AS in RENAME");
+        *pp = p;
+        return;
+    }
+    if (!source_parse_string_expression(fe, cs, &p, "RENAME requires string destination")) {
+        *pp = p;
+        return;
+    }
+    source_emit_syscall_noaux(cs, BC_SYS_FILE_RENAME, 2);
+    *pp = p;
+}
+
+static void source_compile_copy(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    uint8_t mode = 0;
+
+    source_skip_space(&p);
+    if (source_keyword(&p, "A2A")) mode = 1;
+    else if (source_keyword(&p, "A2B")) mode = 2;
+    else if (source_keyword(&p, "B2A")) mode = 3;
+    else if (source_keyword(&p, "B2B")) mode = 4;
+
+    if (!source_parse_string_expression(fe, cs, &p, "COPY requires string source")) {
+        *pp = p;
+        return;
+    }
+    source_skip_space(&p);
+    if (!source_keyword(&p, "TO")) {
+        bc_set_error(cs, "Expected TO in COPY");
+        *pp = p;
+        return;
+    }
+    if (!source_parse_string_expression(fe, cs, &p, "COPY requires string destination")) {
+        *pp = p;
+        return;
+    }
+    source_emit_syscall(cs, BC_SYS_FILE_COPY, 2, &mode, 1);
+    *pp = p;
+}
+
+static void source_compile_files(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    int has_pattern = 0;
+
+    source_skip_space(&p);
+    if (*p != '\0' && *p != '\'') {
+        has_pattern = 1;
+        if (!source_parse_string_expression(fe, cs, &p, "FILES requires string pattern")) {
+            *pp = p;
+            return;
+        }
+    }
+    {
+        uint8_t aux = (uint8_t)has_pattern;
+        source_emit_syscall(cs, BC_SYS_FILE_FILES, (uint8_t)has_pattern, &aux, 1);
+    }
     *pp = p;
 }
 
@@ -2724,11 +3034,12 @@ static void source_compile_line_input(BCSourceFrontend *fe, BCCompiler *cs, cons
     }
 
     slot = source_resolve_var(cs, name, name_len, vtype, 1, &is_local);
-    bc_emit_byte(cs, OP_FILE);
-    bc_emit_byte(cs, BC_FILE_LINE_INPUT);
-    bc_emit_byte(cs, (uint8_t)is_local);
-    bc_emit_u16(cs, slot);
-    bc_emit_u16(cs, (uint16_t)fnbr);
+    {
+        uint8_t aux[5] = {(uint8_t)is_local,
+                          (uint8_t)(slot & 0xFF), (uint8_t)(slot >> 8),
+                          (uint8_t)(fnbr & 0xFF), (uint8_t)(fnbr >> 8)};
+        source_emit_syscall(cs, BC_SYS_FILE_LINE_INPUT, 0, aux, 5);
+    }
     *pp = p;
 }
 
@@ -2837,23 +3148,51 @@ static int source_try_parse_gfx_array_ref(BCCompiler *cs, SourceGfxArg *arg,
     return 1;
 }
 
-static void source_emit_gfx_native(BCCompiler *cs, uint8_t opcode, int max_args,
-                                   int field_count, SourceGfxArg *args) {
-    bc_emit_byte(cs, opcode);
-    bc_emit_byte(cs, (uint8_t)field_count);
+static void source_emit_syscall(BCCompiler *cs, uint16_t sysid, uint8_t argc,
+                                const uint8_t *aux, uint8_t auxlen) {
+    bc_emit_byte(cs, OP_SYSCALL);
+    bc_emit_u16(cs, sysid);
+    bc_emit_byte(cs, argc);
+    bc_emit_byte(cs, auxlen);
+    for (uint8_t i = 0; i < auxlen; i++) {
+        bc_emit_byte(cs, aux[i]);
+    }
+}
+
+static void source_emit_syscall_noaux(BCCompiler *cs, uint16_t sysid, uint8_t argc) {
+    source_emit_syscall(cs, sysid, argc, NULL, 0);
+}
+
+static uint8_t source_gfx_stack_argc(int max_args, SourceGfxArg *args) {
+    uint8_t argc = 0;
     for (int i = 0; i < max_args; i++) {
-        bc_emit_byte(cs, args[i].kind);
+        if (args[i].kind == BC_BOX_ARG_STACK) argc++;
+    }
+    return argc;
+}
+
+static void source_emit_gfx_native(BCCompiler *cs, uint16_t sysid, int max_args,
+                                   int field_count, SourceGfxArg *args) {
+    uint8_t argc = source_gfx_stack_argc(max_args, args);
+    uint8_t aux[1 + BC_TEXT_ARG_COUNT * 3];
+    int auxlen = 0;
+
+    aux[auxlen++] = (uint8_t)field_count;
+    for (int i = 0; i < max_args; i++) {
+        aux[auxlen++] = args[i].kind;
         if (args[i].kind == BC_BOX_ARG_GLOBAL_ARR_I ||
             args[i].kind == BC_BOX_ARG_GLOBAL_ARR_F ||
             args[i].kind == BC_BOX_ARG_LOCAL_ARR_I ||
             args[i].kind == BC_BOX_ARG_LOCAL_ARR_F) {
-            bc_emit_u16(cs, args[i].slot);
+            aux[auxlen++] = (uint8_t)(args[i].slot & 0xFF);
+            aux[auxlen++] = (uint8_t)(args[i].slot >> 8);
         }
     }
+    source_emit_syscall(cs, sysid, argc, aux, (uint8_t)auxlen);
 }
 
 static void source_compile_gfx_args(BCSourceFrontend *fe, BCCompiler *cs, const char **pp,
-                                    const char *cmd_name, uint8_t opcode,
+                                    const char *cmd_name, uint16_t sysid,
                                     int min_args, int max_args, int text_mode) {
     SourceGfxArg args[BC_TEXT_ARG_COUNT];
     const char *p = *pp;
@@ -2929,7 +3268,7 @@ static void source_compile_gfx_args(BCSourceFrontend *fe, BCCompiler *cs, const 
         *pp = p;
         return;
     }
-    source_emit_gfx_native(cs, opcode, max_args, field_count, args);
+    source_emit_gfx_native(cs, sysid, max_args, field_count, args);
     *pp = p;
 }
 
@@ -3002,7 +3341,7 @@ static void source_compile_polygon(BCSourceFrontend *fe, BCCompiler *cs, const c
         *pp = p;
         return;
     }
-    source_emit_gfx_native(cs, OP_POLYGON, BC_POLYGON_ARG_COUNT, field_count, args);
+    source_emit_gfx_native(cs, BC_SYS_GFX_POLYGON, BC_POLYGON_ARG_COUNT, field_count, args);
     *pp = p;
 }
 
@@ -3016,8 +3355,10 @@ static void source_compile_cls(BCSourceFrontend *fe, BCCompiler *cs, const char 
             bc_set_error(cs, "CLS requires numeric arguments");
         has_arg = 1;
     }
-    bc_emit_byte(cs, OP_CLS);
-    bc_emit_byte(cs, (uint8_t)has_arg);
+    {
+        uint8_t aux = (uint8_t)has_arg;
+        source_emit_syscall(cs, BC_SYS_GFX_CLS, (uint8_t)has_arg, &aux, 1);
+    }
     *pp = p;
 }
 
@@ -3405,6 +3746,18 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
+    if (source_keyword(&p, "PWM")) {
+        source_compile_pwm(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "SERVO")) {
+        source_compile_servo(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
     if (source_keyword(&p, "ERROR")) {
         source_skip_space(&p);
         if (*p == '\0' || *p == '\'') {
@@ -3424,6 +3777,12 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
+    if (source_keyword(&p, "DRIVE")) {
+        source_compile_drive(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
     if (source_keyword(&p, "CLOSE")) {
         source_compile_close(cs, &p);
         source_statement_end(cs, p);
@@ -3431,8 +3790,49 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
     }
 
     if (source_keyword(&p, "FILES")) {
-        bc_emit_byte(cs, OP_FILE);
-        bc_emit_byte(cs, BC_FILE_FILES);
+        source_compile_files(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "SEEK")) {
+        source_compile_seek(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "MKDIR")) {
+        source_compile_file_path_command(fe, cs, &p, BC_SYS_FILE_MKDIR, "MKDIR requires string path");
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "CHDIR")) {
+        source_compile_file_path_command(fe, cs, &p, BC_SYS_FILE_CHDIR, "CHDIR requires string path");
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "RMDIR")) {
+        source_compile_file_path_command(fe, cs, &p, BC_SYS_FILE_RMDIR, "RMDIR requires string path");
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "KILL")) {
+        source_compile_file_path_command(fe, cs, &p, BC_SYS_FILE_KILL, "KILL requires string path");
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "RENAME")) {
+        source_compile_rename(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "COPY")) {
+        source_compile_copy(fe, cs, &p);
         source_statement_end(cs, p);
         return;
     }
@@ -3467,8 +3867,7 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
             }
             argc = 2;
         }
-        bc_emit_byte(cs, OP_COLOUR);
-        bc_emit_byte(cs, (uint8_t)argc);
+        source_emit_syscall_noaux(cs, BC_SYS_GFX_COLOUR, (uint8_t)argc);
         source_statement_end(cs, p);
         return;
     }
@@ -3498,35 +3897,34 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
             }
             argc = 2;
         }
-        bc_emit_byte(cs, OP_FONT);
-        bc_emit_byte(cs, (uint8_t)argc);
+        source_emit_syscall_noaux(cs, BC_SYS_GFX_FONT, (uint8_t)argc);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "BOX")) {
-        source_compile_gfx_args(fe, cs, &p, "BOX", OP_BOX,
+        source_compile_gfx_args(fe, cs, &p, "BOX", BC_SYS_GFX_BOX,
                                 4, BC_BOX_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "RBOX")) {
-        source_compile_gfx_args(fe, cs, &p, "RBOX", OP_RBOX,
+        source_compile_gfx_args(fe, cs, &p, "RBOX", BC_SYS_GFX_RBOX,
                                 4, BC_BOX_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "ARC")) {
-        source_compile_gfx_args(fe, cs, &p, "ARC", OP_ARC,
+        source_compile_gfx_args(fe, cs, &p, "ARC", BC_SYS_GFX_ARC,
                                 6, BC_BOX_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "TRIANGLE")) {
-        source_compile_gfx_args(fe, cs, &p, "TRIANGLE", OP_TRIANGLE,
+        source_compile_gfx_args(fe, cs, &p, "TRIANGLE", BC_SYS_GFX_TRIANGLE,
                                 6, BC_TRIANGLE_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
@@ -3539,7 +3937,7 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
     }
 
     if (source_keyword(&p, "CIRCLE")) {
-        source_compile_gfx_args(fe, cs, &p, "CIRCLE", OP_CIRCLE,
+        source_compile_gfx_args(fe, cs, &p, "CIRCLE", BC_SYS_GFX_CIRCLE,
                                 3, BC_BOX_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
@@ -3560,21 +3958,21 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
     }
 
     if (source_keyword(&p, "LINE")) {
-        source_compile_gfx_args(fe, cs, &p, "LINE", OP_DRAW_LINE,
+        source_compile_gfx_args(fe, cs, &p, "LINE", BC_SYS_GFX_LINE,
                                 2, BC_LINE_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "PIXEL")) {
-        source_compile_gfx_args(fe, cs, &p, "PIXEL", OP_PIXEL,
+        source_compile_gfx_args(fe, cs, &p, "PIXEL", BC_SYS_GFX_PIXEL,
                                 2, BC_PIXEL_ARG_COUNT, 0);
         source_statement_end(cs, p);
         return;
     }
 
     if (source_keyword(&p, "TEXT")) {
-        source_compile_gfx_args(fe, cs, &p, "TEXT", OP_TEXT,
+        source_compile_gfx_args(fe, cs, &p, "TEXT", BC_SYS_GFX_TEXT,
                                 3, BC_TEXT_ARG_COUNT, 1);
         source_statement_end(cs, p);
         return;

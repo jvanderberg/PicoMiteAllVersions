@@ -10,6 +10,8 @@
 #include "Hardware_Includes.h"
 #include "bytecode.h"
 #include "gfx_pixel_shared.h"
+#include "vm_sys_pin.h"
+#include "vm_sys_file.h"
 #include "vm_host_fat.h"
 #include "font1.h"
 #include <ctype.h>
@@ -29,6 +31,7 @@ static void host_runtime_check_timeout(void);
 static int host_parse_escaped_char(const char **src);
 static void host_getargaddress(unsigned char *p, long long int **ip, MMFLOAT **fp, int *n);
 static int host_keys_ready(void);
+static int host_parse_pin_arg(unsigned char *arg);
 
 typedef struct {
     unsigned char *expr;
@@ -918,9 +921,31 @@ void cmd_box(void) {
         DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
     }
 }
+static void host_cmd_single_path(void (*fn)(const char *), const char *msg) {
+    char *path = (char *)getFstring(cmdline);
+    if (!path || !*path) error((char *)msg);
+    fn(path);
+}
+
+static int host_file_copy_mode_from_string(unsigned char *mode_text) {
+    if (str_equal(mode_text, (const unsigned char *)"A2A")) return 1;
+    if (str_equal(mode_text, (const unsigned char *)"A2B")) return 2;
+    if (str_equal(mode_text, (const unsigned char *)"B2A")) return 3;
+    if (str_equal(mode_text, (const unsigned char *)"B2B")) return 4;
+    return 0;
+}
+
+static int host_parse_pin_arg(unsigned char *arg) {
+    unsigned char *p = arg;
+    skipspace(p);
+    if ((p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p'))
+        return codemap(getinteger(p + 2));
+    return getinteger(p);
+}
+
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
-void cmd_chdir(void) {}
+void cmd_chdir(void) { host_cmd_single_path(vm_sys_file_chdir, "File name"); }
 void cmd_circle(void) {
     int x, y, r, w = 1, c = gui_fcolour, f = -1;
     MMFLOAT a = 1.0;
@@ -957,13 +982,34 @@ void cmd_cls(void) {
 }
 void cmd_colour(void) {}
 void cmd_configure(void) {}
-void cmd_copy(void) {}
+void cmd_copy(void) {
+    char split[2];
+    int mode = 0;
+    char *from_name;
+    char *to_name;
+    unsigned char *p = cmdline;
+
+    split[0] = tokenTO;
+    split[1] = 0;
+    if ((checkstring(p, (unsigned char *)"A2A")) || (checkstring(p, (unsigned char *)"A2B")) ||
+        (checkstring(p, (unsigned char *)"B2A")) || (checkstring(p, (unsigned char *)"B2B"))) {
+        unsigned char mode_buf[8] = {0};
+        int i = 0;
+        while (*p && !isspace(*p) && i < (int)sizeof(mode_buf) - 1) mode_buf[i++] = *p++;
+        mode = host_file_copy_mode_from_string(mode_buf);
+    }
+    getargs(&p, 3, (unsigned char *)split);
+    if (argc != 3) error("Syntax");
+    from_name = (char *)getFstring(argv[0]);
+    to_name = (char *)getFstring(argv[2]);
+    vm_sys_file_copy(from_name, to_name, mode);
+}
 void cmd_cpu(void) {}
 void cmd_csubinterrupt(void) {}
 void cmd_date(void) {}
 void cmd_device(void) {}
 void cmd_DHT22(void) {}
-void cmd_disk(void) {}
+void cmd_disk(void) { host_cmd_single_path(vm_sys_file_drive, "Invalid disk"); }
 void cmd_ds18b20(void) {}
 void cmd_edit(void) {}
 void cmd_editfile(void) {}
@@ -1030,7 +1076,11 @@ void cmd_fastgfx(void) {
 
     error("Syntax");
 }
-void cmd_files(void) {}
+void cmd_files(void) {
+    char *pattern = NULL;
+    if (cmdline && *cmdline) pattern = (char *)getFstring(cmdline);
+    vm_sys_file_files(pattern);
+}
 void cmd_flash(void) {}
 void cmd_flush(void) {}
 void cmd_font(void) {
@@ -1057,7 +1107,7 @@ void cmd_irqset(void) {}
 void cmd_irqwait(void) {}
 void cmd_jmp(void) {}
 void cmd_keypad(void) {}
-void cmd_kill(void) {}
+void cmd_kill(void) { host_cmd_single_path(vm_sys_file_kill, "File name"); }
 void cmd_label(void) {}
 void cmd_lcd(void) {}
 void cmd_library(void) {}
@@ -1078,10 +1128,21 @@ void cmd_line(void) {
 }
 void cmd_load(void) {}
 void cmd_longString(void) {}
-void cmd_mkdir(void) {}
+void cmd_mkdir(void) { host_cmd_single_path(vm_sys_file_mkdir, "File name"); }
 void cmd_mouse(void) {}
 void cmd_mov(void) {}
-void cmd_name(void) {}
+void cmd_name(void) {
+    char split[2];
+    char *old_name;
+    char *new_name;
+    split[0] = tokenAS;
+    split[1] = 0;
+    getargs(&cmdline, 3, (unsigned char *)split);
+    if (argc != 3) error("Syntax");
+    old_name = (char *)getFstring(argv[0]);
+    new_name = (char *)getFstring(argv[2]);
+    vm_sys_file_rename(old_name, new_name);
+}
 void cmd_nop(void) {}
 void cmd_Nunchuck(void) {}
 void cmd_onewire(void) {}
@@ -1473,16 +1534,179 @@ void cmd_program(void) {}
 void cmd_pull(void) {}
 void cmd_pulse(void) {}
 void cmd_push(void) {}
-void cmd_pwm(void) {}
+void cmd_pwm(void) {
+    unsigned char *tp;
+    if ((tp = checkstring(cmdline, (unsigned char *)"SYNC"))) {
+        MMFLOAT counts[12];
+        uint16_t present = 0;
+        int i;
+        for (i = 0; i < 12; i++) counts[i] = -1.0;
+#ifdef rp2350
+        getargs(&tp, 23, (unsigned char *)",");
+#else
+        getargs(&tp, 15, (unsigned char *)",");
+#endif
+        for (i = 0; i < argc / 2 + 1 && i < 12; i++) {
+            if (i * 2 < argc && *argv[i * 2]) {
+                counts[i] = getnumber(argv[i * 2]);
+                if ((counts[i] < 0.0 || counts[i] > 100.0) && counts[i] != -1.0)
+                    error("Syntax");
+                present |= (uint16_t)(1u << i);
+            }
+        }
+        vm_sys_pwm_sync(present, counts);
+        return;
+    }
+
+    getargs(&cmdline, 11, (unsigned char *)",");
+    if (argc < 3) error("Syntax");
+    {
+        int slice = getint(argv[0], 0, 11);
+        int phase = 0;
+        int defer = 0;
+        int has_duty1 = 0, has_duty2 = 0;
+        MMFLOAT frequency, duty1 = 0, duty2 = 0;
+        if (checkstring(argv[2], (unsigned char *)"OFF")) {
+            vm_sys_pwm_off(slice);
+            return;
+        }
+        if (argc < 5) error("Syntax");
+        frequency = getnumber(argv[2]);
+        if (*argv[4]) {
+            duty1 = getnumber(argv[4]);
+            has_duty1 = 1;
+        }
+        if (argc >= 7 && *argv[6]) {
+            duty2 = getnumber(argv[6]);
+            has_duty2 = 1;
+        }
+        if (argc >= 9 && *argv[8]) phase = getint(argv[8], 0, 1);
+        if (argc == 11 && *argv[10]) defer = getint(argv[10], 0, 1);
+        vm_sys_pwm_configure(slice, frequency, has_duty1, duty1, has_duty2, duty2, phase, defer);
+    }
+}
 void cmd_rbox(void) {}
 void cmd_refresh(void) {}
-void cmd_rmdir(void) {}
+void cmd_rmdir(void) { host_cmd_single_path(vm_sys_file_rmdir, "File name"); }
 void cmd_rtc(void) {}
 void cmd_save(void) {}
-void cmd_seek(void) {}
-void cmd_Servo(void) {}
+void cmd_seek(void) {
+    int fnbr;
+    int pos;
+    getargs(&cmdline, 5, (unsigned char *)",");
+    if (argc != 3) error("Syntax");
+    if (*argv[0] == '#') argv[0]++;
+    fnbr = getint(argv[0], 1, MAXOPENFILES);
+    pos = getinteger(argv[2]);
+    if (FileTable[fnbr].com == 0) error("File number is not open");
+    if (pos < 1) pos = 1;
+    if (f_lseek(FileTable[fnbr].fptr, (FSIZE_t)(pos - 1)) != FR_OK) error("File error");
+}
+void cmd_Servo(void) {
+    getargs(&cmdline, 5, (unsigned char *)",");
+    if (argc < 3) error("Syntax");
+    {
+        int slice = getint(argv[0], 0, 11);
+        int has_pos1 = 0, has_pos2 = 0;
+        MMFLOAT pos1 = 0, pos2 = 0;
+        if (checkstring(argv[2], (unsigned char *)"OFF")) {
+            vm_sys_pwm_off(slice);
+            return;
+        }
+        if (*argv[2]) {
+            pos1 = getnumber(argv[2]);
+            has_pos1 = 1;
+        }
+        if (argc >= 5 && *argv[4]) {
+            pos2 = getnumber(argv[4]);
+            has_pos2 = 1;
+        }
+        vm_sys_servo_configure(slice, has_pos1, pos1, has_pos2, pos2);
+    }
+}
 void cmd_set(void) {}
-void cmd_setpin(void) {}
+void cmd_setpin(void) {
+    int pin;
+    int mode = -1;
+    int option = VM_PIN_OPT_NONE;
+
+    getargs(&cmdline, 7, (unsigned char *)",");
+    if (argc % 2 == 0 || argc < 3) error("Argument count");
+    pin = host_parse_pin_arg(argv[0]);
+
+    if (checkstring(argv[2], (unsigned char *)"OFF") || checkstring(argv[2], (unsigned char *)"0"))
+        mode = VM_PIN_MODE_OFF;
+    else if (checkstring(argv[2], (unsigned char *)"DIN"))
+        mode = VM_PIN_MODE_DIN;
+    else if (checkstring(argv[2], (unsigned char *)"DOUT"))
+        mode = VM_PIN_MODE_DOUT;
+    else if (checkstring(argv[2], (unsigned char *)"ARAW"))
+        mode = VM_PIN_MODE_ARAW;
+    else if (checkstring(argv[2], (unsigned char *)"PWM"))
+        mode = VM_PIN_MODE_PWM_AUTO;
+    else if (checkstring(argv[2], (unsigned char *)"PWM0A"))
+        mode = VM_PIN_MODE_PWM0A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM0B"))
+        mode = VM_PIN_MODE_PWM0B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM1A"))
+        mode = VM_PIN_MODE_PWM1A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM1B"))
+        mode = VM_PIN_MODE_PWM1B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM2A"))
+        mode = VM_PIN_MODE_PWM2A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM2B"))
+        mode = VM_PIN_MODE_PWM2B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM3A"))
+        mode = VM_PIN_MODE_PWM3A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM3B"))
+        mode = VM_PIN_MODE_PWM3B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM4A"))
+        mode = VM_PIN_MODE_PWM4A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM4B"))
+        mode = VM_PIN_MODE_PWM4B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM5A"))
+        mode = VM_PIN_MODE_PWM5A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM5B"))
+        mode = VM_PIN_MODE_PWM5B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM6A"))
+        mode = VM_PIN_MODE_PWM6A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM6B"))
+        mode = VM_PIN_MODE_PWM6B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM7A"))
+        mode = VM_PIN_MODE_PWM7A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM7B"))
+        mode = VM_PIN_MODE_PWM7B;
+#ifdef rp2350
+    else if (checkstring(argv[2], (unsigned char *)"PWM8A"))
+        mode = VM_PIN_MODE_PWM8A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM8B"))
+        mode = VM_PIN_MODE_PWM8B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM9A"))
+        mode = VM_PIN_MODE_PWM9A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM9B"))
+        mode = VM_PIN_MODE_PWM9B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM10A"))
+        mode = VM_PIN_MODE_PWM10A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM10B"))
+        mode = VM_PIN_MODE_PWM10B;
+    else if (checkstring(argv[2], (unsigned char *)"PWM11A"))
+        mode = VM_PIN_MODE_PWM11A;
+    else if (checkstring(argv[2], (unsigned char *)"PWM11B"))
+        mode = VM_PIN_MODE_PWM11B;
+#endif
+    else
+        error("Unsupported SETPIN mode");
+
+    if (argc >= 5 && *argv[4]) {
+        if (checkstring(argv[4], (unsigned char *)"PULLUP"))
+            option = VM_PIN_OPT_PULLUP;
+        else if (checkstring(argv[4], (unsigned char *)"PULLDOWN"))
+            option = VM_PIN_OPT_PULLDOWN;
+        else
+            error("Unsupported SETPIN option");
+    }
+    vm_sys_pin_setpin(pin, mode, option);
+}
 void cmd_settick(void) {}
 void cmd_sideset(void) {}
 void cmd_sort(void) {}
@@ -1683,7 +1907,12 @@ void fun_LLen(void) {}
 void fun_loc(void) {}
 void fun_lof(void) {}
 void fun_peek(void) {}
-void fun_pin(void) {}
+void fun_pin(void) {
+    int pin;
+    pin = host_parse_pin_arg(ep);
+    iret = vm_sys_pin_read(pin);
+    targ = T_INT;
+}
 void fun_pio(void) {}
 void fun_pixel(void) {}
 void fun_port(void) {}
@@ -1877,15 +2106,16 @@ int kbhitConsole(void) { return 0; }
  * shared in-memory FAT disk used by VM host file syscalls. */
 int BasicFileOpen(char *fname, int fnbr, int mode) {
     FRESULT res;
+    char path[FF_MAX_LFN] = {0};
 
     if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
     if (FileTable[fnbr].com != 0) error("File number already open");
     res = vm_host_fat_mount();
     if (res != FR_OK) error("Host FAT init failed");
-
+    vm_sys_file_host_resolve_path(fname, path, sizeof(path));
     FileTable[fnbr].fptr = malloc(sizeof(FIL));
     if (!FileTable[fnbr].fptr) error("Not enough memory");
-    res = f_open(FileTable[fnbr].fptr, vm_host_fat_path(fname), (BYTE)mode);
+    res = f_open(FileTable[fnbr].fptr, path, (BYTE)mode);
     if (res != FR_OK) {
         free(FileTable[fnbr].fptr);
         FileTable[fnbr].fptr = NULL;
@@ -2120,9 +2350,22 @@ void writeusclock(uint64_t timeset) { (void)timeset; }
 uint64_t readIRclock(void) { return 0; }
 void writeIRclock(uint64_t timeset) { (void)timeset; }
 void initExtIO(void) {}
-void ExtCfg(int pin, int cfg, int option) { (void)pin; (void)cfg; (void)option; }
-void ExtSet(int pin, int val) { (void)pin; (void)val; }
-int64_t ExtInp(int pin) { (void)pin; return 0; }
+void ExtCfg(int pin, int cfg, int option) {
+    if (cfg == EXT_NOT_CONFIG) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_OFF, VM_PIN_OPT_NONE);
+    } else if (cfg == EXT_DIG_IN) {
+        int vm_option = VM_PIN_OPT_NONE;
+        if (option == CNPUSET) vm_option = VM_PIN_OPT_PULLUP;
+        else if (option == CNPDSET) vm_option = VM_PIN_OPT_PULLDOWN;
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_DIN, vm_option);
+    } else if (cfg == EXT_DIG_OUT) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_DOUT, VM_PIN_OPT_NONE);
+    } else if (cfg == EXT_ADCRAW) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_ARAW, VM_PIN_OPT_NONE);
+    }
+}
+void ExtSet(int pin, int val) { vm_sys_pin_write(pin, val); }
+int64_t ExtInp(int pin) { return vm_sys_pin_read(pin); }
 int IsInvalidPin(int pin) { (void)pin; return 1; }
 unsigned long ReadCount5(void) { return 0; }
 void WriteCount5(unsigned long timeset) { (void)timeset; }

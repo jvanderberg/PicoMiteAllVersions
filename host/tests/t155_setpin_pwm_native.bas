@@ -1,0 +1,4 @@
+SETPIN 1, PWM0A
+PWM 0, 1000, 25
+PWM 0, OFF
+PRINT "pwm a ok"

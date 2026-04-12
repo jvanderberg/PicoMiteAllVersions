@@ -72,6 +72,11 @@ LOCAL VM PROTOTYPE BUILD/TEST LOOP
 ----------------------------------
 This workspace currently uses a host oracle plus bytecode VM harness for BASIC regression testing.
 
+Current architecture reference:
+- [docs/vm-architecture.md](docs/vm-architecture.md)
+- [docs/vm-cutover-plan.md](docs/vm-cutover-plan.md)
+- [docs/vm-command-coverage.md](docs/vm-command-coverage.md)
+
 ```bash
 cd ~/picocalc/PicoMiteAllVersions
 make -C host
@@ -80,7 +85,7 @@ make -C host
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
 bash host/run_unsupported_tests.sh
-./host/run_missing_syscall_tests.sh   # intentionally red syscall TODO inventory
+./host/run_missing_syscall_tests.sh
 make -C build2350 -j8
 arm-none-eabi-size build2350/PicoMite.elf
 ```

@@ -12,6 +12,10 @@
 void *bc_alloc(size_t size);
 void bc_free(void *ptr);
 void bc_alloc_reset(void);
+void *bc_compile_alloc(size_t size);
+void bc_compile_free(void *ptr);
+void bc_compile_release_all(void);
+int bc_compile_owns(const void *ptr);
 size_t bc_alloc_bytes_used(void);
 size_t bc_alloc_bytes_high_water(void);
 size_t bc_alloc_bytes_capacity(void);
@@ -20,5 +24,7 @@ int bc_alloc_owns(const void *ptr);
 
 #define BC_ALLOC(sz) bc_alloc((sz))
 #define BC_FREE(p)   bc_free((p))
+#define BC_COMPILER_ALLOC(sz) bc_compile_alloc((sz))
+#define BC_COMPILER_FREE(p)   bc_compile_free((p))
 
 #endif

@@ -8,6 +8,8 @@
 #include "gfx_pixel_shared.h"
 #include "gfx_text_shared.h"
 
+void vm_sys_graphics_reset(void);
+
 void vm_sys_graphics_box_execute(GfxBoxMode mode, const GfxBoxIntArg *args, int field_count,
                                  const GfxBoxErrorSink *errors);
 void vm_sys_graphics_rbox_execute(GfxBoxMode mode, const GfxBoxIntArg *args, int field_count,

@@ -10,6 +10,7 @@
 #include "bc_alloc.h"
 #include "bc_source.h"
 #include "vm_sys_file.h"
+#include "vm_sys_graphics.h"
 
 extern jmp_buf mark;
 
@@ -43,6 +44,7 @@ void bc_run_source_string(const char *source, const char *source_name) {
     int err;
     bc_fastgfx_reset();
     vm_sys_file_reset();
+    vm_sys_graphics_reset();
     bc_crash_checkpoint(BC_CK_VM_ENTRY, "source entry");
 
 #ifdef MMBASIC_HOST
@@ -94,6 +96,7 @@ void bc_run_source_string(const char *source, const char *source_name) {
     }
 
     bc_compiler_compact(cs);
+    bc_compile_release_all();
 
     if (bc_vm_alloc(vm) != 0) {
         bc_compiler_free(cs);
@@ -119,11 +122,13 @@ void bc_run_source_string(const char *source, const char *source_name) {
 
     bc_vm_free(vm);
     bc_compiler_free(cs);
+    bc_compile_release_all();
 #ifdef MMBASIC_HOST
     BC_FREE(cs);
     BC_FREE(vm);
 #endif
     vm_sys_file_reset();
+    vm_sys_graphics_reset();
     bc_fastgfx_reset();
     bc_crash_clear();
 }

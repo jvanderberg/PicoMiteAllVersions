@@ -1,0 +1,4 @@
+SETPIN 1, PWM0A
+SERVO 0, 90
+SERVO 0, OFF
+PRINT "servo a ok"
