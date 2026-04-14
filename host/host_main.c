@@ -427,7 +427,9 @@ static int run_bytecode_vm_source(const char *source, const char *source_name,
 typedef enum {
     MODE_SOURCE_COMPARE = 0,
     MODE_INTERP_ONLY,
-    MODE_VM_SOURCE_ONLY
+    MODE_VM_SOURCE_ONLY,
+    MODE_IMMEDIATE,
+    MODE_TRY_COMPILE
 } HostMode;
 
 int main(int argc, char **argv) {
@@ -436,6 +438,7 @@ int main(int argc, char **argv) {
     const char *screenshot_path = NULL;
     int dump_vm_disasm = 0;
     int opt_level = 1;
+    const char *immediate_line = NULL;
     PixelAssert pixel_asserts[MAX_PIXEL_ASSERTS];
     int pixel_assert_count = 0;
     int compare_framebuffer = 0;
@@ -454,16 +457,36 @@ int main(int argc, char **argv) {
         printf("  %s program.bas --source-compare Alias for default compare\n", argv[0]);
         printf("  %s program.bas --interp --timeout-ms 100 --screenshot out.ppm\n", argv[0]);
         printf("  %s program.bas --vm --assert-pixel 10,20,FF0000\n", argv[0]);
+        printf("  %s --immediate \"PRINT 2+2\"   Compile+execute one BASIC line\n", argv[0]);
+        printf("  %s --try-compile \"PRINT 2+2\" Test if a line compiles (exit 0=yes 1=no)\n", argv[0]);
         printf("  %s program.bas --compare-framebuffer\n", argv[0]);
         printf("  %s program.bas --interp --keys-after-ms 100 q\n", argv[0]);
         return 0;
     }
 
-    const char *filename = argv[1];
+    const char *filename = NULL;
     const char *key_script = NULL;
     int key_delay_ms = 0;
 
-    for (int i = 2; i < argc; ++i) {
+    /* First pass: scan for --immediate / --try-compile (no filename needed) */
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) {
+            mode = MODE_IMMEDIATE;
+            immediate_line = argv[++i];
+        } else if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) {
+            mode = MODE_TRY_COMPILE;
+            immediate_line = argv[++i];
+        }
+    }
+
+    /* For non-immediate modes, first positional arg is the filename */
+    if (mode != MODE_IMMEDIATE && mode != MODE_TRY_COMPILE) {
+        filename = argv[1];
+    }
+
+    for (int i = (filename ? 2 : 1); i < argc; ++i) {
+        if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) { i++; continue; }
+        if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) { i++; continue; }
         if (strcmp(argv[i], "--interp") == 0) mode = MODE_INTERP_ONLY;
         else if (strcmp(argv[i], "--vm") == 0) mode = MODE_VM_SOURCE_ONLY;
         else if (strcmp(argv[i], "--vm-disasm") == 0) {
@@ -474,6 +497,14 @@ int main(int argc, char **argv) {
         else if (strcmp(argv[i], "-O1") == 0) opt_level = 1;
         else if (strcmp(argv[i], "--vm-source") == 0) mode = MODE_VM_SOURCE_ONLY;
         else if (strcmp(argv[i], "--source-compare") == 0) mode = MODE_SOURCE_COMPARE;
+        else if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) {
+            mode = MODE_IMMEDIATE;
+            immediate_line = argv[++i];
+        }
+        else if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) {
+            mode = MODE_TRY_COMPILE;
+            immediate_line = argv[++i];
+        }
         else if (strcmp(argv[i], "--compare-framebuffer") == 0) compare_framebuffer = 1;
         else if (strcmp(argv[i], "--timeout-ms") == 0 && i + 1 < argc) {
             timeout_ms = atoi(argv[++i]);
@@ -513,6 +544,33 @@ int main(int argc, char **argv) {
     bc_opt_level = opt_level;
     host_runtime_configure(timeout_ms, screenshot_path);
     host_runtime_configure_keys(key_script, key_delay_ms);
+
+    /* Immediate mode: compile+execute a single BASIC line */
+    if (mode == MODE_IMMEDIATE) {
+        int rc;
+        start_capture(vm_output, CAPTURE_SIZE);
+        vm_host_fat_reset();
+        vm_sys_file_reset();
+        MMErrMsg[0] = '\0';
+        MMerrno = 0;
+        host_runtime_begin();
+        if (setjmp(mark) == 0) {
+            bc_run_immediate(immediate_line);
+            rc = MMErrMsg[0] ? 1 : 0;
+        } else {
+            rc = MMErrMsg[0] ? 1 : 0;
+        }
+        host_runtime_finish();
+        stop_capture();
+        printf("%s", vm_output);
+        if (rc && MMErrMsg[0]) fprintf(stderr, "Error: %s\n", MMErrMsg);
+        return rc;
+    }
+
+    /* Try-compile mode: test if a line compiles, exit 0=yes 1=no */
+    if (mode == MODE_TRY_COMPILE) {
+        return bc_try_compile_line(immediate_line) ? 0 : 1;
+    }
 
     char *source_text = read_basic_source_file(filename);
     if (!source_text) return 1;

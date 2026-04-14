@@ -380,6 +380,15 @@ static uint16_t source_alloc_hidden_slot(BCCompiler *cs, uint8_t type) {
     return bc_add_slot(cs, buf, (int)strlen(buf), type, 0);
 }
 
+/* Allocate a hidden local slot (for FOR limit/step inside SUB/FUNCTION) */
+static uint16_t source_alloc_hidden_local(BCCompiler *cs, uint8_t type) {
+    char buf[MAXVARLEN + 1];
+    snprintf(buf, sizeof(buf), "#SRC_%u", (unsigned)cs->next_hidden_slot++);
+    int idx = bc_add_local(cs, buf, (int)strlen(buf), type, 0);
+    if (idx < 0) return 0;
+    return (uint16_t)idx;
+}
+
 static int source_color_name(const char *start, const char *end, int *color) {
     while (start < end && (*start == ' ' || *start == '\t')) start++;
     while (end > start && (end[-1] == ' ' || end[-1] == '\t')) end--;
@@ -1824,15 +1833,22 @@ static void source_compile_for(BCSourceFrontend *fe, BCCompiler *cs, const char 
         return;
     }
 
-    uint16_t lim_slot = source_alloc_hidden_slot(cs, vtype);
-    uint16_t step_slot = source_alloc_hidden_slot(cs, vtype);
+    int lim_is_local = (cs->current_subfun >= 0);
+    uint16_t lim_slot, step_slot;
+    if (lim_is_local) {
+        lim_slot = source_alloc_hidden_local(cs, vtype);
+        step_slot = source_alloc_hidden_local(cs, vtype);
+    } else {
+        lim_slot = source_alloc_hidden_slot(cs, vtype);
+        step_slot = source_alloc_hidden_slot(cs, vtype);
+    }
 
     uint8_t limit_type = source_parse_expression(fe, cs, &p);
     if (cs->has_error) {
         *pp = p;
         return;
     }
-    source_emit_store_converted(cs, lim_slot, vtype, limit_type, 0);
+    source_emit_store_converted(cs, lim_slot, vtype, limit_type, lim_is_local);
 
     source_skip_space(&p);
     if (source_keyword(&p, "STEP")) {
@@ -1841,22 +1857,24 @@ static void source_compile_for(BCSourceFrontend *fe, BCCompiler *cs, const char 
             *pp = p;
             return;
         }
-        source_emit_store_converted(cs, step_slot, vtype, step_type, 0);
+        source_emit_store_converted(cs, step_slot, vtype, step_type, lim_is_local);
     } else {
         if (vtype == T_INT) bc_emit_byte(cs, OP_PUSH_ONE);
         else {
             bc_emit_byte(cs, OP_PUSH_FLT);
             bc_emit_f64(cs, 1.0);
         }
-        bc_emit_store_var(cs, step_slot, vtype, 0);
+        bc_emit_store_var(cs, step_slot, vtype, lim_is_local);
     }
 
     uint16_t enc_var = var_slot | (is_local ? 0x8000 : 0);
+    uint16_t enc_lim = lim_slot | (lim_is_local ? 0x8000 : 0);
+    uint16_t enc_step = step_slot | (lim_is_local ? 0x8000 : 0);
 
     bc_emit_byte(cs, (vtype == T_INT) ? OP_FOR_INIT_I : OP_FOR_INIT_F);
     bc_emit_u16(cs, enc_var);
-    bc_emit_u16(cs, lim_slot);
-    bc_emit_u16(cs, step_slot);
+    bc_emit_u16(cs, enc_lim);
+    bc_emit_u16(cs, enc_step);
     uint32_t exit_patch = cs->code_len;
     bc_emit_i16(cs, 0);
 
@@ -1867,8 +1885,8 @@ static void source_compile_for(BCSourceFrontend *fe, BCCompiler *cs, const char 
         ne->addr1 = loop_top;
         ne->addr2 = exit_patch;
         ne->var_slot = enc_var;
-        ne->lim_slot = lim_slot;
-        ne->step_slot = step_slot;
+        ne->lim_slot = enc_lim;
+        ne->step_slot = enc_step;
         ne->var_type = vtype;
     }
 
@@ -2404,7 +2422,7 @@ static int source_parse_params(BCCompiler *cs, const char **pp, int sf_idx) {
         if (ptype == 0) ptype = T_NBR;
 
         bc_add_local(cs, name, name_len, ptype, is_array);
-        if (nparams < BC_MAX_LOCALS) {
+        if (nparams < BC_MAX_PARAMS) {
             cs->subfuns[sf_idx].param_types[nparams] = ptype;
             cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)is_array;
         }
@@ -2748,7 +2766,7 @@ static void source_compile_exit(BCCompiler *cs, const char **pp) {
             return;
         }
         uint32_t patch = source_emit_jmp_placeholder(cs, OP_JMP);
-        if (ne->exit_fixup_count < 16) ne->exit_fixups[ne->exit_fixup_count++] = patch;
+        if (ne->exit_fixup_count < 64) ne->exit_fixups[ne->exit_fixup_count++] = patch;
         *pp = p;
         return;
     }
@@ -2761,7 +2779,7 @@ static void source_compile_exit(BCCompiler *cs, const char **pp) {
             return;
         }
         uint32_t patch = source_emit_jmp_placeholder(cs, OP_JMP);
-        if (ne->exit_fixup_count < 16) ne->exit_fixups[ne->exit_fixup_count++] = patch;
+        if (ne->exit_fixup_count < 64) ne->exit_fixups[ne->exit_fixup_count++] = patch;
         *pp = p;
         return;
     }
@@ -4017,7 +4035,7 @@ static void source_compile_elseif(BCSourceFrontend *fe, BCCompiler *cs, const ch
     }
 
     uint32_t end_patch = source_emit_jmp_placeholder(cs, OP_JMP);
-    if (ne->exit_fixup_count < 16) ne->exit_fixups[ne->exit_fixup_count++] = end_patch;
+    if (ne->exit_fixup_count < 64) ne->exit_fixups[ne->exit_fixup_count++] = end_patch;
     if (ne->addr1 != 0xFFFFFFFF) source_patch_jmp_here(cs, ne->addr1);
 
     const char *p = *pp;
@@ -4060,7 +4078,7 @@ static void source_compile_else(BCCompiler *cs, const char **pp) {
         return;
     }
     uint32_t end_patch = source_emit_jmp_placeholder(cs, OP_JMP);
-    if (ne->exit_fixup_count < 16) ne->exit_fixups[ne->exit_fixup_count++] = end_patch;
+    if (ne->exit_fixup_count < 64) ne->exit_fixups[ne->exit_fixup_count++] = end_patch;
     if (ne->addr1 != 0xFFFFFFFF) source_patch_jmp_here(cs, ne->addr1);
     ne->addr1 = 0xFFFFFFFF;
     ne->has_else = 1;
@@ -4275,6 +4293,21 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
 
     if (source_keyword(&p, "COPY")) {
         source_compile_copy(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "RUN")) {
+        source_skip_space(&p);
+        if (*p == '\0' || *p == '\'') {
+            bc_set_error(cs, "RUN requires a filename");
+        } else {
+            if (!source_parse_string_expression(fe, cs, &p, "RUN requires string filename")) {
+                /* error already set */
+            } else {
+                source_emit_syscall(cs, BC_SYS_RUN, 1, NULL, 0);
+            }
+        }
         source_statement_end(cs, p);
         return;
     }
@@ -4568,6 +4601,7 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
                 source_statement_end(cs, p);
                 return;
             }
+            const char *after_name = probe;
             if (*probe == '(') {
                 int depth = 0;
                 do {
@@ -4586,7 +4620,7 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
 
             int sf_idx = bc_find_subfun(cs, name, name_len);
             if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type == 0) {
-                p = probe;
+                p = after_name;
                 int nargs = source_compile_call_args(fe, cs, &p, 0);
                 if (!cs->has_error) {
                     bc_emit_byte(cs, OP_CALL_SUB);

@@ -9,6 +9,7 @@
 
 #include "bytecode.h"
 #include "bc_alloc.h"
+#include "bc_source.h"
 #include "vm_device_support.h"
 #include "vm_device_fileio.h"
 #include "vm_sys_file.h"
@@ -278,8 +279,15 @@ int MIPS16 main(void) {
         if (entry) {
             entry->handler(arg);
         } else {
-            cmd = vm_device_unquote(cmd);
-            vm_device_run_program(cmd);
+            /* Try immediate mode: compile as BASIC, execute via VM */
+            bc_alloc_reset();
+            if (bc_try_compile_line(cmd)) {
+                bc_run_immediate(cmd);
+            } else {
+                /* Not a BASIC statement -- try as filename */
+                cmd = vm_device_unquote(cmd);
+                vm_device_run_program(cmd);
+            }
         }
     }
     return 0;

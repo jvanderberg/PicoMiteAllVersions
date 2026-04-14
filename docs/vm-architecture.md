@@ -283,7 +283,6 @@ Current baseline at the time of this document update:
 - `bash ./host/run_unsupported_tests.sh`: `0 passed, 0 failed`
 - `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`
 - `make -C build2350 -j8`: passed
-- `cmake --build build2350_vm_only -j8`: passed
 
 ## Remaining Architectural Risks
 

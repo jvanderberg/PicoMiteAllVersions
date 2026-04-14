@@ -1,7 +1,7 @@
 build/
 build2350/
-build2350_vm_only/
 host/*.o
+host/*.d
 host/mmbasic_test
 host/mmbasic_legacy_test
 *.uf2

@@ -12,6 +12,11 @@
 #include "vm_device_support.h"
 #include "vm_sys_file.h"
 #include "vm_sys_graphics.h"
+#ifdef MMBASIC_HOST
+#include "vm_host_fat.h"
+#elif defined(PICOMITE_VM_DEVICE_ONLY)
+#include "vm_device_fileio.h"
+#endif
 
 #ifdef MMBASIC_HOST
 #define VMRUN_DBG(s)       ((void)0)
@@ -394,4 +399,121 @@ void bc_vm_capture_char(BCVMState *vm, char c) {
 
 void bc_vm_capture_string(BCVMState *vm, const char *s) {
     bc_vm_capture_write(vm, s, strlen(s));
+}
+
+/*
+ * Try to compile a single line as BASIC.
+ * Returns 1 if compilation succeeds, 0 if it fails.
+ * Does NOT call error() -- safe to use as a probe.
+ * Caller must have called bc_alloc_reset() first.
+ */
+int bc_try_compile_line(const char *line) {
+    int err;
+#ifdef MMBASIC_HOST
+    BCCompiler *cs = (BCCompiler *)calloc(1, sizeof(BCCompiler));
+    if (!cs) return 0;
+    if (bc_compiler_alloc(cs) != 0) {
+        bc_compiler_free(cs);
+        free(cs);
+        return 0;
+    }
+    bc_compiler_init(cs);
+    err = bc_compile_source(cs, line, "<immediate>");
+    bc_compiler_free(cs);
+    free(cs);
+#else
+    BCCompiler *cs = &device_compiler;
+    memset(cs, 0, sizeof(BCCompiler));
+    if (bc_compiler_alloc(cs) != 0) {
+        bc_compiler_free(cs);
+        bc_compile_release_all();
+        return 0;
+    }
+    bc_compiler_init(cs);
+    err = bc_compile_source(cs, line, "<immediate>");
+    bc_compiler_free(cs);
+    bc_compile_release_all();
+#endif
+    return err == 0;
+}
+
+/*
+ * Compile and execute a single line of BASIC (immediate mode).
+ * Resets the VM heap, compiles, executes, and cleans up.
+ */
+void bc_run_immediate(const char *line) {
+    bc_alloc_reset();
+    bc_run_source_string(line, "<immediate>");
+}
+
+/*
+ * Load and execute a BASIC program from file (RUN syscall).
+ * Resets the VM heap, loads source, compiles, executes, then longjmps
+ * back to the caller's mark — the outer VM is abandoned.
+ */
+void bc_run_file(const char *filename) {
+    char fname_buf[STRINGSIZE];
+    char *source = NULL;
+
+    strncpy(fname_buf, filename, STRINGSIZE - 5);
+    fname_buf[STRINGSIZE - 5] = '\0';
+    if (!strchr(fname_buf, '.')) strcat(fname_buf, ".bas");
+
+#ifdef MMBASIC_HOST
+    {
+        char path[FF_MAX_LFN + 1];
+        FIL file;
+        FRESULT res;
+        UINT bytes_read;
+        int fsize;
+
+        vm_host_fat_mount();
+        vm_sys_file_host_resolve_path(fname_buf, path, sizeof(path));
+
+        res = f_open(&file, path, FA_READ);
+        if (res != FR_OK) error("File not found");
+
+        fsize = (int)f_size(&file);
+        source = (char *)malloc(fsize + 1);
+        if (!source) { f_close(&file); error("Not enough memory"); }
+
+        res = f_read(&file, source, (UINT)fsize, &bytes_read);
+        f_close(&file);
+        if (res != FR_OK) { free(source); error("File error"); }
+        source[bytes_read] = '\0';
+
+        bc_run_source_string(source, fname_buf);
+        free(source);
+    }
+#elif defined(PICOMITE_VM_DEVICE_ONLY)
+    vm_device_run_program(fname_buf);
+#else
+    /* Interpreter+VM build: RUN from within FRUN-compiled code */
+    bc_alloc_reset();
+    {
+        int fnbr = FindFreeFileNbr();
+        int fsize, c;
+        char *p;
+        if (!BasicFileOpen(fname_buf, fnbr, FA_READ))
+            error("File not found");
+        fsize = (filesource[fnbr] != FLASHFILE)
+            ? (int)f_size(FileTable[fnbr].fptr)
+            : lfs_file_size(&lfs, FileTable[fnbr].lfsptr);
+        source = (char *)bc_compile_alloc((size_t)fsize + 1);
+        if (!source) { FileClose(fnbr); error("Not enough memory"); }
+        p = source;
+        while (!FileEOF(fnbr)) {
+            c = FileGetChar(fnbr) & 0x7f;
+            if (isprint(c) || c == '\r' || c == '\n' || c == '\t') {
+                if (c == '\t') c = ' ';
+                *p++ = (char)c;
+            }
+        }
+        *p = '\0';
+        FileClose(fnbr);
+        bc_run_source_string(source, fname_buf);
+    }
+#endif
+
+    longjmp(mark, 1);
 }

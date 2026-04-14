@@ -9,7 +9,8 @@ CFLAGS = -std=gnu11 -g -O0 -Wall -Wno-unused-variable -Wno-unused-function \
          -Wno-missing-braces -funsigned-char \
          -DPICOMITE -DMMBASIC_HOST \
          -include host_platform.h \
-         -I. -I..
+         -I. -I.. \
+         -MMD -MP
 
 LDFLAGS = -lm
 
@@ -30,6 +31,7 @@ HOST_SRCS = host_stubs_legacy.c host_main.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)
+DEPS = $(OBJS:.o=.d)
 
 TARGET = mmbasic_test
 
@@ -50,6 +52,8 @@ host_main.o: host_main.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(DEPS) $(TARGET)
+
+-include $(DEPS)
 
 .PHONY: all clean

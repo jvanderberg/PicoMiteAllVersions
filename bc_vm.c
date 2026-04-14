@@ -27,6 +27,9 @@
 #define __not_in_flash_func(func) func
 #endif
 
+/* Zero-length MMBasic string for uninitialized string variables */
+static uint8_t vm_empty_string[1] = { 0 };
+
 /* ======================================================================
  * Helper: get next rotating string temp buffer
  * ====================================================================== */
@@ -1174,6 +1177,14 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
             if (Option.Refresh) Display_Refresh();
             return;
         }
+        case BC_SYS_RUN: {
+            uint8_t *s = bc_vm_pop_string_value(vm);
+            char filename[STRINGSIZE + 1];
+            bc_vm_mstr_to_c_checked(vm, s, filename, 0, "File name");
+            bc_run_file(filename);
+            /* bc_run_file does not return here — it longjmps */
+            return;
+        }
         default:
             bc_vm_error(vm, "Invalid syscall id");
     }
@@ -1782,13 +1793,7 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_CLEAR]          = &&op_clear,
         [OP_FASTGFX_SWAP]   = &&op_fastgfx_swap,
         [OP_FASTGFX_SYNC]   = &&op_fastgfx_sync,
-        [OP_BOX]            = &&op_box,
         [OP_RGB]            = &&op_rgb,
-        [OP_CIRCLE]         = &&op_circle,
-        [OP_DRAW_LINE]      = &&op_draw_line,
-        [OP_TEXT]           = &&op_text,
-        [OP_CLS]            = &&op_cls,
-        [OP_PIXEL]          = &&op_pixel,
         [OP_FASTGFX_CREATE] = &&op_fastgfx_create,
         [OP_FASTGFX_CLOSE]  = &&op_fastgfx_close,
         [OP_FASTGFX_FPS]    = &&op_fastgfx_fps,
@@ -1807,11 +1812,7 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_FILE]           = &&op_file,
         [OP_PIXEL_READ]     = &&op_pixel_read,
         [OP_MATH_MULSHR]    = &&op_math_mulshr,
-        [OP_RBOX]           = &&op_rbox,
-        [OP_ARC]            = &&op_arc,
-        [OP_TRIANGLE]       = &&op_triangle,
         [OP_FONT]           = &&op_font,
-        [OP_POLYGON]        = &&op_polygon,
         [OP_SYSCALL]        = &&op_syscall,
         [OP_MATH_SQRSHR]    = &&op_math_sqrshr,
         [OP_MATH_MULSHRADD] = &&op_math_mulshradd,
@@ -1881,7 +1882,8 @@ op_load_f: {
 
 op_load_s: {
     uint16_t slot = READ_U16();
-    PUSH_S(vm->globals[slot].s);
+    uint8_t *s = vm->globals[slot].s;
+    PUSH_S(s ? s : vm_empty_string);
     DISPATCH();
 }
 
@@ -2489,12 +2491,16 @@ op_return: {
 
 op_for_init_i: {
     uint16_t raw_var   = READ_U16();
-    uint16_t lim_slot  = READ_U16();
-    uint16_t step_slot = READ_U16();
+    uint16_t raw_lim   = READ_U16();
+    uint16_t raw_step  = READ_U16();
     int16_t  exit_off  = READ_I16();
 
     int var_is_local = (raw_var & 0x8000) != 0;
     uint16_t var_slot = raw_var & 0x7FFF;
+    int lim_is_local  = (raw_lim & 0x8000) != 0;
+    uint16_t lim_slot = raw_lim & 0x7FFF;
+    int step_is_local = (raw_step & 0x8000) != 0;
+    uint16_t step_slot = raw_step & 0x7FFF;
 
     if (vm->fsp >= VM_MAX_FOR)
         bc_vm_error(vm, "FOR stack overflow");
@@ -2502,8 +2508,8 @@ op_for_init_i: {
     /* Push for-stack entry */
     BCForEntry *fe = &vm->for_stack[vm->fsp];
     fe->var_slot  = raw_var;  /* preserve flag for NEXT */
-    fe->lim_slot  = lim_slot;
-    fe->step_slot = step_slot;
+    fe->lim_slot  = raw_lim;
+    fe->step_slot = raw_step;
     fe->loop_top  = vm->pc;       /* loop body starts here */
     fe->is_local  = var_is_local;
     fe->var_type  = T_INT;
@@ -2512,8 +2518,8 @@ op_for_init_i: {
     /* Check if already past limit */
     BCValue *var_ptr = var_is_local ? &vm->locals[vm->frame_base + var_slot] : &vm->globals[var_slot];
     int64_t val  = var_ptr->i;
-    int64_t lim  = vm->globals[lim_slot].i;
-    int64_t step = vm->globals[step_slot].i;
+    int64_t lim  = lim_is_local ? vm->locals[vm->frame_base + lim_slot].i : vm->globals[lim_slot].i;
+    int64_t step = step_is_local ? vm->locals[vm->frame_base + step_slot].i : vm->globals[step_slot].i;
     if (step > 0 && val > lim) {
         vm->fsp--;
         vm->pc += exit_off;
@@ -2528,19 +2534,23 @@ op_for_init_i: {
 
 op_for_next_i: {
     uint16_t raw_var   = READ_U16();
-    uint16_t lim_slot  = READ_U16();
-    uint16_t step_slot = READ_U16();
+    uint16_t raw_lim   = READ_U16();
+    uint16_t raw_step  = READ_U16();
     int16_t  loop_off  = READ_I16();
 
     int var_is_local = (raw_var & 0x8000) != 0;
     uint16_t var_slot = raw_var & 0x7FFF;
+    int lim_is_local  = (raw_lim & 0x8000) != 0;
+    uint16_t lim_slot = raw_lim & 0x7FFF;
+    int step_is_local = (raw_step & 0x8000) != 0;
+    uint16_t step_slot = raw_step & 0x7FFF;
     BCValue *var_ptr = var_is_local ? &vm->locals[vm->frame_base + var_slot] : &vm->globals[var_slot];
 
-    int64_t step = vm->globals[step_slot].i;
+    int64_t step = step_is_local ? vm->locals[vm->frame_base + step_slot].i : vm->globals[step_slot].i;
     var_ptr->i += step;
 
     int64_t val = var_ptr->i;
-    int64_t lim = vm->globals[lim_slot].i;
+    int64_t lim = lim_is_local ? vm->locals[vm->frame_base + lim_slot].i : vm->globals[lim_slot].i;
 
     int past;
     if (step > 0)
@@ -2564,20 +2574,24 @@ op_for_next_i: {
 
 op_for_init_f: {
     uint16_t raw_var   = READ_U16();
-    uint16_t lim_slot  = READ_U16();
-    uint16_t step_slot = READ_U16();
+    uint16_t raw_lim   = READ_U16();
+    uint16_t raw_step  = READ_U16();
     int16_t  exit_off  = READ_I16();
 
     int var_is_local = (raw_var & 0x8000) != 0;
     uint16_t var_slot = raw_var & 0x7FFF;
+    int lim_is_local  = (raw_lim & 0x8000) != 0;
+    uint16_t lim_slot = raw_lim & 0x7FFF;
+    int step_is_local = (raw_step & 0x8000) != 0;
+    uint16_t step_slot = raw_step & 0x7FFF;
 
     if (vm->fsp >= VM_MAX_FOR)
         bc_vm_error(vm, "FOR stack overflow");
 
     BCForEntry *fe = &vm->for_stack[vm->fsp];
     fe->var_slot  = raw_var;  /* preserve flag for NEXT */
-    fe->lim_slot  = lim_slot;
-    fe->step_slot = step_slot;
+    fe->lim_slot  = raw_lim;
+    fe->step_slot = raw_step;
     fe->loop_top  = vm->pc;
     fe->is_local  = var_is_local;
     fe->var_type  = T_NBR;
@@ -2585,8 +2599,8 @@ op_for_init_f: {
 
     BCValue *var_ptr = var_is_local ? &vm->locals[vm->frame_base + var_slot] : &vm->globals[var_slot];
     MMFLOAT val  = var_ptr->f;
-    MMFLOAT lim  = vm->globals[lim_slot].f;
-    MMFLOAT step = vm->globals[step_slot].f;
+    MMFLOAT lim  = lim_is_local ? vm->locals[vm->frame_base + lim_slot].f : vm->globals[lim_slot].f;
+    MMFLOAT step = step_is_local ? vm->locals[vm->frame_base + step_slot].f : vm->globals[step_slot].f;
     if (step > 0.0 && val > lim) {
         vm->fsp--;
         vm->pc += exit_off;
@@ -2601,19 +2615,23 @@ op_for_init_f: {
 
 op_for_next_f: {
     uint16_t raw_var   = READ_U16();
-    uint16_t lim_slot  = READ_U16();
-    uint16_t step_slot = READ_U16();
+    uint16_t raw_lim   = READ_U16();
+    uint16_t raw_step  = READ_U16();
     int16_t  loop_off  = READ_I16();
 
     int var_is_local = (raw_var & 0x8000) != 0;
     uint16_t var_slot = raw_var & 0x7FFF;
+    int lim_is_local  = (raw_lim & 0x8000) != 0;
+    uint16_t lim_slot = raw_lim & 0x7FFF;
+    int step_is_local = (raw_step & 0x8000) != 0;
+    uint16_t step_slot = raw_step & 0x7FFF;
     BCValue *var_ptr = var_is_local ? &vm->locals[vm->frame_base + var_slot] : &vm->globals[var_slot];
 
-    MMFLOAT step = vm->globals[step_slot].f;
+    MMFLOAT step = step_is_local ? vm->locals[vm->frame_base + step_slot].f : vm->globals[step_slot].f;
     var_ptr->f += step;
 
     MMFLOAT val = var_ptr->f;
-    MMFLOAT lim = vm->globals[lim_slot].f;
+    MMFLOAT lim = lim_is_local ? vm->locals[vm->frame_base + lim_slot].f : vm->globals[lim_slot].f;
 
     int past;
     if (step > 0.0)
@@ -2668,9 +2686,9 @@ op_call_sub: {
         if (slot >= VM_MAX_LOCALS)
             bc_vm_error(vm, "Local variable overflow");
         uint8_t arg_type = vm->stack_types[vm->sp];
-        uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
+        uint8_t param_type = (i < sf->nparams && i < BC_MAX_PARAMS) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
-        if (i < sf->nparams && sf->param_is_array[i]) {
+        if (i < sf->nparams && i < BC_MAX_PARAMS && sf->param_is_array[i]) {
             BCArray *src;
             if (!bc_stack_type_matches_array_param(arg_type, param_type))
                 bc_vm_error(vm, "Array parameter type mismatch");
@@ -2736,9 +2754,9 @@ op_call_fun: {
         if (slot >= VM_MAX_LOCALS)
             bc_vm_error(vm, "Local variable overflow");
         uint8_t arg_type = vm->stack_types[vm->sp];
-        uint8_t param_type = (i < sf->nparams) ? sf->param_types[i] : arg_type;
+        uint8_t param_type = (i < sf->nparams && i < BC_MAX_PARAMS) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
-        if (i < sf->nparams && sf->param_is_array[i]) {
+        if (i < sf->nparams && i < BC_MAX_PARAMS && sf->param_is_array[i]) {
             BCArray *src;
             if (!bc_stack_type_matches_array_param(arg_type, param_type))
                 bc_vm_error(vm, "Array parameter type mismatch");
@@ -2889,7 +2907,8 @@ op_load_local_s: {
     uint16_t offset = READ_U16();
     int idx = vm->frame_base + offset;
     if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    PUSH_S(vm->locals[idx].s);
+    uint8_t *s = vm->locals[idx].s;
+    PUSH_S(s ? s : vm_empty_string);
     DISPATCH();
 }
 
@@ -3900,101 +3919,6 @@ op_syscall: {
     DISPATCH();
 }
 
-op_cls: {
-    uint8_t has_arg = *vm->pc++;
-    GfxClsArg arg = {0};
-    GfxClsOps ops;
-    VMBoxScalarCtx scalar_ctx;
-
-    if (has_arg) {
-        BCValue v;
-        uint8_t type;
-        if (vm->sp < 0) bc_vm_error(vm, "CLS stack underflow");
-        v = vm->stack[vm->sp];
-        type = vm->stack_types[vm->sp];
-        vm->sp--;
-        if ((type & (T_INT | T_NBR)) == 0 || (type & T_STR))
-            bc_vm_error(vm, "CLS requires numeric arguments");
-        scalar_ctx.value = bc_vm_box_scalar_int(vm, v, type);
-        arg.ctx = &scalar_ctx;
-        arg.get_int = vm_cls_get_int;
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-#ifdef GUICONTROLS
-    HideAllControls();
-#endif
-    ops.ctx = vm;
-    ops.do_clear = vm_cls_do_clear;
-    ops.fail_msg = vm_cls_fail_msg;
-    ops.fail_range = vm_cls_fail_range;
-    vm_sys_graphics_cls_execute(has_arg, &arg, &ops);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_pixel: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_PIXEL_ARG_COUNT];
-    uint16_t slots[BC_PIXEL_ARG_COUNT];
-    BCValue scalars[BC_PIXEL_ARG_COUNT];
-    uint8_t scalar_types[BC_PIXEL_ARG_COUNT];
-    GfxPixelArg args[GFX_PIXEL_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[GFX_PIXEL_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[GFX_PIXEL_ARG_COUNT];
-    GfxPixelErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_PIXEL_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) slots[i] = READ_U16();
-    }
-
-    for (i = BC_PIXEL_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "PIXEL stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_pixel_fail_msg;
-    errors.fail_range = vm_pixel_fail_range;
-
-    for (i = 0; i < GFX_PIXEL_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_pixel_execute((bc_vm_box_is_array_kind(kinds[0]) && bc_vm_box_is_array_kind(kinds[1])) ?
-                                      GFX_PIXEL_MODE_VECTOR : GFX_PIXEL_MODE_SCALAR,
-                                  args, field_count, &errors);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
 op_fastgfx_swap:
     bc_fastgfx_swap();
     DISPATCH();
@@ -4320,71 +4244,6 @@ op_file: {
     DISPATCH();
 }
 
-op_box: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_BOX_ARG_COUNT];
-    uint16_t slots[BC_BOX_ARG_COUNT];
-    BCValue scalars[BC_BOX_ARG_COUNT];
-    uint8_t scalar_types[BC_BOX_ARG_COUNT];
-    GfxBoxIntArg args[GFX_BOX_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[GFX_BOX_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[GFX_BOX_ARG_COUNT];
-    GfxBoxErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            slots[i] = READ_U16();
-        }
-    }
-
-    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "BOX stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_box_fail_msg;
-    errors.fail_range = vm_box_fail_range;
-
-    for (i = 0; i < GFX_BOX_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_box_execute((bc_vm_box_is_array_kind(kinds[0]) && bc_vm_box_is_array_kind(kinds[1])) ?
-                                    GFX_BOX_MODE_VECTOR : GFX_BOX_MODE_SCALAR,
-                                args, field_count, &errors);
-
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
 op_rgb: {
     int b = (int)POP_I();
     int g = (int)POP_I();
@@ -4393,450 +4252,6 @@ op_rgb: {
     DISPATCH();
 }
 
-op_rbox: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_BOX_ARG_COUNT];
-    uint16_t slots[BC_BOX_ARG_COUNT];
-    BCValue scalars[BC_BOX_ARG_COUNT];
-    uint8_t scalar_types[BC_BOX_ARG_COUNT];
-    GfxBoxIntArg args[GFX_BOX_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[GFX_BOX_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[GFX_BOX_ARG_COUNT];
-    GfxBoxErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            slots[i] = READ_U16();
-        }
-    }
-
-    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "RBOX stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_box_fail_msg;
-    errors.fail_range = vm_box_fail_range;
-
-    for (i = 0; i < GFX_BOX_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_rbox_execute((bc_vm_box_is_array_kind(kinds[0]) &&
-                                  bc_vm_box_is_array_kind(kinds[1]) &&
-                                  bc_vm_box_is_array_kind(kinds[2]) &&
-                                  bc_vm_box_is_array_kind(kinds[3])) ?
-                                     GFX_BOX_MODE_VECTOR : GFX_BOX_MODE_SCALAR,
-                                 args, field_count, &errors);
-
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_arc: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_BOX_ARG_COUNT];
-    BCValue scalars[BC_BOX_ARG_COUNT];
-    uint8_t scalar_types[BC_BOX_ARG_COUNT];
-    int i;
-    int x, y, r1, has_r2 = 0, r2 = 0, has_c = 0, c = 0;
-    MMFLOAT a1, a2;
-
-    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            (void)READ_U16();
-            bc_vm_error(vm, "ARC does not support array arguments");
-        }
-    }
-
-    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "ARC stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    if (field_count < 6 || field_count > BC_BOX_ARG_COUNT) bc_vm_error(vm, "Argument count");
-    if (kinds[0] != BC_BOX_ARG_STACK || kinds[1] != BC_BOX_ARG_STACK || kinds[2] != BC_BOX_ARG_STACK ||
-        kinds[4] != BC_BOX_ARG_STACK || kinds[5] != BC_BOX_ARG_STACK)
-        bc_vm_error(vm, "Argument count");
-
-    x = bc_vm_box_scalar_int(vm, scalars[0], scalar_types[0]);
-    y = bc_vm_box_scalar_int(vm, scalars[1], scalar_types[1]);
-    r1 = bc_vm_box_scalar_int(vm, scalars[2], scalar_types[2]);
-    a1 = bc_vm_box_scalar_float(vm, scalars[4], scalar_types[4]);
-    a2 = bc_vm_box_scalar_float(vm, scalars[5], scalar_types[5]);
-
-    if (field_count > 3 && kinds[3] == BC_BOX_ARG_STACK) {
-        has_r2 = 1;
-        r2 = bc_vm_box_scalar_int(vm, scalars[3], scalar_types[3]);
-    }
-    if (field_count > 6 && kinds[6] == BC_BOX_ARG_STACK) {
-        has_c = 1;
-        c = bc_vm_box_scalar_int(vm, scalars[6], scalar_types[6]);
-    }
-
-    vm_sys_graphics_arc_execute(x, y, r1, has_r2, r2, a1, a2, has_c, c);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_triangle: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_TRIANGLE_ARG_COUNT];
-    uint16_t slots[BC_TRIANGLE_ARG_COUNT];
-    BCValue scalars[BC_TRIANGLE_ARG_COUNT];
-    uint8_t scalar_types[BC_TRIANGLE_ARG_COUNT];
-    GfxBoxIntArg args[BC_TRIANGLE_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[BC_TRIANGLE_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[BC_TRIANGLE_ARG_COUNT];
-    GfxBoxErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_TRIANGLE_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            slots[i] = READ_U16();
-        }
-    }
-
-    for (i = BC_TRIANGLE_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "TRIANGLE stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_box_fail_msg;
-    errors.fail_range = vm_box_fail_range;
-
-    for (i = 0; i < BC_TRIANGLE_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_triangle_execute((bc_vm_box_is_array_kind(kinds[0]) &&
-                                      bc_vm_box_is_array_kind(kinds[1]) &&
-                                      bc_vm_box_is_array_kind(kinds[2]) &&
-                                      bc_vm_box_is_array_kind(kinds[3]) &&
-                                      bc_vm_box_is_array_kind(kinds[4]) &&
-                                      bc_vm_box_is_array_kind(kinds[5])) ?
-                                         GFX_BOX_MODE_VECTOR : GFX_BOX_MODE_SCALAR,
-                                     args, field_count, &errors);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_polygon: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_POLYGON_ARG_COUNT];
-    uint16_t slots[BC_POLYGON_ARG_COUNT];
-    BCValue scalars[BC_POLYGON_ARG_COUNT];
-    uint8_t scalar_types[BC_POLYGON_ARG_COUNT];
-    GfxBoxIntArg args[BC_POLYGON_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[BC_POLYGON_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[BC_POLYGON_ARG_COUNT];
-    GfxBoxErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_POLYGON_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) slots[i] = READ_U16();
-    }
-    for (i = BC_POLYGON_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "POLYGON stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_box_fail_msg;
-    errors.fail_range = vm_box_fail_range;
-
-    for (i = 0; i < BC_POLYGON_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_polygon_execute(args, field_count, &errors);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_circle: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_BOX_ARG_COUNT];
-    uint16_t slots[BC_BOX_ARG_COUNT];
-    BCValue scalars[BC_BOX_ARG_COUNT];
-    uint8_t scalar_types[BC_BOX_ARG_COUNT];
-    GfxCircleArg args[GFX_CIRCLE_ARG_COUNT] = {0};
-    VMBoxScalarCtx int_scalar_ctx[GFX_CIRCLE_ARG_COUNT];
-    VMFloatScalarCtx float_scalar_ctx[GFX_CIRCLE_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[GFX_CIRCLE_ARG_COUNT];
-    GfxCircleErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_BOX_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            slots[i] = READ_U16();
-        }
-    }
-
-    for (i = BC_BOX_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "CIRCLE stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_circle_fail_msg;
-    errors.fail_range = vm_circle_fail_range;
-
-    for (i = 0; i < GFX_CIRCLE_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-            args[i].get_float = vm_box_array_get_float;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            int_scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            float_scalar_ctx[i].value = bc_vm_box_scalar_float(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &int_scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-            if (i == 4) {
-                args[i].ctx = &float_scalar_ctx[i];
-                args[i].get_float = vm_box_scalar_get_float;
-            } else {
-                args[i].get_float = NULL;
-            }
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_circle_execute((bc_vm_box_is_array_kind(kinds[0]) &&
-                                    bc_vm_box_is_array_kind(kinds[1]) &&
-                                    bc_vm_box_is_array_kind(kinds[2])) ?
-                                       GFX_CIRCLE_MODE_VECTOR : GFX_CIRCLE_MODE_SCALAR,
-                                   args, field_count, &errors);
-
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
-
-op_draw_line: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_LINE_ARG_COUNT];
-    uint16_t slots[BC_LINE_ARG_COUNT];
-    BCValue scalars[BC_LINE_ARG_COUNT];
-    uint8_t scalar_types[BC_LINE_ARG_COUNT];
-    GfxLineArg args[GFX_LINE_ARG_COUNT] = {0};
-    VMBoxScalarCtx scalar_ctx[GFX_LINE_ARG_COUNT];
-    VMBoxArrayCtx array_ctx[GFX_LINE_ARG_COUNT];
-    GfxLineErrorSink errors;
-    int i;
-
-    for (i = 0; i < BC_LINE_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        slots[i] = 0;
-        scalar_types[i] = 0;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            slots[i] = READ_U16();
-        }
-    }
-
-    for (i = BC_LINE_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "LINE stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    errors.ctx = vm;
-    errors.fail_msg = vm_line_fail_msg;
-    errors.fail_range = vm_line_fail_range;
-
-    for (i = 0; i < GFX_LINE_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        args[i].present = 1;
-        if (bc_vm_box_is_array_kind(kinds[i])) {
-            int count = 0;
-            array_ctx[i].vm = vm;
-            array_ctx[i].kind = kinds[i];
-            array_ctx[i].slot = slots[i];
-            bc_vm_box_get_array(vm, kinds[i], slots[i], &count);
-            args[i].count = count;
-            args[i].ctx = &array_ctx[i];
-            args[i].get_int = vm_box_array_get_int;
-        } else if (kinds[i] == BC_BOX_ARG_STACK) {
-            scalar_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].count = 1;
-            args[i].ctx = &scalar_ctx[i];
-            args[i].get_int = vm_box_scalar_get_int;
-        } else {
-            bc_vm_error(vm, "Argument count");
-        }
-    }
-
-    vm_sys_graphics_line_execute((bc_vm_box_is_array_kind(kinds[0]) &&
-                                  bc_vm_box_is_array_kind(kinds[1]) &&
-                                  field_count > 3 &&
-                                  bc_vm_box_is_array_kind(kinds[2]) &&
-                                  bc_vm_box_is_array_kind(kinds[3])) ?
-                                     GFX_LINE_MODE_VECTOR : GFX_LINE_MODE_SCALAR,
-                                 args, field_count, &errors);
-    DISPATCH();
-}
-
-op_text: {
-    uint8_t field_count = *vm->pc++;
-    uint8_t kinds[BC_TEXT_ARG_COUNT];
-    BCValue scalars[BC_TEXT_ARG_COUNT];
-    uint8_t scalar_types[BC_TEXT_ARG_COUNT];
-    GfxTextArg args[GFX_TEXT_ARG_COUNT] = {0};
-    VMBoxScalarCtx int_ctx[GFX_TEXT_ARG_COUNT];
-    VMStringScalarCtx str_ctx[GFX_TEXT_ARG_COUNT];
-    GfxTextOps ops;
-    int i;
-
-    for (i = 0; i < BC_TEXT_ARG_COUNT; i++) {
-        kinds[i] = *vm->pc++;
-        scalar_types[i] = 0;
-    }
-
-    for (i = BC_TEXT_ARG_COUNT - 1; i >= 0; i--) {
-        if (kinds[i] == BC_BOX_ARG_STACK) {
-            if (vm->sp < 0) bc_vm_error(vm, "TEXT stack underflow");
-            scalars[i] = vm->stack[vm->sp];
-            scalar_types[i] = vm->stack_types[vm->sp];
-            vm->sp--;
-        }
-    }
-
-    if (HRes <= 0 || VRes <= 0) bc_vm_error(vm, "Display not configured");
-    for (i = 0; i < GFX_TEXT_ARG_COUNT; i++) {
-        if (kinds[i] == BC_BOX_ARG_EMPTY) continue;
-        if (kinds[i] != BC_BOX_ARG_STACK) bc_vm_error(vm, "Argument count");
-        args[i].present = 1;
-        if (scalar_types[i] == T_STR) {
-            str_ctx[i].vm = vm;
-            str_ctx[i].value = scalars[i].s;
-            args[i].ctx = &str_ctx[i];
-            args[i].get_str = vm_text_scalar_get_str;
-        } else {
-            int_ctx[i].value = bc_vm_box_scalar_int(vm, scalars[i], scalar_types[i]);
-            args[i].ctx = &int_ctx[i];
-            args[i].get_int = vm_text_scalar_get_int;
-        }
-    }
-
-    ops.ctx = vm;
-    ops.get_defaults = vm_text_get_defaults;
-    ops.font_valid = vm_text_font_valid;
-    ops.render = NULL;
-    ops.fail_msg = vm_text_fail_msg;
-    ops.fail_range = vm_text_fail_range;
-    vm_sys_graphics_text_execute(args, field_count, &ops);
-    if (Option.Refresh) Display_Refresh();
-    DISPATCH();
-}
 
     /* ==================================================================
      * Housekeeping

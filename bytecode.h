@@ -364,6 +364,7 @@ typedef enum {
     BC_SYS_FILE_KILL,
     BC_SYS_FILE_RENAME,
     BC_SYS_FILE_COPY,
+    BC_SYS_RUN,
 } BCSyscallId;
 
 typedef enum {
@@ -418,6 +419,7 @@ typedef enum {
   #define BC_MAX_FIXUPS     2048
   #define BC_MAX_LINEMAP    4096
   #define BC_MAX_LOCALS     64
+  #define BC_MAX_PARAMS     16
   #define BC_MAX_LOCAL_META 4096
   #define BC_MAX_NEST       64
   #define BC_MAX_DATA_ITEMS 1024
@@ -435,6 +437,7 @@ typedef enum {
   #define BC_MAX_FIXUPS     512
   #define BC_MAX_LINEMAP    1024
   #define BC_MAX_LOCALS     64
+  #define BC_MAX_PARAMS     16
   #define BC_MAX_LOCAL_META 384
   #define BC_MAX_NEST       32
   #define BC_MAX_DATA_ITEMS 1024
@@ -446,6 +449,7 @@ typedef enum {
   #define BC_MAX_FIXUPS     256
   #define BC_MAX_LINEMAP    512
   #define BC_MAX_LOCALS     64
+  #define BC_MAX_PARAMS     16
   #define BC_MAX_LOCAL_META 256
   #define BC_MAX_NEST       16
   #define BC_MAX_DATA_ITEMS 512
@@ -469,8 +473,8 @@ typedef struct {
     char     name[MAXVARLEN + 1];
     uint32_t entry_addr;        /* bytecode offset of ENTER_FRAME */
     uint8_t  nparams;
-    uint8_t  param_types[BC_MAX_LOCALS]; /* T_INT, T_NBR, T_STR for each param */
-    uint8_t  param_is_array[BC_MAX_LOCALS]; /* 1 if param is array (passed by ref) */
+    uint8_t  param_types[BC_MAX_PARAMS]; /* T_INT, T_NBR, T_STR for each param */
+    uint8_t  param_is_array[BC_MAX_PARAMS]; /* 1 if param is array (passed by ref) */
     uint8_t  return_type;       /* 0 for SUB, T_INT/T_NBR/T_STR for FUNCTION */
     uint16_t nlocals;           /* total local slots (params + LOCAL vars) */
 } BCSubFun;
@@ -533,7 +537,7 @@ typedef struct {
     int        case_end_count;
 
     /* For EXIT FOR/DO — patch locations to fill in when we reach NEXT/LOOP */
-    uint32_t   exit_fixups[16];
+    uint32_t   exit_fixups[64];
     int        exit_fixup_count;
 } BCNestEntry;
 
@@ -782,6 +786,9 @@ void bc_vm_release_arrays(BCVMState *vm);
 
 /* Commands */
 void bc_run_source_string(const char *source, const char *source_name);
+int  bc_try_compile_line(const char *line);
+void bc_run_immediate(const char *line);
+void bc_run_file(const char *filename);
 
 /* Helpers */
 uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);
