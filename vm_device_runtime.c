@@ -125,6 +125,10 @@ int CameraChannel = 0;
 const uint8_t *flash_option_contents = (const uint8_t *)(XIP_BASE + FLASH_TARGET_OFFSET);
 bool mergerunning = false;
 uint32_t mergetimer = 0;
+volatile bool mergedone = false;
+unsigned char SPIatRisk = false;
+uint32_t _excep_code = 0;
+void SoftReset(void) { watchdog_enable(1, 1); while(1); }
 bool rp2350a = true;
 volatile BYTE SDCardStat = STA_NOINIT;
 volatile unsigned int Timer1 = 0, Timer2 = 0, Timer3 = 0, Timer4 = 0, Timer5 = 0;
