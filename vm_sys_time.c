@@ -1,12 +1,18 @@
+/*
+ * VM syscall conversion rule:
+ * - copy/adapt legacy implementation code as closely as possible
+ * - copy/adapt dependent legacy helpers too when needed
+ * - do not invent new algorithms when legacy code already exists
+ * - do not call, wrap, or dispatch back into legacy handlers
+ * Any deviation from legacy implementation shape must be explicit and justified.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include "MMBasic_Includes.h"
-#include "Hardware_Includes.h"
 #include "vm_sys_time.h"
-
-extern uint64_t readusclock(void);
+#include "vm_device_support.h"
 
 #ifndef MMBASIC_HOST
 extern int64_t TimeOffsetToUptime;

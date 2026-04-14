@@ -1859,7 +1859,11 @@ void InitReservedIO(void) {
 }
 
 char *pinsearch(int pin){
+#ifdef PICOMITE_VM_DEVICE_ONLY
+	static char buff[STRINGSIZE];
+#else
 	char *buff=GetTempMemory(STRINGSIZE);
+#endif
 #ifndef PICOMITEVGA
 	int ssd=PinDef[Option.SSD_DATA].GPno;
 	if(pin==Option.LCD_CD)strcpy(buff,"LCD DC");

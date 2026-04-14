@@ -1,0 +1,12 @@
+OPTION EXPLICIT
+OPTION CONTINUATION LINES ON
+
+DIM x%
+x% = 3
+
+IF x% = 3 _
+   AND x% > 1 THEN
+  PRINT "ok"
+ELSE
+  PRINT "bad"
+END IF

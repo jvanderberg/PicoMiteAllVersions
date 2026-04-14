@@ -308,3 +308,37 @@ run_case \
     --assert-pixel 34,26,00FF00 \
     --assert-pixel 84,40,0000FF \
     --assert-pixel 72,28,FFFFFF
+
+run_case \
+    "t159_framebuffer_merge_basic" \
+    "tests/t159_framebuffer_merge_basic.bas" \
+    --assert-pixel 5,5,0000FF \
+    --assert-pixel 25,25,00FF00 \
+    --assert-pixel 40,32,FF0000 \
+    --assert-pixel 75,25,00FF00
+
+run_case \
+    "t160_framebuffer_merge_running" \
+    "tests/t160_framebuffer_merge_running.bas" \
+    --assert-pixel 5,5,0000FF \
+    --assert-pixel 20,20,00FF00 \
+    --assert-pixel 35,28,FF0000 \
+    --assert-pixel 85,20,00FF00
+
+run_case \
+    "t162_framebuffer_copy_display_roundtrip" \
+    "tests/t162_framebuffer_copy_display_roundtrip.bas" \
+    --assert-pixel 5,5,0000FF \
+    --assert-pixel 20,20,0000FF
+
+run_case \
+    "t163_framebuffer_copy_buffer_roundtrip" \
+    "tests/t163_framebuffer_copy_buffer_roundtrip.bas" \
+    --assert-pixel 5,5,FF0000 \
+    --assert-pixel 20,20,FF0000
+
+run_case \
+    "t164_framebuffer_copy_background_sync" \
+    "tests/t164_framebuffer_copy_background_sync.bas" \
+    --assert-pixel 5,5,00FF00 \
+    --assert-pixel 20,20,00FF00

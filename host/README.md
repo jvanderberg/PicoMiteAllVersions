@@ -26,6 +26,7 @@ cd host
 ./run_pixel_tests.sh
 ./run_host_shim_tests.sh
 ./run_frontend_tests.sh
+./run_optimizer_tests.sh
 ./run_unsupported_tests.sh
 ./run_missing_syscall_tests.sh
 ```
@@ -38,6 +39,7 @@ make -C host
 ./host/run_pixel_tests.sh
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
+./host/run_optimizer_tests.sh
 bash host/run_unsupported_tests.sh
 ./host/run_missing_syscall_tests.sh
 ```
@@ -59,13 +61,14 @@ The default compare mode runs the legacy interpreter first, then the VM, and fai
 
 | Command | Purpose |
 |---------|---------|
-| `./run_tests.sh` | Runs all `tests/t*.bas` oracle tests in compare mode. Current count: 162. |
+| `./run_tests.sh` | Runs all `tests/t*.bas` oracle tests in compare mode. Current count: 168. |
 | `./run_tests.sh --interp` | Runs oracle tests through the legacy interpreter only. |
 | `./run_tests.sh --vm` | Runs oracle tests through the VM only. |
 | `./run_tests.sh tests/t01_print.bas --vm` | Runs one test through one engine. |
 | `./run_pixel_tests.sh` | Runs framebuffer assertions through both interpreter and VM. |
 | `./run_host_shim_tests.sh` | Runs deterministic host shim tests, including fixed date/time and delayed keyboard injection. Current count: 4. |
-| `./run_frontend_tests.sh` | Runs raw-source VM frontend oracle comparisons. Current count: 27. |
+| `./run_frontend_tests.sh` | Runs raw-source VM frontend oracle comparisons. Current count: 48. |
+| `./run_optimizer_tests.sh` | Runs peephole/superinstruction assertion and equivalence tests. Current count: 22. |
 | `./run_unsupported_tests.sh` | VM-only negative tests for unsupported syscalls. Current count: 0. |
 | `./run_missing_syscall_tests.sh` | Inventory runner for missing VM syscall implementations. Current count: 0. |
 | `./run_bench.sh` | Runs host benchmarks. |
@@ -89,6 +92,10 @@ Missing syscall implementation tests belong in `tests/missing_syscalls/*.bas`. T
 Host shim tests belong in `tests/host_shims/*.bas`. These are for host harness behavior rather than MMBasic semantic coverage.
 
 Source frontend tests belong in `tests/frontend/*.bas`. These compare `source -> legacy interpreter` against `source -> VM source frontend -> bytecode -> VM`; they should grow before adding more native syscall coverage.
+
+Optimizer tests belong in `tests/frontend/` and are run by `run_optimizer_tests.sh`. Each optimization has two test files:
+- **Peephole tests** (`t0XX_*_peephole.bas`): verify the fused opcode appears in `--vm-disasm` output and the unfused form is absent.
+- **Equivalence tests** (`t0XX_*_opt_equiv.bas`): compare `-O0` vs `-O1` output to verify correctness across boundary values, sign combinations, and type edge cases.
 
 Graphics tests should prefer deterministic framebuffer assertions in `run_pixel_tests.sh`. Host graphics are still an approximation of hardware, so final validation for FASTGFX, LCD behavior, timing, SD, and resource limits must happen on device.
 
@@ -145,13 +152,13 @@ Current snapshot:
 
 - `make -C host`: passes.
 - `make -C build2350 -j8`: passes.
+- `./host/run_tests.sh`: `168 passed, 0 failed`.
+- `./host/run_pixel_tests.sh`: passes.
 - `./host/run_host_shim_tests.sh`: `4 passed, 0 failed`.
-- `./host/run_frontend_tests.sh`: `27 passed, 0 failed`.
+- `./host/run_frontend_tests.sh`: `48 passed, 0 failed`.
+- `./host/run_optimizer_tests.sh`: `22 passed, 0 failed`.
 - `bash host/run_unsupported_tests.sh`: `0 passed, 0 failed`.
 - `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`.
-- `./host/run_tests.sh`: `162 passed, 0 failed`.
-- `./host/run_pixel_tests.sh`: passes.
-- `arm-none-eabi-size build2350/PicoMite.elf`: `text=976656`, `data=0`, `bss=296140`, `dec=1272796`.
 
 ## Known Build Note
 

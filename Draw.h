@@ -114,6 +114,7 @@ extern void DrawBox(int x1, int y1, int x2, int y2, int w, int c, int fill);
 extern void DrawRBox(int x1, int y1, int x2, int y2, int radius, int c, int fill);
 extern void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect);
 extern void ClearScreen(int c);
+extern void setframebuffer(void);
 extern void SetFont(int fnt);
 extern void ResetDisplay(void);
 extern int GetFontWidth(int fnt);

@@ -1,0 +1,8 @@
+OPTION EXPLICIT
+DIM x! = 0.0
+
+DO WHILE x! < 2.0
+  PRINT x!;
+  x! = x! + 0.5
+LOOP
+PRINT

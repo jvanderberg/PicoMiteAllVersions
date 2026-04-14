@@ -11,8 +11,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
-#include "MMBasic.h"
 #include "bytecode.h"
+#include "vm_device_support.h"
 
 /* Global debug flag - when set, VM execution dumps stats + disassembly */
 int bc_debug_enabled = 0;
@@ -221,6 +221,12 @@ static const char *opcode_name(uint8_t op) {
         case OP_PIN_WRITE:    return "PIN_WRITE";
         case OP_PWM:          return "PWM";
         case OP_SERVO:        return "SERVO";
+        case OP_MATH_MULSHR:  return "MATH_MULSHR";
+        case OP_MATH_SQRSHR:  return "MATH_SQRSHR";
+        case OP_MATH_MULSHRADD:return "MATH_MULSHRADD";
+        case OP_JCMP_I:       return "JCMP_I";
+        case OP_JCMP_F:       return "JCMP_F";
+        case OP_MOV_VAR:      return "MOV_VAR";
         case OP_SYSCALL:      return "SYSCALL";
 
         case OP_LINE:         return "LINE";
@@ -246,6 +252,18 @@ static uint32_t rd32(const uint8_t *p) {
 }
 static int64_t rdi64(const uint8_t *p) {
     int64_t v; memcpy(&v, p, 8); return v;
+}
+
+static const char *jcmp_name(uint8_t rel) {
+    switch (rel) {
+        case BC_JCMP_EQ: return "EQ";
+        case BC_JCMP_NE: return "NE";
+        case BC_JCMP_LT: return "LT";
+        case BC_JCMP_GT: return "GT";
+        case BC_JCMP_LE: return "LE";
+        case BC_JCMP_GE: return "GE";
+        default:         return "?";
+    }
 }
 static double rdf64(const uint8_t *p) {
     double v; memcpy(&v, p, 8); return v;
@@ -310,10 +328,19 @@ void bc_disassemble(BCCompiler *cs) {
 
         /* slot:16 opcodes */
         case OP_LOAD_I: case OP_LOAD_F: case OP_LOAD_S:
-        case OP_STORE_I: case OP_STORE_F: case OP_STORE_S:
-        case OP_INC_I: case OP_INC_F: {
+        case OP_STORE_I: case OP_STORE_F: case OP_STORE_S: {
             uint16_t s = rd16(code + pc); pc += 2;
             dbg_print("  %04X: %-16s %d (%s)\r\n", start, name, s, slot_name(cs, s));
+            break;
+        }
+
+        case OP_INC_I:
+        case OP_INC_F: {
+            uint16_t raw = rd16(code + pc); pc += 2;
+            uint16_t s = raw & 0x7FFFu;
+            dbg_print("  %04X: %-16s %s%d (%s)\r\n", start, name,
+                      (raw & 0x8000u) ? "local:" : "global:",
+                      s, slot_name(cs, s));
             break;
         }
 
@@ -350,6 +377,30 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_JMP: case OP_JZ: case OP_JNZ: {
             int16_t off = rdi16(code + pc); pc += 2;
             dbg_print("  %04X: %-16s %+d -> %04X\r\n", start, name, off, (unsigned)(pc + off));
+            break;
+        }
+
+        case OP_JCMP_I:
+        case OP_JCMP_F: {
+            uint8_t rel = code[pc++];
+            int16_t off = rdi16(code + pc); pc += 2;
+            dbg_print("  %04X: %-16s %s %+d -> %04X\r\n",
+                      start, name, jcmp_name(rel), off, (unsigned)(pc + off));
+            break;
+        }
+
+        case OP_MOV_VAR: {
+            uint8_t kind = code[pc++];
+            uint16_t src_raw = rd16(code + pc); pc += 2;
+            uint16_t dst_raw = rd16(code + pc); pc += 2;
+            const char *kind_name = "?";
+            switch (kind) {
+                case BC_MOV_INT: kind_name = "I"; break;
+                case BC_MOV_FLT: kind_name = "F"; break;
+                case BC_MOV_STR: kind_name = "S"; break;
+            }
+            dbg_print("  %04X: %-16s kind=%s src=%s dst=%s\r\n",
+                      start, name, kind_name, slot_name(cs, src_raw), slot_name(cs, dst_raw));
             break;
         }
 
@@ -422,6 +473,9 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_PLAY_STOP:
         case OP_PIN_READ:
         case OP_PIN_WRITE:
+        case OP_MATH_MULSHR:
+        case OP_MATH_SQRSHR:
+        case OP_MATH_MULSHRADD:
             dbg_print("  %04X: %-16s\r\n", start, name);
             break;
 

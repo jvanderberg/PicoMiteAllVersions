@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "MMBasic.h"
 #include "bc_compiler_internal.h"
 #include "bc_source.h"
 #include "Draw.h"
@@ -14,6 +13,12 @@
 typedef struct {
     int line_no;
 } BCSourceFrontend;
+
+#ifdef MMBASIC_HOST
+int bc_opt_level = 1;
+#else
+int bc_opt_level = 1;
+#endif
 
 static uint8_t source_parse_expression(BCSourceFrontend *fe, BCCompiler *cs, const char **pp);
 static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const char *stmt);
@@ -66,7 +71,184 @@ static void source_insert_byte(BCCompiler *cs, uint32_t pos, uint8_t b) {
     cs->code_len++;
 }
 
+static void source_delete_bytes(BCCompiler *cs, uint32_t pos, uint32_t count) {
+    if (count == 0) return;
+    if (pos + count > cs->code_len) {
+        bc_set_error(cs, "Internal source compiler error");
+        return;
+    }
+    memmove(&cs->code[pos], &cs->code[pos + count], cs->code_len - (pos + count));
+    cs->code_len -= count;
+}
+
+static int source_power_of_two_bits_i64(int64_t v) {
+    int bits = 0;
+    if (v <= 0) return -1;
+    while ((v & 1) == 0) {
+        v >>= 1;
+        bits++;
+    }
+    return (v == 1) ? bits : -1;
+}
+
+static int source_try_fuse_mulshr(BCCompiler *cs, uint8_t left, uint8_t right,
+                                  uint32_t expr_start, uint32_t right_start) {
+    uint32_t mul_pos;
+    uint32_t mul_len;
+    int64_t divisor;
+    int bits;
+
+    if (bc_opt_level < 1) return 0;
+    if (left != T_INT || right != T_INT) return 0;
+    if (right_start < 1 || right_start + 9 != cs->code_len) return 0;
+    if (cs->code[right_start - 1] != OP_MUL_I) return 0;
+    if (cs->code[right_start] != OP_PUSH_INT) return 0;
+
+    memcpy(&divisor, &cs->code[right_start + 1], sizeof(divisor));
+    bits = source_power_of_two_bits_i64(divisor);
+    if (bits < 0) return 0;
+
+    mul_pos = right_start - 1;
+    mul_len = mul_pos - expr_start;
+    source_delete_bytes(cs, mul_pos, 1);
+    if (cs->has_error) return 0;
+
+    divisor = (int64_t)bits;
+    cs->code[mul_pos] = OP_PUSH_INT;
+    memcpy(&cs->code[mul_pos + 1], &divisor, sizeof(divisor));
+    if (mul_len == 6 &&
+        cs->code[expr_start] == OP_LOAD_I &&
+        cs->code[expr_start + 3] == OP_LOAD_I &&
+        memcmp(&cs->code[expr_start + 1], &cs->code[expr_start + 4], 2) == 0) {
+        source_delete_bytes(cs, expr_start + 3, 3);
+        if (cs->has_error) return 0;
+        bc_emit_byte(cs, OP_MATH_SQRSHR);
+        return 1;
+    }
+    if (mul_len == 6 &&
+        cs->code[expr_start] == OP_LOAD_LOCAL_I &&
+        cs->code[expr_start + 3] == OP_LOAD_LOCAL_I &&
+        memcmp(&cs->code[expr_start + 1], &cs->code[expr_start + 4], 2) == 0) {
+        source_delete_bytes(cs, expr_start + 3, 3);
+        if (cs->has_error) return 0;
+        bc_emit_byte(cs, OP_MATH_SQRSHR);
+        return 1;
+    }
+    bc_emit_byte(cs, OP_MATH_MULSHR);
+    return 1;
+}
+
+static int source_is_same_simple_int_load(BCCompiler *cs,
+                                          uint32_t start_a, uint32_t end_a,
+                                          uint32_t start_b, uint32_t end_b) {
+    uint32_t len_a = end_a - start_a;
+    uint32_t len_b = end_b - start_b;
+
+    if (len_a != len_b) return 0;
+    if (len_a == 3 &&
+        cs->code[start_a] == OP_LOAD_I &&
+        cs->code[start_b] == OP_LOAD_I &&
+        memcmp(&cs->code[start_a + 1], &cs->code[start_b + 1], 2) == 0)
+        return 1;
+    if (len_a == 3 &&
+        cs->code[start_a] == OP_LOAD_LOCAL_I &&
+        cs->code[start_b] == OP_LOAD_LOCAL_I &&
+        memcmp(&cs->code[start_a + 1], &cs->code[start_b + 1], 2) == 0)
+        return 1;
+    return 0;
+}
+
+static int source_try_fuse_mulshradd(BCCompiler *cs, uint8_t left, uint8_t right,
+                                     uint32_t right_start, char op) {
+    if (bc_opt_level < 1) return 0;
+    if (op != '+') return 0;
+    if (left != T_INT || right != T_INT) return 0;
+    if (right_start < 1) return 0;
+    if (cs->code[right_start - 1] != OP_MATH_MULSHR)
+        return 0;
+    source_delete_bytes(cs, right_start - 1, 1);
+    if (cs->has_error) return 0;
+    bc_emit_byte(cs, OP_MATH_MULSHRADD);
+    return 1;
+}
+
+static int source_try_fuse_mov_assignment(BCCompiler *cs, uint32_t expr_start,
+                                          uint16_t dst_slot, int dst_is_local,
+                                          uint8_t vtype, uint8_t etype) {
+    uint32_t expr_len = cs->code_len - expr_start;
+    uint16_t src_slot;
+    uint8_t mov_kind;
+    uint16_t src_raw;
+    uint16_t dst_raw = dst_is_local ? (uint16_t)(dst_slot | 0x8000u) : dst_slot;
+    int src_is_local;
+
+    if (bc_opt_level < 1) return 0;
+    if (expr_len != 3) return 0;
+    (void)etype;
+
+    if (vtype == T_INT) {
+        mov_kind = BC_MOV_INT;
+        if (cs->code[expr_start] == OP_LOAD_LOCAL_I) src_is_local = 1;
+        else if (cs->code[expr_start] == OP_LOAD_I) src_is_local = 0;
+        else return 0;
+    } else if (vtype == T_NBR) {
+        mov_kind = BC_MOV_FLT;
+        if (cs->code[expr_start] == OP_LOAD_LOCAL_F) src_is_local = 1;
+        else if (cs->code[expr_start] == OP_LOAD_F) src_is_local = 0;
+        else return 0;
+    } else if (vtype == T_STR) {
+        mov_kind = BC_MOV_STR;
+        if (cs->code[expr_start] == OP_LOAD_LOCAL_S) src_is_local = 1;
+        else if (cs->code[expr_start] == OP_LOAD_S) src_is_local = 0;
+        else return 0;
+    } else {
+        return 0;
+    }
+
+    memcpy(&src_slot, &cs->code[expr_start + 1], sizeof(src_slot));
+    src_raw = src_is_local ? (uint16_t)(src_slot | 0x8000u) : src_slot;
+
+    source_delete_bytes(cs, expr_start, expr_len);
+    if (cs->has_error) return 0;
+    bc_emit_byte(cs, OP_MOV_VAR);
+    bc_emit_byte(cs, mov_kind);
+    bc_emit_u16(cs, src_raw);
+    bc_emit_u16(cs, dst_raw);
+    return 1;
+}
+
+static uint8_t source_jcmp_relation(uint8_t compare_op, uint8_t branch_op, uint8_t *jcmp_op) {
+    if (branch_op != OP_JZ && branch_op != OP_JNZ) return 0;
+    switch (compare_op) {
+        case OP_EQ_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_EQ : BC_JCMP_NE;
+        case OP_NE_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_NE : BC_JCMP_EQ;
+        case OP_LT_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_LT : BC_JCMP_GE;
+        case OP_GT_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_GT : BC_JCMP_LE;
+        case OP_LE_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_LE : BC_JCMP_GT;
+        case OP_GE_I: *jcmp_op = OP_JCMP_I; return (branch_op == OP_JNZ) ? BC_JCMP_GE : BC_JCMP_LT;
+        case OP_EQ_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_EQ : BC_JCMP_NE;
+        case OP_NE_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_NE : BC_JCMP_EQ;
+        case OP_LT_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_LT : BC_JCMP_GE;
+        case OP_GT_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_GT : BC_JCMP_LE;
+        case OP_LE_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_LE : BC_JCMP_GT;
+        case OP_GE_F: *jcmp_op = OP_JCMP_F; return (branch_op == OP_JNZ) ? BC_JCMP_GE : BC_JCMP_LT;
+        default:      return 0;
+    }
+}
+
 static uint32_t source_emit_jmp_placeholder(BCCompiler *cs, uint8_t opcode) {
+    uint8_t rel;
+    uint8_t jcmp_op;
+    if (bc_opt_level >= 1 && cs->code_len > 0 &&
+        (rel = source_jcmp_relation(cs->code[cs->code_len - 1], opcode, &jcmp_op)) != 0) {
+        source_delete_bytes(cs, cs->code_len - 1, 1);
+        if (cs->has_error) return 0;
+        bc_emit_byte(cs, jcmp_op);
+        bc_emit_byte(cs, rel);
+        uint32_t patch = cs->code_len;
+        bc_emit_i16(cs, 0);
+        return patch;
+    }
     bc_emit_byte(cs, opcode);
     uint32_t patch = cs->code_len;
     bc_emit_i16(cs, 0);
@@ -75,6 +257,22 @@ static uint32_t source_emit_jmp_placeholder(BCCompiler *cs, uint8_t opcode) {
 
 static void source_patch_jmp_here(BCCompiler *cs, uint32_t patch_addr) {
     bc_patch_i16(cs, patch_addr, (int16_t)(cs->code_len - (patch_addr + 2)));
+}
+
+static void source_emit_rel_jump(BCCompiler *cs, uint8_t opcode, uint32_t target_addr) {
+    uint8_t rel;
+    uint8_t jcmp_op;
+    if (bc_opt_level >= 1 && cs->code_len > 0 &&
+        (rel = source_jcmp_relation(cs->code[cs->code_len - 1], opcode, &jcmp_op)) != 0) {
+        source_delete_bytes(cs, cs->code_len - 1, 1);
+        if (cs->has_error) return;
+        bc_emit_byte(cs, jcmp_op);
+        bc_emit_byte(cs, rel);
+        bc_emit_i16(cs, (int16_t)(target_addr - (cs->code_len + 2)));
+        return;
+    }
+    bc_emit_byte(cs, opcode);
+    bc_emit_i16(cs, (int16_t)(target_addr - (cs->code_len + 2)));
 }
 
 static int source_parse_line_number(const char **pp) {
@@ -919,17 +1117,28 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
 
         if (source_name_eq(name, name_len, "MULSHR") && *after_name == '(') {
+            uint32_t a_start, a_end, b_start, b_end;
             p = after_name + 1;
+            a_start = cs->code_len;
             uint8_t a_type = source_parse_expression(fe, cs, &p);
             source_emit_int_conversion(cs, a_type);
+            a_end = cs->code_len;
             if (!source_expect_char(cs, &p, ',', "Expected ',' after MULSHR a")) return 0;
+            b_start = cs->code_len;
             uint8_t b_type = source_parse_expression(fe, cs, &p);
             source_emit_int_conversion(cs, b_type);
+            b_end = cs->code_len;
             if (!source_expect_char(cs, &p, ',', "Expected ',' after MULSHR b")) return 0;
             uint8_t bits_type = source_parse_expression(fe, cs, &p);
             source_emit_int_conversion(cs, bits_type);
             if (!source_expect_char(cs, &p, ')', "Expected ')' after MULSHR")) return 0;
-            bc_emit_byte(cs, OP_MATH_MULSHR);
+            if (bc_opt_level >= 1 &&
+                source_is_same_simple_int_load(cs, a_start, a_end, b_start, b_end)) {
+                source_delete_bytes(cs, b_start, b_end - b_start);
+                if (cs->has_error) return 0;
+                bc_emit_byte(cs, OP_MATH_SQRSHR);
+            } else
+                bc_emit_byte(cs, OP_MATH_MULSHR);
             *pp = p;
             return T_INT;
         }
@@ -1322,6 +1531,7 @@ static uint8_t source_emit_int_binary(BCCompiler *cs, uint8_t left, uint8_t righ
 }
 
 static uint8_t source_parse_mul_expr(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    uint32_t expr_start = cs->code_len;
     uint8_t left = source_parse_power_expr(fe, cs, pp);
     if (cs->has_error) return 0;
 
@@ -1343,6 +1553,11 @@ static uint8_t source_parse_mul_expr(BCSourceFrontend *fe, BCCompiler *cs, const
         uint32_t right_start = cs->code_len;
         uint8_t right = source_parse_power_expr(fe, cs, &p);
         if (cs->has_error) return 0;
+        if (op == '\\' && source_try_fuse_mulshr(cs, left, right, expr_start, right_start)) {
+            left = T_INT;
+            *pp = p;
+            continue;
+        }
         left = source_emit_numeric_binary(cs, left, right, right_start, op);
         *pp = p;
     }
@@ -1351,6 +1566,7 @@ static uint8_t source_parse_mul_expr(BCSourceFrontend *fe, BCCompiler *cs, const
 }
 
 static uint8_t source_parse_add_expr(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    uint32_t expr_start = cs->code_len;
     uint8_t left = source_parse_mul_expr(fe, cs, pp);
     if (cs->has_error) return 0;
 
@@ -1362,6 +1578,11 @@ static uint8_t source_parse_add_expr(BCSourceFrontend *fe, BCCompiler *cs, const
         uint32_t right_start = cs->code_len;
         uint8_t right = source_parse_mul_expr(fe, cs, &p);
         if (cs->has_error) return 0;
+        if (source_try_fuse_mulshradd(cs, left, right, right_start, op)) {
+            left = T_INT;
+            *pp = p;
+            continue;
+        }
         left = source_emit_numeric_binary(cs, left, right, right_start, op);
         *pp = p;
     }
@@ -1539,6 +1760,7 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
     }
     p++;
 
+    uint32_t expr_start = cs->code_len;
     uint8_t etype = source_parse_expression(fe, cs, &p);
     if (cs->has_error) {
         *pp = p;
@@ -1552,6 +1774,10 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
     }
     if (!(vtype & T_STR) && (etype & T_STR)) {
         bc_set_error(cs, "Cannot assign string expression to numeric variable");
+        *pp = p;
+        return;
+    }
+    if (source_try_fuse_mov_assignment(cs, expr_start, slot, is_local, vtype, etype)) {
         *pp = p;
         return;
     }
@@ -2493,13 +2719,11 @@ static void source_compile_loop(BCSourceFrontend *fe, BCCompiler *cs, const char
     if (source_keyword(&p, "WHILE")) {
         uint8_t type = source_parse_expression(fe, cs, &p);
         if (type == T_STR) bc_set_error(cs, "LOOP WHILE requires a numeric condition");
-        bc_emit_byte(cs, OP_JNZ);
-        bc_emit_i16(cs, (int16_t)(ne->addr1 - (cs->code_len + 2)));
+        source_emit_rel_jump(cs, OP_JNZ, ne->addr1);
     } else if (source_keyword(&p, "UNTIL")) {
         uint8_t type = source_parse_expression(fe, cs, &p);
         if (type == T_STR) bc_set_error(cs, "LOOP UNTIL requires a numeric condition");
-        bc_emit_byte(cs, OP_JZ);
-        bc_emit_i16(cs, (int16_t)(ne->addr1 - (cs->code_len + 2)));
+        source_emit_rel_jump(cs, OP_JZ, ne->addr1);
     } else {
         bc_emit_byte(cs, OP_JMP);
         bc_emit_i16(cs, (int16_t)(ne->addr1 - (cs->code_len + 2)));
@@ -2606,6 +2830,218 @@ static void source_compile_fastgfx(BCSourceFrontend *fe, BCCompiler *cs, const c
     }
 
     bc_set_error(cs, "Unsupported FASTGFX command");
+    *pp = p;
+}
+
+static int source_parse_framebuffer_target(const char **pp, char *target_out) {
+    const char *p = *pp;
+    source_skip_space(&p);
+    if (*p == '"') {
+        p++;
+        if ((*p == 'N' || *p == 'n' || *p == 'F' || *p == 'f' || *p == 'L' || *p == 'l') &&
+            p[1] == '"') {
+            *target_out = (char)toupper((unsigned char)*p);
+            p += 2;
+            *pp = p;
+            return 1;
+        }
+        return 0;
+    }
+    if (*p == 'N' || *p == 'n' || *p == 'F' || *p == 'f' || *p == 'L' || *p == 'l') {
+        *target_out = (char)toupper((unsigned char)*p);
+        p++;
+        *pp = p;
+        return 1;
+    }
+    return 0;
+}
+
+static int source_parse_framebuffer_merge_mode(const char **pp, uint8_t *mode_out) {
+    const char *p = *pp;
+    source_skip_space(&p);
+    if (*p == '"') {
+        p++;
+        if ((*p == 'A' || *p == 'a' || *p == 'B' || *p == 'b' || *p == 'R' || *p == 'r') &&
+            p[1] == '"') {
+            char mode = (char)toupper((unsigned char)*p);
+            *mode_out = (mode == 'A') ? BC_FB_MERGE_MODE_A :
+                        (mode == 'B') ? BC_FB_MERGE_MODE_B : BC_FB_MERGE_MODE_R;
+            p += 2;
+            *pp = p;
+            return 1;
+        }
+        return 0;
+    }
+    if (*p == 'A' || *p == 'a' || *p == 'B' || *p == 'b' || *p == 'R' || *p == 'r') {
+        char mode = (char)toupper((unsigned char)*p);
+        *mode_out = (mode == 'A') ? BC_FB_MERGE_MODE_A :
+                    (mode == 'B') ? BC_FB_MERGE_MODE_B : BC_FB_MERGE_MODE_R;
+        p++;
+        *pp = p;
+        return 1;
+    }
+    return 0;
+}
+
+static void source_compile_framebuffer(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    uint8_t aux[4];
+    source_skip_space(&p);
+
+    if (source_keyword(&p, "CREATE")) {
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, (uint8_t[]){BC_FB_OP_CREATE}, 1);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "LAYER")) {
+        source_skip_space(&p);
+        if (source_keyword(&p, "TOP")) {
+            bc_set_error(cs, "Unsupported FRAMEBUFFER LAYER TOP");
+            *pp = p;
+            return;
+        }
+        if (*p && *p != '\'') {
+            uint8_t type = source_parse_expression(fe, cs, &p);
+            source_emit_int_conversion(cs, type);
+            aux[0] = BC_FB_OP_LAYER;
+            aux[1] = 1;
+            source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 1, aux, 2);
+        } else {
+            aux[0] = BC_FB_OP_LAYER;
+            aux[1] = 0;
+            source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, aux, 2);
+        }
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "WRITE")) {
+        char target = 0;
+        if (!source_parse_framebuffer_target(&p, &target)) {
+            bc_set_error(cs, "Unsupported FRAMEBUFFER WRITE target");
+            *pp = p;
+            return;
+        }
+        aux[0] = BC_FB_OP_WRITE;
+        aux[1] = (uint8_t)target;
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, aux, 2);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "CLOSE")) {
+        char target = BC_FB_TARGET_DEFAULT;
+        source_parse_framebuffer_target(&p, &target);
+        aux[0] = BC_FB_OP_CLOSE;
+        aux[1] = (uint8_t)target;
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, aux, 2);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "MERGE")) {
+        int argc = 0;
+        uint8_t mode = BC_FB_MERGE_MODE_NOW;
+        int has_colour = 0;
+        int has_rate = 0;
+
+        source_skip_space(&p);
+        if (*p && *p != '\'') {
+            uint8_t type = source_parse_expression(fe, cs, &p);
+            source_emit_int_conversion(cs, type);
+            argc++;
+            has_colour = 1;
+            source_skip_space(&p);
+            if (*p == ',') {
+                p++;
+                if (!source_parse_framebuffer_merge_mode(&p, &mode)) {
+                    bc_set_error(cs, "Unsupported FRAMEBUFFER MERGE mode");
+                    *pp = p;
+                    return;
+                }
+                source_skip_space(&p);
+                if (*p == ',') {
+                    p++;
+                    {
+                        uint8_t type2 = source_parse_expression(fe, cs, &p);
+                        source_emit_int_conversion(cs, type2);
+                        argc++;
+                        has_rate = 1;
+                    }
+                }
+            }
+        }
+
+        aux[0] = BC_FB_OP_MERGE;
+        aux[1] = mode;
+        aux[2] = (uint8_t)has_colour;
+        aux[3] = (uint8_t)has_rate;
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, (uint8_t)argc, aux, 4);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "SYNC")) {
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, (uint8_t[]){BC_FB_OP_SYNC}, 1);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "WAIT")) {
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, (uint8_t[]){BC_FB_OP_WAIT}, 1);
+        *pp = p;
+        return;
+    }
+    if (source_keyword(&p, "COPY")) {
+        char from = 0;
+        char to = 0;
+        uint8_t background = 0;
+
+        if (!source_parse_framebuffer_target(&p, &from)) {
+            bc_set_error(cs, "Unsupported FRAMEBUFFER COPY source");
+            *pp = p;
+            return;
+        }
+        source_skip_space(&p);
+        if (*p != ',') {
+            bc_set_error(cs, "Expected ','");
+            *pp = p;
+            return;
+        }
+        p++;
+        if (!source_parse_framebuffer_target(&p, &to)) {
+            bc_set_error(cs, "Unsupported FRAMEBUFFER COPY destination");
+            *pp = p;
+            return;
+        }
+        source_skip_space(&p);
+        if (*p == ',') {
+            p++;
+            source_skip_space(&p);
+            if (*p == '"') {
+                p++;
+                if ((*p == 'B' || *p == 'b') && p[1] == '"') {
+                    background = 1;
+                    p += 2;
+                } else {
+                    bc_set_error(cs, "Unsupported FRAMEBUFFER COPY mode");
+                    *pp = p;
+                    return;
+                }
+            } else if (*p == 'B' || *p == 'b') {
+                background = 1;
+                p++;
+            } else {
+                bc_set_error(cs, "Unsupported FRAMEBUFFER COPY mode");
+                *pp = p;
+                return;
+            }
+        }
+        aux[0] = BC_FB_OP_COPY;
+        aux[1] = (uint8_t)from;
+        aux[2] = (uint8_t)to;
+        aux[3] = background;
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, aux, 4);
+        *pp = p;
+        return;
+    }
+
+    bc_set_error(cs, "Unsupported FRAMEBUFFER command");
     *pp = p;
 }
 
@@ -3708,6 +4144,12 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
+    if (source_keyword(&p, "FRAMEBUFFER")) {
+        source_compile_framebuffer(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
     if (source_keyword(&p, "SAVE")) {
         source_skip_space(&p);
         if (!source_keyword(&p, "IMAGE")) {
@@ -4284,25 +4726,81 @@ static void source_predeclare_line(BCCompiler *cs, const char *line, int line_no
     }
 }
 
-static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
-    int line_no = 1;
-    const char *p = source;
+static void source_update_continuation_setting(const char *line, unsigned char *continuation) {
+    const char *p = line;
 
-    while (*p && !cs->has_error) {
+    if (!continuation) return;
+    source_skip_space(&p);
+    if (isdigit((unsigned char)*p)) {
+        char *end = NULL;
+        (void)strtol(p, &end, 10);
+        if (end != p) {
+            p = end;
+            source_skip_space(&p);
+        }
+    }
+    if (!source_keyword(&p, "OPTION")) return;
+    source_skip_space(&p);
+    if (!source_keyword(&p, "CONTINUATION")) return;
+    source_skip_space(&p);
+    if (!source_keyword(&p, "LINES")) return;
+    source_skip_space(&p);
+    if (source_keyword(&p, "ON") || source_keyword(&p, "ENABLE")) {
+        *continuation = '_';
+    } else if (source_keyword(&p, "OFF") || source_keyword(&p, "DISABLE")) {
+        *continuation = 0;
+    }
+}
+
+static int source_read_logical_line(const char **pp, char *line, size_t line_cap,
+                                    int *physical_line_io, int *line_no_out,
+                                    unsigned char *continuation) {
+    const char *p = *pp;
+    size_t out_len = 0;
+    int line_no = *physical_line_io;
+
+    if (*p == '\0') return 0;
+    line[0] = '\0';
+
+    while (*p) {
         const char *start = p;
+        size_t len;
         while (*p && *p != '\n' && *p != '\r') p++;
-
-        char line[STRINGSIZE + 1];
-        size_t len = (size_t)(p - start);
-        if (len > STRINGSIZE) len = STRINGSIZE;
-        memcpy(line, start, len);
-        line[len] = '\0';
-
-        source_predeclare_line(cs, line, line_no);
+        len = (size_t)(p - start);
+        if (out_len + len > line_cap - 1) len = (line_cap - 1) - out_len;
+        memcpy(line + out_len, start, len);
+        out_len += len;
+        line[out_len] = '\0';
 
         if (*p == '\r' && p[1] == '\n') p += 2;
         else if (*p == '\n' || *p == '\r') p++;
-        line_no++;
+
+        (*physical_line_io)++;
+        if (*continuation && out_len >= 2 &&
+            line[out_len - 2] == ' ' && line[out_len - 1] == *continuation) {
+            out_len -= 2;
+            line[out_len] = '\0';
+            continue;
+        }
+        break;
+    }
+
+    *pp = p;
+    *line_no_out = line_no;
+    source_update_continuation_setting(line, continuation);
+    return 1;
+}
+
+static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
+    int physical_line = 1;
+    int line_no = 1;
+    unsigned char continuation = 0;
+    const char *p = source;
+    char line[STRINGSIZE + 1];
+
+    while (!cs->has_error &&
+           source_read_logical_line(&p, line, sizeof(line), &physical_line, &line_no, &continuation)) {
+        source_predeclare_line(cs, line, line_no);
     }
 }
 
@@ -4315,21 +4813,13 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
     if (cs->has_error) return -1;
 
     const char *p = source;
-    while (*p && !cs->has_error) {
-        const char *start = p;
-        while (*p && *p != '\n' && *p != '\r') p++;
-
+    int physical_line = 1;
+    unsigned char continuation = 0;
+    while (!cs->has_error) {
         char line[STRINGSIZE + 1];
-        size_t len = (size_t)(p - start);
-        if (len > STRINGSIZE) len = STRINGSIZE;
-        memcpy(line, start, len);
-        line[len] = '\0';
-
+        if (!source_read_logical_line(&p, line, sizeof(line), &physical_line, &fe.line_no, &continuation))
+            break;
         source_compile_line(&fe, cs, line);
-
-        if (*p == '\r' && p[1] == '\n') p += 2;
-        else if (*p == '\n' || *p == '\r') p++;
-        fe.line_no++;
     }
 
     if (cs->has_error) {

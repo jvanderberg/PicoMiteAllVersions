@@ -2,6 +2,7 @@
 #define VM_SYS_PIN_H
 
 #include <stdint.h>
+#include "configuration.h"
 
 #define VM_PIN_MODE_PWM_AUTO (-1)
 

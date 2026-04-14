@@ -1,5 +1,4 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_pixel_shared.h"
 
 static int gfx_pixel_arg_value(const GfxPixelArg *arg, int index) {

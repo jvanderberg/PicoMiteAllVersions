@@ -38,6 +38,10 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
 #include "hardware/irq.h"
+#if defined(PICOCALC) && defined(rp2350)
+#include "bc_alloc.h"
+#include "bc_run_diag.h"
+#endif
 #include "hardware/gpio.h"
 #include "pico/binary_info.h"
 #include "hardware/structs/watchdog.h"
@@ -2532,6 +2536,66 @@ int FileLoadSourceProgram(unsigned char *fname, char **source_out)
     ClearSavedVars();
     *source_out = buf;
     return true;
+}
+
+int FileLoadSourceProgramVM(unsigned char *fname, char **source_out)
+{
+#if defined(PICOCALC) && defined(rp2350)
+    int fnbr;
+    char *p, *buf;
+    int fsize;
+    int c;
+
+    if (source_out) *source_out = NULL;
+    if (!source_out) error("Internal error");
+    if (!InitSDCard()) return false;
+
+    fnbr = FindFreeFileNbr();
+    p = (char *)getFstring(fname);
+    if (strchr((char *)p, '.') == NULL) strcat((char *)p, ".bas");
+    if (!BasicFileOpen(p, fnbr, FA_READ)) return false;
+
+    if (filesource[fnbr] != FLASHFILE)
+        fsize = (int)f_size(FileTable[fnbr].fptr);
+    else
+        fsize = lfs_file_size(&lfs, FileTable[fnbr].lfsptr);
+    bc_run_diag_note_load(filesource[fnbr] == FLASHFILE ? 'A' : 'B',
+                          (unsigned)fsize,
+                          (unsigned)FreeSpaceOnHeap(),
+                          (unsigned)bc_compile_bytes_free());
+    if (fsize < 0 || fsize >= EDIT_BUFFER_SIZE - 2048 - 512) {
+        FileClose(fnbr);
+        error("Not enough memory");
+    }
+
+    p = buf = (char *)bc_compile_alloc((size_t)fsize + 1u);
+    if (buf == NULL) {
+        bc_run_diag_note_source_alloc_fail((unsigned)(fsize + 1u),
+                                           (unsigned)bc_compile_bytes_free(),
+                                           (unsigned)bc_alloc_bytes_capacity());
+        bc_run_diag_dump("source alloc");
+        FileClose(fnbr);
+        error("Not enough memory");
+    }
+
+    while (!FileEOF(fnbr)) {
+        if ((p - buf) >= fsize)
+            error("Not enough memory");
+        c = FileGetChar(fnbr) & 0x7f;
+        if (isprint(c) || c == '\r' || c == '\n' || c == TAB) {
+            if (c == TAB) c = ' ';
+            *p++ = (char)c;
+        }
+    }
+    FileClose(fnbr);
+
+    *p = 0;
+    ClearSavedVars();
+    *source_out = buf;
+    return true;
+#else
+    return FileLoadSourceProgram(fname, source_out);
+#endif
 }
 #ifdef rp2350
 volatile uint32_t realmempointer;

@@ -40,7 +40,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
-#if defined(PICOCALC) && defined(rp2350)
+#include "bc_alloc.h"
+#if defined(PICOMITE_VM_DEVICE_ONLY)
 #include "bc_alloc.h"
 #endif
 #define ASMMAX 6400 // maximum number of bytes that can be copied or set by assembler routines
@@ -53,7 +54,7 @@ extern const uint8_t *flash_progmemory;
 // allocate static memory for programs, variables and the heap
 // this is simple memory management because DOS has plenty of memory
 //unsigned char __attribute__ ((aligned (256))) AllMemory[ALL_MEMORY_SIZE];
-#if defined(PICOCALC) && defined(rp2350)
+#if defined(PICOMITE_VM_DEVICE_ONLY)
     unsigned char *MMHeap=NULL;
     uint32_t framebuffersize=0;
     unsigned char *FRAMEBUFFER=NULL;
@@ -140,7 +141,7 @@ unsigned char *SecondFrame=video;
     unsigned char *FrameBuf=NULL;
 #endif
 
-#if defined(PICOCALC) && defined(rp2350)
+#if defined(PICOMITE_VM_DEVICE_ONLY)
 unsigned int mmap[1]={0};
 unsigned int psmap[1]={0};
 #elif defined(rp2350)
@@ -151,7 +152,7 @@ void SBitsSet(unsigned char *addr, int bits);
 #else
 unsigned int mmap[HEAP_MEMORY_SIZE/ PAGESIZE / PAGESPERWORD]={0};
 #endif
-#if !(defined(PICOCALC) && defined(rp2350))
+#if !defined(PICOMITE_VM_DEVICE_ONLY)
 static inline unsigned int MBitsGet(unsigned char *addr);
 static inline void MBitsSet(unsigned char *addr, int bits);
 #endif
@@ -893,7 +894,7 @@ void __not_in_flash_func(TestStackOverflow)(void) {
 
 
 
-#if defined(PICOCALC) && defined(rp2350)
+#if defined(PICOMITE_VM_DEVICE_ONLY)
 
 void MIPS64 __not_in_flash_func(FreeMemory)(unsigned char *addr) {
     BC_FREE(addr);

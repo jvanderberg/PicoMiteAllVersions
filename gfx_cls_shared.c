@@ -1,5 +1,4 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_cls_shared.h"
 
 void gfx_cls_execute(int has_arg, const GfxClsArg *arg, const GfxClsOps *ops) {

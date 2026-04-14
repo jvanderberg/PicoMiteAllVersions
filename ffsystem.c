@@ -5,6 +5,9 @@
 
 
 #include "ff.h"
+#ifdef PICOMITE_VM_DEVICE_ONLY
+#include "bc_alloc.h"
+#endif
 
 
 #if FF_USE_LFN == 3	/* Dynamic memory allocation */
@@ -17,7 +20,11 @@ void* ff_memalloc (	/* Returns pointer to the allocated memory block (null if no
 	UINT msize		/* Number of bytes to allocate */
 )
 {
+#ifdef PICOMITE_VM_DEVICE_ONLY
+	return BC_ALLOC(msize);
+#else
 	return GetMemory(msize);	/* Allocate a new memory block with POSIX API */
+#endif
 }
 
 
@@ -29,7 +36,11 @@ void ff_memfree (
 	void* mblock	/* Pointer to the memory block to free (nothing to do if null) */
 )
 {
+#ifdef PICOMITE_VM_DEVICE_ONLY
+	BC_FREE(mblock);
+#else
 	FreeMemory(mblock);	/* Free the memory block with POSIX API */
+#endif
 }
 
 #endif

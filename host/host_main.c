@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+#include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bytecode.h"
 #include "vm_sys_pin.h"
@@ -241,6 +242,60 @@ static char *read_basic_source_file(const char *filename) {
     return source;
 }
 
+static void host_update_continuation_setting(const char *line, unsigned char *continuation) {
+    const char *p = line;
+    if (!continuation) return;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p >= '0' && *p <= '9') {
+        while (*p >= '0' && *p <= '9') p++;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    if (strncasecmp(p, "OPTION CONTINUATION LINES ON", 28) == 0 ||
+        strncasecmp(p, "OPTION CONTINUATION LINES ENABLE", 32) == 0) {
+        *continuation = '_';
+    } else if (strncasecmp(p, "OPTION CONTINUATION LINES OFF", 29) == 0 ||
+               strncasecmp(p, "OPTION CONTINUATION LINES DISABLE", 33) == 0) {
+        *continuation = 0;
+    }
+}
+
+static int host_read_logical_line(const char **linep, char *out, size_t out_cap,
+                                  int *physical_line_io, int *line_no_out,
+                                  unsigned char *continuation) {
+    const char *line = *linep;
+    size_t out_len = 0;
+    int line_no = *physical_line_io;
+
+    if (*line == '\0') return 0;
+    out[0] = '\0';
+
+    while (*line) {
+        const char *eol = strchr(line, '\n');
+        int len = eol ? (int)(eol - line) : (int)strlen(line);
+        if (len > 0 && line[len - 1] == '\r') len--;
+        if (out_len + (size_t)len > out_cap - 1) len = (int)((out_cap - 1) - out_len);
+        memcpy(out + out_len, line, (size_t)len);
+        out_len += (size_t)len;
+        out[out_len] = '\0';
+
+        (*physical_line_io)++;
+        line = eol ? eol + 1 : line + strlen(line);
+
+        if (*continuation && out_len >= 2 &&
+            out[out_len - 2] == ' ' && out[out_len - 1] == *continuation) {
+            out_len -= 2;
+            out[out_len] = '\0';
+            continue;
+        }
+        break;
+    }
+
+    *linep = line;
+    *line_no_out = line_no;
+    host_update_continuation_setting(out, continuation);
+    return 1;
+}
+
 /*
  * Tokenize source text into ProgMemory for the legacy interpreter path.
  * Returns 0 on success, -1 on error.
@@ -249,33 +304,34 @@ static int load_basic_source(const char *source) {
     /* Tokenize line by line into ProgMemory */
     unsigned char *pm = ProgMemory;
     const char *line = source;
-    int lineno = 1;
+    int physical_line = 1;
+    unsigned char continuation = Option.continuation;
 
     while (*line) {
-        const char *eol = strchr(line, '\n');
-        int len = eol ? (int)(eol - line) : (int)strlen(line);
-
-        /* Strip CR */
-        if (len > 0 && line[len - 1] == '\r') len--;
+        char logical[STRINGSIZE + 1];
+        int lineno = 0;
+        if (!host_read_logical_line(&line, logical, sizeof(logical), &physical_line, &lineno, &continuation))
+            break;
+        int len = (int)strlen(logical);
 
         /* Skip empty lines */
         if (len > 0) {
             /* Check if the line starts with a digit (user-provided line number).
              * If so, use the line as-is.  Otherwise prepend an auto-incrementing
              * line number so tokenise() generates a T_LINENBR. */
-            const char *p = line;
-            while (p < line + len && (*p == ' ' || *p == '\t')) p++;
-            int has_user_lineno = (p < line + len && *p >= '0' && *p <= '9');
+            const char *p = logical;
+            while (p < logical + len && (*p == ' ' || *p == '\t')) p++;
+            int has_user_lineno = (p < logical + len && *p >= '0' && *p <= '9');
 
             if (has_user_lineno) {
-                memcpy(inpbuf, line, len);
+                memcpy(inpbuf, logical, len);
                 inpbuf[len] = '\0';
             } else {
                 char numbuf[16];
                 snprintf(numbuf, sizeof(numbuf), "%d ", lineno);
                 int nlen = strlen(numbuf);
                 memcpy(inpbuf, numbuf, nlen);
-                memcpy(inpbuf + nlen, line, len);
+                memcpy(inpbuf + nlen, logical, len);
                 inpbuf[nlen + len] = '\0';
             }
 
@@ -294,9 +350,6 @@ static int load_basic_source(const char *source) {
             }
             *pm++ = 0;  /* element terminator */
         }
-
-        lineno++;
-        line = eol ? eol + 1 : line + strlen(line);
     }
 
     /* Program terminator */
@@ -381,6 +434,8 @@ int main(int argc, char **argv) {
     HostMode mode = MODE_SOURCE_COMPARE;
     int timeout_ms = 0;
     const char *screenshot_path = NULL;
+    int dump_vm_disasm = 0;
+    int opt_level = 1;
     PixelAssert pixel_asserts[MAX_PIXEL_ASSERTS];
     int pixel_assert_count = 0;
     int compare_framebuffer = 0;
@@ -392,6 +447,9 @@ int main(int argc, char **argv) {
         printf("  %s program.bas          Compare interpreter oracle vs raw-source VM\n", argv[0]);
         printf("  %s program.bas --interp Run interpreter oracle only\n", argv[0]);
         printf("  %s program.bas --vm     Run raw-source VM only\n", argv[0]);
+        printf("  %s program.bas --vm-disasm Dump VM disassembly, then run VM\n", argv[0]);
+        printf("  %s program.bas --vm -O0 Disable VM frontend peephole opts\n", argv[0]);
+        printf("  %s program.bas --vm -O1 Enable VM frontend peephole opts\n", argv[0]);
         printf("  %s program.bas --vm-source Alias for --vm\n", argv[0]);
         printf("  %s program.bas --source-compare Alias for default compare\n", argv[0]);
         printf("  %s program.bas --interp --timeout-ms 100 --screenshot out.ppm\n", argv[0]);
@@ -408,6 +466,12 @@ int main(int argc, char **argv) {
     for (int i = 2; i < argc; ++i) {
         if (strcmp(argv[i], "--interp") == 0) mode = MODE_INTERP_ONLY;
         else if (strcmp(argv[i], "--vm") == 0) mode = MODE_VM_SOURCE_ONLY;
+        else if (strcmp(argv[i], "--vm-disasm") == 0) {
+            mode = MODE_VM_SOURCE_ONLY;
+            dump_vm_disasm = 1;
+        }
+        else if (strcmp(argv[i], "-O0") == 0) opt_level = 0;
+        else if (strcmp(argv[i], "-O1") == 0) opt_level = 1;
         else if (strcmp(argv[i], "--vm-source") == 0) mode = MODE_VM_SOURCE_ONLY;
         else if (strcmp(argv[i], "--source-compare") == 0) mode = MODE_SOURCE_COMPARE;
         else if (strcmp(argv[i], "--compare-framebuffer") == 0) compare_framebuffer = 1;
@@ -446,6 +510,7 @@ int main(int argc, char **argv) {
 
     /* Initialize the MMBasic runtime */
     InitBasic();
+    bc_opt_level = opt_level;
     host_runtime_configure(timeout_ms, screenshot_path);
     host_runtime_configure_keys(key_script, key_delay_ms);
 
@@ -474,8 +539,10 @@ int main(int argc, char **argv) {
     }
 
     if (mode == MODE_VM_SOURCE_ONLY) {
+        bc_debug_enabled = dump_vm_disasm ? 1 : 0;
         printf("--- Bytecode VM Source Frontend ---\n");
         int rc = run_bytecode_vm_source(source_text, filename, vm_output, CAPTURE_SIZE);
+        bc_debug_enabled = 0;
         printf("%s", vm_output);
         int pixel_failures = (rc == 0) ? check_pixel_assertions("Bytecode VM Source", pixel_asserts, pixel_assert_count) : 0;
         if (rc == 2) printf("\n--- Timed Out ---\n");

@@ -14,6 +14,7 @@ Status is conservative. If only a subset of the legacy command family is support
 
 - This is about the VM BASIC program path, not the prompt shell.
 - A command can still work at the prompt through legacy shell code and remain `unimplemented` here.
+- The VM-only device shell has its own command table in `vm_device_main.c`; that surface is tracked in `vm-architecture.md` / `vm-cutover-plan.md`, not here.
 - Hybrid command/function entries from the command table such as `Pin(`, `Timer`, `Date$`, `Time$`, and `MID$(` are included because they appear in `INCLUDE_COMMAND_TABLE`.
 
 ## Implemented
@@ -128,6 +129,14 @@ Status is conservative. If only a subset of the legacy command family is support
 - `Time$`
   The function/value form is implemented; broader legacy command-family behavior is not fully matched.
 
+### Graphics and display (partial)
+
+- `FRAMEBUFFER`
+  Current VM slice covers the LCD-style `CREATE`, `LAYER [colour]`, `WRITE N/F/L`,
+  `CLOSE [F/L]`, `COPY N/F/L, N/F/L [,B]`, `MERGE [colour][,B|R|A][,rate]`,
+  `SYNC`, and `WAIT` forms. RP2350/HDMI/VGA extensions such as `CREATE 2`,
+  `LAYER TOP`, and `WRITE/CLOSE/COPY` targets `2`/`T` remain unimplemented.
+
 ### Audio
 
 - `Play`
@@ -180,7 +189,6 @@ Status is conservative. If only a subset of the legacy command family is support
 
 ### Graphics, framebuffer, UI, and display families
 
-- `FRAMEBUFFER`
 - `Sprite`
 - `Blit`
 - `Blit Memory`
@@ -288,5 +296,6 @@ Status is conservative. If only a subset of the legacy command family is support
 
 - `RUN` is intentionally `unimplemented` as a BASIC program command on the VM path even though device shell `RUN` exists. The shell command loads source and hands execution to the VM; that is not the same thing as supporting `RUN` inside a BASIC program.
 - `FILES` is no longer a VM runtime no-op. It remains `partial` because the command family is not yet treated as full legacy parity.
+- `FRAMEBUFFER` is `partial` because the LCD-style dual-buffer forms are implemented but HDMI/VGA extensions remain unimplemented.
 - `SETPIN`, `PIN(`, `PWM`, and `Servo` all have meaningful native VM support now, but only for the currently implemented slice.
 - This matrix is about commands only. Function backlogs outside the command table, such as the wider `MM.INFO()` surface, are tracked separately.

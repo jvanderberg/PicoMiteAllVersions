@@ -1,5 +1,4 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_circle_shared.h"
 
 static int gfx_circle_arg_int(const GfxCircleArg *arg, int index) {

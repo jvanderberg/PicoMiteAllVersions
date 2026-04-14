@@ -1,14 +1,23 @@
+/*
+ * VM syscall conversion rule:
+ * - copy/adapt legacy implementation code as closely as possible
+ * - copy/adapt dependent legacy helpers too when needed
+ * - do not invent new algorithms when legacy code already exists
+ * - do not call, wrap, or dispatch back into legacy handlers
+ * Any deviation from legacy implementation shape must be explicit and justified.
+ */
+
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 
-#include "MMBasic_Includes.h"
-#include "Hardware_Includes.h"
-#include "Draw.h"
 #include "bc_alloc.h"
+#include "bytecode.h"
+#include "vm_device_support.h"
 #include "vm_sys_graphics.h"
 
 #ifndef MMBASIC_HOST
-#include "SPI-LCD.h"
+#include "pico/multicore.h"
 #endif
 
 typedef struct VMGfxScratchBuffer {
@@ -26,6 +35,29 @@ static VMGfxScratchBuffer vm_gfx_int_b;
 static VMGfxScratchBuffer vm_gfx_int_c;
 static VMGfxScratchBuffer vm_gfx_int_d;
 static VMGfxScratchBuffer vm_gfx_mask_a;
+static VMGfxScratchBuffer vm_gfx_fb_line;
+
+static int vm_fb_merge_running = 0;
+static uint8_t vm_fb_merge_colour = 0;
+static uint32_t vm_fb_merge_interval_us = 0;
+static uint64_t vm_fb_next_merge_us = 0;
+static uint8_t *vm_fb_copy_src = NULL;
+static int vm_fb_copy_pending = 0;
+
+#ifdef MMBASIC_HOST
+extern void host_framebuffer_reset_runtime(int colour);
+extern void host_framebuffer_shutdown_runtime(void);
+extern void host_framebuffer_clear_target(int colour);
+extern void host_framebuffer_create(void);
+extern void host_framebuffer_layer(int has_colour, int colour);
+extern void host_framebuffer_write(char which);
+extern void host_framebuffer_close(char which);
+extern void host_framebuffer_merge(int has_colour, int colour, int mode, int has_rate, int rate_ms);
+extern void host_framebuffer_sync(void);
+extern void host_framebuffer_wait(void);
+extern void host_framebuffer_copy(char from, char to, int background);
+extern void host_framebuffer_service(void);
+#endif
 
 static void *vm_sys_graphics_reserve_scratch(VMGfxScratchBuffer *buffer, size_t bytes) {
     void *new_ptr;
@@ -41,14 +73,103 @@ static void *vm_sys_graphics_reserve_scratch(VMGfxScratchBuffer *buffer, size_t 
     return buffer->ptr;
 }
 
+static uint8_t vm_sys_graphics_rgb121(uint32_t c) {
+    return (uint8_t)(((c & 0x800000u) >> 20) |
+                     ((c & 0x00C000u) >> 13) |
+                     ((c & 0x000080u) >> 7));
+}
+
+#ifndef MMBASIC_HOST
+static size_t vm_sys_graphics_fb_bytes(void) {
+    return (size_t)HRes * (size_t)VRes / 2u;
+}
+
+static void vm_sys_graphics_fb_stop_merge(void) {
+    if (mergerunning) {
+        multicore_fifo_push_blocking(0xFF);
+        busy_wait_ms(mergetimer + 200);
+        if (mergerunning) {
+            _excep_code = RESET_COMMAND;
+            SoftReset();
+        }
+    }
+    vm_fb_merge_running = 0;
+    mergerunning = 0;
+    mergetimer = 0;
+    vm_fb_merge_interval_us = 0;
+    vm_fb_next_merge_us = 0;
+}
+
+static void vm_sys_graphics_fb_copy_to_screen(uint8_t *src) {
+    if (src == NULL) return;
+    copyframetoscreen(src, 0, HRes - 1, 0, VRes - 1, 0);
+}
+
+static void vm_sys_graphics_fb_complete_pending_copy(void) {
+    if (!vm_fb_copy_pending || vm_fb_copy_src == NULL) return;
+    vm_sys_graphics_fb_copy_to_screen(vm_fb_copy_src);
+    vm_fb_copy_src = NULL;
+    vm_fb_copy_pending = 0;
+}
+
+static void vm_sys_graphics_fb_merge_now(uint8_t transparent) {
+    int stride;
+    uint8_t *linebuf;
+    uint8_t *src_layer;
+    uint8_t *src_frame;
+    int y;
+
+    if (LayerBuf == NULL || FrameBuf == NULL) return;
+    stride = HRes / 2;
+    if (stride <= 0) return;
+    linebuf = (uint8_t *)vm_sys_graphics_reserve_scratch(&vm_gfx_fb_line, (size_t)stride);
+    src_layer = LayerBuf;
+    src_frame = FrameBuf;
+
+    for (y = 0; y < VRes; ++y) {
+        uint8_t *layer_row = src_layer + (size_t)y * (size_t)stride;
+        uint8_t *frame_row = src_frame + (size_t)y * (size_t)stride;
+        memcpy(linebuf, frame_row, (size_t)stride);
+        for (int x = 0; x < stride; ++x) {
+            uint8_t layer = layer_row[x];
+            uint8_t top = layer & 0xF0u;
+            uint8_t bottom = layer & 0x0Fu;
+            if (top == (uint8_t)(transparent << 4) && bottom == transparent) continue;
+            if (top != (uint8_t)(transparent << 4) && bottom != transparent) {
+                linebuf[x] = layer;
+            } else if (top != (uint8_t)(transparent << 4)) {
+                linebuf[x] = (uint8_t)((linebuf[x] & 0x0Fu) | top);
+            } else {
+                linebuf[x] = (uint8_t)((linebuf[x] & 0xF0u) | bottom);
+            }
+        }
+        copyframetoscreen(linebuf, 0, HRes - 1, y, y, 0);
+    }
+}
+#endif
+
 void vm_sys_graphics_reset(void) {
     VMGfxScratchBuffer *buffers[] = {
         &vm_gfx_short_a, &vm_gfx_short_b,
         &vm_gfx_float_a, &vm_gfx_float_b, &vm_gfx_float_c,
         &vm_gfx_int_a, &vm_gfx_int_b, &vm_gfx_int_c, &vm_gfx_int_d,
-        &vm_gfx_mask_a
+        &vm_gfx_mask_a, &vm_gfx_fb_line
     };
     size_t i;
+
+#ifdef MMBASIC_HOST
+    host_framebuffer_shutdown_runtime();
+#else
+    vm_sys_graphics_fb_stop_merge();
+    vm_fb_copy_src = NULL;
+    vm_fb_copy_pending = 0;
+    if (WriteBuf == FrameBuf || WriteBuf == LayerBuf) restorepanel();
+    if (FrameBuf) BC_FREE(FrameBuf);
+    if (LayerBuf) BC_FREE(LayerBuf);
+    FrameBuf = NULL;
+    LayerBuf = NULL;
+    WriteBuf = NULL;
+#endif
 
     for (i = 0; i < sizeof(buffers) / sizeof(buffers[0]); i++) {
         if (buffers[i]->ptr) BC_FREE(buffers[i]->ptr);
@@ -1664,6 +1785,238 @@ int vm_sys_graphics_read_pixel(int x, int y) {
     if ((void *)ReadBuffer == (void *)DisplayNotSet) error("Invalid on this display");
     ReadBuffer(x, y, x, y, (unsigned char *)&p);
     return p & 0xFFFFFF;
+#endif
+}
+
+void vm_sys_graphics_service(void) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_service();
+#else
+    vm_sys_graphics_fb_complete_pending_copy();
+#endif
+}
+
+void vm_sys_graphics_framebuffer_create(void) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_create();
+#else
+    size_t bytes;
+
+    if (FrameBuf != NULL) error("Framebuffer already exists");
+    if (HRes <= 0 || VRes <= 0) error("Display not configured");
+    bytes = vm_sys_graphics_fb_bytes();
+    FrameBuf = (unsigned char *)BC_ALLOC(bytes);
+    if (FrameBuf == NULL) error("Not enough memory");
+    memset(FrameBuf, 0, bytes);
+#endif
+}
+
+void vm_sys_graphics_framebuffer_layer(int has_colour, int colour) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_layer(has_colour, colour);
+#else
+    size_t bytes;
+    uint8_t transparent = 0;
+
+    if (LayerBuf != NULL) error("Framebuffer already exists");
+    if (HRes <= 0 || VRes <= 0) error("Display not configured");
+    bytes = vm_sys_graphics_fb_bytes();
+    if (has_colour) transparent = vm_sys_graphics_rgb121((uint32_t)colour);
+    LayerBuf = (unsigned char *)BC_ALLOC(bytes);
+    if (LayerBuf == NULL) error("Not enough memory");
+    memset(LayerBuf, (int)(transparent | (transparent << 4)), bytes);
+#endif
+}
+
+void vm_sys_graphics_framebuffer_write(char which) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_write(which);
+#else
+    switch (which) {
+        case BC_FB_TARGET_N:
+            if (mergerunning) error("Display in use for merged operation");
+            restorepanel();
+            return;
+        case BC_FB_TARGET_F:
+            if (FrameBuf == NULL) error("Frame buffer not created");
+            WriteBuf = FrameBuf;
+            setframebuffer();
+            return;
+        case BC_FB_TARGET_L:
+            if (LayerBuf == NULL) error("Layer buffer not created");
+            WriteBuf = LayerBuf;
+            setframebuffer();
+            return;
+        default:
+            error("Syntax");
+    }
+#endif
+}
+
+void vm_sys_graphics_framebuffer_close(char which) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_close(which);
+#else
+    if (which == BC_FB_TARGET_DEFAULT) which = 'A';
+    vm_sys_graphics_fb_stop_merge();
+    if ((which == 'A' || which == BC_FB_TARGET_F) && FrameBuf != NULL) {
+        if (WriteBuf == FrameBuf) restorepanel();
+        BC_FREE(FrameBuf);
+        FrameBuf = NULL;
+    }
+    if ((which == 'A' || which == BC_FB_TARGET_L) && LayerBuf != NULL) {
+        if (WriteBuf == LayerBuf) restorepanel();
+        BC_FREE(LayerBuf);
+        LayerBuf = NULL;
+    }
+    if (which != 'A' && which != BC_FB_TARGET_F && which != BC_FB_TARGET_L)
+        error("Syntax");
+#endif
+}
+
+void vm_sys_graphics_framebuffer_merge(int has_colour, int colour, int mode, int has_rate, int rate_ms) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_merge(has_colour, colour, mode, has_rate, rate_ms);
+#else
+    uint8_t transparent = has_colour ? vm_sys_graphics_rgb121((uint32_t)colour) : 0;
+
+    if (LayerBuf == NULL) error("Layer not created");
+    if (FrameBuf == NULL) error("Framebuffer not created");
+    if (has_rate && rate_ms < 0) error("Number out of bounds");
+
+    switch (mode) {
+        case BC_FB_MERGE_MODE_NOW:
+            vm_sys_graphics_fb_stop_merge();
+            vm_sys_graphics_fb_merge_now(transparent);
+            return;
+        case BC_FB_MERGE_MODE_B:
+            vm_sys_graphics_fb_stop_merge();
+            if (!(((Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) ||
+                   (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL)
+#if defined(rp2350)
+                   || Option.DISPLAY_TYPE >= NEXTGEN
+#endif
+                   ))) {
+                error("Not available on this display");
+            }
+            if (diskchecktimer < 200 && SPIatRisk) diskchecktimer = 200;
+            multicore_fifo_push_blocking(2);
+            multicore_fifo_push_blocking((uint32_t)transparent);
+            return;
+        case BC_FB_MERGE_MODE_R:
+            if (!(((Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) ||
+                   (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL)))) {
+                error("Not available on this display");
+            }
+            if (WriteBuf == NULL) {
+                WriteBuf = FrameBuf;
+                setframebuffer();
+            }
+            vm_sys_graphics_fb_stop_merge();
+            vm_fb_merge_running = 1;
+            vm_fb_merge_colour = transparent;
+            mergetimer = (uint32_t)(has_rate ? rate_ms : 0);
+            vm_fb_merge_interval_us = (uint32_t)(has_rate ? rate_ms * 1000 : 0);
+            multicore_fifo_push_blocking(3);
+            multicore_fifo_push_blocking((uint32_t)transparent);
+            multicore_fifo_push_blocking((uint32_t)vm_fb_merge_interval_us);
+            return;
+        case BC_FB_MERGE_MODE_A:
+            vm_sys_graphics_fb_stop_merge();
+            return;
+        default:
+            error("Syntax");
+    }
+#endif
+}
+
+void vm_sys_graphics_framebuffer_sync(void) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_sync();
+#else
+    vm_sys_graphics_fb_complete_pending_copy();
+    if (mergerunning) {
+        mergedone = false;
+        while (mergedone == false) {
+            CheckAbort();
+        }
+    }
+#endif
+}
+
+void vm_sys_graphics_framebuffer_wait(void) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_wait();
+#else
+    if (Option.DISPLAY_TYPE == ILI9341 || Option.DISPLAY_TYPE == ST7796SP ||
+        Option.DISPLAY_TYPE == ST7796S || Option.DISPLAY_TYPE == ST7789B ||
+        Option.DISPLAY_TYPE == ILI9488 || Option.DISPLAY_TYPE == ILI9488P) {
+        while (GetLineILI9341() != 0) {
+        }
+    }
+#endif
+}
+
+void vm_sys_graphics_framebuffer_copy(char from, char to, int background) {
+#ifdef MMBASIC_HOST
+    host_framebuffer_copy(from, to, background);
+#else
+    int complex = 0;
+    unsigned char *saved = WriteBuf;
+    uint8_t *s = NULL;
+    uint8_t *d = NULL;
+
+    from = (char)toupper((unsigned char)from);
+    to = (char)toupper((unsigned char)to);
+    if (from == to) return;
+
+    if (from == BC_FB_TARGET_N) {
+        complex = 1;
+        if ((void *)ReadBuffer == (void *)DisplayNotSet) error("Invalid on this display");
+    } else if (from == BC_FB_TARGET_L) {
+        if (LayerBuf == NULL) error("Layer buffer not created");
+        s = LayerBuf;
+    } else if (from == BC_FB_TARGET_F) {
+        if (FrameBuf == NULL) error("Frame buffer not created");
+        s = FrameBuf;
+    } else error("Syntax");
+
+    if (to == BC_FB_TARGET_N) {
+        complex = 2;
+    } else if (to == BC_FB_TARGET_L) {
+        if (LayerBuf == NULL) error("Layer buffer not created");
+        d = LayerBuf;
+    } else if (to == BC_FB_TARGET_F) {
+        if (FrameBuf == NULL) error("Frame buffer not created");
+        d = FrameBuf;
+    } else error("Syntax");
+
+    if (!complex) {
+        if (d != s) memcpy(d, s, vm_sys_graphics_fb_bytes());
+    } else if (complex == 1) {
+        unsigned char *linebuf = (unsigned char *)vm_sys_graphics_reserve_scratch(&vm_gfx_fb_line, (size_t)HRes * 3u);
+        int y;
+        WriteBuf = d;
+        setframebuffer();
+        for (y = 0; y < VRes; ++y) {
+            restorepanel();
+            ReadBuffer(0, y, HRes - 1, y, linebuf);
+            WriteBuf = d;
+            setframebuffer();
+            DrawBuffer(0, y, HRes - 1, y, linebuf);
+        }
+    } else {
+        if (background) {
+            vm_fb_copy_src = s;
+            vm_fb_copy_pending = 1;
+        } else {
+            vm_sys_graphics_fb_copy_to_screen(s);
+        }
+    }
+
+    WriteBuf = saved;
+    if (WriteBuf == FrameBuf || WriteBuf == LayerBuf) setframebuffer();
+    else restorepanel();
 #endif
 }
 

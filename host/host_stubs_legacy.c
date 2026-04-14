@@ -7,6 +7,8 @@
  * variables are zero-initialized globals.
  */
 
+#include <setjmp.h>
+#include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bytecode.h"
 #include "gfx_pixel_shared.h"
@@ -82,10 +84,10 @@ short CurrentX = 0;
 short CurrentY = 0;
 volatile int DISPLAY_TYPE = 0;
 /* DisplayNotSet is a function - see function stubs below */
-int dma_rx_chan = 0;
-int dma_rx_chan2 = 0;
-int dma_tx_chan = 0;
-int dma_tx_chan2 = 0;
+uint32_t dma_rx_chan = 0;
+uint32_t dma_rx_chan2 = 0;
+uint32_t dma_tx_chan = 0;
+uint32_t dma_tx_chan2 = 0;
 bool dmarunning = 0;
 long long int *ds18b20Timers = NULL;
 volatile int ExtCurrentConfig[NBRPINS + 1] = {0};
@@ -207,6 +209,9 @@ volatile short low_y = 0, high_y = 0, low_x = 0, high_x = 0;
 uint8_t sprite_transparent = 0;
 char CMM1 = 0;
 int ScreenSize = 0;
+unsigned char *DisplayBuf = NULL;
+unsigned char *SecondLayer = NULL;
+unsigned char *SecondFrame = NULL;
 char LCDAttrib = 0;
 struct D3D *struct3d[MAX3D + 1] = {NULL};
 s_camera camera[MAXCAM + 1] = {{0}};
@@ -378,11 +383,13 @@ static inline uint32_t host_colour24(int c) {
     return (uint32_t)c & 0x00FFFFFFu;
 }
 
+#include "host_framebuffer_backend.h"
+
 static inline void host_put_pixel(int x, int y, int c) {
-    if (!host_framebuffer) host_fb_ensure();
-    if (!host_framebuffer) return;
+    uint32_t *target = host_fb_current_target();
+    if (!target) return;
     if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return;
-    host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
+    target[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
 }
 
 static void host_draw_pixel_ptr(int x, int y, int c) {
@@ -405,8 +412,8 @@ int host_runtime_height(void) {
 }
 
 static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
-    if (!host_framebuffer) host_fb_ensure();
-    if (!host_framebuffer) return;
+    uint32_t *target = host_fb_current_target();
+    if (!target) return;
     if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
     if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
     x1 = host_clamp_int(x1, 0, host_fb_width - 1);
@@ -417,7 +424,7 @@ static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
 
     uint32_t colour = host_colour24(c);
     for (int y = y1; y <= y2; ++y) {
-        uint32_t *row = host_framebuffer + (size_t)y * (size_t)host_fb_width;
+        uint32_t *row = target + (size_t)y * (size_t)host_fb_width;
         for (int x = x1; x <= x2; ++x) {
             row[x] = colour;
         }
@@ -742,8 +749,7 @@ static void host_draw_text(int x, int y, int fnt, int jh, int jv, int jo, int fc
 }
 
 static void host_fb_reset(int colour) {
-    host_fb_ensure();
-    host_fill_rect_pixels(0, 0, host_fb_width - 1, host_fb_height - 1, colour);
+    host_framebuffer_clear_target(colour);
 }
 
 static void host_write_screenshot(const char *path) {
@@ -865,12 +871,13 @@ void host_runtime_begin(void) {
     if (host_runtime_timeout_ms > 0) {
         host_runtime_deadline_us = timeroffset + (uint64_t)host_runtime_timeout_ms * 1000ULL;
     }
-    host_fb_reset(gui_bcolour);
+    host_framebuffer_reset_runtime(gui_bcolour);
     FontTable[0] = (unsigned char *)font1;
     DrawPixel = host_draw_pixel_ptr;
 }
 
 void host_runtime_finish(void) {
+    host_framebuffer_service();
     if (host_screenshot_path[0]) {
         host_write_screenshot(host_screenshot_path);
     }
@@ -881,6 +888,7 @@ int host_runtime_timed_out(void) {
 }
 
 static void host_runtime_check_timeout(void) {
+    host_framebuffer_service();
     if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
     uint64_t now = host_time_us_64();
     if (now < host_runtime_deadline_us) return;
@@ -1093,7 +1101,131 @@ void cmd_font(void) {
         SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | 1);
     PromptFont = gui_font;
 }
-void cmd_framebuffer(void) {}
+void cmd_framebuffer(void) {
+    unsigned char *p = NULL;
+
+    if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
+        checkend(p);
+        host_framebuffer_create();
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"LAYER"))) {
+        getargs(&p, 1, (unsigned char *)",");
+        if (argc == 0) {
+            host_framebuffer_layer(0, 0);
+            return;
+        }
+        if (argc != 1) error("Syntax");
+        host_framebuffer_layer(1, getint(argv[0], 0, 0xFFFFFF));
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"WRITE"))) {
+        if (checkstring(p, (unsigned char *)"N")) {
+            host_framebuffer_write('N');
+            return;
+        }
+        if (checkstring(p, (unsigned char *)"F")) {
+            host_framebuffer_write('F');
+            return;
+        }
+        if (checkstring(p, (unsigned char *)"L")) {
+            host_framebuffer_write('L');
+            return;
+        }
+        getargs(&p, 1, (unsigned char *)",");
+        if (argc != 1) error("Syntax");
+        {
+            char *q = (char *)getCstring(argv[0]);
+            if (strcasecmp(q, "N") == 0) host_framebuffer_write('N');
+            else if (strcasecmp(q, "F") == 0) host_framebuffer_write('F');
+            else if (strcasecmp(q, "L") == 0) host_framebuffer_write('L');
+            else error("Syntax");
+        }
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"SYNC"))) {
+        checkend(p);
+        host_framebuffer_sync();
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"WAIT"))) {
+        checkend(p);
+        host_framebuffer_wait();
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"COPY"))) {
+        char from = 0;
+        char to = 0;
+        int background = 0;
+        getargs(&p, 5, (unsigned char *)",");
+        if (!(argc == 3 || argc == 5)) error("Syntax");
+        if (checkstring(argv[0], (unsigned char *)"N")) from = 'N';
+        else if (checkstring(argv[0], (unsigned char *)"F")) from = 'F';
+        else if (checkstring(argv[0], (unsigned char *)"L")) from = 'L';
+        else {
+            char *q = (char *)getCstring(argv[0]);
+            if (strcasecmp(q, "N") == 0) from = 'N';
+            else if (strcasecmp(q, "F") == 0) from = 'F';
+            else if (strcasecmp(q, "L") == 0) from = 'L';
+            else error("Syntax");
+        }
+        if (checkstring(argv[2], (unsigned char *)"N")) to = 'N';
+        else if (checkstring(argv[2], (unsigned char *)"F")) to = 'F';
+        else if (checkstring(argv[2], (unsigned char *)"L")) to = 'L';
+        else {
+            char *q = (char *)getCstring(argv[2]);
+            if (strcasecmp(q, "N") == 0) to = 'N';
+            else if (strcasecmp(q, "F") == 0) to = 'F';
+            else if (strcasecmp(q, "L") == 0) to = 'L';
+            else error("Syntax");
+        }
+        if (argc == 5) {
+            if (!checkstring(argv[4], (unsigned char *)"B")) error("Syntax");
+            background = 1;
+        }
+        host_framebuffer_copy(from, to, background);
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"MERGE"))) {
+        int colour = 0;
+        int has_colour = 0;
+        int mode = BC_FB_MERGE_MODE_NOW;
+        int has_rate = 0;
+        int rate_ms = 0;
+        getargs(&p, 5, (unsigned char *)",");
+        if (argc >= 1 && *argv[0]) {
+            colour = getint(argv[0], 0, 0xFFFFFF);
+            has_colour = 1;
+        }
+        if (argc >= 3 && *argv[2]) {
+            if (checkstring(argv[2], (unsigned char *)"B")) mode = BC_FB_MERGE_MODE_B;
+            else if (checkstring(argv[2], (unsigned char *)"R")) mode = BC_FB_MERGE_MODE_R;
+            else if (checkstring(argv[2], (unsigned char *)"A")) mode = BC_FB_MERGE_MODE_A;
+            else error("Syntax");
+        }
+        if (argc == 5 && *argv[4]) {
+            rate_ms = getint(argv[4], 0, 600000);
+            has_rate = 1;
+        }
+        host_framebuffer_merge(has_colour, colour, mode, has_rate, rate_ms);
+        return;
+    }
+    if ((p = checkstring(cmdline, (unsigned char *)"CLOSE"))) {
+        if (checkstring(p, (unsigned char *)"F")) {
+            host_framebuffer_close('F');
+            return;
+        }
+        if (checkstring(p, (unsigned char *)"L")) {
+            host_framebuffer_close('L');
+            return;
+        }
+        checkend(p);
+        host_framebuffer_close('A');
+        return;
+    }
+
+    error("Syntax");
+}
 void cmd_guiMX170(void) {}
 void cmd_i2c(void) {}
 void cmd_i2c2(void) {}
@@ -1976,17 +2108,17 @@ void fun_touch(void) {}
 void CheckAbort(void) { host_runtime_check_timeout(); }
 int check_interrupt(void) { return 0; }
 void ClearExternalIO(void) {}
-void ClearScreen(int c) { host_fb_reset(c); }
+void ClearScreen(int c) { host_framebuffer_clear_target(c); }
 void CloseAllFiles(void) {}
 void CloseAudio(int all) { (void)all; }
-void closeframebuffer(char layer) { (void)layer; }
+void closeframebuffer(char layer) { host_framebuffer_close(layer); }
 void clear320(void) {}
 void DisplayPutC(char c) { host_print(&c, 1); }
 void enable_interrupts_pico(void) {}
 void disable_interrupts_pico(void) {}
 void initFonts(void) { FontTable[0] = (unsigned char *)font1; }
 void initMouse0(int sensitivity) { (void)sensitivity; }
-void restorepanel(void) {}
+void restorepanel(void) { WriteBuf = NULL; }
 void routinechecks(void) { host_runtime_check_timeout(); }
 void SoftReset(void) {}
 void uSec(int us) { (void)us; }
@@ -2148,6 +2280,7 @@ char FileGetChar(int fnbr) {
 }
 int FileLoadProgram(unsigned char *fname, bool chain) { (void)fname; (void)chain; return 0; }
 int FileLoadSourceProgram(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
+int FileLoadSourceProgramVM(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
 int FileLoadCMM2Program(char *fname, bool message) { (void)fname; (void)message; return 0; }
 void FilePutStr(int count, char *s, int fnbr) {
     UINT wrote = 0;

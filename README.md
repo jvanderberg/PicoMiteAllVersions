@@ -84,6 +84,7 @@ make -C host
 ./host/run_pixel_tests.sh
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
+./host/run_optimizer_tests.sh
 bash host/run_unsupported_tests.sh
 ./host/run_missing_syscall_tests.sh
 make -C build2350 -j8

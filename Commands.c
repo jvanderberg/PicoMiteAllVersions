@@ -42,11 +42,34 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifdef PICOMITE
 #include "pico/multicore.h"
 #endif
+#include "bc_alloc.h"
+#include "bc_run_diag.h"
 #define overlap (VRes % (FontTable[gui_font >> 4][1] * (gui_font & 0b1111)) ? 0 : 1)
 #include <math.h>
 void flist(int, int, int);
 //void clearprog(void);
 extern void bc_run_source_string(const char *source, const char *source_name);
+#if defined(PICOCALC) && defined(rp2350)
+static void vm_run_memdiag(const char *stage) {
+    if (strcmp(stage, "before_clear") == 0) {
+        bc_run_diag_note_before_clear((unsigned)UsedHeap(),
+                                      (unsigned)FreeSpaceOnHeap(),
+                                      (unsigned)LargestContiguousHeap());
+    } else if (strcmp(stage, "after_clear") == 0) {
+        bc_run_diag_note_after_clear((unsigned)UsedHeap(),
+                                     (unsigned)FreeSpaceOnHeap(),
+                                     (unsigned)LargestContiguousHeap());
+    } else if (strcmp(stage, "after_vm_reset") == 0) {
+        bc_run_diag_note_after_vm_reset((unsigned)UsedHeap(),
+                                        (unsigned)FreeSpaceOnHeap(),
+                                        (unsigned)LargestContiguousHeap(),
+                                        (unsigned)bc_alloc_bytes_used_peek(),
+                                        (unsigned)bc_compile_bytes_used(),
+                                        (unsigned)bc_compile_bytes_free(),
+                                        (unsigned)bc_alloc_bytes_capacity());
+    }
+}
+#endif
 char *KeyInterrupt=NULL;
 unsigned char* SaveNextDataLine = NULL;
 void execute_one_command(unsigned char *p);
@@ -679,20 +702,21 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     unsigned char *filename = (unsigned char *)"", *cmd_args = (unsigned char *)"";
     char source_name[MAXSTRLEN + 1];
     char *source_text = NULL;
-	unsigned char *cmdbuf=GetMemory(256);
+    unsigned char cmdbuf[STRINGSIZE];
+    unsigned char *cmdbufp = cmdbuf;
 	memcpy(cmdbuf,cmdline,STRINGSIZE);
-    getargs(&cmdbuf, 3, (unsigned char *)",");
+    getargs(&cmdbufp, 3, (unsigned char *)",");
 	    switch (argc) {
         case 0:
             break;
         case 1:
-            filename = getCstring(argv[0]);
+            filename = getFstring(argv[0]);
             break;
         case 2:
             cmd_args = getCstring(argv[1]);
             break;
         default:
-            filename = getCstring(argv[0]);
+            filename = getFstring(argv[0]);
             if(*argv[2])cmd_args = getCstring(argv[2]);
             break;
     }
@@ -708,15 +732,28 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     unsigned char *pcmd_args = buf + strlen((char *)filename) + 3; // *** THW 16/4/23
 
     if (!*filename) error("Syntax");
+#if defined(PICOCALC) && defined(rp2350)
+    bc_run_diag_reset();
+    vm_run_memdiag("before_clear");
+#endif
     ClearRuntime(true);
+#if defined(PICOCALC) && defined(rp2350)
+    vm_run_memdiag("after_clear");
+    InitHeap(true);
+    bc_alloc_reset();
+    vm_run_memdiag("after_vm_reset");
+#endif
 #ifdef rp2350
     if(CMM2mode){
 		error("Syntax");
 	} else {
 #endif
-		if (!FileLoadSourceProgram(buf, &source_text)) return;
+		if (!FileLoadSourceProgramVM(buf, &source_text)) return;
 #ifdef rp2350
 	}
+#endif
+#if defined(PICOCALC) && defined(rp2350)
+    vm_run_memdiag("after_load");
 #endif
     if(Option.DISPLAY_CONSOLE && (SPIREAD  || Option.NoScroll)){ClearScreen(gui_bcolour);CurrentX=0;CurrentY=0;}
     // Create a global constant MM.CMDLINE$ containing 'cmd_args'.
@@ -732,7 +769,11 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     if(mouse0==false && Option.MOUSE_CLOCK)initMouse0(0);  //see if there is a mouse to initialise 
 #endif
     bc_run_source_string(source_text, source_name);
+#if !(defined(PICOCALC) && defined(rp2350))
     FreeMemorySafe((void **)&source_text);
+#else
+    source_text = NULL;
+#endif
 }
 /** @endcond */
 void MIPS16 cmd_list(void) {

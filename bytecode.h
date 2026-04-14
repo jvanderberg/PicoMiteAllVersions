@@ -10,7 +10,7 @@
 #ifndef __BYTECODE_H
 #define __BYTECODE_H
 
-#include "MMBasic.h"
+#include "vm_core.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -197,8 +197,8 @@ typedef enum {
     OP_RND          = 0xC8,  /* — push float RND */
 
     /* Additional statements */
-    OP_INC_I        = 0xC9,  /* slot:16 — INC integer var by TOS or 1 */
-    OP_INC_F        = 0xCA,  /* slot:16 — INC float var by TOS or 1 */
+    OP_INC_I        = 0xC9,  /* raw_slot:16 — pop int delta, add into int var (high bit = local) */
+    OP_INC_F        = 0xCA,  /* raw_slot:16 — pop float delta, add into float var (high bit = local) */
     OP_RANDOMIZE    = 0xCB,  /* — pop int seed, RANDOMIZE */
     OP_ERROR_S      = 0xCC,  /* — pop string, raise error */
     OP_ERROR_EMPTY  = 0xCD,  /* — raise empty error */
@@ -243,6 +243,11 @@ typedef enum {
     OP_PWM            = 0xF6, /* subop:8 — native PWM */
     OP_SERVO          = 0xF7, /* present:8 — native SERVO */
     OP_SYSCALL        = 0xF8, /* sysid:16 argc:8 auxlen:8 aux... — generic VM syscall/intrinsic */
+    OP_MATH_SQRSHR    = 0xF9, /* pop bits, pop a, push int trunc((a*a)/2^bits) */
+    OP_MATH_MULSHRADD = 0xFA, /* pop c, pop bits, pop b, pop a, push int trunc((a*b)/2^bits)+c */
+    OP_JCMP_I         = 0xFB, /* rel:8 off:16 — pop b,a, jump if integer relation holds */
+    OP_JCMP_F         = 0xFC, /* rel:8 off:16 — pop b,a, jump if float relation holds */
+    OP_MOV_VAR        = 0xFD, /* kind:8 src_raw:16 dst_raw:16 — direct typed variable copy */
 
     /* Housekeeping */
     OP_LINE         = 0xF0,  /* lineno:16 — for errors/trace */
@@ -279,6 +284,19 @@ typedef enum {
 #define BC_PWM_SYNC           2  /* present:16, pop optional counts[0..11] */
 #define BC_PWM_OFF            3  /* pop slice */
 
+/* Integer relation codes for OP_JCMP_I */
+#define BC_JCMP_EQ 1
+#define BC_JCMP_NE 2
+#define BC_JCMP_LT 3
+#define BC_JCMP_GT 4
+#define BC_JCMP_LE 5
+#define BC_JCMP_GE 6
+
+/* Typed move kinds for OP_MOV_VAR */
+#define BC_MOV_INT 1
+#define BC_MOV_FLT 2
+#define BC_MOV_STR 3
+
 /*
  * Generic VM syscall/intrinsic ids for OP_SYSCALL.
  *
@@ -314,6 +332,7 @@ typedef enum {
     BC_SYS_GFX_ARC,
     BC_SYS_GFX_TRIANGLE,
     BC_SYS_GFX_POLYGON,
+    BC_SYS_GFX_FRAMEBUFFER,
     BC_SYS_MM_HRES,
     BC_SYS_MM_VRES,
     BC_SYS_PAUSE,
@@ -346,6 +365,27 @@ typedef enum {
     BC_SYS_FILE_RENAME,
     BC_SYS_FILE_COPY,
 } BCSyscallId;
+
+typedef enum {
+    BC_FB_OP_CREATE = 1,
+    BC_FB_OP_LAYER,
+    BC_FB_OP_WRITE,
+    BC_FB_OP_CLOSE,
+    BC_FB_OP_MERGE,
+    BC_FB_OP_SYNC,
+    BC_FB_OP_WAIT,
+    BC_FB_OP_COPY,
+} BCFramebufferOp;
+
+#define BC_FB_TARGET_DEFAULT  0
+#define BC_FB_TARGET_N        'N'
+#define BC_FB_TARGET_F        'F'
+#define BC_FB_TARGET_L        'L'
+
+#define BC_FB_MERGE_MODE_NOW  0
+#define BC_FB_MERGE_MODE_B    1
+#define BC_FB_MERGE_MODE_R    2
+#define BC_FB_MERGE_MODE_A    3
 
 /* Native BOX argument kinds */
 #define BC_BOX_ARG_COUNT         7
@@ -389,13 +429,13 @@ typedef enum {
    * heap budget while removing several host/device mismatches.
    */
   #define BC_MAX_CODE       (32 * 1024)
-  #define BC_MAX_CONSTANTS  128
-  #define BC_MAX_SLOTS      256
-  #define BC_MAX_SUBFUNS    128
-  #define BC_MAX_FIXUPS     1024
-  #define BC_MAX_LINEMAP    2048
+  #define BC_MAX_CONSTANTS  96
+  #define BC_MAX_SLOTS      192
+  #define BC_MAX_SUBFUNS    96
+  #define BC_MAX_FIXUPS     512
+  #define BC_MAX_LINEMAP    1024
   #define BC_MAX_LOCALS     64
-  #define BC_MAX_LOCAL_META 1024
+  #define BC_MAX_LOCAL_META 384
   #define BC_MAX_NEST       32
   #define BC_MAX_DATA_ITEMS 1024
 #else
@@ -728,7 +768,7 @@ typedef struct {
 /* Compiler */
 int  bc_compiler_alloc(BCCompiler *cs);   /* allocate all dynamic arrays */
 void bc_compiler_free(BCCompiler *cs);    /* free all dynamic arrays */
-void bc_compiler_compact(BCCompiler *cs); /* shrink to actual size after compile */
+int  bc_compiler_compact(BCCompiler *cs); /* shrink to actual size after compile */
 void bc_compiler_init(BCCompiler *cs);    /* reset state (arrays must be allocated) */
 int  bc_compile_source(BCCompiler *cs, const char *source, const char *source_name);
 
@@ -772,6 +812,7 @@ void bc_patch_u32(BCCompiler *cs, uint32_t addr, uint32_t v);
 
 /* Debug / diagnostic tools */
 extern int bc_debug_enabled;       /* set to 1 to dump stats+disassembly on VM run */
+extern int bc_opt_level;           /* host/device frontend optimization level (default 1) */
 void bc_disassemble(BCCompiler *cs);
 
 /* Native FASTGFX helpers implemented by the platform runtime. */

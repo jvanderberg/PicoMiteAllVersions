@@ -12,34 +12,20 @@
 #include <stdarg.h>
 #include <math.h>
 
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
 #include "bytecode.h"
 #include "bc_alloc.h"
+#include "vm_device_support.h"
 #include "vm_sys_input.h"
 #include "vm_sys_graphics.h"
 #include "vm_sys_time.h"
 #include "vm_sys_audio.h"
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
-#ifndef MMBASIC_HOST
-#include "pico/time.h"
-#endif
-
-extern uint64_t readusclock(void);
-extern uint64_t timeroffset;
-
-/* External declarations */
-extern int MMInkey(void);
 
 /* Ensure __not_in_flash_func is defined (from pico SDK platform headers) */
 #ifndef __not_in_flash_func
 #define __not_in_flash_func(func) func
 #endif
-
-/* External MMBasic runtime functions */
-extern void CheckAbort(void);
-extern int  check_interrupt(void);
 
 /* ======================================================================
  * Helper: get next rotating string temp buffer
@@ -439,10 +425,14 @@ static MMFLOAT bc_vm_box_scalar_float(BCVMState *vm, BCValue value, uint8_t type
 
 static uint8_t *bc_vm_string_to_c_temp(BCVMState *vm, uint8_t *src) {
     uint8_t *tmp;
+    int len;
     if (!src) return NULL;
     tmp = vm_get_str_temp(vm);
     Mstrcpy(tmp, src);
-    return MtoC(tmp);
+    len = tmp[0];
+    memmove(tmp, tmp + 1, (size_t)len);
+    tmp[len] = 0;
+    return tmp;
 }
 
 typedef struct {
@@ -577,6 +567,7 @@ static void bc_vm_poll_interrupts(void) {
     loop_poll_counter++;
     if ((loop_poll_counter & 0x3FFu) != 0) return;
     CheckAbort();
+    vm_sys_graphics_service();
     check_interrupt();
 }
 
@@ -1030,6 +1021,54 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
             if (Option.DISPLAY_CONSOLE && !CurrentLinePtr)
                 PromptFont = gui_font;
             return;
+        }
+        case BC_SYS_GFX_FRAMEBUFFER: {
+            uint8_t op = *p++;
+            switch (op) {
+                case BC_FB_OP_CREATE:
+                    vm_sys_graphics_framebuffer_create();
+                    return;
+                case BC_FB_OP_LAYER: {
+                    int has_colour = (int)*p++;
+                    int colour = 0;
+                    if (has_colour) colour = (int)bc_vm_pop_numeric_i_value(vm);
+                    vm_sys_graphics_framebuffer_layer(has_colour, colour);
+                    return;
+                }
+                case BC_FB_OP_WRITE:
+                    vm_sys_graphics_framebuffer_write((char)*p++);
+                    return;
+                case BC_FB_OP_CLOSE:
+                    vm_sys_graphics_framebuffer_close((char)*p++);
+                    return;
+                case BC_FB_OP_MERGE: {
+                    int mode = (int)*p++;
+                    int has_colour = (int)*p++;
+                    int has_rate = (int)*p++;
+                    int rate_ms = 0;
+                    int colour = 0;
+                    if (has_rate) rate_ms = (int)bc_vm_pop_numeric_i_value(vm);
+                    if (has_colour) colour = (int)bc_vm_pop_numeric_i_value(vm);
+                    vm_sys_graphics_framebuffer_merge(has_colour, colour, mode, has_rate, rate_ms);
+                    return;
+                }
+                case BC_FB_OP_SYNC:
+                    vm_sys_graphics_framebuffer_sync();
+                    return;
+                case BC_FB_OP_WAIT:
+                    vm_sys_graphics_framebuffer_wait();
+                    return;
+                case BC_FB_OP_COPY: {
+                    char from = (char)*p++;
+                    char to = (char)*p++;
+                    int background = (int)*p++;
+                    vm_sys_graphics_framebuffer_copy(from, to, background);
+                    return;
+                }
+                default:
+                    bc_vm_error(vm, "Invalid FRAMEBUFFER operation");
+                    return;
+            }
         }
         case BC_SYS_GFX_BOX:
         case BC_SYS_GFX_RBOX:
@@ -1634,6 +1673,9 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_JMP_ABS]        = &&op_jmp_abs,
         [OP_JZ]             = &&op_jz,
         [OP_JNZ]            = &&op_jnz,
+        [OP_JCMP_I]         = &&op_jcmp_i,
+        [OP_JCMP_F]         = &&op_jcmp_f,
+        [OP_MOV_VAR]        = &&op_mov_var,
         [OP_GOSUB]          = &&op_gosub,
         [OP_RETURN]         = &&op_return,
 
@@ -1732,6 +1774,8 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_MM_VRES]        = &&op_mm_vres,
 
         /* Additional statements */
+        [OP_INC_I]          = &&op_inc_i,
+        [OP_INC_F]          = &&op_inc_f,
         [OP_RANDOMIZE]      = &&op_randomize,
         [OP_ERROR_S]        = &&op_error_s,
         [OP_ERROR_EMPTY]    = &&op_error_empty,
@@ -1769,6 +1813,8 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_FONT]           = &&op_font,
         [OP_POLYGON]        = &&op_polygon,
         [OP_SYSCALL]        = &&op_syscall,
+        [OP_MATH_SQRSHR]    = &&op_math_sqrshr,
+        [OP_MATH_MULSHRADD] = &&op_math_mulshradd,
 
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
@@ -2321,6 +2367,100 @@ op_jnz: {
     if (val != 0) {
         if (offset < 0) bc_vm_poll_interrupts();
         vm->pc += offset;
+    }
+    DISPATCH();
+}
+
+op_jcmp_i: {
+    uint8_t rel = *vm->pc++;
+    int16_t offset = READ_I16();
+    int64_t b = POP_I();
+    int64_t a = POP_I();
+    int take = 0;
+    switch (rel) {
+        case BC_JCMP_EQ: take = (a == b); break;
+        case BC_JCMP_NE: take = (a != b); break;
+        case BC_JCMP_LT: take = (a <  b); break;
+        case BC_JCMP_GT: take = (a >  b); break;
+        case BC_JCMP_LE: take = (a <= b); break;
+        case BC_JCMP_GE: take = (a >= b); break;
+        default: bc_vm_error(vm, "Invalid JCMP_I relation %u", (unsigned)rel);
+    }
+    if (take) {
+        if (offset < 0) bc_vm_poll_interrupts();
+        vm->pc += offset;
+    }
+    DISPATCH();
+}
+
+op_jcmp_f: {
+    uint8_t rel = *vm->pc++;
+    int16_t offset = READ_I16();
+    MMFLOAT b = POP_F();
+    MMFLOAT a = POP_F();
+    int take = 0;
+    switch (rel) {
+        case BC_JCMP_EQ: take = (a == b); break;
+        case BC_JCMP_NE: take = (a != b); break;
+        case BC_JCMP_LT: take = (a <  b); break;
+        case BC_JCMP_GT: take = (a >  b); break;
+        case BC_JCMP_LE: take = (a <= b); break;
+        case BC_JCMP_GE: take = (a >= b); break;
+        default: bc_vm_error(vm, "Invalid JCMP_F relation %u", (unsigned)rel);
+    }
+    if (take) {
+        if (offset < 0) bc_vm_poll_interrupts();
+        vm->pc += offset;
+    }
+    DISPATCH();
+}
+
+op_mov_var: {
+    uint8_t kind = *vm->pc++;
+    uint16_t src_raw = READ_U16();
+    uint16_t dst_raw = READ_U16();
+    int src_is_local = (src_raw & 0x8000u) != 0;
+    int dst_is_local = (dst_raw & 0x8000u) != 0;
+    uint16_t src_slot = src_raw & 0x7FFFu;
+    uint16_t dst_slot = dst_raw & 0x7FFFu;
+    BCValue *src;
+    BCValue *dst;
+
+    if (src_is_local) {
+        int idx = vm->frame_base + src_slot;
+        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
+        src = &vm->locals[idx];
+    } else {
+        src = &vm->globals[src_slot];
+    }
+
+    if (dst_is_local) {
+        int idx = vm->frame_base + dst_slot;
+        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
+        dst = &vm->locals[idx];
+    } else {
+        dst = &vm->globals[dst_slot];
+    }
+
+    switch (kind) {
+        case BC_MOV_INT:
+            dst->i = src->i;
+            if (dst_is_local) vm->local_types[vm->frame_base + dst_slot] = T_INT;
+            break;
+        case BC_MOV_FLT:
+            dst->f = src->f;
+            if (dst_is_local) vm->local_types[vm->frame_base + dst_slot] = T_NBR;
+            break;
+        case BC_MOV_STR:
+            if (!dst->s) {
+                dst->s = BC_ALLOC(STRINGSIZE);
+                if (!dst->s) bc_vm_error(vm, "Out of memory for string");
+            }
+            Mstrcpy(dst->s, src->s ? src->s : (uint8_t *)"");
+            if (dst_is_local) vm->local_types[vm->frame_base + dst_slot] = T_STR;
+            break;
+        default:
+            bc_vm_error(vm, "Invalid MOV_VAR kind %u", (unsigned)kind);
     }
     DISPATCH();
 }
@@ -3440,6 +3580,60 @@ op_math_mulshr: {
     int64_t b = POP_NUMERIC_I();
     int64_t a = POP_NUMERIC_I();
     PUSH_I(bc_vm_mulshr_int(a, b, bits));
+    DISPATCH();
+}
+
+op_math_sqrshr: {
+    int bits = (int)POP_NUMERIC_I();
+    int64_t a = POP_NUMERIC_I();
+    PUSH_I(bc_vm_mulshr_int(a, a, bits));
+    DISPATCH();
+}
+
+op_math_mulshradd: {
+    int64_t c = POP_NUMERIC_I();
+    int bits = (int)POP_NUMERIC_I();
+    int64_t b = POP_NUMERIC_I();
+    int64_t a = POP_NUMERIC_I();
+    PUSH_I(bc_vm_mulshr_int(a, b, bits) + c);
+    DISPATCH();
+}
+
+op_inc_i: {
+    uint16_t raw_slot = READ_U16();
+    int is_local = (raw_slot & 0x8000u) != 0;
+    uint16_t slot = raw_slot & 0x7FFFu;
+    int64_t delta = POP_NUMERIC_I();
+    BCValue *dst;
+
+    if (is_local) {
+        int idx = vm->frame_base + slot;
+        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
+        dst = &vm->locals[idx];
+    } else {
+        dst = &vm->globals[slot];
+    }
+
+    dst->i += delta;
+    DISPATCH();
+}
+
+op_inc_f: {
+    uint16_t raw_slot = READ_U16();
+    int is_local = (raw_slot & 0x8000u) != 0;
+    uint16_t slot = raw_slot & 0x7FFFu;
+    MMFLOAT delta = POP_NUMERIC_F();
+    BCValue *dst;
+
+    if (is_local) {
+        int idx = vm->frame_base + slot;
+        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
+        dst = &vm->locals[idx];
+    } else {
+        dst = &vm->globals[slot];
+    }
+
+    dst->f += delta;
     DISPATCH();
 }
 

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.13)
 # Valid builds are PICO, PICOUSB, VGA, VGAUSB, HDMI(rp2350 only), HDMIUSB(rp2350 only), WEB
 
 set(PICOCALC true)
+option(PICOMITE_VM_DEVICE_ONLY "Build the device target without the legacy interpreter core" OFF)
 # For dynamic loading from SD card:
 # SDBOOT requires the bootloader to be in the first 256KB of flash
 # PicoMite will need to be shifted by this amount, and all references to
@@ -37,19 +38,39 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 #set(PICO_NO_COPRO_DIS 1)
 pico_sdk_init()
-add_executable(PicoMite
+set(PICOMITE_BASE_COMMON_SOURCES
+	regex.c
+	ff.c
+	ffsystem.c
+	ffunicode.c
+	mmc_stm32.c
+	picojpeg.c
+	lfs.c
+	lfs_util.c
+	hxcmod.c
+	aes.c
+)
+
+set(PICOMITE_BASE_SOURCES
+	${PICOMITE_BASE_COMMON_SOURCES}
 	PicoMite.c
-	regex.c 
+	VS1053.c
+	Memory.c
+)
+
+set(PICOMITE_VM_DEVICE_SOURCES
+	vm_device_runtime.c
+	vm_device_main.c
+	vm_device_fileio.c
+)
+
+set(PICOMITE_LEGACY_CORE_SOURCES
 	MMBasic.c
 	Operators.c
 	Custom.c
 	Functions.c
 	Commands.c
 	FileIO.c
-	ff.c
-	ffsystem.c
-	ffunicode.c
-	mmc_stm32.c
 	Draw.c
 	Editor.c
 	XModem.c
@@ -65,39 +86,51 @@ add_executable(PicoMite
 	GPS.c
 	Audio.c
 	CFunction.c
-    picojpeg.c 
-    lfs.c
-    lfs_util.c
-	hxcmod.c
-    VS1053.c
-	aes.c
-	Memory.c
+)
+
+set(PICOMITE_VM_SHARED_GFX_SOURCES
 	gfx_box_shared.c
 	gfx_circle_shared.c
 	gfx_line_shared.c
 	gfx_pixel_shared.c
 	gfx_cls_shared.c
 	gfx_text_shared.c
+)
+
+set(PICOMITE_VM_SOURCES
 	bc_alloc.c
+	bc_source.c
+	bc_compiler_core.c
+	bc_vm.c
+	bc_runtime.c
+	bc_debug.c
 	vm_sys_input.c
 	vm_sys_graphics.c
 	vm_sys_time.c
 	vm_sys_audio.c
 	vm_sys_pin.c
 	vm_sys_file.c
-	bc_source.c
-	bc_compiler_core.c
-	bc_vm.c
-	bc_runtime.c
-	bc_debug.c
+	${PICOMITE_VM_SHARED_GFX_SOURCES}
 )
+
+add_executable(PicoMite
+	${PICOMITE_BASE_SOURCES}
+	${PICOMITE_VM_SOURCES}
+)
+if(PICOMITE_VM_DEVICE_ONLY)
+	target_sources(PicoMite PRIVATE ${PICOMITE_VM_DEVICE_SOURCES})
+endif()
+if(NOT PICOMITE_VM_DEVICE_ONLY)
+	target_sources(PicoMite PRIVATE ${PICOMITE_LEGACY_CORE_SOURCES})
+endif()
 if (COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "HDMIUSB"  OR COMPILE STREQUAL "VGARP2350"  OR COMPILE STREQUAL "VGAUSBRP2350"  OR COMPILE STREQUAL "PICORP2350"  OR COMPILE STREQUAL "PICOUSBRP2350" )
     target_sources(PicoMite PRIVATE psram.c)
 endif()
 if (COMPILE STREQUAL "WEB" OR COMPILE STREQUAL "WEBRP2350" )
-    target_sources(PicoMite PRIVATE 
-	SSD1963.c 
-	Touch.c     
+if(NOT PICOMITE_VM_DEVICE_ONLY)
+    target_sources(PicoMite PRIVATE
+	SSD1963.c
+	Touch.c
 	GUI.c
 	cJSON.c
     mqtt.c
@@ -117,23 +150,30 @@ if (COMPILE STREQUAL "WEB" OR COMPILE STREQUAL "WEBRP2350" )
 	)
 	Pico_enable_stdio_usb(PicoMite 1)
 endif()
+endif()
 
 if ((COMPILE STREQUAL "PICO") OR (COMPILE STREQUAL "PICOUSB") OR (COMPILE STREQUAL "PICORP2350") OR (COMPILE STREQUAL "PICOUSBRP2350") OR (COMPILE STREQUAL "WEBRP2350"))
-    target_sources(PicoMite PRIVATE 
-	SSD1963.c 
-	Touch.c 
+if(NOT PICOMITE_VM_DEVICE_ONLY)
+    target_sources(PicoMite PRIVATE
+	SSD1963.c
+	Touch.c
 	GUI.c)
+endif()
 endif()
 
 if (COMPILE STREQUAL "VGAUSB" OR COMPILE STREQUAL "PICOUSBRP2350" OR COMPILE STREQUAL "VGAUSBRP2350" OR COMPILE STREQUAL "PICOUSB" OR COMPILE STREQUAL "HDMIUSB")
-    target_sources(PicoMite PRIVATE 
+if(NOT PICOMITE_VM_DEVICE_ONLY)
+    target_sources(PicoMite PRIVATE
 	USBKeyboard.c
 	)
+endif()
 else()
-	target_sources(PicoMite PRIVATE 
-	Keyboard.c 
+if(NOT PICOMITE_VM_DEVICE_ONLY)
+	target_sources(PicoMite PRIVATE
+	Keyboard.c
 	mouse.c
 	)
+endif()
 endif()
 
 if(COMPILE STREQUAL "VGARP2350" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "PICORP2350" OR COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "HDMIUSB" OR COMPILE STREQUAL "VGAUSBRP2350" OR COMPILE STREQUAL "PICOUSBRP2350")
@@ -143,8 +183,23 @@ if(COMPILE STREQUAL "VGARP2350" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQ
 endif()
 
 if(PICOCALC STREQUAL "true")
+if(NOT PICOMITE_VM_DEVICE_ONLY)
 	target_sources(PicoMite PRIVATE
 	picocalc/i2ckbd.c
+	)
+else()
+	target_sources(PicoMite PRIVATE
+	picocalc/i2ckbd.c
+	)
+endif()
+endif()
+
+if(PICOMITE_VM_DEVICE_ONLY)
+	set_source_files_properties(
+		PicoMite.c
+		VS1053.c
+		Memory.c
+		PROPERTIES HEADER_FILE_ONLY TRUE
 	)
 endif()
 
@@ -251,6 +306,9 @@ endif()
 if(PICOCALC STREQUAL "true")
 	target_compile_options(PicoMite PRIVATE -DPICOCALC
 											)
+endif()
+if(PICOMITE_VM_DEVICE_ONLY)
+	target_compile_definitions(PicoMite PRIVATE PICOMITE_VM_DEVICE_ONLY=1)
 endif()
 
 

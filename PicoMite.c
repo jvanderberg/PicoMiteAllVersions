@@ -445,6 +445,14 @@ static inline CommandToken commandtbl_decode(const unsigned char *p){
 }
 char banner[64];
 void __not_in_flash_func(routinechecks)(void){
+#ifdef PICOMITE_VM_DEVICE_ONLY
+    if(abs((time_us_64()-mSecTimer*1000))> 5000){
+        cancel_repeating_timer(&timer);
+        add_repeating_timer_us(-1000, timer_callback, NULL, &timer);
+        mSecTimer=time_us_64()/1000;
+    }
+    return;
+#else
     static int when=0;
     if(abs((time_us_64()-mSecTimer*1000))> 5000){
         cancel_repeating_timer(&timer);
@@ -557,6 +565,7 @@ void __not_in_flash_func(routinechecks)(void){
 /*frame
     if(frame && CurrentLinePtr)ShowCursor(framecursor);
 */
+#endif
 }
 
 int __not_in_flash_func(getConsole)(void) {
@@ -1486,6 +1495,15 @@ void __not_in_flash_func(mT4IntEnable)(int status){
 volatile int onoff=0;
 bool MIPS16 __not_in_flash_func(timer_callback)(repeating_timer_t *rt)
 {
+#ifdef PICOMITE_VM_DEVICE_ONLY
+    (void)rt;
+    mSecTimer++;
+    InkeyTimer++;
+    PauseTimer++;
+    IntPauseTimer++;
+    if(++CursorTimer > CURSOR_OFF + CURSOR_ON) CursorTimer = 0;
+    return true;
+#else
     mSecTimer++;                                                      // used by the TIMER function
     if(processtick){
         static int IrTimeout, IrTick, NextIrTick;
@@ -1678,6 +1696,7 @@ bool MIPS16 __not_in_flash_func(timer_callback)(repeating_timer_t *rt)
         }
     }
   return 1;
+#endif
 }
 void __not_in_flash_func(uSec)(int us) {
 #ifdef PICOMITEWEB
@@ -3876,6 +3895,11 @@ void settiles(void){
 #include "pico/multicore.h"
 void __not_in_flash_func(UpdateCore)()
 {
+#ifdef PICOMITE_VM_DEVICE_ONLY
+	while (true) {
+        tight_loop_contents();
+    }
+#else
 //    systick_hw->csr = 0x5;
 //    systick_hw->rvr = 0x00FFFFFF;
 //    while(multicore_fifo_rvalid()) {
@@ -3971,6 +3995,7 @@ void __not_in_flash_func(UpdateCore)()
         }
     }
 
+#endif
 }
 uint32_t core1stack[512];
 #endif

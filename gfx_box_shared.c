@@ -1,5 +1,4 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_box_shared.h"
 
 static int gfx_box_arg_value(const GfxBoxIntArg *arg, int index) {

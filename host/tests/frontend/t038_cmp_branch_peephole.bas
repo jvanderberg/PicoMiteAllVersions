@@ -1,0 +1,5 @@
+OPTION EXPLICIT
+DIM i%
+FOR i% = 1 TO 3
+  IF i% < 3 THEN PRINT i%
+NEXT i%

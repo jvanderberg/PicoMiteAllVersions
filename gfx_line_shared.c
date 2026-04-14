@@ -1,5 +1,4 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_line_shared.h"
 
 static int gfx_line_arg_value(const GfxLineArg *arg, int index) {

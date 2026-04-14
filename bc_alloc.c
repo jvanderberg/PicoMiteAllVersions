@@ -66,6 +66,26 @@ int bc_alloc_owns(const void *ptr) {
     return 0;
 }
 
+size_t bc_alloc_bytes_used_peek(void) {
+    return 0;
+}
+
+size_t bc_alloc_bytes_high_water_peek(void) {
+    return 0;
+}
+
+size_t bc_compile_bytes_used(void) {
+    return 0;
+}
+
+size_t bc_compile_bytes_free(void) {
+    return 0;
+}
+
+size_t bc_runtime_bytes_limit(void) {
+    return 0;
+}
+
 #else
 
 #ifndef BC_DEVICE_HEAP_SIZE
@@ -279,6 +299,32 @@ size_t bc_alloc_bytes_high_water(void) {
 
 size_t bc_alloc_bytes_capacity(void) {
     return sizeof(bc_heap);
+}
+
+size_t bc_alloc_bytes_used_peek(void) {
+    return bc_heap_used;
+}
+
+size_t bc_alloc_bytes_high_water_peek(void) {
+    return bc_heap_high_water;
+}
+
+size_t bc_compile_bytes_used(void) {
+    if (bc_compile_top == 0 && bc_runtime_limit == 0 && !bc_free_list)
+        return 0;
+    return sizeof(bc_heap) - bc_compile_top;
+}
+
+size_t bc_compile_bytes_free(void) {
+    if (bc_compile_top == 0 && bc_runtime_limit == 0 && !bc_free_list)
+        return sizeof(bc_heap);
+    if (bc_compile_top <= bc_runtime_limit)
+        return 0;
+    return bc_compile_top - bc_runtime_limit;
+}
+
+size_t bc_runtime_bytes_limit(void) {
+    return bc_runtime_limit;
 }
 
 #endif

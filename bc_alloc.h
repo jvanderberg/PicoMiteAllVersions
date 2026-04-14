@@ -21,6 +21,11 @@ size_t bc_alloc_bytes_high_water(void);
 size_t bc_alloc_bytes_capacity(void);
 size_t bc_alloc_usable_size(void *ptr);
 int bc_alloc_owns(const void *ptr);
+size_t bc_alloc_bytes_used_peek(void);
+size_t bc_alloc_bytes_high_water_peek(void);
+size_t bc_compile_bytes_used(void);
+size_t bc_compile_bytes_free(void);
+size_t bc_runtime_bytes_limit(void);
 
 #define BC_ALLOC(sz) bc_alloc((sz))
 #define BC_FREE(p)   bc_free((p))

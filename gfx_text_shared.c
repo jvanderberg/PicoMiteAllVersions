@@ -1,7 +1,5 @@
-#include "MMBasic.h"
-#include "Hardware_Includes.h"
+#include "vm_device_support.h"
 #include "gfx_text_shared.h"
-#include "Draw.h"
 
 static void gfx_text_fail_msg(const GfxTextOps *ops, const char *msg) {
     if (ops && ops->fail_msg) ops->fail_msg(ops->ctx, msg);

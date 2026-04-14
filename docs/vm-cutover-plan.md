@@ -22,7 +22,9 @@ Move to a prototype architecture with:
 - Native VM syscalls must be implemented in VM-owned runtime files by copying/adapting the useful legacy implementation logic. They must not wrap, call, or dispatch through legacy interpreter syscall handlers or helper entrypoints such as `cmd_*`, `fun_*`, `ExtCfg`, `ExtSet`, `ExtInp`, `DrawCircle`, or file command handlers.
 - Shared immutable tables, device option state, and hardware SDK primitives may be used by VM syscall modules where needed, but the syscall behavior itself must live in `vm_sys_*` code.
 - Legacy modules such as `FileIO.c`, `Commands.c`, `Functions.c`, and old drawing command handlers remain oracle-owned unless they are only changed behind a host/device shim boundary.
+- **!!! THIS IS A BLOCKING REPOSITORY RULE, NOT A STYLE PREFERENCE OR BEST-EFFORT GUIDELINE !!!**
 - **!!! VM SYSCALL CONVERSIONS MUST COPY LEGACY IMPLEMENTATION CODE INTO VM-OWNED MODULES AND ADAPT IT THERE !!!**
+- **!!! IF THE LEGACY IMPLEMENTATION DEPENDS ON HELPERS, COPY/ADAPT THOSE HELPERS TOO !!!**
 - **!!! DO NOT INVENT NEW ALGORITHMS WHEN LEGACY CODE ALREADY EXISTS !!!**
 - **!!! DO NOT LINK, WRAP, OR DISPATCH BACK INTO LEGACY HANDLERS OR LEGACY DRAWING/FILE HELPER ENTRYPOINTS !!!**
 - **!!! NOVEL CODE SHOULD BE LIMITED TO VM FRONTEND/DISPATCH GLUE, REQUIRED ADAPTATION LAYERS, AND HOST MOCKS/SHIMS !!!**
@@ -55,6 +57,19 @@ These are the current highest-priority architecture items. New syscall expansion
    - Optional dedicated opcodes remain allowed only for proven hot paths where profiling or code-size measurements justify them.
    - The generic ABI is the default. Dedicated opcodes are the exception.
 
+4. Isolate the device build from the legacy allocator API
+   - `GetMemory`, `GetSystemMemory`, `GetTempMemory`, `FreeMemory`, and `ReAllocMemory` must not exist on the PicoCalc RP2350 VM/device path.
+   - This requires a build-target split, not more local allocator patching.
+   - Current blocker:
+     - the RP2350 firmware target still links major legacy modules such as `MMBasic.c`, `Commands.c`, `Functions.c`, `FileIO.c`, and `Draw.c`
+     - the VM/runtime layer still imports a narrowed but still critical legacy support surface such as `error`, `mark`, `MMPrintString`, `Option`, display globals, numeric/string conversion helpers, and prompt/display state
+     - `vm_device_support.h` is now the live seam for these imports; it must shrink until the legacy core source list can be removed from the RP2350 target
+   - Required sequence:
+     1. replace the remaining runtime support surface the VM still imports from legacy modules
+     2. split the RP2350 device target source list from the host oracle source list
+     3. make the legacy allocator API unavailable in the device target so remaining violations fail at build time
+     4. replace the temporary VM support imports with VM-owned or shell-owned implementations as needed
+
 ## Plan
 
 ### 1. Freeze a host-only legacy interpreter
@@ -83,6 +98,10 @@ Status: in progress.
 - The remaining interpreter table reservations are `g_vartbl` and `funtbl`; these persist only because interpreter-adjacent modules are still linked.
 - Remaining risk: the device build still carries interpreter/tokenising code for prompt, editing, command table, and oracle-adjacent runtime dependencies. This needs further size-driven separation before the firmware is truly VM-only internally.
 - Native syscall extraction proceeds only through VM-owned source frontend opcodes and VM-owned `vm_sys_*` runtime modules.
+- Progress made toward the split:
+  - live VM core files (`bc_runtime.c`, `bc_debug.c`, `bc_vm.c`, `vm_sys_*`, and `gfx_*_shared.c`) no longer include `MMBasic.h` / `MMBasic_Includes.h` directly
+  - these imports now flow through `vm_device_support.h`, which exposes the remaining legacy support surface explicitly
+  - `CMakeLists.txt` now separates `PICOMITE_BASE_SOURCES`, `PICOMITE_LEGACY_CORE_SOURCES`, and `PICOMITE_VM_SOURCES`, giving the RP2350 build a concrete cut line for the future VM-only device target
 
 ### 2B. Split VM memory by lifetime
 
@@ -140,6 +159,7 @@ Status: started.
   - `bc_source.c` now emits the current implemented VM syscall surface through `OP_SYSCALL` by default instead of command-specific opcodes.
   - The shared syscall path currently covers:
     - graphics commands and graphics/query builtins
+    - `FRAMEBUFFER` (CREATE, LAYER, WRITE, CLOSE, MERGE, SYNC, WAIT, COPY)
     - `FASTGFX`
     - `DATE$`, `TIME$`, `KEYDOWN()`, `PAUSE`
     - `PLAY`
@@ -150,6 +170,40 @@ Status: started.
   - remove or quarantine obsolete dedicated syscall opcodes once the generic path is stable enough
   - move any remaining current syscall implementations that still depend on bespoke sub-encodings onto cleaner shared metadata formats where practical
   - decide which dedicated opcodes are actually justified by profiling and code-size measurements
+
+### 2D. Peephole optimizer
+
+Status: implemented — 7 optimization families active.
+
+- The source frontend (`bc_source.c`) now includes a compile-time peephole optimizer.
+- Controlled by `bc_opt_level`: 0 = disabled, 1 = enabled (default).
+- CLI: `-O0` / `-O1`.
+- Operates on a 1-2 instruction window immediately after parsing each statement/expression.
+
+Implemented superinstructions:
+
+| Opcode | Pattern | Bytecode |
+|--------|---------|----------|
+| `OP_MATH_MULSHR` | `(a * b) \ 2^n` | `0xEE` |
+| `OP_MATH_SQRSHR` | `(a * a) \ 2^n` | `0xF9` |
+| `OP_MATH_MULSHRADD` | `((a * b) \ 2^n) + c` | `0xFA` |
+| `OP_JCMP_I` | integer compare + branch | `0xFB` |
+| `OP_JCMP_F` | float compare + branch | `0xFC` |
+| `OP_MOV_VAR` | `a = b` typed copy | `0xFD` |
+
+Additional rewrites: `INC a%, const` and `INC a%, expr` / `INC a, expr` fold constant/expression increments into direct assignment, eliminating the `INC_I`/`INC_F` opcode.
+
+Testing methodology:
+
+- **Peephole assertion tests** (`tests/frontend/t0XX_*_peephole.bas`): run `--vm-disasm` and verify the fused opcode appears / unfused form is absent.
+- **Equivalence tests** (`tests/frontend/t0XX_*_opt_equiv.bas`): compare `-O0` vs `-O1` output byte-for-byte to verify behavioral correctness across sign combinations, boundary values, and type edge cases.
+- **Smoke test**: mandelbrot with `-O1` as a full-program integration check.
+- Runner: `./host/run_optimizer_tests.sh` (22 tests).
+
+Remaining optimizer work:
+- profile on device to measure actual cycle savings for each superinstruction
+- evaluate whether additional hot patterns (e.g., array index, FOR loop step) justify new fused opcodes
+- consider a post-compile pass for optimizations that span more than the current 1-2 instruction window
 
 ### 2A. Build a VM-owned source frontend
 
@@ -191,7 +245,34 @@ Status: partially complete.
 - Reject arbitrary immediate BASIC at the prompt with a clear error.
 - Treat the prompt as OS control, not a BASIC REPL.
 - Current prompt rejects arbitrary immediate BASIC with `Immediate BASIC disabled`.
-- Current prompt still uses selected legacy command handlers for shell/file/editor behavior.
+- The dedicated `PICOMITE_VM_DEVICE_ONLY` build now uses a table-driven VM-owned shell in `vm_device_main.c`.
+- Current VM-only shell commands:
+  - `RUN`
+  - bare filename run
+  - `LOAD`
+  - `SAVE`
+  - `LIST`
+  - `NEW`
+  - `FILES`
+  - `DRIVE`
+  - `CHDIR` / `CD`
+  - `MKDIR`
+  - `RMDIR`
+  - `KILL`
+  - `COPY`
+  - `RENAME`
+  - `HELP`
+  - `MEMORY`
+  - `FREE`
+  - `PWD`
+  - `CLS`
+- Remaining VM-only shell gaps:
+  - `EDIT`
+  - `AUTOSAVE`
+  - `OPTION`
+  - `CONFIGURE`
+  - broader prompt submodes and exact formatting parity for commands like `FILES` and `LIST`
+- The default non-VM-only firmware target still uses selected legacy prompt handlers.
 
 ### 4. Make `RUN` VM-only
 
@@ -239,10 +320,11 @@ Status: active.
 - Use device tests mainly for hardware-facing behavior, timing, and memory/resource validation.
 - Remaining gap: the host oracle is currently not fully independent for some file/pin/PWM paths because parts of the host legacy shim call VM-owned helpers. That must be corrected.
 - Current baseline:
-  - `./host/run_tests.sh`: `162 passed, 0 failed`.
+  - `./host/run_tests.sh`: `168 passed, 0 failed`.
   - `./host/run_pixel_tests.sh`: passing framebuffer assertions.
   - `./host/run_host_shim_tests.sh`: `4 passed, 0 failed`.
-  - `./host/run_frontend_tests.sh`: `27 passed, 0 failed`.
+  - `./host/run_frontend_tests.sh`: `48 passed, 0 failed`.
+  - `./host/run_optimizer_tests.sh`: `22 passed, 0 failed`.
   - `bash host/run_unsupported_tests.sh`: `0 passed, 0 failed`.
   - `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`.
 
@@ -271,6 +353,7 @@ make -C host
 ./host/run_pixel_tests.sh
 ./host/run_host_shim_tests.sh
 ./host/run_frontend_tests.sh
+./host/run_optimizer_tests.sh
 bash host/run_unsupported_tests.sh
 ./host/run_missing_syscall_tests.sh
 make -C build2350 -j8

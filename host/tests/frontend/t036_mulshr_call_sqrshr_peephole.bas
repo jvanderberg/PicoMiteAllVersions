@@ -1,0 +1,3 @@
+OPTION EXPLICIT
+DIM a% = 7
+PRINT MULSHR(a%, a%, 3)

@@ -59,7 +59,8 @@ void bc_compiler_free(BCCompiler *cs) {
  *
  * Call after bc_compile() returns successfully, before bc_vm_execute().
  */
-void bc_compiler_compact(BCCompiler *cs) {
+int bc_compiler_compact(BCCompiler *cs) {
+    int ok = 1;
     /* 1. Free arrays only needed during compilation */
     if (cs->fixups)     { BC_COMPILER_FREE(cs->fixups);     cs->fixups = NULL; }
     if (cs->linemap)    { BC_COMPILER_FREE(cs->linemap);    cs->linemap = NULL; }
@@ -74,6 +75,7 @@ void bc_compiler_compact(BCCompiler *cs) {
         size_t sz = (size_t)(count) * sizeof(type); \
         type *p = (type *)BC_ALLOC(sz); \
         if (p) { memcpy(p, cs->field, sz); BC_COMPILER_FREE(cs->field); cs->field = p; } \
+        else if (bc_compile_owns(cs->field)) { ok = 0; } \
     } else if (cs->field && (count) == 0) { \
         BC_COMPILER_FREE(cs->field); cs->field = NULL; \
     } \
@@ -83,6 +85,7 @@ void bc_compiler_compact(BCCompiler *cs) {
     if (cs->code && cs->code_len > 0) {
         uint8_t *p = (uint8_t *)BC_ALLOC(cs->code_len);
         if (p) { memcpy(p, cs->code, cs->code_len); BC_COMPILER_FREE(cs->code); cs->code = p; }
+        else if (bc_compile_owns(cs->code)) { ok = 0; }
     }
 
     COMPACT(constants, cs->const_count, BCConstant);
@@ -93,6 +96,7 @@ void bc_compiler_compact(BCCompiler *cs) {
     COMPACT(data_pool, cs->data_count, BCDataItem);
 
 #undef COMPACT
+    return ok ? 0 : -1;
 }
 
 /* ------------------------------------------------------------------ */
