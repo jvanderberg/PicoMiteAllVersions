@@ -422,7 +422,7 @@ typedef enum {
 #if defined(BC_SIM_RP2040)
   /* Host build simulating RP2040 — uses RP2040 device limits */
   #define BC_MAX_CODE       (16 * 1024)
-  #define BC_MAX_CONSTANTS  32
+  #define BC_MAX_CONSTANTS  64
   #define BC_MAX_SLOTS      128
   #define BC_MAX_SUBFUNS    32
   #define BC_MAX_FIXUPS     256
@@ -478,7 +478,7 @@ typedef enum {
   #define BC_MAX_DATA_ITEMS 1024
 #else
   #define BC_MAX_CODE       (16 * 1024)
-  #define BC_MAX_CONSTANTS  32
+  #define BC_MAX_CONSTANTS  64
   #define BC_MAX_SLOTS      128
   #define BC_MAX_SUBFUNS    32
   #define BC_MAX_FIXUPS     256
@@ -497,8 +497,11 @@ typedef struct {
     char     name[MAXVARLEN + 1];
     uint8_t  type;              /* T_INT, T_NBR, T_STR */
     uint8_t  is_array;
+    uint8_t  is_const;          /* 1 if Const — value inlined, no slot load */
     uint8_t  ndims;
     int      dims[MAXDIM];      /* array dimension sizes, 0 if unknown at compile time */
+    int64_t  const_ival;        /* integer value if is_const && type==T_INT */
+    double   const_fval;        /* float value if is_const && type==T_NBR */
 } BCSlot;
 
 /*

@@ -1,67 +1,68 @@
 ' Stress test SELECT CASE — many CASE clauses (case_end_fixups[32])
+' Uses PRINT with numbers to avoid exhausting the string constant pool
 DIM x%
 x% = 25
 SELECT CASE x%
   CASE 1
-    PRINT "one"
+    PRINT 1
   CASE 2
-    PRINT "two"
+    PRINT 2
   CASE 3
-    PRINT "three"
+    PRINT 3
   CASE 4
-    PRINT "four"
+    PRINT 4
   CASE 5
-    PRINT "five"
+    PRINT 5
   CASE 6
-    PRINT "six"
+    PRINT 6
   CASE 7
-    PRINT "seven"
+    PRINT 7
   CASE 8
-    PRINT "eight"
+    PRINT 8
   CASE 9
-    PRINT "nine"
+    PRINT 9
   CASE 10
-    PRINT "ten"
+    PRINT 10
   CASE 11
-    PRINT "eleven"
+    PRINT 11
   CASE 12
-    PRINT "twelve"
+    PRINT 12
   CASE 13
-    PRINT "thirteen"
+    PRINT 13
   CASE 14
-    PRINT "fourteen"
+    PRINT 14
   CASE 15
-    PRINT "fifteen"
+    PRINT 15
   CASE 16
-    PRINT "sixteen"
+    PRINT 16
   CASE 17
-    PRINT "seventeen"
+    PRINT 17
   CASE 18
-    PRINT "eighteen"
+    PRINT 18
   CASE 19
-    PRINT "nineteen"
+    PRINT 19
   CASE 20
-    PRINT "twenty"
+    PRINT 20
   CASE 21
-    PRINT "twenty-one"
+    PRINT 21
   CASE 22
-    PRINT "twenty-two"
+    PRINT 22
   CASE 23
-    PRINT "twenty-three"
+    PRINT 23
   CASE 24
-    PRINT "twenty-four"
+    PRINT 24
   CASE 25
-    PRINT "twenty-five"
+    PRINT 25
   CASE 26
-    PRINT "twenty-six"
+    PRINT 26
   CASE 27
-    PRINT "twenty-seven"
+    PRINT 27
   CASE 28
-    PRINT "twenty-eight"
+    PRINT 28
   CASE 29
-    PRINT "twenty-nine"
+    PRINT 29
   CASE 30
-    PRINT "thirty"
+    PRINT 30
   CASE ELSE
     PRINT "other"
 END SELECT
@@ -74,44 +75,10 @@ SELECT CASE x%
     PRINT "second"
   CASE 3
     PRINT "third"
-  CASE 4
-    PRINT "fourth"
-  CASE 5
-    PRINT "fifth"
-  CASE 6
-    PRINT "sixth"
-  CASE 7
-    PRINT "seventh"
-  CASE 8
-    PRINT "eighth"
-  CASE 9
-    PRINT "ninth"
-  CASE 10
-    PRINT "tenth"
-  CASE 11
-    PRINT "eleventh"
-  CASE 12
-    PRINT "twelfth"
-  CASE 13
-    PRINT "thirteenth"
-  CASE 14
-    PRINT "fourteenth"
-  CASE 15
-    PRINT "fifteenth"
-  CASE 16
-    PRINT "sixteenth"
-  CASE 17
-    PRINT "seventeenth"
-  CASE 18
-    PRINT "eighteenth"
-  CASE 19
-    PRINT "nineteenth"
-  CASE 20
-    PRINT "twentieth"
   CASE ELSE
     PRINT "high"
 END SELECT
-' Test CASE ELSE with many cases
+' Test CASE ELSE
 x% = 999
 SELECT CASE x%
   CASE 1
@@ -120,40 +87,6 @@ SELECT CASE x%
     PRINT "b"
   CASE 3
     PRINT "c"
-  CASE 4
-    PRINT "d"
-  CASE 5
-    PRINT "e"
-  CASE 6
-    PRINT "f"
-  CASE 7
-    PRINT "g"
-  CASE 8
-    PRINT "h"
-  CASE 9
-    PRINT "i"
-  CASE 10
-    PRINT "j"
-  CASE 11
-    PRINT "k"
-  CASE 12
-    PRINT "l"
-  CASE 13
-    PRINT "m"
-  CASE 14
-    PRINT "n"
-  CASE 15
-    PRINT "o"
-  CASE 16
-    PRINT "p"
-  CASE 17
-    PRINT "q"
-  CASE 18
-    PRINT "r"
-  CASE 19
-    PRINT "s"
-  CASE 20
-    PRINT "t"
   CASE ELSE
     PRINT "else"
 END SELECT

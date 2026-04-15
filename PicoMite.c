@@ -446,14 +446,6 @@ static inline CommandToken commandtbl_decode(const unsigned char *p){
 }
 char banner[64];
 void __not_in_flash_func(routinechecks)(void){
-#ifdef PICOMITE_VM_DEVICE_ONLY
-    if(abs((time_us_64()-mSecTimer*1000))> 5000){
-        cancel_repeating_timer(&timer);
-        add_repeating_timer_us(-1000, timer_callback, NULL, &timer);
-        mSecTimer=time_us_64()/1000;
-    }
-    return;
-#else
     static int when=0;
     if(abs((time_us_64()-mSecTimer*1000))> 5000){
         cancel_repeating_timer(&timer);
@@ -566,7 +558,6 @@ void __not_in_flash_func(routinechecks)(void){
 /*frame
     if(frame && CurrentLinePtr)ShowCursor(framecursor);
 */
-#endif
 }
 
 int __not_in_flash_func(getConsole)(void) {
@@ -1496,15 +1487,6 @@ void __not_in_flash_func(mT4IntEnable)(int status){
 volatile int onoff=0;
 bool MIPS16 __not_in_flash_func(timer_callback)(repeating_timer_t *rt)
 {
-#ifdef PICOMITE_VM_DEVICE_ONLY
-    (void)rt;
-    mSecTimer++;
-    InkeyTimer++;
-    PauseTimer++;
-    IntPauseTimer++;
-    if(++CursorTimer > CURSOR_OFF + CURSOR_ON) CursorTimer = 0;
-    return true;
-#else
     mSecTimer++;                                                      // used by the TIMER function
     if(processtick){
         static int IrTimeout, IrTick, NextIrTick;
@@ -1697,7 +1679,6 @@ bool MIPS16 __not_in_flash_func(timer_callback)(repeating_timer_t *rt)
         }
     }
   return 1;
-#endif
 }
 void __not_in_flash_func(uSec)(int us) {
 #ifdef PICOMITEWEB
@@ -3896,11 +3877,6 @@ void settiles(void){
 #include "pico/multicore.h"
 void __not_in_flash_func(UpdateCore)()
 {
-#ifdef PICOMITE_VM_DEVICE_ONLY
-	while (true) {
-        tight_loop_contents();
-    }
-#else
 //    systick_hw->csr = 0x5;
 //    systick_hw->rvr = 0x00FFFFFF;
 //    while(multicore_fifo_rvalid()) {
@@ -3996,7 +3972,6 @@ void __not_in_flash_func(UpdateCore)()
         }
     }
 
-#endif
 }
 uint32_t core1stack[512];
 #endif
@@ -4144,42 +4119,6 @@ static void MIPS16 transform_star_command(char *input) {
     ClearSpecificTempMemory(tmp);
 }
 
-static bool MIPS16 prompt_shell_command_allowed(CommandToken tkn) {
-    static bool initialised = false;
-    static CommandToken allowed[20];
-
-    if (!initialised) {
-        int i = 0;
-        allowed[i++] = GetCommandValue((unsigned char *)"RUN");
-        allowed[i++] = GetCommandValue((unsigned char *)"EDIT");
-        allowed[i++] = GetCommandValue((unsigned char *)"AUTOSAVE");
-        allowed[i++] = GetCommandValue((unsigned char *)"LIST");
-        allowed[i++] = GetCommandValue((unsigned char *)"LOAD");
-        allowed[i++] = GetCommandValue((unsigned char *)"SAVE");
-        allowed[i++] = GetCommandValue((unsigned char *)"FILES");
-        allowed[i++] = GetCommandValue((unsigned char *)"NEW");
-        allowed[i++] = GetCommandValue((unsigned char *)"OPTION");
-        allowed[i++] = GetCommandValue((unsigned char *)"KILL");
-        allowed[i++] = GetCommandValue((unsigned char *)"RMDIR");
-        allowed[i++] = GetCommandValue((unsigned char *)"CHDIR");
-        allowed[i++] = GetCommandValue((unsigned char *)"MKDIR");
-        allowed[i++] = GetCommandValue((unsigned char *)"COPY");
-        allowed[i++] = GetCommandValue((unsigned char *)"RENAME");
-        allowed[i++] = GetCommandValue((unsigned char *)"DRIVE");
-        allowed[i++] = GetCommandValue((unsigned char *)"HELP");
-        allowed[i++] = GetCommandValue((unsigned char *)"CONFIGURE");
-#ifdef rp2350
-        allowed[i++] = GetCommandValue((unsigned char *)"CMM2 LOAD");
-        allowed[i++] = GetCommandValue((unsigned char *)"CMM2 RUN");
-#endif
-        initialised = true;
-    }
-
-    for (unsigned int i = 0; i < sizeof(allowed) / sizeof(allowed[0]); ++i) {
-        if (allowed[i] != 0 && tkn == allowed[i]) return true;
-    }
-    return false;
-}
 #ifdef PICOMITEWEB
 void WebConnect(void){
     if(*Option.SSID){
@@ -4219,6 +4158,7 @@ void WebConnect(void){
 #endif
 
 int MIPS16 main(){
+    static int ErrorInPrompt;
     int i=0;
     char savewatchdog=false;
         i=watchdog_caused_reboot();
@@ -4360,7 +4300,7 @@ int MIPS16 main(){
 #ifndef rp2350
     if(Option.CPU_Speed<=200000)modclock(2);
 #else
-#if defined(PICOMITE) && defined(rp2350) && !defined(PICOCALC)
+#if defined(PICOMITE) && defined(rp2350)
     if(Option.DISPLAY_TYPE>=NEXTGEN){ //adjust the size of the heap
         framebuffersize=display_details[Option.DISPLAY_TYPE].horizontal*display_details[Option.DISPLAY_TYPE].vertical;
         heap_memory_size-=framebuffersize;
@@ -4487,6 +4427,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
     if(Option.BackLightLevel)setBacklight(Option.BackLightLevel);
 #endif
 #endif
+    ErrorInPrompt = false;
     exception_set_exclusive_handler(HARDFAULT_EXCEPTION,sigbus);
     exception_set_exclusive_handler(SVCALL_EXCEPTION,sigbus);
     exception_set_exclusive_handler(PENDSV_EXCEPTION,sigbus);
@@ -4737,8 +4678,15 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         }
         if(_excep_code!=POSSIBLE_WATCHDOG)_excep_code = 0;
         PrepareProgram(false);
-        MMPrintString("> ");                                        // shell prompt
-        MMPromptPos=2;                                              // save length of prompt
+        if(!ErrorInPrompt && FindSubFun((unsigned char *)"MM.PROMPT", 0) >= 0) {
+            ErrorInPrompt = true;
+            ExecuteProgram((unsigned char *)"MM.PROMPT\0");
+            MMPromptPos=MMCharPos-1;    //Save length of prompt
+        } else{
+            MMPrintString("> ");                                    // print the prompt
+            MMPromptPos=2;    //Save length of prompt
+        }
+        ErrorInPrompt = false;
         EditInputLine();
         //InsertLastcmd(inpbuf);                                  // save in case we want to edit it later
         if(!*inpbuf) continue;                                      // ignore an empty line
@@ -4759,11 +4707,6 @@ autorun:
         i=0;
         WatchdogSet=savewatchdog;
         CommandToken tkn=commandtbl_decode(tknbuf);
-        if(!prompt_shell_command_allowed(tkn)) {
-            MMPrintString("Immediate BASIC disabled\r\n");
-            memset(inpbuf,0,STRINGSIZE);
-            continue;
-        }
         if(tkn==GetCommandValue((unsigned char *)"RUN") || tkn==GetCommandValue((unsigned char *)"FRUN") || tkn==GetCommandValue((unsigned char *)"EDIT") || tkn==GetCommandValue((unsigned char *)"AUTOSAVE"))i=1;
         if (setjmp(jmprun) != 0) {
             PrepareProgram(false);

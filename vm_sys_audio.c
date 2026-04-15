@@ -12,7 +12,7 @@
 #include "vm_sys_audio.h"
 #include "vm_device_support.h"
 
-#if defined(MMBASIC_HOST) || defined(PICOMITE_VM_DEVICE_ONLY)
+#if defined(MMBASIC_HOST)
 
 void vm_sys_audio_play_stop(void) {
 }

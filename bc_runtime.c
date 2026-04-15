@@ -506,7 +506,6 @@ void cmd_frun(void) {
     }
 #endif
 
-    ClearRuntime(true);
     bc_run_source_string(source, fname_buf);
 
 #ifdef MMBASIC_HOST
@@ -555,8 +554,6 @@ void bc_run_file(const char *filename) {
         bc_run_source_string(source, fname_buf);
         free(source);
     }
-#elif defined(PICOMITE_VM_DEVICE_ONLY)
-    vm_device_run_program(fname_buf);
 #else
     /* Interpreter+VM build: load source via VM-owned file I/O */
     bc_alloc_reset();

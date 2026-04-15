@@ -41,9 +41,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bc_alloc.h"
-#if defined(PICOMITE_VM_DEVICE_ONLY)
-#include "bc_alloc.h"
-#endif
 #define ASMMAX 6400 // maximum number of bytes that can be copied or set by assembler routines
 #define MAXCPY 3200 // tuned maximum number of bytes to copy using ZCOPY
 
@@ -54,11 +51,7 @@ extern const uint8_t *flash_progmemory;
 // allocate static memory for programs, variables and the heap
 // this is simple memory management because DOS has plenty of memory
 //unsigned char __attribute__ ((aligned (256))) AllMemory[ALL_MEMORY_SIZE];
-#if defined(PICOMITE_VM_DEVICE_ONLY)
-    unsigned char *MMHeap=NULL;
-    uint32_t framebuffersize=0;
-    unsigned char *FRAMEBUFFER=NULL;
-#elif defined(rp2350)
+#if defined(rp2350)
     #ifdef PICOMITEVGA
         unsigned char __attribute__ ((aligned (256))) AllMemory[HEAP_MEMORY_SIZE+256+320*240*2];
         unsigned char *FRAMEBUFFER=AllMemory+HEAP_MEMORY_SIZE+256;
@@ -141,10 +134,7 @@ unsigned char *SecondFrame=video;
     unsigned char *FrameBuf=NULL;
 #endif
 
-#if defined(PICOMITE_VM_DEVICE_ONLY)
-unsigned int mmap[1]={0};
-unsigned int psmap[1]={0};
-#elif defined(rp2350)
+#if defined(rp2350)
 unsigned int mmap[HEAP_MEMORY_SIZE/ PAGESIZE / PAGESPERWORD]={0};
 unsigned int psmap[6*1024*1024/ PAGESIZE / PAGESPERWORD]={0};
 unsigned int SBitsGet(unsigned char *addr);
@@ -152,10 +142,8 @@ void SBitsSet(unsigned char *addr, int bits);
 #else
 unsigned int mmap[HEAP_MEMORY_SIZE/ PAGESIZE / PAGESPERWORD]={0};
 #endif
-#if !defined(PICOMITE_VM_DEVICE_ONLY)
 static inline unsigned int MBitsGet(unsigned char *addr);
 static inline void MBitsSet(unsigned char *addr, int bits);
-#endif
 volatile char *g_StrTmp[MAXTEMPSTRINGS];                                       // used to track temporary string space on the heap
 volatile char g_StrTmpLocalIndex[MAXTEMPSTRINGS];                              // used to track the g_LocalIndex for each temporary string space on the heap
 
@@ -894,85 +882,6 @@ void __not_in_flash_func(TestStackOverflow)(void) {
 
 
 
-#if defined(PICOMITE_VM_DEVICE_ONLY)
-
-void MIPS64 __not_in_flash_func(FreeMemory)(unsigned char *addr) {
-    BC_FREE(addr);
-}
-
-void InitHeap(bool all) {
-    (void)all;
-    bc_alloc_reset();
-    for(int i = 0; i < MAXTEMPSTRINGS; i++) g_StrTmp[i] = NULL;
-    g_StrTmpIndex = 0;
-    g_TempMemoryIsChanged = false;
-    FrameBuf = NULL;
-    WriteBuf = NULL;
-    LayerBuf = NULL;
-}
-
-void MIPS64 __not_in_flash_func(*GetSystemMemory)(int size) {
-    void *addr = BC_ALLOC(size);
-    if (!addr) {
-        TempStringClearStart = 0;
-        ClearTempMemory();
-        error("Not enough memory");
-    }
-    return addr;
-}
-
-void MIPS64 __not_in_flash_func(*GetMemory)(int size) {
-    void *addr = BC_ALLOC(size);
-    if (!addr) {
-        TempStringClearStart = 0;
-        ClearTempMemory();
-        error("Not enough memory");
-    }
-    return addr;
-}
-
-void *GetAlignedMemory(int size) {
-    return GetMemory(size);
-}
-
-int FreeSpaceOnHeap(void) {
-    size_t capacity = bc_alloc_bytes_capacity();
-    size_t used = bc_alloc_bytes_used();
-    return capacity > used ? (int)(capacity - used) : 0;
-}
-
-int LargestContiguousHeap(void) {
-    return FreeSpaceOnHeap();
-}
-
-unsigned int UsedHeap(void) {
-    return (unsigned int)bc_alloc_bytes_used();
-}
-
-int MemSize(void *addr){
-    return (int)bc_alloc_usable_size(addr);
-}
-
-void *ReAllocMemory(void *addr, size_t msize){
-    size_t old_size = bc_alloc_usable_size(addr);
-    if(msize <= old_size) return addr;
-    void *newaddr = GetMemory((int)msize);
-    if(addr != NULL && old_size != 0) {
-        memcpy(newaddr, addr, old_size);
-        FreeMemory(addr);
-    }
-    return newaddr;
-}
-
-void __not_in_flash_func(FreeMemorySafe)(void **addr){
-    if(*addr != NULL) {
-        BC_FREE(*addr);
-        *addr = NULL;
-    }
-}
-
-#else
-
 void MIPS64 __not_in_flash_func(FreeMemory)(unsigned char *addr) {
     if(addr == NULL) return;
 #if defined(rp2350) && !defined(PICOMITEWEB)
@@ -1319,5 +1228,4 @@ void __not_in_flash_func(FreeMemorySafe)(void **addr){
 	}
 }
 
-#endif
 /*  @endcond */

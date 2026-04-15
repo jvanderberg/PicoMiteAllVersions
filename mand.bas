@@ -79,17 +79,17 @@ Sub Mandelbrot(block%(), startX%, startY%, delta%, bCount%, maxIter%)
   Local periodZX%, periodZY%
 
   cy% = startY%
-  cy2% = MULSHR(cy%, cy%, 30)
+  cy2% = (cy% * cy%) \ SCALE
   cx% = startX%
   For i% = 0 To bCount% - 1
     xQuarter% = cx% - QUARTER_SCALE
-    q% = MULSHR(xQuarter%, xQuarter%, 30) + cy2%
-    prod% = MULSHR(q%, q% + xQuarter%, 30)
+    q% = (xQuarter% * xQuarter%) \ SCALE + cy2%
+    prod% = (q% * (q% + xQuarter%)) \ SCALE
     If prod% <= (cy2% >> 2) Then
       block%(i%) = maxIter%
     Else
       xBulb% = cx% + SCALE
-      If (MULSHR(xBulb%, xBulb%, 30) + cy2%) <= SIXTEENTH_SCALE Then
+      If ((xBulb% * xBulb%) \ SCALE + cy2%) <= SIXTEENTH_SCALE Then
         block%(i%) = maxIter%
       Else
         zx% = 0
@@ -102,11 +102,11 @@ Sub Mandelbrot(block%(), startX%, startY%, delta%, bCount%, maxIter%)
         periodZY% = 0
         Do While iter% < maxIter%
           nextX% = zx2% - zy2% + cx%
-          nextY% = MULSHR(zx%, zy%, 29) + cy%
+          nextY% = (zx% * zy%) \ HALF_SCALE + cy%
           zx% = nextX%
           zy% = nextY%
-          zx2% = MULSHR(zx%, zx%, 30)
-          zy2% = MULSHR(zy%, zy%, 30)
+          zx2% = (zx% * zx%) \ SCALE
+          zy2% = (zy% * zy%) \ SCALE
           If zx2% + zy2% > ESCAPE_LIMIT Then Exit Do
           iter% = iter% + 1
           If zx% = periodZX% Then

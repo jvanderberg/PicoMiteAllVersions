@@ -175,17 +175,13 @@ extern "C" {
     #define MIN_CPU     48000
     #ifdef rp2350
         #ifdef PICOCALC
-        /* PicoCalc device BASIC is VM-only.  HEAP_MEMORY_SIZE is retained as a
-         * compatibility limit for legacy shell code; device allocation is
-         * routed through bc_alloc.c instead of reserving AllMemory. */
-        #define HEAP_MEMORY_SIZE (32*1024)
-        #define MAXVARS             128
-        #define MAXSUBFUN           64
+        /* Slightly reduced to fit VM code alongside full interpreter in RAM */
+        #define HEAP_MEMORY_SIZE (296*1024)
         #else
         #define HEAP_MEMORY_SIZE (300*1024)
-        #define MAXVARS             768                     // 8 + MAXVARLEN + MAXDIM * 4  (ie, 64 bytes) - these do not incl array members
-        #define MAXSUBFUN           512                     // each entry takes up 4 bytes
         #endif
+        #define MAXVARS             768
+        #define MAXSUBFUN           512
         /* The rp2350 PicoCalc/PicoMite image now exceeds 880 KiB.
          * Keep the persisted options/program area above a 1 MiB boundary
          * so firmware updates do not overwrite display/config flash. */

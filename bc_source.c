@@ -1441,6 +1441,20 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             *pp = p;
             return 0;
         }
+        /* Inline known constants — emit literal instead of slot load */
+        if (!is_local && slot < cs->slot_count && cs->slots[slot].is_const) {
+            if (cs->slots[slot].type & T_INT) {
+                bc_emit_byte(cs, OP_PUSH_INT);
+                bc_emit_i64(cs, cs->slots[slot].const_ival);
+                *pp = p;
+                return T_INT;
+            } else if (cs->slots[slot].type & T_NBR) {
+                bc_emit_byte(cs, OP_PUSH_FLT);
+                bc_emit_f64(cs, cs->slots[slot].const_fval);
+                *pp = p;
+                return T_NBR;
+            }
+        }
         bc_emit_load_var(cs, slot, type, is_local);
         *pp = p;
         return type;
@@ -2239,6 +2253,7 @@ static void source_compile_const(BCSourceFrontend *fe, BCCompiler *cs, const cha
         }
         p++;
 
+        uint32_t expr_start = cs->code_len;
         uint8_t etype = source_parse_expression(fe, cs, &p);
         if (cs->has_error) {
             *pp = p;
@@ -2257,7 +2272,28 @@ static void source_compile_const(BCSourceFrontend *fe, BCCompiler *cs, const cha
             return;
         }
         uint16_t slot = source_resolve_global(cs, name, name_len, vtype, 1);
-        source_emit_store_converted(cs, slot, vtype, etype, 0);
+
+        /* Constant inlining: if the expression is a simple literal, record
+         * the value in the slot and elide the store.  Every subsequent
+         * LOAD of this slot will emit PUSH_INT/PUSH_FLT instead. */
+        uint32_t expr_len = cs->code_len - expr_start;
+        if (expr_len == 9 && cs->code[expr_start] == OP_PUSH_INT &&
+            (vtype & T_INT)) {
+            int64_t val;
+            memcpy(&val, &cs->code[expr_start + 1], sizeof(val));
+            cs->slots[slot].is_const = 1;
+            cs->slots[slot].const_ival = val;
+            cs->code_len = expr_start;  /* roll back — no runtime code needed */
+        } else if (expr_len == 9 && cs->code[expr_start] == OP_PUSH_FLT &&
+                   (vtype & T_NBR)) {
+            double val;
+            memcpy(&val, &cs->code[expr_start + 1], sizeof(val));
+            cs->slots[slot].is_const = 1;
+            cs->slots[slot].const_fval = val;
+            cs->code_len = expr_start;
+        } else {
+            source_emit_store_converted(cs, slot, vtype, etype, 0);
+        }
 
         source_skip_space(&p);
         if (*p != ',') break;

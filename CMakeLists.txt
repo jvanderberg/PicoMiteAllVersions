@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.13)
 # Valid builds are PICO, PICOUSB, VGA, VGAUSB, HDMI(rp2350 only), HDMIUSB(rp2350 only), WEB
 
 set(PICOCALC true)
-option(PICOMITE_VM_DEVICE_ONLY "Build the device target without the legacy interpreter core" OFF)
 # For dynamic loading from SD card:
 # SDBOOT requires the bootloader to be in the first 256KB of flash
 # PicoMite will need to be shifted by this amount, and all references to
@@ -118,17 +117,11 @@ add_executable(PicoMite
 	${PICOMITE_BASE_SOURCES}
 	${PICOMITE_VM_SOURCES}
 )
-if(PICOMITE_VM_DEVICE_ONLY)
-	target_sources(PicoMite PRIVATE ${PICOMITE_VM_DEVICE_SOURCES})
-endif()
-if(NOT PICOMITE_VM_DEVICE_ONLY)
-	target_sources(PicoMite PRIVATE ${PICOMITE_LEGACY_CORE_SOURCES})
-endif()
+target_sources(PicoMite PRIVATE ${PICOMITE_LEGACY_CORE_SOURCES})
 if (COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "HDMIUSB"  OR COMPILE STREQUAL "VGARP2350"  OR COMPILE STREQUAL "VGAUSBRP2350"  OR COMPILE STREQUAL "PICORP2350"  OR COMPILE STREQUAL "PICOUSBRP2350" )
     target_sources(PicoMite PRIVATE psram.c)
 endif()
 if (COMPILE STREQUAL "WEB" OR COMPILE STREQUAL "WEBRP2350" )
-if(NOT PICOMITE_VM_DEVICE_ONLY)
     target_sources(PicoMite PRIVATE
 	SSD1963.c
 	Touch.c
@@ -151,30 +144,23 @@ if(NOT PICOMITE_VM_DEVICE_ONLY)
 	)
 	Pico_enable_stdio_usb(PicoMite 1)
 endif()
-endif()
 
 if ((COMPILE STREQUAL "PICO") OR (COMPILE STREQUAL "PICOUSB") OR (COMPILE STREQUAL "PICORP2350") OR (COMPILE STREQUAL "PICOUSBRP2350") OR (COMPILE STREQUAL "WEBRP2350"))
-if(NOT PICOMITE_VM_DEVICE_ONLY)
     target_sources(PicoMite PRIVATE
 	SSD1963.c
 	Touch.c
 	GUI.c)
 endif()
-endif()
 
 if (COMPILE STREQUAL "VGAUSB" OR COMPILE STREQUAL "PICOUSBRP2350" OR COMPILE STREQUAL "VGAUSBRP2350" OR COMPILE STREQUAL "PICOUSB" OR COMPILE STREQUAL "HDMIUSB")
-if(NOT PICOMITE_VM_DEVICE_ONLY)
     target_sources(PicoMite PRIVATE
 	USBKeyboard.c
 	)
-endif()
 else()
-if(NOT PICOMITE_VM_DEVICE_ONLY)
 	target_sources(PicoMite PRIVATE
 	Keyboard.c
 	mouse.c
 	)
-endif()
 endif()
 
 if(COMPILE STREQUAL "VGARP2350" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQUAL "PICORP2350" OR COMPILE STREQUAL "HDMI" OR COMPILE STREQUAL "HDMIUSB" OR COMPILE STREQUAL "VGAUSBRP2350" OR COMPILE STREQUAL "PICOUSBRP2350")
@@ -184,23 +170,8 @@ if(COMPILE STREQUAL "VGARP2350" OR COMPILE STREQUAL "WEBRP2350" OR COMPILE STREQ
 endif()
 
 if(PICOCALC STREQUAL "true")
-if(NOT PICOMITE_VM_DEVICE_ONLY)
 	target_sources(PicoMite PRIVATE
 	picocalc/i2ckbd.c
-	)
-else()
-	target_sources(PicoMite PRIVATE
-	picocalc/i2ckbd.c
-	)
-endif()
-endif()
-
-if(PICOMITE_VM_DEVICE_ONLY)
-	set_source_files_properties(
-		PicoMite.c
-		VS1053.c
-		Memory.c
-		PROPERTIES HEADER_FILE_ONLY TRUE
 	)
 endif()
 
@@ -307,9 +278,6 @@ endif()
 if(PICOCALC STREQUAL "true")
 	target_compile_options(PicoMite PRIVATE -DPICOCALC
 											)
-endif()
-if(PICOMITE_VM_DEVICE_ONLY)
-	target_compile_definitions(PicoMite PRIVATE PICOMITE_VM_DEVICE_ONLY=1)
 endif()
 
 
