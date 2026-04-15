@@ -132,9 +132,9 @@ typedef enum {
     OP_LOAD_LOCAL_ARR_S  = 0x7E, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_I = 0x7F, /* offset:16, ndim:8 */
     OP_BRIDGE_CMD   = 0x80,  /* len:16 tokenized_bytes... — bridge to interpreter command handler */
-    OP_BRIDGE_FUN_I = 0x81,  /* len:16 tokenized_bytes... — bridge to interpreter function (int result) */
-    OP_BRIDGE_FUN_F = 0x82,  /* len:16 tokenized_bytes... — bridge to interpreter function (float result) */
-    OP_BRIDGE_FUN_S = 0x83,  /* len:16 tokenized_bytes... — bridge to interpreter function (string result) */
+    OP_BRIDGE_FUN_I = 0x81,  /* fun_idx:16 arg_len:16 tokenized_args... — bridge to interpreter function (int result) */
+    OP_BRIDGE_FUN_F = 0x82,  /* fun_idx:16 arg_len:16 tokenized_args... — bridge to interpreter function (float result) */
+    OP_BRIDGE_FUN_S = 0x83,  /* fun_idx:16 arg_len:16 tokenized_args... — bridge to interpreter function (string result) */
     OP_STORE_LOCAL_ARR_F = 0x84, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_S = 0x85, /* offset:16, ndim:8 */
 
@@ -410,12 +410,43 @@ typedef enum {
 /*
  * Compiler limits — platform-conditional
  *
- * Host build uses generous limits for comprehensive testing.
- * RP2350 device builds get a larger compiler budget to match their larger heap.
- * Other device builds keep reduced limits to fit comfortably in the RP2040 heap.
+ * On device, RP2350 builds get larger limits; RP2040 builds are tighter.
+ * On host, limits default to generous for broad testing, but can be switched
+ * to match a specific device profile via DEVICE_SIM= in the Makefile:
+ *   make DEVICE_SIM=rp2040   →  -DBC_SIM_RP2040  (128 KB heap, small tables)
+ *   make DEVICE_SIM=rp2350   →  -DBC_SIM_RP2350  (300 KB heap, medium tables)
+ *   make DEVICE_SIM=host     →  (no flag, generous host limits)
+ *
  * Compiler arrays are dynamically allocated via bc_compiler_alloc().
  */
-#ifdef MMBASIC_HOST
+#if defined(BC_SIM_RP2040)
+  /* Host build simulating RP2040 — uses RP2040 device limits */
+  #define BC_MAX_CODE       (16 * 1024)
+  #define BC_MAX_CONSTANTS  32
+  #define BC_MAX_SLOTS      128
+  #define BC_MAX_SUBFUNS    32
+  #define BC_MAX_FIXUPS     256
+  #define BC_MAX_LINEMAP    512
+  #define BC_MAX_LOCALS     64
+  #define BC_MAX_PARAMS     16
+  #define BC_MAX_LOCAL_META 256
+  #define BC_MAX_NEST       16
+  #define BC_MAX_DATA_ITEMS 512
+#elif defined(BC_SIM_RP2350)
+  /* Host build simulating RP2350 — uses RP2350 device limits */
+  #define BC_MAX_CODE       (32 * 1024)
+  #define BC_MAX_CONSTANTS  96
+  #define BC_MAX_SLOTS      192
+  #define BC_MAX_SUBFUNS    96
+  #define BC_MAX_FIXUPS     512
+  #define BC_MAX_LINEMAP    1024
+  #define BC_MAX_LOCALS     64
+  #define BC_MAX_PARAMS     16
+  #define BC_MAX_LOCAL_META 384
+  #define BC_MAX_NEST       32
+  #define BC_MAX_DATA_ITEMS 1024
+#elif defined(MMBASIC_HOST)
+  /* Host build, no simulation — generous limits for testing */
   #define BC_MAX_CODE       (64 * 1024)
   #define BC_MAX_CONSTANTS  512
   #define BC_MAX_SLOTS      512
@@ -796,6 +827,7 @@ void bc_run_file(const char *filename);
 
 /* Bridge */
 void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len);
+void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, const uint8_t *args, uint16_t arg_len, uint8_t ret_type);
 void bc_bridge_reset_sync(void);
 
 /* Helpers */

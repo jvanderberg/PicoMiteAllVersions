@@ -22,6 +22,7 @@
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bytecode.h"
+#include "bc_alloc.h"
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 #include "vm_host_fat.h"
@@ -627,6 +628,7 @@ int main(int argc, char **argv) {
         }
 
         printf("--- Bytecode VM Source Frontend ---\n");
+        bc_alloc_reset();  /* reset memory tracking before VM run */
         int r2 = run_bytecode_vm_source(source_text, filename, vm_output, CAPTURE_SIZE);
         int p2 = (r2 == 0) ? check_pixel_assertions("Bytecode VM Source", pixel_asserts, pixel_assert_count) : 0;
         if (compare_framebuffer && r1 == 0 && r2 == 0 && fb_compare_failures == 0) {
@@ -636,6 +638,20 @@ int main(int argc, char **argv) {
         printf("\n--- Results ---\n");
         printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
         printf("Bytecode VM Source: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
+
+        /* Memory simulation report */
+        {
+            size_t cap = bc_alloc_bytes_capacity();
+            size_t hw  = bc_alloc_bytes_high_water();
+            size_t cur = bc_alloc_bytes_used();
+            if (cap > 0) {
+                printf("VM heap: %zu / %zu bytes (peak %zu, %.0f%%)\n",
+                       cur, cap, hw, cap ? (100.0 * hw / cap) : 0.0);
+                if (hw > cap) {
+                    printf("*** DEVICE OOM: peak %zu exceeds %zu byte heap ***\n", hw, cap);
+                }
+            }
+        }
         if (pixel_assert_count > 0) {
             printf("Interpreter pixels: %s\n", p1 == 0 ? "OK" : "FAIL");
             printf("Bytecode VM Source pixels: %s\n", p2 == 0 ? "OK" : "FAIL");

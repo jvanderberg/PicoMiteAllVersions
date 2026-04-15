@@ -80,12 +80,28 @@ run_one_test() {
     output=$(cat "$tmpfile")
     rm -f "$tmpfile"
 
+    # Extract memory peak from output (e.g. "VM heap: 0 / 131072 bytes (peak 78336, 60%)")
+    local mem_info=""
+    local peak
+    peak=$(echo "$output" | sed -n 's/.*peak \([0-9]*\),.*/\1/p' | tail -1)
+    if [ -n "$peak" ]; then
+        local peak_kb=$((peak / 1024))
+        local cap
+        cap=$(echo "$output" | sed -n 's/.*\/ \([0-9]*\) bytes.*/\1/p' | tail -1)
+        if [ -n "$cap" ] && [ "$cap" -gt 0 ]; then
+            local pct=$((peak * 100 / cap))
+            mem_info=" [${peak_kb}KB/${pct}%]"
+        else
+            mem_info=" [${peak_kb}KB]"
+        fi
+    fi
+
     if [ $ec -eq 0 ]; then
-        echo "PASS"
+        echo "PASS${mem_info}"
         PASSED=$((PASSED + 1))
         return 0
     else
-        echo "FAIL"
+        echo "FAIL${mem_info}"
         FAILED=$((FAILED + 1))
         ERRORS="${ERRORS}\n--- $name ($mode) ---\n${output}\n"
         return 1

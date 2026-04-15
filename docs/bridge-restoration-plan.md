@@ -112,9 +112,15 @@ Implemented steps 4+5 together. New `bc_bridge.c` adapted from commit `2112876` 
 
 **Key detail:** `tokenise(1)` (console mode) produces output WITHOUT T_NEWLINE prefix — the first 2 bytes are directly the command token. `tokenise(0)` prepends T_NEWLINE.
 
-Function bridge (OP_BRIDGE_FUN_I/F/S) defined in bytecode.h but not yet implemented. Commands-only for now.
+**Function bridge (`bc_bridge_call_fun`):**
+1. Compiler searches `tokentbl[]` for unknown function names in `source_parse_primary`
+2. For T_FUN (functions with args): tokenize arguments using `?` prefix trick (forces non-firstnonwhite mode in `tokenise()`), skip 2-byte PRINT command prefix, emit `OP_BRIDGE_FUN_x fun_idx:16 arg_len:16 tokenized_args`
+3. For T_FNA (no-arg functions): emit `OP_BRIDGE_FUN_x fun_idx:16 0:16` (no args)
+4. At runtime: `sync_vm_to_mmbasic()`, set `ep` to tokenized args, set `targ`, call `tokentbl[fun_idx].fptr()`, push `iret`/`fret`/`sret` result, `sync_mmbasic_to_vm()`, `ClearTempMemory()`
 
-Validated with ASAN. 181/181 tests pass (including new t174_bridge_cmd.bas).
+**Key detail:** `tokenise(1)` treats the first token on a line as a command (searches `commandtbl`). Function tokens are only recognized in non-firstnonwhite position. The `?` prefix trick forces this by prepending a PRINT command.
+
+Validated with ASAN. 182/182 tests pass (including t174_bridge_cmd.bas and t175_bridge_fun.bas).
 
 Status: done
 

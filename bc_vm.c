@@ -1819,6 +1819,9 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
 
         /* Bridge */
         [OP_BRIDGE_CMD]     = &&op_bridge_cmd,
+        [OP_BRIDGE_FUN_I]   = &&op_bridge_fun_i,
+        [OP_BRIDGE_FUN_F]   = &&op_bridge_fun_f,
+        [OP_BRIDGE_FUN_S]   = &&op_bridge_fun_s,
 
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
@@ -3927,6 +3930,33 @@ op_bridge_cmd: {
     const uint8_t *tok = vm->pc;
     vm->pc += len;
     bc_bridge_call_cmd(vm, tok, len);
+    DISPATCH();
+}
+
+op_bridge_fun_i: {
+    uint16_t fun_idx = READ_U16();
+    uint16_t arg_len = READ_U16();
+    const uint8_t *args = vm->pc;
+    vm->pc += arg_len;
+    bc_bridge_call_fun(vm, fun_idx, args, arg_len, T_INT);
+    DISPATCH();
+}
+
+op_bridge_fun_f: {
+    uint16_t fun_idx = READ_U16();
+    uint16_t arg_len = READ_U16();
+    const uint8_t *args = vm->pc;
+    vm->pc += arg_len;
+    bc_bridge_call_fun(vm, fun_idx, args, arg_len, T_NBR);
+    DISPATCH();
+}
+
+op_bridge_fun_s: {
+    uint16_t fun_idx = READ_U16();
+    uint16_t arg_len = READ_U16();
+    const uint8_t *args = vm->pc;
+    vm->pc += arg_len;
+    bc_bridge_call_fun(vm, fun_idx, args, arg_len, T_STR);
     DISPATCH();
 }
 

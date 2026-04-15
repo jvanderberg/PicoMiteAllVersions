@@ -73,6 +73,7 @@ add_executable(PicoMite
 	aes.c
 	Memory.c
 	bc_alloc.c
+	bc_bridge.c
 	bc_source.c
 	bc_compiler_core.c
 	bc_vm.c

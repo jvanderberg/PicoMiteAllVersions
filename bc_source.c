@@ -1304,6 +1304,122 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             return cs->subfuns[sf_idx].return_type;
         }
 
+        /* Check if this is a built-in interpreter function we should bridge.
+         * Search tokentbl for T_FUN match (name with '(') and T_FNA match (name without). */
+        {
+            unsigned char tok_lookup[MAXVARLEN + 4];
+            int tl_len = 0;
+            int tok_idx = -1;
+            uint8_t tok_flags = 0;
+
+            /* Try T_FUN match: "NAME$(" */
+            if (*after_name == '(') {
+                memcpy(tok_lookup, name, name_len);
+                tl_len = name_len;
+                if (suffix_type == T_STR) tok_lookup[tl_len++] = '$';
+                tok_lookup[tl_len++] = '(';
+                tok_lookup[tl_len] = 0;
+                for (int ti = 0; ti < TokenTableSize - 1; ti++) {
+                    if (str_equal(tok_lookup, tokentbl[ti].name)) {
+                        tok_idx = ti;
+                        tok_flags = tokentbl[ti].type;
+                        break;
+                    }
+                }
+            }
+
+            /* Try T_FNA match: "NAME$" (no-argument function) */
+            if (tok_idx < 0) {
+                memcpy(tok_lookup, name, name_len);
+                tl_len = name_len;
+                if (suffix_type == T_STR) tok_lookup[tl_len++] = '$';
+                tok_lookup[tl_len] = 0;
+                for (int ti = 0; ti < TokenTableSize - 1; ti++) {
+                    if ((tokentbl[ti].type & T_FNA) &&
+                        str_equal(tok_lookup, tokentbl[ti].name)) {
+                        tok_idx = ti;
+                        tok_flags = tokentbl[ti].type;
+                        break;
+                    }
+                }
+            }
+
+            if (tok_idx >= 0) {
+                /* Determine return type and bridge opcode */
+                uint8_t ret_type;
+                uint8_t bridge_op;
+                if (tok_flags & T_STR) { ret_type = T_STR; bridge_op = OP_BRIDGE_FUN_S; }
+                else if (tok_flags & T_INT) { ret_type = T_INT; bridge_op = OP_BRIDGE_FUN_I; }
+                else { ret_type = T_NBR; bridge_op = OP_BRIDGE_FUN_F; }
+
+                uint16_t tok_len = 0;
+                unsigned char saved_inpbuf[STRINGSIZE];
+                unsigned char saved_tknbuf[STRINGSIZE];
+
+                if (tok_flags & T_FUN) {
+                    /* Function with arguments: scan to matching ')' in source */
+                    const char *paren = after_name; /* points to '(' */
+                    int depth = 1;
+                    const char *scan = paren + 1;
+                    while (*scan && depth > 0) {
+                        if (*scan == '(') depth++;
+                        else if (*scan == ')') depth--;
+                        scan++;
+                    }
+                    if (depth != 0) {
+                        bc_set_error(cs, "Unmatched parenthesis in bridged function");
+                        *pp = p;
+                        return 0;
+                    }
+
+                    /* Tokenize the arguments (between parens, exclusive).
+                     * Prepend "?" so tokenise() enters non-firstnonwhite mode,
+                     * allowing nested function tokens to be recognized.
+                     * The "?" tokenizes as a 2-byte PRINT command prefix we skip. */
+                    char call_text[STRINGSIZE];
+                    call_text[0] = '?';
+                    size_t args_len = (size_t)(scan - 1 - (paren + 1)); /* exclude outer ( and ) */
+                    if (args_len >= STRINGSIZE - 2) args_len = STRINGSIZE - 2;
+                    memcpy(call_text + 1, paren + 1, args_len);
+                    call_text[1 + args_len] = 0;
+
+                    memcpy(saved_inpbuf, inpbuf, STRINGSIZE);
+                    memcpy(saved_tknbuf, tknbuf, STRINGSIZE);
+                    memcpy(inpbuf, call_text, args_len + 2);
+                    tokenise(1);
+
+                    /* tknbuf: PRINT_cmd(2 bytes) + tokenized_args + 0x00
+                     * Skip the 2-byte PRINT command prefix. */
+                    unsigned char *tp = tknbuf + 2;
+                    unsigned char *tp_start = tp;
+                    while (*tp) {
+                        if (*tp == T_LINENBR) { tp += 3; continue; }
+                        tp++;
+                    }
+                    tok_len = (uint16_t)(tp - tp_start);
+
+                    bc_emit_byte(cs, bridge_op);
+                    bc_emit_u16(cs, (uint16_t)tok_idx);
+                    bc_emit_u16(cs, tok_len);
+                    for (uint16_t i = 0; i < tok_len; i++)
+                        bc_emit_byte(cs, tp_start[i]);
+
+                    memcpy(inpbuf, saved_inpbuf, STRINGSIZE);
+                    memcpy(tknbuf, saved_tknbuf, STRINGSIZE);
+                    p = scan; /* advance past closing ')' */
+                } else {
+                    /* T_FNA: no arguments */
+                    bc_emit_byte(cs, bridge_op);
+                    bc_emit_u16(cs, (uint16_t)tok_idx);
+                    bc_emit_u16(cs, 0);
+                    /* p stays where it was — no args to consume */
+                }
+
+                *pp = p;
+                return ret_type;
+            }
+        }
+
         if (*after_name == '(') {
             p = after_name;
             int ndim = source_parse_array_indices(fe, cs, &p);

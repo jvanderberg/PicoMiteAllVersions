@@ -99,6 +99,7 @@ set(PICOMITE_VM_SHARED_GFX_SOURCES
 
 set(PICOMITE_VM_SOURCES
 	bc_alloc.c
+	bc_bridge.c
 	bc_source.c
 	bc_compiler_core.c
 	bc_vm.c

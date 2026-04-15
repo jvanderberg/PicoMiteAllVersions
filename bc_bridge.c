@@ -324,3 +324,96 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len) {
 
     ClearTempMemory();
 }
+
+/*
+ * bc_bridge_call_fun — Execute a bridged function.
+ *
+ * fun_idx is the tokentbl index of the function.
+ * args points to pre-tokenized argument bytes (what would go in ep).
+ * arg_len is the length of the argument bytes (0 for T_FNA no-arg functions).
+ * ret_type is the expected return type (T_INT, T_NBR, or T_STR).
+ *
+ * Sets up the interpreter's function-call globals (ep, targ) and calls
+ * the function handler, then pushes the result onto the VM stack.
+ */
+void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, const uint8_t *args, uint16_t arg_len, uint8_t ret_type) {
+    if (fun_idx >= (unsigned)TokenTableSize - 1) {
+        bc_vm_error(vm, "Bridge: invalid function index %d", fun_idx);
+        return;
+    }
+
+    /* Save interpreter context */
+    int saved_targ = targ;
+    unsigned char *saved_ep = ep;
+    MMFLOAT saved_fret = fret;
+    long long int saved_iret = iret;
+    unsigned char *saved_sret = sret;
+    int saved_local_index = g_LocalIndex;
+    int local_map[VM_MAX_LOCALS];
+    int bridge_level = 0;
+
+    /* Sync VM variables to MMBasic table */
+    sync_vm_to_mmbasic(vm);
+    bridge_level = sync_vm_locals_to_mmbasic(vm, local_map);
+
+    /* Set up function arguments in ep */
+    if (arg_len > 0) {
+        ep = GetTempMemory(STRINGSIZE);
+        memcpy(ep, args, arg_len);
+        ep[arg_len] = 0;
+    } else {
+        ep = GetTempMemory(1);
+        ep[0] = 0;
+    }
+
+    targ = ret_type;
+    tokentbl[fun_idx].fptr();
+
+    /* Capture result before cleanup */
+    MMFLOAT result_f = fret;
+    long long int result_i = iret;
+    unsigned char *result_s = sret;
+
+    /* Sync modified variables back to VM */
+    sync_mmbasic_locals_to_vm(vm, local_map);
+    sync_mmbasic_to_vm(vm);
+    if (bridge_level) ClearVars(bridge_level, 1);
+    g_LocalIndex = saved_local_index;
+
+    /* Push result onto VM stack */
+    if (ret_type == T_INT) {
+        if (vm->sp + 1 >= VM_STACK_SIZE) { bc_vm_error(vm, "Stack overflow"); goto cleanup; }
+        vm->sp++;
+        vm->stack[vm->sp].i = result_i;
+        vm->stack_types[vm->sp] = T_INT;
+    } else if (ret_type == T_NBR) {
+        if (vm->sp + 1 >= VM_STACK_SIZE) { bc_vm_error(vm, "Stack overflow"); goto cleanup; }
+        vm->sp++;
+        vm->stack[vm->sp].f = result_f;
+        vm->stack_types[vm->sp] = T_NBR;
+    } else if (ret_type == T_STR) {
+        /* Copy string to VM temp storage before ClearTempMemory */
+        uint8_t *temp = &vm->str_temp[vm->str_temp_idx & 3][0];
+        vm->str_temp_idx = (vm->str_temp_idx + 1) & 3;
+        if (result_s) {
+            int slen = *result_s;
+            memcpy(temp, result_s, slen + 1);
+        } else {
+            temp[0] = 0;
+        }
+        if (vm->sp + 1 >= VM_STACK_SIZE) { bc_vm_error(vm, "Stack overflow"); goto cleanup; }
+        vm->sp++;
+        vm->stack[vm->sp].s = temp;
+        vm->stack_types[vm->sp] = T_STR;
+    }
+
+cleanup:
+    /* Restore interpreter context */
+    targ = saved_targ;
+    ep = saved_ep;
+    fret = saved_fret;
+    iret = saved_iret;
+    sret = saved_sret;
+
+    ClearTempMemory();
+}

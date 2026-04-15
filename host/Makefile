@@ -4,10 +4,25 @@
 # through both the old interpreter and the new bytecode VM for comparison.
 
 CC = gcc
+
+# Device memory simulation target.  Controls compiler/VM array sizes AND
+# the heap budget in bc_alloc.c.  Values: rp2040 (default), rp2350, host.
+# Usage:  make DEVICE_SIM=rp2350
+#         BC_HEAP_LIMIT=307200 ./run_tests.sh   (runtime override)
+DEVICE_SIM ?= rp2040
+
+ifeq ($(DEVICE_SIM),rp2040)
+  SIM_FLAGS = -DBC_SIM_RP2040
+else ifeq ($(DEVICE_SIM),rp2350)
+  SIM_FLAGS = -DBC_SIM_RP2350
+else
+  SIM_FLAGS =
+endif
+
 CFLAGS = -std=gnu11 -g -O0 -Wall -Wno-unused-variable -Wno-unused-function \
          -Wno-unused-but-set-variable -Wno-misleading-indentation \
          -Wno-missing-braces -funsigned-char \
-         -DPICOMITE -DMMBASIC_HOST \
+         -DPICOMITE -DMMBASIC_HOST $(SIM_FLAGS) \
          -include host_platform.h \
          -I. -I.. \
          -MMD -MP
