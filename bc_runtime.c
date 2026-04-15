@@ -15,8 +15,6 @@
 #include "vm_sys_graphics.h"
 #ifdef MMBASIC_HOST
 #include "vm_host_fat.h"
-#elif defined(PICOMITE_VM_DEVICE_ONLY)
-#include "vm_device_fileio.h"
 #endif
 
 #ifdef MMBASIC_HOST
@@ -339,6 +337,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
 
     bc_vm_init(vm, cs);
+    bc_bridge_reset_sync();
     VMRUN_DBG("VM: execute\r\n");
 
     jmp_buf saved_mark;

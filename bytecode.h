@@ -131,6 +131,10 @@ typedef enum {
     OP_LOAD_LOCAL_ARR_F  = 0x7D, /* offset:16, ndim:8 */
     OP_LOAD_LOCAL_ARR_S  = 0x7E, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_I = 0x7F, /* offset:16, ndim:8 */
+    OP_BRIDGE_CMD   = 0x80,  /* len:16 tokenized_bytes... — bridge to interpreter command handler */
+    OP_BRIDGE_FUN_I = 0x81,  /* len:16 tokenized_bytes... — bridge to interpreter function (int result) */
+    OP_BRIDGE_FUN_F = 0x82,  /* len:16 tokenized_bytes... — bridge to interpreter function (float result) */
+    OP_BRIDGE_FUN_S = 0x83,  /* len:16 tokenized_bytes... — bridge to interpreter function (string result) */
     OP_STORE_LOCAL_ARR_F = 0x84, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_S = 0x85, /* offset:16, ndim:8 */
 
@@ -789,6 +793,10 @@ void bc_run_source_string(const char *source, const char *source_name);
 int  bc_try_compile_line(const char *line);
 void bc_run_immediate(const char *line);
 void bc_run_file(const char *filename);
+
+/* Bridge */
+void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len);
+void bc_bridge_reset_sync(void);
 
 /* Helpers */
 uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);

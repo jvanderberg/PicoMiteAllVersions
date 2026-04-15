@@ -1817,6 +1817,9 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_MATH_SQRSHR]    = &&op_math_sqrshr,
         [OP_MATH_MULSHRADD] = &&op_math_mulshradd,
 
+        /* Bridge */
+        [OP_BRIDGE_CMD]     = &&op_bridge_cmd,
+
         /* Housekeeping */
         [OP_LINE]           = &&op_line,
         [OP_CHECKINT]       = &&op_checkint,
@@ -3916,6 +3919,14 @@ op_syscall: {
     const uint8_t *aux = vm->pc;
     vm->pc += auxlen;
     bc_vm_execute_syscall(vm, sysid, argc, aux, auxlen);
+    DISPATCH();
+}
+
+op_bridge_cmd: {
+    uint16_t len = READ_U16();
+    const uint8_t *tok = vm->pc;
+    vm->pc += len;
+    bc_bridge_call_cmd(vm, tok, len);
     DISPATCH();
 }
 

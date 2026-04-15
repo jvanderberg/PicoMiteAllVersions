@@ -6,6 +6,7 @@
 
 #include "bc_compiler_internal.h"
 #include "bc_source.h"
+#include "MMBasic.h"
 #include "Draw.h"
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
@@ -4633,7 +4634,44 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         }
     }
 
-    bc_set_error(cs, "Unsupported source command near: %.24s", p);
+    /* Unsupported command: bridge to interpreter.
+     * Tokenize the source statement and embed the tokenized form
+     * in the bytecode stream so the VM can hand it to the interpreter. */
+    {
+        unsigned char saved_inpbuf[STRINGSIZE];
+        unsigned char saved_tknbuf[STRINGSIZE];
+        memcpy(saved_inpbuf, inpbuf, STRINGSIZE);
+        memcpy(saved_tknbuf, tknbuf, STRINGSIZE);
+
+        /* Copy statement into inpbuf for tokenise() */
+        size_t slen = strlen(stmt);
+        if (slen >= STRINGSIZE) slen = STRINGSIZE - 1;
+        memcpy(inpbuf, stmt, slen);
+        inpbuf[slen] = 0;
+
+        tokenise(1);  /* console mode: no T_NEWLINE prefix */
+
+        /* tknbuf now has: cmd_token(2 bytes) + tokenized args + 0x00 terminator.
+         * Find the length of the tokenized form. */
+        unsigned char *tp = tknbuf;
+        while (*tp) {
+            if (*tp == T_LINENBR) { tp += 3; continue; }
+            tp++;
+        }
+        uint16_t tok_len = (uint16_t)(tp - tknbuf);
+
+        if (tok_len < 2) {
+            bc_set_error(cs, "Unsupported source command near: %.24s", p);
+        } else {
+            bc_emit_byte(cs, OP_BRIDGE_CMD);
+            bc_emit_u16(cs, tok_len);
+            for (uint16_t i = 0; i < tok_len; i++)
+                bc_emit_byte(cs, tknbuf[i]);
+        }
+
+        memcpy(inpbuf, saved_inpbuf, STRINGSIZE);
+        memcpy(tknbuf, saved_tknbuf, STRINGSIZE);
+    }
 }
 
 static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char *line) {

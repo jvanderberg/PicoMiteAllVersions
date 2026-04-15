@@ -93,36 +93,30 @@ The compiler already has the decision logic — it's the same code path that cur
 
 **Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Existing tests that only use natively-compiled commands should still pass unchanged. New tests can be added for bridged commands.
 
-Status: pending
+Status: done
 
 ### 5. Restore bridge dispatch
 
-Bring back `bc_bridge_call_cmd()` and `bc_bridge_call_fun()` adapted from commit `2112876`. Core logic:
+Implemented steps 4+5 together. New `bc_bridge.c` adapted from commit `2112876` with:
 
-**Command bridge:**
-1. `sync_vm_to_mmbasic()` — copy VM globals → `g_vartbl`
-2. Set up `cmdtoken`, `cmdline`, `nextstmt` from pre-tokenized bytes
-3. Call `commandtbl[idx].fptr()`
-4. `sync_mmbasic_to_vm()` — copy `g_vartbl` → VM globals
-5. `ClearTempMemory()`
-
-**Function bridge:**
-1. `sync_vm_to_mmbasic()`
-2. Set up `ep`, `targ` from pre-tokenized bytes
-3. Call `tokentbl[idx].fptr()`
-4. Push `iret`/`fret`/`sret` to VM stack
-5. `sync_mmbasic_to_vm()`
-6. `ClearTempMemory()`
+**Command bridge (`bc_bridge_call_cmd`):**
+1. Copy pre-tokenized bytes to temp memory
+2. Decode 2-byte command token to get `commandtbl` index
+3. `sync_vm_to_mmbasic()` — copy VM globals/arrays/locals → `g_vartbl`
+4. Set up `cmdtoken`, `cmdline`, `nextstmt` from tokenized bytes
+5. Call `commandtbl[idx].fptr()`
+6. `sync_mmbasic_to_vm()` — copy `g_vartbl` → VM globals
+7. `ClearTempMemory()`
 
 **Variable sync** maps VM slot indices to `g_vartbl` indices. Cached mapping built lazily on first bridge call. Handles scalars, arrays, locals, and strings.
 
-The sync layer from `2112876` should work largely as-is since we're going back to shared memory.
+**Key detail:** `tokenise(1)` (console mode) produces output WITHOUT T_NEWLINE prefix — the first 2 bytes are directly the command token. `tokenise(0)` prepends T_NEWLINE.
 
-**Host impact:** `bc_bridge.c` will be a new file added to the host Makefile. The variable sync layer touches `g_vartbl`, `varcnt`, locals — all shared interpreter state. Must be testable in host mode.
+Function bridge (OP_BRIDGE_FUN_I/F/S) defined in bytecode.h but not yet implemented. Commands-only for now.
 
-**Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Add new test programs that exercise bridged commands (commands not natively compiled) and verify output matches the interpreter oracle. Test with: string operations, array manipulation, SUB/FUNCTION with locals, and error handling (bridge call that triggers `error()`).
+Validated with ASAN. 181/181 tests pass (including new t174_bridge_cmd.bas).
 
-Status: pending
+Status: done
 
 ### 6. Keep all native VM advances
 

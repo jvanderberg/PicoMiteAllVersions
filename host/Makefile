@@ -22,7 +22,7 @@ CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c
 CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c
 
 # Bytecode VM sources
-BC_SRCS = bc_alloc.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
+BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
           vm_sys_input.c vm_sys_graphics.c vm_sys_time.c vm_sys_audio.c vm_sys_pin.c vm_sys_file.c bc_source.c bc_compiler_core.c \
           bc_vm.c bc_runtime.c bc_debug.c
 
