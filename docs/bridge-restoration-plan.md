@@ -9,6 +9,15 @@ Restore the interpreter as the primary runtime, with the VM as a performance bac
 - **Bridge** handles: commands/functions the VM doesn't have native opcodes for — pre-tokenized at compile time, dispatched to interpreter handlers at runtime
 - **Shared memory**: VM and interpreter use the same heap (`GetMemory`/`FreeMemory`), same `g_vartbl`, same file handles
 
+## Build modes
+
+There are exactly two build modes:
+
+- **Host** (`MMBASIC_HOST`): macOS native build for off-device testing. Uses `calloc`/`free`. Built via `host/Makefile`.
+- **Device**: RP2040/RP2350 firmware. Interpreter + VM behind FRUN, sharing the interpreter's page-based MMHeap via `TryGetMemory`/`FreeMemory`. Built via `CMakeLists.txt`.
+
+There is no separate "VM-only device" build. `PICOMITE_VM_DEVICE_ONLY` and its associated code are dead and will be removed.
+
 ## Validation requirements
 
 Every step that touches the VM, call structure, or memory management must pass the host build gate before proceeding:
@@ -57,25 +66,14 @@ Status: done
 
 ### 3. Switch VM allocations to interpreter's allocator
 
-Replace `bc_alloc.c` arena usage with `GetMemory`/`FreeMemory` for:
+Replaced the 200+ line arena allocator in `bc_alloc.c` with a two-path design:
 
-- Compiler scratch (tables, metadata)
-- VM runtime arrays (`OP_DIM_ARR` allocations)
-- String storage
-- `BCCompiler` and `BCVMState` structs themselves
+- **Host** (`MMBASIC_HOST`): `calloc`/`free` — unchanged.
+- **Device** (`#else`): thin wrappers around `TryGetMemory`/`FreeMemory`, sharing the interpreter's page-based MMHeap.
 
-This is the biggest mechanical change. The `bc_alloc.c` arena was introduced to isolate VM memory from the interpreter heap. Going back to shared memory means:
+The old `PICOMITE_VM_DEVICE_ONLY` arena block was removed entirely. `bc_alloc.c` is now ~100 lines. `BCCompiler` and `BCVMState` are heap-allocated via `BC_ALLOC`/`BC_FREE` on all platforms (no more statics on device). `TryGetMemory` added to `Memory.c` — same page allocator as `GetMemory` but returns NULL on OOM.
 
-- Variable sync works naturally (both sides see the same heap)
-- No separate arena to manage
-- `GetTempMemory` available for bridge calls
-- Must ensure VM cleanup frees everything it allocated
-
-`bc_alloc.c` can remain as a thin wrapper (`BC_ALLOC` → `GetMemory`, `BC_FREE` → `FreeMemory`) or be removed entirely.
-
-**Host impact:** This is the highest-risk step for the host build. The host uses `calloc`/`free` behind `#ifdef MMBASIC_HOST`. Changing allocation paths must preserve the host's ability to allocate/free VM state. Test for memory leaks/corruption by running the full test suite.
-
-**Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Run with address sanitizer if available (`CFLAGS=-fsanitize=address`). All three modes must pass.
+Validated with ASAN. 180/180 tests pass.
 
 Status: done
 
@@ -146,10 +144,11 @@ Status: no action needed
 
 - `vm_device_main.c` — VM-only shell (interpreter owns the prompt)
 - `vm_device_fileio.c` / `vm_device_fileio.h` — VM-only file/shell commands
+- `vm_device_runtime.c` — VM-only device runtime
 - `vm_device_support.h` — VM-only legacy import seam
 - `bc_run_immediate()` / `bc_try_compile_line()` — REPL functions (interpreter handles REPL)
-- `PICOMITE_VM_DEVICE_ONLY` build target and all `#ifdef` guards for it
-- Possibly `bc_alloc.c` if we fully revert to interpreter allocator
+- All `PICOMITE_VM_DEVICE_ONLY` `#ifdef` guards and the CMake option — there is no VM-only build
+- The 200+ line arena allocator that was in `bc_alloc.c` (already removed — replaced with thin TryGetMemory/FreeMemory wrapper)
 
 ## What gets modified
 
@@ -176,7 +175,7 @@ Status: no action needed
 - `bc_source.c` — the current compiler (keep this, modify to emit bridge ops)
 - `bc_vm.c` — the current VM dispatch (keep this, add bridge op handlers)
 - `bc_runtime.c` — current VM entry points (simplify to cmd_frun)
-- `bc_alloc.c` — current arena allocator (replace with interpreter allocator)
+- `bc_alloc.c` — thin allocator wrapper (host: calloc, device: TryGetMemory)
 - `bytecode.h` — opcode/syscall definitions (add OP_BRIDGE_CMD/OP_BRIDGE_FUN)
 - `PicoMite.c:4650-4780` — the main loop that was modified to use bc_run_immediate
 - `AllCommands.h` — command table declarations
