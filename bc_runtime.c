@@ -10,6 +10,7 @@
 #include "bc_run_diag.h"
 #include "bc_source.h"
 #include "vm_device_support.h"
+#include "MMBasic.h"
 #include "vm_sys_file.h"
 #include "vm_sys_graphics.h"
 #ifdef MMBASIC_HOST
@@ -452,6 +453,93 @@ int bc_try_compile_line(const char *line) {
 void bc_run_immediate(const char *line) {
     bc_alloc_reset();
     bc_run_source_string_ex(line, "<immediate>", 1);
+}
+
+/*
+ * cmd_frun() — The FRUN command
+ *
+ * Loads a BASIC source file and executes it via the bytecode VM.
+ * Called from the interpreter prompt like any command.
+ */
+void cmd_frun(void) {
+    unsigned char *filename = getCstring(cmdline);
+    if (!*filename) error("Syntax");
+
+    char fname_buf[STRINGSIZE];
+    strncpy(fname_buf, (const char *)filename, STRINGSIZE - 5);
+    fname_buf[STRINGSIZE - 5] = '\0';
+    if (!strchr(fname_buf, '.')) strcat(fname_buf, ".bas");
+
+    char *source = NULL;
+
+#ifdef MMBASIC_HOST
+    {
+        char path[FF_MAX_LFN + 1];
+        FIL file;
+        FRESULT res;
+        UINT bytes_read;
+        int fsize;
+
+        vm_host_fat_mount();
+        vm_sys_file_host_resolve_path(fname_buf, path, sizeof(path));
+
+        res = f_open(&file, path, FA_READ);
+        if (res != FR_OK) error("File not found");
+
+        fsize = (int)f_size(&file);
+        source = (char *)malloc(fsize + 1);
+        if (!source) { f_close(&file); error("Not enough memory"); }
+
+        res = f_read(&file, source, (UINT)fsize, &bytes_read);
+        f_close(&file);
+        if (res != FR_OK) { free(source); error("File error"); }
+        source[bytes_read] = '\0';
+    }
+#else
+    {
+        int fnbr;
+        int c, fsize;
+        char *p;
+
+        if (!InitSDCard()) error("SD card not found");
+        fnbr = FindFreeFileNbr();
+        if (!BasicFileOpen(fname_buf, fnbr, FA_READ)) error("File not found");
+
+        if (filesource[fnbr] != FLASHFILE)
+            fsize = (int)f_size(FileTable[fnbr].fptr);
+        else
+            fsize = lfs_file_size(&lfs, FileTable[fnbr].lfsptr);
+
+        if (fsize < 0 || fsize >= EDIT_BUFFER_SIZE - 2048) {
+            FileClose(fnbr);
+            error("File too large");
+        }
+
+        source = (char *)GetMemory(fsize + 1);
+        if (!source) { FileClose(fnbr); error("Not enough memory"); }
+
+        p = source;
+        while (!FileEOF(fnbr)) {
+            if ((p - source) >= fsize) break;
+            c = FileGetChar(fnbr) & 0x7f;
+            if (isprint(c) || c == '\r' || c == '\n' || c == '\t') {
+                if (c == '\t') c = ' ';
+                *p++ = (char)c;
+            }
+        }
+        *p = '\0';
+        FileClose(fnbr);
+    }
+#endif
+
+    ClearRuntime(true);
+    bc_run_source_string(source, fname_buf);
+
+#ifdef MMBASIC_HOST
+    free(source);
+#else
+    FreeMemorySafe((void **)&source);
+#endif
 }
 
 /*

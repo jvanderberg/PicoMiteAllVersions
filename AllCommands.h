@@ -49,6 +49,7 @@ void cmd_read(void);
 void cmd_restore(void);
 void cmd_return(void);
 void cmd_run(void);
+void cmd_frun(void);
 void cmd_save(void);
 void cmd_troff(void);
 void cmd_tron(void);
@@ -375,6 +376,7 @@ void fun_map(void);
 	{ (unsigned char *)"Exit Function",      T_CMD,                          0, cmd_endfun	},      // this entry must come before EXIT and FUNCTION
 	{ (unsigned char *)"Exit",		T_CMD,				0, cmd_exit	},
 	{ (unsigned char *)"For",		T_CMD,				0, cmd_for	},
+	{ (unsigned char *)"Frun",		T_CMD,				0, cmd_frun	},
 	{ (unsigned char *)"Function",           T_CMD,				0, cmd_subfun	},
 	{ (unsigned char *)"GoSub",		T_CMD,				0, cmd_gosub	},
 	{ (unsigned char *)"GoTo",		T_CMD,				0, cmd_goto	},

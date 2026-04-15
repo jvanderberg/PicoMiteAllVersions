@@ -700,23 +700,20 @@ void MIPS16 ListProgram(unsigned char *p, int all) {
 void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     // RUN [ filename$ ] [, cmd_args$ ]
     unsigned char *filename = (unsigned char *)"", *cmd_args = (unsigned char *)"";
-    char source_name[MAXSTRLEN + 1];
-    char *source_text = NULL;
-    unsigned char cmdbuf[STRINGSIZE];
-    unsigned char *cmdbufp = cmdbuf;
+	unsigned char *cmdbuf=GetMemory(256);
 	memcpy(cmdbuf,cmdline,STRINGSIZE);
-    getargs(&cmdbufp, 3, (unsigned char *)",");
+    getargs(&cmdbuf, 3, (unsigned char *)",");
 	    switch (argc) {
         case 0:
             break;
         case 1:
-            filename = getFstring(argv[0]);
+            filename = getCstring(argv[0]);
             break;
         case 2:
             cmd_args = getCstring(argv[1]);
             break;
         default:
-            filename = getFstring(argv[0]);
+            filename = getCstring(argv[0]);
             if(*argv[2])cmd_args = getCstring(argv[2]);
             break;
     }
@@ -728,33 +725,19 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
     if (snprintf((char *)buf, MAXSTRLEN + 1, "\"%s\",%s", filename, cmd_args) > MAXSTRLEN) {
         error("RUN command line too long");
     }
-    snprintf(source_name, sizeof(source_name), "%s", filename);
     unsigned char *pcmd_args = buf + strlen((char *)filename) + 3; // *** THW 16/4/23
 
-    if (!*filename) error("Syntax");
-#if defined(PICOCALC) && defined(rp2350)
-    bc_run_diag_reset();
-    vm_run_memdiag("before_clear");
-#endif
-    ClearRuntime(true);
-#if defined(PICOCALC) && defined(rp2350)
-    vm_run_memdiag("after_clear");
-    InitHeap(true);
-    bc_alloc_reset();
-    vm_run_memdiag("after_vm_reset");
-#endif
 #ifdef rp2350
     if(CMM2mode){
-		error("Syntax");
+		if (*filename && !FileLoadCMM2Program((char *)buf,false)) return;
 	} else {
 #endif
-		if (!FileLoadSourceProgramVM(buf, &source_text)) return;
+		if (*filename && !FileLoadProgram(buf, false)) return;
 #ifdef rp2350
 	}
 #endif
-#if defined(PICOCALC) && defined(rp2350)
-    vm_run_memdiag("after_load");
-#endif
+    ClearRuntime(true);
+    PrepareProgram(true);
     if(Option.DISPLAY_CONSOLE && (SPIREAD  || Option.NoScroll)){ClearScreen(gui_bcolour);CurrentX=0;CurrentY=0;}
     // Create a global constant MM.CMDLINE$ containing 'cmd_args'.
 //    void *ptr = findvar((unsigned char *)"MM.CMDLINE$", V_FIND | V_DIM_VAR | T_CONST);
@@ -762,18 +745,15 @@ void MIPS16 do_run(unsigned char *cmdline, bool CMM2mode) {
 //    memcpy(cmdlinebuff, pcmd_args, *pcmd_args + 1); // *** THW 16/4/23
 	Mstrcpy(cmdlinebuff, pcmd_args);
     IgnorePIN = false;
+	if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE) ExecuteProgram(LibMemory);       // run anything that might be in the library
+    if(*ProgMemory != T_NEWLINE) return;                             // no program to run
 #ifdef PICOMITEWEB
 	cleanserver();
 #endif
 #ifndef USBKEYBOARD
-    if(mouse0==false && Option.MOUSE_CLOCK)initMouse0(0);  //see if there is a mouse to initialise 
+    if(mouse0==false && Option.MOUSE_CLOCK)initMouse0(0);  //see if there is a mouse to initialise
 #endif
-    bc_run_source_string(source_text, source_name);
-#if !(defined(PICOCALC) && defined(rp2350))
-    FreeMemorySafe((void **)&source_text);
-#else
-    source_text = NULL;
-#endif
+	nextstmt = ProgMemory;
 }
 /** @endcond */
 void MIPS16 cmd_list(void) {

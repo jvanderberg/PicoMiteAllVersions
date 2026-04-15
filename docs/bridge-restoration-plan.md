@@ -9,13 +9,32 @@ Restore the interpreter as the primary runtime, with the VM as a performance bac
 - **Bridge** handles: commands/functions the VM doesn't have native opcodes for — pre-tokenized at compile time, dispatched to interpreter handlers at runtime
 - **Shared memory**: VM and interpreter use the same heap (`GetMemory`/`FreeMemory`), same `g_vartbl`, same file handles
 
+## Validation requirements
+
+Every step that touches the VM, call structure, or memory management must pass the host build gate before proceeding:
+
+1. **Host build compiles clean:** `cd host/ && ./build.sh` — zero warnings, zero errors.
+2. **Full test suite passes:** `cd host/ && ./run_tests.sh` — all tests PASS in the default comparison mode (interpreter oracle vs VM).
+3. **Interpreter-only mode works:** `./run_tests.sh --interp` — interpreter path is not broken.
+4. **VM-only mode works:** `./run_tests.sh --vm` — VM path is not broken.
+
+The default comparison mode is the most important gate — it runs the same BASIC program through both the interpreter and the VM, then asserts output equality. Any mismatch is a failure.
+
+**The host build must be preserved throughout.** `host_main.c` is the test driver and is NOT touched by PicoMite.c changes (device build only). But any changes to `bc_runtime.c`, `bc_vm.c`, `bc_source.c`, `bc_alloc.c`, `bytecode.h`, or the interpreter core (`MMBasic.c`, `Commands.c`, etc.) affect the host build and must be validated.
+
+The `--immediate` and `--try-compile` modes in host_main.c use `bc_run_immediate()` and `bc_try_compile_line()`. These modes may be removed or adapted in step 2 when we simplify `bc_runtime.c` to the `cmd_frun` entry point, but the core comparison mode must always work.
+
 ## Steps
 
 ### 1. Restore PicoMite.c main loop to stock interpreter prompt
 
 Revert the `bc_run_immediate()` changes in `PicoMite.c`. The main loop goes back to `tokenise() → ExecuteProgram()` for all prompt input. The interpreter owns the REPL again — no `bc_run_immediate`, no `bc_try_compile_line`.
 
-Status: pending
+**Scope:** Device build only (`PicoMite.c` is not in the host Makefile). No host validation needed for this step alone, but confirm the host build still compiles (no header/extern drift).
+
+**Validation:** `cd host/ && ./build.sh && ./run_tests.sh` — must still pass (this step shouldn't affect host, but verify).
+
+Status: in progress
 
 ### 2. Bring back FRUN command
 
@@ -29,6 +48,10 @@ Restore `cmd_frun()` as the VM entry point. Called from the interpreter prompt l
 6. Restores `mark`, cleans up
 
 Adapted from the `cmd_frun()` at commit `2112876`, but using `bc_source.c` instead of the old tokenized compiler.
+
+**Host impact:** `bc_runtime.c` is in the host build. The `--immediate` and `--try-compile` modes in `host_main.c` call `bc_run_immediate()` / `bc_try_compile_line()`. These must either be preserved (keep the functions in `bc_runtime.c` alongside `cmd_frun`) or the host driver must be updated to use the new entry point. The default comparison mode calls `bc_run_source_string()` which must remain working.
+
+**Validation:** Full host gate — `./build.sh && ./run_tests.sh` (default comparison mode). Also `./run_tests.sh --vm` and `./run_tests.sh --interp` individually.
 
 Status: pending
 
@@ -50,6 +73,10 @@ This is the biggest mechanical change. The `bc_alloc.c` arena was introduced to 
 
 `bc_alloc.c` can remain as a thin wrapper (`BC_ALLOC` → `GetMemory`, `BC_FREE` → `FreeMemory`) or be removed entirely.
 
+**Host impact:** This is the highest-risk step for the host build. The host uses `calloc`/`free` behind `#ifdef MMBASIC_HOST`. Changing allocation paths must preserve the host's ability to allocate/free VM state. Test for memory leaks/corruption by running the full test suite.
+
+**Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Run with address sanitizer if available (`CFLAGS=-fsanitize=address`). All three modes must pass.
+
 Status: pending
 
 ### 4. Pre-tokenize bridged calls in bc_source.c
@@ -63,6 +90,10 @@ When `bc_source.c` encounters a command/function it can't compile natively:
 At runtime the VM reads the pre-tokenized bytes and hands them directly to the interpreter handler. Zero runtime tokenization cost.
 
 The compiler already has the decision logic — it's the same code path that currently errors. This is changing the error into an emit.
+
+**Host impact:** `bc_source.c` is in the host build. Changes to the compiler affect VM compilation for all test programs. Programs that previously errored with "Unsupported VM command" will now emit bridge ops instead — but those bridge ops must be handled by the VM dispatch (step 5). Do steps 4 and 5 together, or add a stub handler that errors cleanly.
+
+**Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Existing tests that only use natively-compiled commands should still pass unchanged. New tests can be added for bridged commands.
 
 Status: pending
 
@@ -88,6 +119,10 @@ Bring back `bc_bridge_call_cmd()` and `bc_bridge_call_fun()` adapted from commit
 **Variable sync** maps VM slot indices to `g_vartbl` indices. Cached mapping built lazily on first bridge call. Handles scalars, arrays, locals, and strings.
 
 The sync layer from `2112876` should work largely as-is since we're going back to shared memory.
+
+**Host impact:** `bc_bridge.c` will be a new file added to the host Makefile. The variable sync layer touches `g_vartbl`, `varcnt`, locals — all shared interpreter state. Must be testable in host mode.
+
+**Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Add new test programs that exercise bridged commands (commands not natively compiled) and verify output matches the interpreter oracle. Test with: string operations, array manipulation, SUB/FUNCTION with locals, and error handling (bridge call that triggers `error()`).
 
 Status: pending
 
@@ -128,8 +163,8 @@ Status: no action needed
 
 ## Git references
 
-- **Current branch:** `fastgfx` — all current work is here
-- **Last commit before this work:** `2c8f64a` — REPL immediate mode, vm_sys_file fixes, doc cleanup
+- **Current branch:** `bridge-restoration` (branched from `fastgfx` at `33e755c`)
+- **Parent branch:** `fastgfx` — last commit `33e755c` (Add bridge restoration plan)
 - **Bridge source code:** `git show 2112876:bc_bridge.c` — 663-line bridge with variable sync, cmd/fun dispatch, cmd_frun
 - **Bridge removal commit:** `91ce021` — "Remove VM bridge path" — this is what we're partially reverting
 - **Old tokenized compiler:** `git show 2112876:bc_compiler.c` (NOT needed — we keep `bc_source.c`)
@@ -151,4 +186,7 @@ Status: no action needed
 - The variable sync layer is the most delicate part. It must handle: scalars (int, float, string), arrays (all types), locals inside SUB/FUNCTION, and the function return value slot. The `2112876` version handled all of these.
 - `longjmp(mark)` from interpreter error handlers must be in the bridge's save/restore chain. The `2112876` version handled this.
 - Host build needs a path that doesn't depend on `GetMemory` — keep `#ifdef MMBASIC_HOST` using `calloc`/`free` as before.
-- Test strategy: existing host oracle tests (`run_tests.sh`) should keep working. The VM path just needs `FRUN` instead of `RUN` as the entry point.
+- Test strategy: existing host oracle tests (`run_tests.sh`) must keep working at every step. The default comparison mode (interpreter vs VM) is the primary gate. No step is "done" until the full test suite passes.
+- The host `--immediate` and `--try-compile` modes call `bc_run_immediate()` and `bc_try_compile_line()`. These are convenience test modes. They can be kept, adapted, or removed as part of step 2 — but if removed, update `host_main.c` accordingly.
+- Steps 4 and 5 (pre-tokenize + bridge dispatch) are tightly coupled. Implement together or add a stub `OP_BRIDGE_CMD` handler that cleanly errors, so existing tests still pass between the two steps.
+- Every step must be independently committable with a green test suite. No "break now, fix later" across commits.
