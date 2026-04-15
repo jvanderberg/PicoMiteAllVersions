@@ -15,7 +15,7 @@ The host binary is `mmbasic_test`. It has two execution engines:
 - `--source-compare`: legacy interpreter oracle compared with raw-source VM frontend.
 - default: run both and compare output.
 
-The device direction is VM-only for BASIC program execution. The host interpreter remains as the semantic reference for language behavior and host-safe syscalls.
+The device uses VM-owned BASIC program execution. The host interpreter remains as the semantic reference for language behavior and host-safe syscalls.
 
 ## Quick Start
 
@@ -63,13 +63,13 @@ The default compare mode runs the legacy interpreter first, then the VM, and fai
 |---------|---------|
 | `./run_tests.sh` | Runs all `tests/t*.bas` oracle tests in compare mode. Current count: 168. |
 | `./run_tests.sh --interp` | Runs oracle tests through the legacy interpreter only. |
-| `./run_tests.sh --vm` | Runs oracle tests through the VM only. |
+| `./run_tests.sh --vm` | Runs oracle tests through the VM. |
 | `./run_tests.sh tests/t01_print.bas --vm` | Runs one test through one engine. |
 | `./run_pixel_tests.sh` | Runs framebuffer assertions through both interpreter and VM. |
 | `./run_host_shim_tests.sh` | Runs deterministic host shim tests, including fixed date/time and delayed keyboard injection. Current count: 4. |
 | `./run_frontend_tests.sh` | Runs raw-source VM frontend oracle comparisons. Current count: 48. |
 | `./run_optimizer_tests.sh` | Runs peephole/superinstruction assertion and equivalence tests. Current count: 22. |
-| `./run_unsupported_tests.sh` | VM-only negative tests for unsupported syscalls. Current count: 0. |
+| `./run_unsupported_tests.sh` | Negative tests for unsupported VM syscalls. Current count: 0. |
 | `./run_missing_syscall_tests.sh` | Inventory runner for missing VM syscall implementations. Current count: 0. |
 | `./run_bench.sh` | Runs host benchmarks. |
 
@@ -79,7 +79,7 @@ Keyboard-driven host tests can inject characters with `--keys TEXT` or `--keys-a
 
 ## Test Policy
 
-Oracle comparison tests must be accepted by the legacy interpreter. Do not add VM-only syntax or VM extensions to `tests/t*.bas`; if the interpreter rejects it, it is not a valid semantic oracle test.
+Oracle comparison tests must be accepted by the legacy interpreter. Do not add VM-specific syntax or VM extensions to `tests/t*.bas`; if the interpreter rejects it, it is not a valid semantic oracle test.
 
 Unsupported syscall tests belong in `tests/unsupported/*.bas`. Each file must fail under `--vm` and must start with:
 

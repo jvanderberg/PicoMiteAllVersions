@@ -151,11 +151,19 @@ void bc_run_diag_dump(const char *reason) {
  * boundary, so this path must free only its own allocations and must not reset
  * the heap wholesale.
  */
+void bc_run_source_string_ex(const char *source, const char *source_name, int is_immediate);
+
 void bc_run_source_string(const char *source, const char *source_name) {
+    bc_run_source_string_ex(source, source_name, 0);
+}
+
+void bc_run_source_string_ex(const char *source, const char *source_name, int is_immediate) {
     int err;
-    bc_fastgfx_reset();
-    vm_sys_file_reset();
-    vm_sys_graphics_reset();
+    if (!is_immediate) {
+        bc_fastgfx_reset();
+        vm_sys_file_reset();
+        vm_sys_graphics_reset();
+    }
     bc_crash_checkpoint(BC_CK_VM_ENTRY, "source entry");
     VMRUN_DBG("VM: entry\r\n");
 #ifndef MMBASIC_HOST
@@ -443,7 +451,7 @@ int bc_try_compile_line(const char *line) {
  */
 void bc_run_immediate(const char *line) {
     bc_alloc_reset();
-    bc_run_source_string(line, "<immediate>");
+    bc_run_source_string_ex(line, "<immediate>", 1);
 }
 
 /*
@@ -488,29 +496,27 @@ void bc_run_file(const char *filename) {
 #elif defined(PICOMITE_VM_DEVICE_ONLY)
     vm_device_run_program(fname_buf);
 #else
-    /* Interpreter+VM build: RUN from within FRUN-compiled code */
+    /* Interpreter+VM build: load source via VM-owned file I/O */
     bc_alloc_reset();
     {
-        int fnbr = FindFreeFileNbr();
-        int fsize, c;
+        int fnbr = 1;
+        int c, fsize;
         char *p;
-        if (!BasicFileOpen(fname_buf, fnbr, FA_READ))
-            error("File not found");
-        fsize = (filesource[fnbr] != FLASHFILE)
-            ? (int)f_size(FileTable[fnbr].fptr)
-            : lfs_file_size(&lfs, FileTable[fnbr].lfsptr);
+
+        vm_sys_file_open(fname_buf, fnbr, VM_FILE_MODE_INPUT);
+        fsize = vm_sys_file_lof(fnbr);
         source = (char *)bc_compile_alloc((size_t)fsize + 1);
-        if (!source) { FileClose(fnbr); error("Not enough memory"); }
+        if (!source) { vm_sys_file_close(fnbr); error("Not enough memory"); }
         p = source;
-        while (!FileEOF(fnbr)) {
-            c = FileGetChar(fnbr) & 0x7f;
+        while (!vm_sys_file_eof(fnbr)) {
+            c = vm_sys_file_getc(fnbr) & 0x7f;
             if (isprint(c) || c == '\r' || c == '\n' || c == '\t') {
                 if (c == '\t') c = ' ';
                 *p++ = (char)c;
             }
         }
         *p = '\0';
-        FileClose(fnbr);
+        vm_sys_file_close(fnbr);
         bc_run_source_string(source, fname_buf);
     }
 #endif

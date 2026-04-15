@@ -95,7 +95,7 @@ The host binary is `host/mmbasic_test`. Its default mode compares the legacy hos
 
 For keyboard-driven host tests, `mmbasic_test` supports `--keys TEXT` and `--keys-after-ms MS TEXT`.
 
-The current prototype direction is VM-only BASIC program execution on device: `RUN` compiles source to bytecode with a VM-owned frontend and runs on the VM. `FRUN` and the interpreter bridge fallback are removed from the user-facing VM path. The device prompt is a reduced shell for OS/file operations, not a full immediate BASIC REPL.
+`RUN` compiles source to bytecode with the VM-owned frontend and executes on the VM. `FRUN` and the interpreter bridge fallback are removed from the user-facing VM path. The legacy prompt handles shell/OS commands.
 
 (_original readme follows..._)
 

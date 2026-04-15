@@ -89,7 +89,7 @@ size_t bc_runtime_bytes_limit(void) {
 #else
 
 #ifndef BC_DEVICE_HEAP_SIZE
-  #ifdef rp2350
+  #if defined(rp2350)
     #define BC_DEVICE_HEAP_SIZE (232 * 1024)
   #else
     #define BC_DEVICE_HEAP_SIZE (256 * 1024)

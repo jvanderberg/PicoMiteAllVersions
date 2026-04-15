@@ -8,7 +8,7 @@
 
 ## Build Architecture
 
-The device firmware builds under `PICOMITE_VM_DEVICE_ONLY` with its own `main()` in `vm_device_main.c`. The production compilation pipeline is `bc_source.c` (raw `.bas` source) exclusively. The legacy interpreter (`PicoMite.c` / `MMBasic.c` / `ExecuteProgram()`) exists only in the host build as the test oracle.
+The device firmware uses the legacy prompt with VM-owned BASIC program execution. The production compilation pipeline is `bc_source.c` (raw `.bas` source). The legacy interpreter (`PicoMite.c` / `MMBasic.c` / `ExecuteProgram()`) serves as the host test oracle.
 
 **Dead code removed from `CMakeLists 2350.txt`:** `bc_compiler.c`, `bc_compiler_stmt.c`, `bc_compiler_expr.c`, `bc_test.c`, `bc_bridge.c`. These files implemented a tokenized-input compiler and on-device test harness (`FTEST`) that are not used by the production build. The active `CMakeLists.txt` already excluded them. Issues in these files (e.g., broken `compile_colour`, `GetCommandValue()` not cached, duplicated SUB call parsing) are not production bugs.
 
@@ -213,7 +213,7 @@ If the compiler is trusted this is fine, but bytecode corruption (flash bit-flip
 
 ### 6.1 Current state — the device is already fully VM
 
-The device build (`PICOMITE_VM_DEVICE_ONLY`) has **its own `main()`** in `vm_device_main.c` with a custom shell loop. There is no legacy interpreter on device — `RUN`, bare filenames at the prompt, and `LOAD` + `RUN` all go through `vm_device_run_program()` -> `bc_run_source_string()` -> compile -> VM execute.
+The device build uses the legacy prompt with VM-owned program execution. `RUN` goes through `bc_run_source_string()` -> compile -> VM execute.
 
 The legacy interpreter (`PicoMite.c` / `MMBasic.c` / `ExecuteProgram()`) exists only in the host build as the test oracle for comparison testing.
 

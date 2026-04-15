@@ -7,14 +7,14 @@ For the current architecture snapshot, see [vm-architecture.md](./vm-architectur
 Move to a prototype architecture with:
 
 1. A host-only legacy interpreter preserved as the semantic oracle.
-2. A VM-only BASIC program engine on device.
-3. A stripped-down device prompt that handles OS/shell tasks, not immediate BASIC.
+2. VM-owned BASIC program execution on device.
+3. The legacy prompt handles OS/shell tasks; BASIC program execution goes through the VM.
 
 ## Principles
 
 - The legacy host interpreter remains untouched for semantic validation.
 - The device firmware does not carry both the full interpreter and the VM.
-- `RUN` becomes VM-only.
+- `RUN` executes through the VM.
 - `FRUN` is removed from the user model.
 - Missing VM functionality faults immediately.
 - No bridge or interpreter fallback exists on device.
@@ -96,12 +96,12 @@ Status: in progress.
 - PicoCalc RP2350 no longer reserves the legacy `AllMemory` heap; the legacy allocator API is a compatibility wrapper over `bc_alloc.c`.
 - VM/compiler/runtime framebuffer buffers and remaining linked shell/display/file allocation calls now use the same device allocator.
 - The remaining interpreter table reservations are `g_vartbl` and `funtbl`; these persist only because interpreter-adjacent modules are still linked.
-- Remaining risk: the device build still carries interpreter/tokenising code for prompt, editing, command table, and oracle-adjacent runtime dependencies. This needs further size-driven separation before the firmware is truly VM-only internally.
+- The device build still carries interpreter/tokenising code for prompt, editing, command table, and runtime dependencies. The legacy prompt infrastructure remains the active shell.
 - Native syscall extraction proceeds only through VM-owned source frontend opcodes and VM-owned `vm_sys_*` runtime modules.
 - Progress made toward the split:
   - live VM core files (`bc_runtime.c`, `bc_debug.c`, `bc_vm.c`, `vm_sys_*`, and `gfx_*_shared.c`) no longer include `MMBasic.h` / `MMBasic_Includes.h` directly
   - these imports now flow through `vm_device_support.h`, which exposes the remaining legacy support surface explicitly
-  - `CMakeLists.txt` now separates `PICOMITE_BASE_SOURCES`, `PICOMITE_LEGACY_CORE_SOURCES`, and `PICOMITE_VM_SOURCES`, giving the RP2350 build a concrete cut line for the future VM-only device target
+  - `CMakeLists.txt` now separates `PICOMITE_BASE_SOURCES`, `PICOMITE_LEGACY_CORE_SOURCES`, and `PICOMITE_VM_SOURCES`
 
 ### 2B. Split VM memory by lifetime
 
@@ -245,36 +245,10 @@ Status: partially complete.
 - Reject arbitrary immediate BASIC at the prompt with a clear error.
 - Treat the prompt as OS control, not a BASIC REPL.
 - Current prompt rejects arbitrary immediate BASIC with `Immediate BASIC disabled`.
-- The dedicated `PICOMITE_VM_DEVICE_ONLY` build now uses a table-driven VM-owned shell in `vm_device_main.c`.
-- Current VM-only shell commands:
-  - `RUN`
-  - bare filename run
-  - `LOAD`
-  - `SAVE`
-  - `LIST`
-  - `NEW`
-  - `FILES`
-  - `DRIVE`
-  - `CHDIR` / `CD`
-  - `MKDIR`
-  - `RMDIR`
-  - `KILL`
-  - `COPY`
-  - `RENAME`
-  - `HELP`
-  - `MEMORY`
-  - `FREE`
-  - `PWD`
-  - `CLS`
-- Remaining VM-only shell gaps:
-  - `EDIT`
-  - `AUTOSAVE`
-  - `OPTION`
-  - `CONFIGURE`
-  - broader prompt submodes and exact formatting parity for commands like `FILES` and `LIST`
-- The default non-VM-only firmware target still uses selected legacy prompt handlers.
+- The firmware uses the legacy prompt for shell commands.
+- BASIC program execution goes through the VM via `RUN`.
 
-### 4. Make `RUN` VM-only
+### 4. Make `RUN` VM-owned
 
 Status: complete for the current prototype path.
 

@@ -14,7 +14,7 @@
   - `make -C build2350 -j8`
   - `arm-none-eabi-size build2350/PicoMite.elf`
 - Current host binary: `host/mmbasic_test`.
-- Current device program execution target: VM-only `RUN`.
+- Current device program execution: `RUN` goes through the VM.
 - `FRUN` and interpreter bridge fallback are removed from the user-facing VM path.
 - If the host build links against stale command-table objects after header changes, use `make -B -C host`.
 

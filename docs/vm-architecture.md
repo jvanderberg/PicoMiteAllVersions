@@ -8,8 +8,7 @@ This document describes the current VM-oriented prototype architecture as it exi
 - The host contains both:
   - the legacy interpreter oracle
   - the VM implementation and test harness
-- The default firmware path still carries legacy prompt/control infrastructure.
-- The dedicated `PICOMITE_VM_DEVICE_ONLY` target now has a VM-owned shell/control layer instead of the legacy prompt.
+- The firmware carries both the legacy prompt/control infrastructure and VM-owned execution.
 
 ## High-Level Shape
 
@@ -28,14 +27,11 @@ This document describes the current VM-oriented prototype architecture as it exi
 
 ### Device
 
-- `RUN`
-  - loads source
-  - compiles through the VM-owned source frontend
-  - executes bytecode on the VM
-- prompt/shell
-  - default firmware still uses selected legacy prompt infrastructure
-  - `PICOMITE_VM_DEVICE_ONLY` uses `vm_device_main.c` and `vm_device_fileio.c`
-  - immediate BASIC is disabled in both
+One firmware target:
+
+- **`build2350/`** — `cmake ..` then `make -C build2350 -j8`
+  - legacy interpreter prompt with VM-owned BASIC program execution
+  - `RUN` compiles source through the VM-owned frontend and executes on the VM
 
 ## Major Components
 
@@ -242,34 +238,8 @@ The prompt boundary now depends on which device target is being discussed.
 Current state:
 
 - BASIC program execution is VM-owned
-- the default firmware still depends on selected legacy prompt infrastructure
-- the `PICOMITE_VM_DEVICE_ONLY` build has a VM-owned command-table shell
-  - current shell commands implemented there:
-    - `RUN`
-    - bare filename run
-    - `LOAD`
-    - `SAVE`
-    - `LIST`
-    - `NEW`
-    - `FILES`
-    - `DRIVE`
-    - `CHDIR` / `CD`
-    - `MKDIR`
-    - `RMDIR`
-    - `KILL`
-    - `COPY`
-    - `RENAME`
-    - `HELP`
-    - `MEMORY`
-    - `FREE`
-    - `PWD`
-    - `CLS`
-- shell commands still pending in the VM-only build:
-  - `EDIT`
-  - `AUTOSAVE`
-  - `OPTION`
-  - `CONFIGURE`
-  - full prompt parity for submodes like `FILES ... ,TIME` and the broader `LIST`/`OPTION` families
+- the firmware uses the legacy prompt infrastructure
+- BASIC program execution is VM-owned
 
 ## Verification Status
 
@@ -282,6 +252,7 @@ Current baseline at the time of this document update:
 - `./host/run_host_shim_tests.sh`: `4 passed, 0 failed`
 - `bash ./host/run_unsupported_tests.sh`: `0 passed, 0 failed`
 - `./host/run_missing_syscall_tests.sh`: `0 passed, 0 failed`
+- `./host/run_immediate_tests.sh`: `84 passed, 0 failed`
 - `make -C build2350 -j8`: passed
 
 ## Remaining Architectural Risks

@@ -15,6 +15,7 @@ void vm_sys_file_print_str(int fnbr, const uint8_t *mstr);
 void vm_sys_file_print_newline(int fnbr);
 void vm_sys_file_line_input(int fnbr, uint8_t *dest);
 int vm_sys_file_eof(int fnbr);
+int vm_sys_file_lof(int fnbr);
 int vm_sys_file_getc(int fnbr);
 void vm_sys_file_files(const char *pattern);
 #ifdef MMBASIC_HOST

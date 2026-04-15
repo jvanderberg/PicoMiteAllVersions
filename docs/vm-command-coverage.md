@@ -14,7 +14,7 @@ Status is conservative. If only a subset of the legacy command family is support
 
 - This is about the VM BASIC program path, not the prompt shell.
 - A command can still work at the prompt through legacy shell code and remain `unimplemented` here.
-- The VM-only device shell has its own command table in `vm_device_main.c`; that surface is tracked in `vm-architecture.md` / `vm-cutover-plan.md`, not here.
+- The device shell uses the legacy prompt; shell command coverage is tracked in `vm-architecture.md` / `vm-cutover-plan.md`, not here.
 - Hybrid command/function entries from the command table such as `Pin(`, `Timer`, `Date$`, `Time$`, and `MID$(` are included because they appear in `INCLUDE_COMMAND_TABLE`.
 
 ## Implemented

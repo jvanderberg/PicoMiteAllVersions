@@ -278,6 +278,12 @@ int vm_sys_file_eof(int fnbr) {
     return f_eof(vm_files[fnbr]);
 }
 
+int vm_sys_file_lof(int fnbr) {
+    vm_file_check_number(fnbr);
+    if (!vm_files[fnbr]) return 0;
+    return (int)f_size(vm_files[fnbr]);
+}
+
 int vm_sys_file_getc(int fnbr) {
     unsigned char c = 0;
     UINT read = 0;
@@ -457,31 +463,53 @@ static int vm_file_current_fs(void) {
     return FatFSFileSystemSave ? FatFSFileSystemSave : FatFSFileSystem;
 }
 
+/*
+ * Resolve a filename to a full path and file system index.
+ * Adapted from legacy getfullfilename / fullpath (FileIO.c).
+ *
+ * The legacy path model:
+ *  - filepath[0] = "A:/" (flash/LFS), filepath[1] = "B:/" (SD/FatFS)
+ *  - fullpathname[] stores resolved paths WITHOUT drive prefix (e.g. "/")
+ *  - FatFS receives paths without volume prefix; the active file system
+ *    is determined by FatFSFileSystem, not by the path string.
+ *  - Drive prefixes like "B:" are stripped before passing to f_open/f_opendir.
+ */
 static void vm_file_resolve_path(const char *filename, int *fs_out, char *path) {
     int fs = vm_file_current_fs();
     const char *name = filename;
-    const char *base;
 
+    /* Handle drive spec: "A:file" or "B:file" */
     if (vm_file_is_drive_spec(filename)) {
         fs = vm_file_drive_index(filename);
-        name = filename + 2;
+        name = filename + 2;  /* skip "X:" */
     }
-    if (*name == '\0') error("File name");
-
-    if (*name == '/') {
-        strncpy(path, name, FF_MAX_LFN - 1);
-        path[FF_MAX_LFN - 1] = '\0';
+    if (*name == '\0') {
+        /* bare drive spec like "B:" → resolve to root */
+        strcpy(path, "/");
         *fs_out = fs;
         return;
     }
 
-    base = filepath[fs];
-    if (*base == '\0') base = "/";
-    strncpy(path, base, FF_MAX_LFN - 1);
-    path[FF_MAX_LFN - 1] = '\0';
-    if (strcmp(path, "/") != 0)
-        strncat(path, "/", FF_MAX_LFN - strlen(path) - 1);
-    strncat(path, name, FF_MAX_LFN - strlen(path) - 1);
+    if (*name == '/') {
+        /* Absolute path — use as-is (no drive prefix) */
+        strncpy(path, name, FF_MAX_LFN - 1);
+        path[FF_MAX_LFN - 1] = '\0';
+    } else {
+        /* Relative path — prepend CWD.
+         * filepath[fs] has format "X:/subdir", strip the "X:" prefix
+         * to get the bare path that FatFS/LFS expects. */
+        const char *base = filepath[fs];
+        /* Skip drive prefix if present */
+        if (base[0] && base[1] == ':') base += 2;
+        if (*base == '\0') base = "/";
+
+        strncpy(path, base, FF_MAX_LFN - 1);
+        path[FF_MAX_LFN - 1] = '\0';
+        if (path[strlen(path) - 1] != '/')
+            strncat(path, "/", FF_MAX_LFN - strlen(path) - 1);
+        strncat(path, name, FF_MAX_LFN - strlen(path) - 1);
+    }
+
     vm_file_normalize_resolved_path(path);
     *fs_out = fs;
 }
@@ -654,6 +682,14 @@ int vm_sys_file_eof(int fnbr) {
            lfs_file_size(&lfs, vm_files[fnbr].flash);
 }
 
+int vm_sys_file_lof(int fnbr) {
+    vm_file_check_number(fnbr);
+    if (vm_files[fnbr].source == NONEFILE) return 0;
+    if (vm_files[fnbr].source == FATFSFILE)
+        return (int)f_size(vm_files[fnbr].fat);
+    return (int)lfs_file_size(&lfs, vm_files[fnbr].flash);
+}
+
 int vm_sys_file_getc(int fnbr) {
     char ch = 0;
     unsigned int read = 0;
@@ -783,7 +819,7 @@ void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
     vm_file_resolve_path(from_name, &from_fs, from_full);
     vm_file_resolve_path(to_name, &to_fs, to_full);
 
-    if (from_fs == FATFSFILE && to_fs == FATFSFILE) {
+    if (from_fs && to_fs) {  /* both SD */
         if (!InitSDCard()) error("SD Card not found");
         FSerror = f_open(&fat_src, from_full, FA_READ);
         if (FSerror) vm_file_error(FSerror, "File error");
@@ -805,7 +841,7 @@ void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
         return;
     }
 
-    if (from_fs == FLASHFILE && to_fs == FLASHFILE) {
+    if (!from_fs && !to_fs) {  /* both flash */
         lrc = lfs_file_open(&lfs, &lfs_src, from_full, LFS_O_RDONLY);
         if (lrc < 0) vm_file_error(lrc, "File error");
         lrc = lfs_file_open(&lfs, &lfs_dst, to_full, LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC);
@@ -828,7 +864,7 @@ void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
         return;
     }
 
-    if (from_fs == FLASHFILE && to_fs == FATFSFILE) {
+    if (!from_fs && to_fs) {  /* flash → SD */
         if (!InitSDCard()) error("SD Card not found");
         lrc = lfs_file_open(&lfs, &lfs_src, from_full, LFS_O_RDONLY);
         if (lrc < 0) vm_file_error(lrc, "File error");
@@ -879,7 +915,7 @@ void vm_sys_file_files(const char *pattern) {
     char pat[FF_MAX_LFN] = {0};
 
     vm_file_resolve_dir_and_pattern(pattern && *pattern ? pattern : "*", &fs, dir, pat);
-    if (fs == FATFSFILE) {
+    if (fs) {
         DIR dj;
         FILINFO info;
         if (!InitSDCard()) error("SD Card not found");

@@ -38,6 +38,7 @@ extern "C" {
 #include "hardware/exception.h"
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "bytecode.h"
 #include "hardware/structs/systick.h"
 #include "hardware/structs/timer.h"
 #include "hardware/vreg.h"
@@ -4663,8 +4664,9 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
             *ptr=0;
             MtoC(inpbuf);
             *ptr=0;
-            tokenise(true);
-            goto autorun;
+            bc_run_immediate((const char *)inpbuf);
+            memset(inpbuf,0,STRINGSIZE);
+            longjmp(mark, 1);
         }
     } else {
         if(*ProgMemory == 0x01 ) ClearVars(0,true);
@@ -4691,15 +4693,12 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
             ClearRuntime(true);
             PrepareProgram(true);
             if(*ProgMemory == 0x01 ){
-                memset(tknbuf,0,STRINGSIZE);
-                unsigned short tkn=GetCommandValue((unsigned char *)"RUN");
-                tknbuf[0] = (tkn & 0x7f ) + C_BASETOKEN;
-                tknbuf[1] = (tkn >> 7) + C_BASETOKEN; //tokens can be 14-bit
-                goto autorun;
+                bc_run_immediate("RUN");
+                longjmp(mark, 1);
             }  else {
                 Option.Autorun=0;
                 SaveOptions();
-            }       
+            }
         }
     }
     while(1) {
@@ -4752,32 +4751,10 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
                 transform_star_command((char *)inpbuf);
                 p = (char *)inpbuf;
         }
-        multi=false;
-        tokenise(true);                                             // turn into executable code
-autorun:
-        i=0;
-        WatchdogSet=savewatchdog;
-        CommandToken tkn=commandtbl_decode(tknbuf);
-        if(!prompt_shell_command_allowed(tkn)) {
-            MMPrintString("Immediate BASIC disabled\r\n");
-            memset(inpbuf,0,STRINGSIZE);
-            continue;
-        }
-        if(tkn==GetCommandValue((unsigned char *)"RUN") || tkn==GetCommandValue((unsigned char *)"EDIT") || tkn==GetCommandValue((unsigned char *)"AUTOSAVE"))i=1;
-        if (setjmp(jmprun) != 0) {
-            PrepareProgram(false);
-            CurrentLinePtr = 0;
-        }
-        ExecuteProgram(tknbuf);                                     // execute the line straight away
-        if(i){
-            cmdline=NULL;
-            do_end(false);
-            longjmp(mark, 1);												// jump back to the input prompt
-        }
-        else {
-            memset(inpbuf,0,STRINGSIZE);
-	        longjmp(mark, 1);												// jump back to the input prompt
-        }
+        /* Route all REPL input through VM immediate mode via syscalls */
+        bc_run_immediate((const char *)inpbuf);
+        memset(inpbuf,0,STRINGSIZE);
+        longjmp(mark, 1);
 	}
 }
 void stripcomment(char *p){
