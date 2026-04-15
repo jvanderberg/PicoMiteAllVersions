@@ -1154,7 +1154,39 @@ void MIPS64 __not_in_flash_func(*GetMemory)(int size) {
     ClearTempMemory();                                               // hopefully this will give us enough to print the prompt
     error("Not enough Heap memory");
     return NULL;                                                    // keep the compiler happy
-}    
+}
+
+/*
+ * TryGetMemory — same as GetMemory but returns NULL on OOM instead of calling error().
+ * Used by the bytecode VM allocator so it can handle failures gracefully.
+ */
+void *TryGetMemory(int size) {
+    unsigned int j, n, k;
+    unsigned char *addr;
+#ifdef rp2350
+#ifndef PICOMITEWEB
+    if(PSRAMsize && size > heap_memory_size/2) return GetPSMemory(size);
+#endif
+#endif
+    j = n = k = (size + PAGESIZE - 1) / PAGESIZE;
+    for(addr = MMHeap + heap_memory_size - PAGESIZE; addr >= MMHeap; addr -= PAGESIZE) {
+        if(!(MBitsGet(addr) & PUSED)) {
+            if(--n == 0) {
+                j--;
+                MBitsSet(addr + (j * PAGESIZE), PUSED | PLAST);
+                while(j--) MBitsSet(addr + (j * PAGESIZE), PUSED);
+                memset(addr, 0, size);
+                return (void *)addr;
+            }
+        } else n = j;
+    }
+#ifdef rp2350
+#ifndef PICOMITEWEB
+    if(PSRAMsize) return GetPSMemory(size);
+#endif
+#endif
+    return NULL;
+}
 
 void *GetAlignedMemory(int size) {
    unsigned char *addr=MMHeap;

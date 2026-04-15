@@ -28,8 +28,9 @@
 #endif
 
 #ifndef MMBASIC_HOST
-static BCCompiler device_compiler;
-static BCVMState device_vm;
+/* BCCompiler and BCVMState are heap-allocated via BC_ALLOC on all platforms.
+ * On host: calloc.  On VM-only device: arena.  On bridge device: TryGetMemory.
+ */
 typedef struct {
     unsigned before_clear_used, before_clear_free, before_clear_contig;
     unsigned after_clear_used, after_clear_free, after_clear_contig;
@@ -177,7 +178,6 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
-#ifdef MMBASIC_HOST
     BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
     BCVMState  *vm = (BCVMState  *)BC_ALLOC(sizeof(BCVMState));
     if (!cs || !vm) {
@@ -187,10 +187,6 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
         error("Not enough memory for VM");
         return;
     }
-#else
-    BCCompiler *cs = &device_compiler;
-    BCVMState  *vm = &device_vm;
-#endif
     memset(cs, 0, sizeof(BCCompiler));
     memset(vm, 0, sizeof(BCVMState));
 
@@ -213,10 +209,8 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
             BC_FREE((void *)source);
             source = NULL;
         }
-#ifdef MMBASIC_HOST
         BC_FREE(cs);
         BC_FREE(vm);
-#endif
         error("Not enough memory for VM compiler");
         return;
     }
@@ -245,10 +239,8 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
             BC_FREE((void *)source);
             source = NULL;
         }
-#ifdef MMBASIC_HOST
         BC_FREE(cs);
         BC_FREE(vm);
-#endif
         error("$", msg);
         return;
     }
@@ -290,10 +282,8 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
         bc_compiler_free(cs);
         bc_compile_release_all();
-#ifdef MMBASIC_HOST
         BC_FREE(cs);
         BC_FREE(vm);
-#endif
         error("Not enough memory for VM image");
         return;
     }
@@ -332,10 +322,8 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
         bc_compiler_free(cs);
         bc_compile_release_all();
-#ifdef MMBASIC_HOST
         BC_FREE(cs);
         BC_FREE(vm);
-#endif
         error("Not enough memory for VM runtime");
         return;
     }
@@ -366,10 +354,8 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
     bc_vm_free(vm);
     bc_compiler_free(cs);
     bc_compile_release_all();
-#ifdef MMBASIC_HOST
     BC_FREE(cs);
     BC_FREE(vm);
-#endif
     vm_sys_file_reset();
     vm_sys_graphics_reset();
     bc_fastgfx_reset();
@@ -418,31 +404,20 @@ void bc_vm_capture_string(BCVMState *vm, const char *s) {
  */
 int bc_try_compile_line(const char *line) {
     int err;
-#ifdef MMBASIC_HOST
-    BCCompiler *cs = (BCCompiler *)calloc(1, sizeof(BCCompiler));
+    BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
     if (!cs) return 0;
-    if (bc_compiler_alloc(cs) != 0) {
-        bc_compiler_free(cs);
-        free(cs);
-        return 0;
-    }
-    bc_compiler_init(cs);
-    err = bc_compile_source(cs, line, "<immediate>");
-    bc_compiler_free(cs);
-    free(cs);
-#else
-    BCCompiler *cs = &device_compiler;
     memset(cs, 0, sizeof(BCCompiler));
     if (bc_compiler_alloc(cs) != 0) {
         bc_compiler_free(cs);
         bc_compile_release_all();
+        BC_FREE(cs);
         return 0;
     }
     bc_compiler_init(cs);
     err = bc_compile_source(cs, line, "<immediate>");
     bc_compiler_free(cs);
     bc_compile_release_all();
-#endif
+    BC_FREE(cs);
     return err == 0;
 }
 

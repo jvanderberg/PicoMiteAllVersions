@@ -177,6 +177,7 @@ extern int BasicFileOpen(char *fname, int fnbr, int mode);
 extern int kbhitConsole(void);
 extern int InitSDCard(void);
 extern void FileClose(int fnbr);
+extern void *TryGetMemory(int size);
 #define NBRERRMSG 17				// number of file error messages
 extern void PRet(void);
 extern void PInt(int64_t n);

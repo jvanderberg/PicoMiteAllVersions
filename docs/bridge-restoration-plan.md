@@ -34,7 +34,7 @@ Revert the `bc_run_immediate()` changes in `PicoMite.c`. The main loop goes back
 
 **Validation:** `cd host/ && ./build.sh && ./run_tests.sh` — must still pass (this step shouldn't affect host, but verify).
 
-Status: in progress
+Status: done
 
 ### 2. Bring back FRUN command
 
@@ -53,7 +53,7 @@ Adapted from the `cmd_frun()` at commit `2112876`, but using `bc_source.c` inste
 
 **Validation:** Full host gate — `./build.sh && ./run_tests.sh` (default comparison mode). Also `./run_tests.sh --vm` and `./run_tests.sh --interp` individually.
 
-Status: pending
+Status: done
 
 ### 3. Switch VM allocations to interpreter's allocator
 
@@ -77,7 +77,7 @@ This is the biggest mechanical change. The `bc_alloc.c` arena was introduced to 
 
 **Validation:** Full host gate — `./build.sh && ./run_tests.sh`. Run with address sanitizer if available (`CFLAGS=-fsanitize=address`). All three modes must pass.
 
-Status: pending
+Status: done
 
 ### 4. Pre-tokenize bridged calls in bc_source.c
 
