@@ -1817,6 +1817,9 @@ void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
         [OP_MATH_SQRSHR]    = &&op_math_sqrshr,
         [OP_MATH_MULSHRADD] = &&op_math_mulshradd,
 
+        /* Fast loop */
+        [OP_FAST_LOOP]      = &&op_fast_loop,
+
         /* Bridge */
         [OP_BRIDGE_CMD]     = &&op_bridge_cmd,
         [OP_BRIDGE_FUN_I]   = &&op_bridge_fun_i,
@@ -4293,6 +4296,327 @@ op_rgb: {
     DISPATCH();
 }
 
+
+    /* ==================================================================
+     * Fast Loop — register micro-op executor
+     * ================================================================== */
+
+op_fast_loop: {
+    /* Read header */
+    uint16_t total_len = READ_U16();
+    uint8_t *block_end = vm->pc + total_len;
+    uint8_t nregs     = *vm->pc++;
+    uint8_t nlocals   = *vm->pc++;
+    uint8_t nglobals  = *vm->pc++;
+    uint8_t nconsts   = *vm->pc++;
+    uint8_t narrays   = *vm->pc++;
+
+    if (nregs > MAX_FAST_REGS)
+        bc_vm_error(vm, "FAST_LOOP: too many registers (%d)", nregs);
+
+    /* Register file — on C stack */
+    int64_t regs[MAX_FAST_REGS];
+    memset(regs, 0, sizeof(int64_t) * nregs);
+
+    /* Load locals into registers */
+    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++)
+        regs[i] = vm->locals[vm->frame_base + i].i;
+
+    /* Load globals */
+    uint16_t global_slots[32];
+    for (int i = 0; i < nglobals; i++) {
+        uint16_t slot; memcpy(&slot, vm->pc, 2); vm->pc += 2;
+        global_slots[i] = slot;
+        regs[nlocals + i] = vm->globals[slot].i;
+    }
+
+    /* Load array references */
+    BCArray *arr_ptrs[16];
+    for (int i = 0; i < narrays; i++) {
+        uint8_t is_local = *vm->pc++;
+        uint16_t slot; memcpy(&slot, vm->pc, 2); vm->pc += 2;
+        if (is_local)
+            arr_ptrs[i] = &vm->local_arrays[vm->frame_base + slot];
+        else
+            arr_ptrs[i] = &vm->arrays[slot];
+    }
+
+    /* Load constants */
+    for (int i = 0; i < nconsts; i++) {
+        uint8_t ctype = *vm->pc++;
+        int reg = nlocals + nglobals + i;
+        if (ctype == T_INT) {
+            int64_t val; memcpy(&val, vm->pc, 8); vm->pc += 8;
+            regs[reg] = val;
+        } else {
+            double fval; memcpy(&fval, vm->pc, 8); vm->pc += 8;
+            memcpy(&regs[reg], &fval, 8);
+        }
+    }
+
+    /* Micro-op execution */
+    uint8_t *rop_base = vm->pc;
+    uint8_t *rpc = rop_base;
+
+    for (;;) {
+        uint8_t rop = *rpc++;
+        switch (rop) {
+
+        case ROP_END:
+        case ROP_EXIT:
+            goto fast_loop_done;
+
+        case ROP_JMP: {
+            int16_t off; memcpy(&off, rpc, 2); rpc += 2;
+            rpc += off;
+            break;
+        }
+
+        case ROP_CHECKINT:
+            CheckAbort();
+            check_interrupt();
+            break;
+
+        /* --- Integer arithmetic --- */
+        case ROP_ADD_I: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] + regs[b];
+            break;
+        }
+        case ROP_SUB_I: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] - regs[b];
+            break;
+        }
+        case ROP_MUL_I: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] * regs[b];
+            break;
+        }
+        case ROP_IDIV_I: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            if (regs[b] == 0) bc_vm_error(vm, "Division by zero");
+            regs[d] = regs[a] / regs[b];
+            break;
+        }
+        case ROP_MOD_I: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            if (regs[b] == 0) bc_vm_error(vm, "Division by zero");
+            regs[d] = regs[a] % regs[b];
+            break;
+        }
+
+        /* --- Float arithmetic --- */
+        case ROP_ADD_F: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            double fa, fb, fr;
+            memcpy(&fa, &regs[a], 8); memcpy(&fb, &regs[b], 8);
+            fr = fa + fb;
+            memcpy(&regs[d], &fr, 8);
+            break;
+        }
+        case ROP_SUB_F: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            double fa, fb, fr;
+            memcpy(&fa, &regs[a], 8); memcpy(&fb, &regs[b], 8);
+            fr = fa - fb;
+            memcpy(&regs[d], &fr, 8);
+            break;
+        }
+        case ROP_MUL_F: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            double fa, fb, fr;
+            memcpy(&fa, &regs[a], 8); memcpy(&fb, &regs[b], 8);
+            fr = fa * fb;
+            memcpy(&regs[d], &fr, 8);
+            break;
+        }
+        case ROP_DIV_F: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            double fa, fb, fr;
+            memcpy(&fa, &regs[a], 8); memcpy(&fb, &regs[b], 8);
+            if (fb == 0.0) bc_vm_error(vm, "Division by zero");
+            fr = fa / fb;
+            memcpy(&regs[d], &fr, 8);
+            break;
+        }
+
+        /* --- Unary --- */
+        case ROP_NEG_I: {
+            uint8_t d = *rpc++, s = *rpc++;
+            regs[d] = -regs[s];
+            break;
+        }
+        case ROP_NEG_F: {
+            uint8_t d = *rpc++, s = *rpc++;
+            double fv; memcpy(&fv, &regs[s], 8);
+            fv = -fv;
+            memcpy(&regs[d], &fv, 8);
+            break;
+        }
+        case ROP_NOT: {
+            uint8_t d = *rpc++, s = *rpc++;
+            regs[d] = !regs[s];
+            break;
+        }
+        case ROP_INV: {
+            uint8_t d = *rpc++, s = *rpc++;
+            regs[d] = ~regs[s];
+            break;
+        }
+
+        /* --- Bitwise --- */
+        case ROP_AND: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] & regs[b];
+            break;
+        }
+        case ROP_OR: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] | regs[b];
+            break;
+        }
+        case ROP_XOR: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] ^ regs[b];
+            break;
+        }
+        case ROP_SHL: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] << regs[b];
+            break;
+        }
+        case ROP_SHR: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++;
+            regs[d] = regs[a] >> regs[b];
+            break;
+        }
+
+        /* --- Move / convert --- */
+        case ROP_MOV: {
+            uint8_t d = *rpc++, s = *rpc++;
+            regs[d] = regs[s];
+            break;
+        }
+        case ROP_CVT_I2F: {
+            uint8_t d = *rpc++, s = *rpc++;
+            double fv = (double)regs[s];
+            memcpy(&regs[d], &fv, 8);
+            break;
+        }
+        case ROP_CVT_F2I: {
+            uint8_t d = *rpc++, s = *rpc++;
+            double fv; memcpy(&fv, &regs[s], 8);
+            regs[d] = (int64_t)fv;
+            break;
+        }
+
+        /* --- Load immediate --- */
+        case ROP_LOAD_IMM_I: {
+            uint8_t d = *rpc++;
+            int64_t val; memcpy(&val, rpc, 8); rpc += 8;
+            regs[d] = val;
+            break;
+        }
+        case ROP_LOAD_IMM_F: {
+            uint8_t d = *rpc++;
+            memcpy(&regs[d], rpc, 8); rpc += 8;
+            break;
+        }
+
+        /* --- Fused fixed-point --- */
+        case ROP_SQRSHR: {
+            uint8_t d = *rpc++, a = *rpc++, bits = *rpc++;
+            regs[d] = bc_vm_mulshr_int(regs[a], regs[a], (int)regs[bits]);
+            break;
+        }
+        case ROP_MULSHR: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++, bits = *rpc++;
+            regs[d] = bc_vm_mulshr_int(regs[a], regs[b], (int)regs[bits]);
+            break;
+        }
+        case ROP_MULSHRADD: {
+            uint8_t d = *rpc++, a = *rpc++, b = *rpc++, bits = *rpc++, c = *rpc++;
+            regs[d] = bc_vm_mulshr_int(regs[a], regs[b], (int)regs[bits]) + regs[c];
+            break;
+        }
+
+        /* --- Integer comparison (produce 0/1) --- */
+        case ROP_EQ_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]==regs[b]); break; }
+        case ROP_NE_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]!=regs[b]); break; }
+        case ROP_LT_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]< regs[b]); break; }
+        case ROP_GT_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]> regs[b]); break; }
+        case ROP_LE_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]<=regs[b]); break; }
+        case ROP_GE_I: { uint8_t d=*rpc++,a=*rpc++,b=*rpc++; regs[d]=(regs[a]>=regs[b]); break; }
+
+        /* --- Conditional jumps (integer) --- */
+        case ROP_JCMP_EQ_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]==regs[b]) rpc+=o; break; }
+        case ROP_JCMP_NE_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]!=regs[b]) rpc+=o; break; }
+        case ROP_JCMP_LT_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]< regs[b]) rpc+=o; break; }
+        case ROP_JCMP_GT_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]> regs[b]) rpc+=o; break; }
+        case ROP_JCMP_LE_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]<=regs[b]) rpc+=o; break; }
+        case ROP_JCMP_GE_I: { uint8_t a=*rpc++,b=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[a]>=regs[b]) rpc+=o; break; }
+
+        /* --- JZ / JNZ --- */
+        case ROP_JZ: { uint8_t s=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[s]==0) rpc+=o; break; }
+        case ROP_JNZ: { uint8_t s=*rpc++; int16_t o; memcpy(&o,rpc,2); rpc+=2; if(regs[s]!=0) rpc+=o; break; }
+
+        /* --- 1D Array access --- */
+        case ROP_LOAD_ARR_I: {
+            uint8_t d = *rpc++, ai = *rpc++, ir = *rpc++;
+            BCArray *a = arr_ptrs[ai];
+            int64_t idx = regs[ir];
+            if (idx < 0 || idx >= (int64_t)a->total_elements)
+                bc_vm_error(vm, "Array index out of bounds (%lld)", (long long)idx);
+            regs[d] = a->data[idx].i;
+            break;
+        }
+        case ROP_STORE_ARR_I: {
+            uint8_t vr = *rpc++, ai = *rpc++, ir = *rpc++;
+            BCArray *a = arr_ptrs[ai];
+            int64_t idx = regs[ir];
+            if (idx < 0 || idx >= (int64_t)a->total_elements)
+                bc_vm_error(vm, "Array index out of bounds (%lld)", (long long)idx);
+            a->data[idx].i = regs[vr];
+            break;
+        }
+        case ROP_LOAD_ARR_F: {
+            uint8_t d = *rpc++, ai = *rpc++, ir = *rpc++;
+            BCArray *a = arr_ptrs[ai];
+            int64_t idx = regs[ir];
+            if (idx < 0 || idx >= (int64_t)a->total_elements)
+                bc_vm_error(vm, "Array index out of bounds (%lld)", (long long)idx);
+            memcpy(&regs[d], &a->data[idx].f, 8);
+            break;
+        }
+        case ROP_STORE_ARR_F: {
+            uint8_t vr = *rpc++, ai = *rpc++, ir = *rpc++;
+            BCArray *a = arr_ptrs[ai];
+            int64_t idx = regs[ir];
+            if (idx < 0 || idx >= (int64_t)a->total_elements)
+                bc_vm_error(vm, "Array index out of bounds (%lld)", (long long)idx);
+            memcpy(&a->data[idx].f, &regs[vr], 8);
+            break;
+        }
+
+        default:
+            bc_vm_error(vm, "FAST_LOOP: invalid micro-op 0x%02X", rop);
+        }
+    }
+
+fast_loop_done:
+    /* Write back locals */
+    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++)
+        vm->locals[vm->frame_base + i].i = regs[i];
+
+    /* Write back globals */
+    for (int i = 0; i < nglobals; i++)
+        vm->globals[global_slots[i]].i = regs[nlocals + i];
+
+    /* Advance past entire block */
+    vm->pc = block_end;
+    DISPATCH();
+}
 
     /* ==================================================================
      * Housekeeping

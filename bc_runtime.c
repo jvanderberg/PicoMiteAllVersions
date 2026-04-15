@@ -17,13 +17,8 @@
 #include "vm_host_fat.h"
 #endif
 
-#ifdef MMBASIC_HOST
 #define VMRUN_DBG(s)       ((void)0)
 #define VMRUN_DBGF(fmt...) ((void)0)
-#else
-#define VMRUN_DBG(s)       MMPrintString(s)
-#define VMRUN_DBGF(fmt...) do { char _b[80]; snprintf(_b, sizeof(_b), fmt); MMPrintString(_b); } while(0)
-#endif
 
 #ifndef MMBASIC_HOST
 /* BCCompiler and BCVMState are heap-allocated via BC_ALLOC on all platforms.

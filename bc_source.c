@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bc_alloc.h"
 #include "bc_compiler_internal.h"
 #include "bc_source.h"
 #include "MMBasic.h"
@@ -13,6 +14,7 @@
 
 typedef struct {
     int line_no;
+    int fast_next_loop;   /* set by '!FAST directive, consumed by next loop */
 } BCSourceFrontend;
 
 #ifdef MMBASIC_HOST
@@ -2025,7 +2027,11 @@ static void source_compile_for(BCSourceFrontend *fe, BCCompiler *cs, const char 
 }
 
 static void source_compile_next(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
-    (void)fe;
+    if (fe->fast_next_loop) {
+        fe->fast_next_loop = 0;
+        bc_set_error(cs, "'!FAST not yet supported for FOR loops (use DO WHILE instead)");
+        return;
+    }
     BCNestEntry *ne = bc_nest_find(cs, NEST_FOR);
     if (!ne) {
         bc_set_error(cs, "NEXT without matching FOR");
@@ -2840,6 +2846,764 @@ static void source_compile_end_function(BCCompiler *cs) {
     bc_nest_pop(cs);
 }
 
+/* ======================================================================
+ * '!FAST loop converter — stack bytecode to register micro-ops
+ * ====================================================================== */
+
+/* Converter state */
+typedef struct {
+    uint8_t  rop[4096];          /* micro-op output buffer */
+    uint32_t rop_len;
+
+    /* Simulated stack — each entry is a register index */
+    uint8_t  sim[64];
+    int      sim_sp;
+
+    /* Register allocation */
+    int      nlocals;            /* regs 0..nlocals-1 = local frame slots */
+
+    /* Global register map */
+    struct { uint16_t slot; } globals[32];
+    int      nglobals;
+
+    /* Constant register map */
+    struct { int64_t ival; double fval; uint8_t type; } consts[32];
+    int      nconsts;
+
+    /* Array reference map (for 1D array access in fast loop) */
+    struct { uint8_t is_local; uint16_t slot; } arrays[16];
+    int      narrays;
+
+    int      temp_base;          /* first temp register index */
+    int      temp_next;          /* next available temp */
+    int      max_regs;           /* high-water mark */
+
+    /* Bytecode-to-ROP offset mapping (for jump resolution) */
+    uint16_t bc_to_rop[4096];    /* indexed by bc offset within loop */
+    uint32_t bc_len;             /* length of loop bytecode being converted */
+
+    /* Forward jump fixups */
+    struct { uint32_t rop_addr; uint32_t bc_target; } fixups[64];
+    int      fixup_count;
+
+    /* Last line number seen (for error reporting) */
+    uint16_t last_line;
+} FastConv;
+
+static void fc_emit(FastConv *fc, uint8_t b) {
+    if (fc->rop_len < sizeof(fc->rop)) fc->rop[fc->rop_len++] = b;
+}
+
+static void fc_emit_u16(FastConv *fc, uint16_t v) {
+    fc_emit(fc, v & 0xFF);
+    fc_emit(fc, (v >> 8) & 0xFF);
+}
+
+static void fc_emit_i16(FastConv *fc, int16_t v) {
+    fc_emit_u16(fc, (uint16_t)v);
+}
+
+static void fc_emit_i64(FastConv *fc, int64_t v) {
+    for (int i = 0; i < 8; i++) fc_emit(fc, (v >> (i * 8)) & 0xFF);
+}
+
+static void fc_emit_f64(FastConv *fc, double v) {
+    int64_t bits; memcpy(&bits, &v, 8); fc_emit_i64(fc, bits);
+}
+
+/* Push a register index onto the simulated stack */
+static void fc_sim_push(FastConv *fc, uint8_t reg) {
+    if (fc->sim_sp < 63) fc->sim[++fc->sim_sp] = reg;
+}
+
+static uint8_t fc_sim_pop(FastConv *fc) {
+    return (fc->sim_sp >= 0) ? fc->sim[fc->sim_sp--] : 0;
+}
+
+/* Allocate a temporary register */
+static uint8_t fc_alloc_temp(FastConv *fc) {
+    uint8_t r = (uint8_t)fc->temp_next++;
+    if (fc->temp_next > fc->max_regs) fc->max_regs = fc->temp_next;
+    return r;
+}
+
+/* Reset temp allocator at statement boundary */
+static void fc_reset_temps(FastConv *fc) {
+    fc->temp_next = fc->temp_base;
+}
+
+/* Find or create a global register mapping */
+static uint8_t fc_global_reg(FastConv *fc, uint16_t slot) {
+    for (int i = 0; i < fc->nglobals; i++) {
+        if (fc->globals[i].slot == slot)
+            return (uint8_t)(fc->nlocals + i);
+    }
+    if (fc->nglobals >= 32) return 0; /* overflow — should error */
+    int idx = fc->nglobals++;
+    fc->globals[idx].slot = slot;
+    /* Adjust temp_base and temp_next */
+    fc->temp_base = fc->nlocals + fc->nglobals + fc->nconsts;
+    fc->temp_next = fc->temp_base;
+    return (uint8_t)(fc->nlocals + idx);
+}
+
+/* Find or create a constant register mapping */
+static uint8_t fc_const_reg_i(FastConv *fc, int64_t val) {
+    int base = fc->nlocals + fc->nglobals;
+    for (int i = 0; i < fc->nconsts; i++) {
+        if (fc->consts[i].type == T_INT && fc->consts[i].ival == val)
+            return (uint8_t)(base + i);
+    }
+    if (fc->nconsts >= 32) return 0;
+    int idx = fc->nconsts++;
+    fc->consts[idx].type = T_INT;
+    fc->consts[idx].ival = val;
+    fc->temp_base = fc->nlocals + fc->nglobals + fc->nconsts;
+    fc->temp_next = fc->temp_base;
+    return (uint8_t)(base + idx);
+}
+
+static uint8_t fc_const_reg_f(FastConv *fc, double val) {
+    int base = fc->nlocals + fc->nglobals;
+    for (int i = 0; i < fc->nconsts; i++) {
+        if (fc->consts[i].type == T_NBR) {
+            double d; memcpy(&d, &fc->consts[i].fval, sizeof(d));
+            if (d == val) return (uint8_t)(base + i);
+        }
+    }
+    if (fc->nconsts >= 32) return 0;
+    int idx = fc->nconsts++;
+    fc->consts[idx].type = T_NBR;
+    fc->consts[idx].fval = val;
+    fc->temp_base = fc->nlocals + fc->nglobals + fc->nconsts;
+    fc->temp_next = fc->temp_base;
+    return (uint8_t)(base + idx);
+}
+
+/* Find or create an array reference */
+static uint8_t fc_array_ref(FastConv *fc, uint8_t is_local, uint16_t slot) {
+    for (int i = 0; i < fc->narrays; i++) {
+        if (fc->arrays[i].is_local == is_local && fc->arrays[i].slot == slot)
+            return (uint8_t)i;
+    }
+    if (fc->narrays >= 16) return 0;
+    int idx = fc->narrays++;
+    fc->arrays[idx].is_local = is_local;
+    fc->arrays[idx].slot = slot;
+    return (uint8_t)idx;
+}
+
+/* Emit a 3-register op: [op][dst][s1][s2] */
+static void fc_emit_3reg(FastConv *fc, uint8_t op, uint8_t dst, uint8_t s1, uint8_t s2) {
+    fc_emit(fc, op); fc_emit(fc, dst); fc_emit(fc, s1); fc_emit(fc, s2);
+}
+
+/* Emit a 2-register op: [op][dst][src] */
+static void fc_emit_2reg(FastConv *fc, uint8_t op, uint8_t dst, uint8_t src) {
+    fc_emit(fc, op); fc_emit(fc, dst); fc_emit(fc, src);
+}
+
+/* Try to patch the previous micro-op's destination to avoid a MOV.
+ * Returns 1 if successful. */
+static int fc_patch_prev_dst(FastConv *fc, uint8_t old_dst, uint8_t new_dst) {
+    if (fc->rop_len < 3) return 0;
+    /* The previous op should have its dst at rop[prev_start + 1] */
+    uint8_t prev_op = fc->rop[fc->rop_len - 3]; /* for 2-reg ops, check -2 too */
+    /* For 4-byte ops (3-reg): dst is at [-3] */
+    if (fc->rop_len >= 4) {
+        uint8_t op4 = fc->rop[fc->rop_len - 4];
+        /* Check if it's a 4-byte arithmetic/comparison op */
+        if ((op4 >= ROP_ADD_I && op4 <= ROP_DIV_F) ||
+            (op4 >= ROP_AND && op4 <= ROP_SHR) ||
+            (op4 >= ROP_EQ_I && op4 <= ROP_GE_I) ||
+            op4 == ROP_SQRSHR) {
+            if (fc->rop[fc->rop_len - 3] == old_dst) {
+                fc->rop[fc->rop_len - 3] = new_dst;
+                return 1;
+            }
+        }
+    }
+    /* 5-byte ops (MULSHR): dst at [-4] */
+    if (fc->rop_len >= 5) {
+        uint8_t op5 = fc->rop[fc->rop_len - 5];
+        if (op5 == ROP_MULSHR) {
+            if (fc->rop[fc->rop_len - 4] == old_dst) {
+                fc->rop[fc->rop_len - 4] = new_dst;
+                return 1;
+            }
+        }
+    }
+    /* 6-byte ops (MULSHRADD): dst at [-5] */
+    if (fc->rop_len >= 6) {
+        uint8_t op6 = fc->rop[fc->rop_len - 6];
+        if (op6 == ROP_MULSHRADD) {
+            if (fc->rop[fc->rop_len - 5] == old_dst) {
+                fc->rop[fc->rop_len - 5] = new_dst;
+                return 1;
+            }
+        }
+    }
+    /* 3-byte ops (unary/mov/cvt): dst at [-2] */
+    if (fc->rop_len >= 3) {
+        uint8_t op3 = fc->rop[fc->rop_len - 3];
+        if ((op3 >= ROP_NEG_I && op3 <= ROP_INV) ||
+            op3 == ROP_MOV || op3 == ROP_CVT_I2F || op3 == ROP_CVT_F2I) {
+            if (fc->rop[fc->rop_len - 2] == old_dst) {
+                fc->rop[fc->rop_len - 2] = new_dst;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Record a forward jump fixup */
+static void fc_add_fixup(FastConv *fc, uint32_t rop_addr, uint32_t bc_target) {
+    if (fc->fixup_count < 64) {
+        fc->fixups[fc->fixup_count].rop_addr = rop_addr;
+        fc->fixups[fc->fixup_count].bc_target = bc_target;
+        fc->fixup_count++;
+    }
+}
+
+/*
+ * Convert loop bytecode [loop_start, loop_end) to register micro-ops.
+ * Returns 1 on success, 0 on failure (sets cs->error_msg).
+ */
+static int source_convert_fast_loop(BCCompiler *cs, uint32_t loop_start,
+                                     uint32_t loop_end) {
+    /* Heap-allocate: FastConv is ~12KB, too large for the 4KB device stack */
+    FastConv *fcp = (FastConv *)BC_COMPILER_ALLOC(sizeof(FastConv));
+    if (!fcp) { bc_set_error(cs, "'!FAST: out of memory"); return 0; }
+    memset(fcp, 0, sizeof(*fcp));
+    #define fc (*fcp)
+    fc.sim_sp = -1;
+    fc.nlocals = (cs->current_subfun >= 0) ? cs->local_count : 0;
+    fc.temp_base = fc.nlocals;
+    fc.temp_next = fc.temp_base;
+    fc.max_regs = fc.nlocals;
+    fc.bc_len = loop_end - loop_start;
+
+    int fc_result = 0; /* used by FC_FAIL */
+    #define FC_FAIL do { fc_result = 0; goto fc_cleanup; } while(0)
+    #define FC_OK   do { fc_result = 1; goto fc_cleanup; } while(0)
+
+    if (fc.bc_len > sizeof(fc.bc_to_rop)) {
+        bc_set_error(cs, "'!FAST loop too large");
+        FC_FAIL;
+    }
+
+    /* Initialize bc_to_rop mapping with sentinel values */
+    memset(fc.bc_to_rop, 0xFF, sizeof(fc.bc_to_rop));
+
+    uint8_t *base = &cs->code[loop_start];
+    uint8_t *end = &cs->code[loop_end];
+
+    /* Fast loops only work inside subs/functions (locals only).
+     * Module-scope globals have a register allocation collision with constants. */
+    if (fc.nlocals == 0) {
+        bc_set_error(cs, "'!FAST requires loop to be inside a SUB or FUNCTION");
+        FC_FAIL;
+    }
+
+    /* Pre-scan: register all constants so temp registers never overlap with them.
+     * Without this, temps allocated before a constant is first seen can collide. */
+    {
+        uint8_t *scan = base;
+        while (scan < end) {
+            uint8_t sop = *scan++;
+            switch (sop) {
+            case OP_PUSH_INT: { int64_t v; memcpy(&v, scan, 8); scan += 8; fc_const_reg_i(&fc, v); break; }
+            case OP_PUSH_FLT: { double v; memcpy(&v, scan, 8); scan += 8; fc_const_reg_f(&fc, v); break; }
+            case OP_PUSH_ZERO: fc_const_reg_i(&fc, 0); break;
+            case OP_PUSH_ONE:  fc_const_reg_i(&fc, 1); break;
+            /* Skip operand bytes for known opcodes */
+            case OP_LOAD_LOCAL_I: case OP_LOAD_LOCAL_F: case OP_LOAD_LOCAL_S:
+            case OP_STORE_LOCAL_I: case OP_STORE_LOCAL_F: case OP_STORE_LOCAL_S:
+            case OP_LOAD_I: case OP_LOAD_F: case OP_LOAD_S:
+            case OP_STORE_I: case OP_STORE_F: case OP_STORE_S:
+            case OP_INC_I: case OP_LINE:
+                scan += 2; break;
+            case OP_LOAD_ARR_I: case OP_LOAD_ARR_F: case OP_LOAD_ARR_S:
+            case OP_STORE_ARR_I: case OP_STORE_ARR_F: case OP_STORE_ARR_S:
+                scan += 3; break; /* slot:16 + ndim:8 */
+            case OP_JMP: case OP_JZ: case OP_JNZ:
+                scan += 2; break;
+            case OP_JCMP_I: case OP_JCMP_F:
+                scan += 3; break; /* rel:8 + off:16 */
+            case OP_MOV_VAR:
+                scan += 5; break; /* kind:8 src:16 dst:16 */
+            default:
+                break; /* zero-operand opcodes (arithmetic, etc) */
+            }
+        }
+    }
+
+    uint8_t *pc = base;
+
+    while (pc < end) {
+        uint32_t bc_off = (uint32_t)(pc - base);
+        fc.bc_to_rop[bc_off] = (uint16_t)fc.rop_len;
+
+        uint8_t op = *pc++;
+        switch (op) {
+
+        /* --- Loads --- */
+        case OP_LOAD_LOCAL_I:
+        case OP_LOAD_LOCAL_F: {
+            uint16_t off; memcpy(&off, pc, 2); pc += 2;
+            fc_sim_push(&fc, (uint8_t)off);
+            break;
+        }
+        case OP_LOAD_I:
+        case OP_LOAD_F: {
+            uint16_t slot; memcpy(&slot, pc, 2); pc += 2;
+            uint8_t r = fc_global_reg(&fc, slot);
+            fc_sim_push(&fc, r);
+            break;
+        }
+
+        /* --- Stores --- */
+        case OP_STORE_LOCAL_I:
+        case OP_STORE_LOCAL_F: {
+            uint16_t off; memcpy(&off, pc, 2); pc += 2;
+            uint8_t src = fc_sim_pop(&fc);
+            if (src != (uint8_t)off) {
+                if (!fc_patch_prev_dst(&fc, src, (uint8_t)off))
+                    fc_emit_2reg(&fc, ROP_MOV, (uint8_t)off, src);
+            }
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+        case OP_STORE_I:
+        case OP_STORE_F: {
+            uint16_t slot; memcpy(&slot, pc, 2); pc += 2;
+            uint8_t dst = fc_global_reg(&fc, slot);
+            uint8_t src = fc_sim_pop(&fc);
+            if (src != dst) {
+                if (!fc_patch_prev_dst(&fc, src, dst))
+                    fc_emit_2reg(&fc, ROP_MOV, dst, src);
+            }
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+
+        /* --- Constants --- */
+        case OP_PUSH_INT: {
+            int64_t val; memcpy(&val, pc, 8); pc += 8;
+            uint8_t r = fc_const_reg_i(&fc, val);
+            fc_sim_push(&fc, r);
+            break;
+        }
+        case OP_PUSH_FLT: {
+            double val; memcpy(&val, pc, 8); pc += 8;
+            uint8_t r = fc_const_reg_f(&fc, val);
+            fc_sim_push(&fc, r);
+            break;
+        }
+        case OP_PUSH_ZERO: {
+            uint8_t r = fc_const_reg_i(&fc, 0);
+            fc_sim_push(&fc, r);
+            break;
+        }
+        case OP_PUSH_ONE: {
+            uint8_t r = fc_const_reg_i(&fc, 1);
+            fc_sim_push(&fc, r);
+            break;
+        }
+
+        /* --- Integer binary arithmetic --- */
+        case OP_ADD_I: case OP_SUB_I: case OP_MUL_I:
+        case OP_IDIV_I: case OP_MOD_I: {
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            uint8_t rop;
+            switch (op) {
+                case OP_ADD_I:  rop = ROP_ADD_I;  break;
+                case OP_SUB_I:  rop = ROP_SUB_I;  break;
+                case OP_MUL_I:  rop = ROP_MUL_I;  break;
+                case OP_IDIV_I: rop = ROP_IDIV_I; break;
+                default:        rop = ROP_MOD_I;   break;
+            }
+            fc_emit_3reg(&fc, rop, dst, a, b);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Float binary arithmetic --- */
+        case OP_ADD_F: case OP_SUB_F: case OP_MUL_F: case OP_DIV_F: {
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            uint8_t rop;
+            switch (op) {
+                case OP_ADD_F: rop = ROP_ADD_F; break;
+                case OP_SUB_F: rop = ROP_SUB_F; break;
+                case OP_MUL_F: rop = ROP_MUL_F; break;
+                default:       rop = ROP_DIV_F; break;
+            }
+            fc_emit_3reg(&fc, rop, dst, a, b);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Unary --- */
+        case OP_NEG_I: case OP_NEG_F: case OP_NOT: case OP_INV: {
+            uint8_t src = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            uint8_t rop;
+            switch (op) {
+                case OP_NEG_I: rop = ROP_NEG_I; break;
+                case OP_NEG_F: rop = ROP_NEG_F; break;
+                case OP_NOT:   rop = ROP_NOT;   break;
+                default:       rop = ROP_INV;   break;
+            }
+            fc_emit_2reg(&fc, rop, dst, src);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Bitwise --- */
+        case OP_AND: case OP_OR: case OP_XOR: case OP_SHL: case OP_SHR: {
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            uint8_t rop;
+            switch (op) {
+                case OP_AND: rop = ROP_AND; break;
+                case OP_OR:  rop = ROP_OR;  break;
+                case OP_XOR: rop = ROP_XOR; break;
+                case OP_SHL: rop = ROP_SHL; break;
+                default:     rop = ROP_SHR; break;
+            }
+            fc_emit_3reg(&fc, rop, dst, a, b);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Integer comparisons (produce 0/1) --- */
+        case OP_EQ_I: case OP_NE_I: case OP_LT_I:
+        case OP_GT_I: case OP_LE_I: case OP_GE_I: {
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            uint8_t rop;
+            switch (op) {
+                case OP_EQ_I: rop = ROP_EQ_I; break;
+                case OP_NE_I: rop = ROP_NE_I; break;
+                case OP_LT_I: rop = ROP_LT_I; break;
+                case OP_GT_I: rop = ROP_GT_I; break;
+                case OP_LE_I: rop = ROP_LE_I; break;
+                default:      rop = ROP_GE_I; break;
+            }
+            fc_emit_3reg(&fc, rop, dst, a, b);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Type conversion --- */
+        case OP_CVT_I2F: {
+            uint8_t src = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit_2reg(&fc, ROP_CVT_I2F, dst, src);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+        case OP_CVT_F2I: {
+            uint8_t src = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit_2reg(&fc, ROP_CVT_F2I, dst, src);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- Fused fixed-point --- */
+        case OP_MATH_SQRSHR: {
+            uint8_t bits = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit(&fc, ROP_SQRSHR);
+            fc_emit(&fc, dst); fc_emit(&fc, a); fc_emit(&fc, bits);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+        case OP_MATH_MULSHR: {
+            uint8_t bits = fc_sim_pop(&fc);
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit(&fc, ROP_MULSHR);
+            fc_emit(&fc, dst); fc_emit(&fc, a); fc_emit(&fc, b); fc_emit(&fc, bits);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+        case OP_MATH_MULSHRADD: {
+            uint8_t c = fc_sim_pop(&fc);
+            uint8_t bits = fc_sim_pop(&fc);
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit(&fc, ROP_MULSHRADD);
+            fc_emit(&fc, dst); fc_emit(&fc, a); fc_emit(&fc, b);
+            fc_emit(&fc, bits); fc_emit(&fc, c);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+
+        /* --- JCMP_I (fused compare+jump) --- */
+        case OP_JCMP_I: {
+            uint8_t rel = *pc++;
+            int16_t off; memcpy(&off, pc, 2); pc += 2;
+            uint8_t b = fc_sim_pop(&fc);
+            uint8_t a = fc_sim_pop(&fc);
+            uint8_t rop;
+            switch (rel) {
+                case BC_JCMP_EQ: rop = ROP_JCMP_EQ_I; break;
+                case BC_JCMP_NE: rop = ROP_JCMP_NE_I; break;
+                case BC_JCMP_LT: rop = ROP_JCMP_LT_I; break;
+                case BC_JCMP_GT: rop = ROP_JCMP_GT_I; break;
+                case BC_JCMP_LE: rop = ROP_JCMP_LE_I; break;
+                case BC_JCMP_GE: rop = ROP_JCMP_GE_I; break;
+                default:
+                    bc_set_error(cs, "'!FAST: unknown JCMP relation %d", rel);
+                    return 0;
+            }
+            /* Compute bytecode target (absolute within loop) */
+            uint32_t bc_here = (uint32_t)(pc - base);
+            uint32_t bc_target = (uint32_t)((int32_t)bc_here + off);
+
+            fc_emit(&fc, rop);
+            fc_emit(&fc, a); fc_emit(&fc, b);
+            uint32_t fixup_addr = fc.rop_len;
+
+            if (bc_target <= bc_off) {
+                /* Backward jump — target already mapped */
+                int16_t rop_off = (int16_t)((int32_t)fc.bc_to_rop[bc_target] - (int32_t)(fc.rop_len + 2));
+                fc_emit_i16(&fc, rop_off);
+            } else {
+                /* Forward jump — add fixup */
+                fc_emit_i16(&fc, 0); /* placeholder */
+                fc_add_fixup(&fc, fixup_addr, bc_target);
+            }
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+
+        /* --- JZ / JNZ --- */
+        case OP_JZ: case OP_JNZ: {
+            int16_t off; memcpy(&off, pc, 2); pc += 2;
+            uint8_t src = fc_sim_pop(&fc);
+            uint8_t rop = (op == OP_JZ) ? ROP_JZ : ROP_JNZ;
+            uint32_t bc_here = (uint32_t)(pc - base);
+            uint32_t bc_target = (uint32_t)((int32_t)bc_here + off);
+
+            fc_emit(&fc, rop);
+            fc_emit(&fc, src);
+            uint32_t fixup_addr = fc.rop_len;
+
+            if (bc_target <= bc_off) {
+                int16_t rop_off = (int16_t)((int32_t)fc.bc_to_rop[bc_target] - (int32_t)(fc.rop_len + 2));
+                fc_emit_i16(&fc, rop_off);
+            } else {
+                fc_emit_i16(&fc, 0);
+                fc_add_fixup(&fc, fixup_addr, bc_target);
+            }
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+
+        /* --- JMP --- */
+        case OP_JMP: {
+            int16_t off; memcpy(&off, pc, 2); pc += 2;
+            uint32_t bc_here = (uint32_t)(pc - base);
+            uint32_t bc_target = (uint32_t)((int32_t)bc_here + off);
+
+            /* If jumping past loop end, this is an exit */
+            if (bc_target >= fc.bc_len) {
+                fc_emit(&fc, ROP_EXIT);
+            } else {
+                fc_emit(&fc, ROP_JMP);
+                uint32_t fixup_addr = fc.rop_len;
+                if (bc_target <= bc_off) {
+                    int16_t rop_off = (int16_t)((int32_t)fc.bc_to_rop[bc_target] - (int32_t)(fc.rop_len + 2));
+                    fc_emit_i16(&fc, rop_off);
+                } else {
+                    fc_emit_i16(&fc, 0);
+                    fc_add_fixup(&fc, fixup_addr, bc_target);
+                }
+            }
+            break;
+        }
+
+        /* --- INC_I (increment variable) --- */
+        case OP_INC_I: {
+            uint16_t raw_slot; memcpy(&raw_slot, pc, 2); pc += 2;
+            int is_local = (raw_slot & 0x8000u) != 0;
+            uint16_t slot = raw_slot & 0x7FFFu;
+            uint8_t delta = fc_sim_pop(&fc);
+            uint8_t dst = is_local ? (uint8_t)slot : fc_global_reg(&fc, slot);
+            fc_emit_3reg(&fc, ROP_ADD_I, dst, dst, delta);
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+
+        /* --- MOV_VAR --- */
+        case OP_MOV_VAR: {
+            uint8_t kind = *pc++;
+            uint16_t src_raw; memcpy(&src_raw, pc, 2); pc += 2;
+            uint16_t dst_raw; memcpy(&dst_raw, pc, 2); pc += 2;
+            int src_local = (src_raw & 0x8000u) != 0;
+            int dst_local = (dst_raw & 0x8000u) != 0;
+            uint16_t src_slot = src_raw & 0x7FFFu;
+            uint16_t dst_slot = dst_raw & 0x7FFFu;
+            (void)kind; /* type doesn't matter for int/float move */
+            uint8_t src_r = src_local ? (uint8_t)src_slot : fc_global_reg(&fc, src_slot);
+            uint8_t dst_r = dst_local ? (uint8_t)dst_slot : fc_global_reg(&fc, dst_slot);
+            if (src_r != dst_r)
+                fc_emit_2reg(&fc, ROP_MOV, dst_r, src_r);
+            break;
+        }
+
+        /* --- 1D Array access --- */
+        case OP_LOAD_LOCAL_ARR_I: case OP_LOAD_LOCAL_ARR_F:
+        case OP_LOAD_ARR_I: case OP_LOAD_ARR_F: {
+            uint16_t slot; memcpy(&slot, pc, 2); pc += 2;
+            uint8_t ndim = *pc++;
+            if (ndim != 1) {
+                bc_set_error(cs, "'!FAST: only 1D arrays supported (got %dD)", ndim);
+                return 0;
+            }
+            uint8_t is_local = (op == OP_LOAD_LOCAL_ARR_I || op == OP_LOAD_LOCAL_ARR_F);
+            uint8_t is_float = (op == OP_LOAD_LOCAL_ARR_F || op == OP_LOAD_ARR_F);
+            uint8_t arr_idx = fc_array_ref(&fc, is_local, slot);
+            uint8_t idx_reg = fc_sim_pop(&fc);
+            uint8_t dst = fc_alloc_temp(&fc);
+            fc_emit(&fc, is_float ? ROP_LOAD_ARR_F : ROP_LOAD_ARR_I);
+            fc_emit(&fc, dst); fc_emit(&fc, arr_idx); fc_emit(&fc, idx_reg);
+            fc_sim_push(&fc, dst);
+            break;
+        }
+        case OP_STORE_LOCAL_ARR_I: case OP_STORE_LOCAL_ARR_F:
+        case OP_STORE_ARR_I: case OP_STORE_ARR_F: {
+            uint16_t slot; memcpy(&slot, pc, 2); pc += 2;
+            uint8_t ndim = *pc++;
+            if (ndim != 1) {
+                bc_set_error(cs, "'!FAST: only 1D arrays supported (got %dD)", ndim);
+                return 0;
+            }
+            uint8_t is_local = (op == OP_STORE_LOCAL_ARR_I || op == OP_STORE_LOCAL_ARR_F);
+            uint8_t is_float = (op == OP_STORE_LOCAL_ARR_F || op == OP_STORE_ARR_F);
+            uint8_t val_reg = fc_sim_pop(&fc);
+            uint8_t idx_reg = fc_sim_pop(&fc);
+            uint8_t arr_idx = fc_array_ref(&fc, is_local, slot);
+            fc_emit(&fc, is_float ? ROP_STORE_ARR_F : ROP_STORE_ARR_I);
+            fc_emit(&fc, val_reg); fc_emit(&fc, arr_idx); fc_emit(&fc, idx_reg);
+            if (fc.sim_sp < 0) fc_reset_temps(&fc);
+            break;
+        }
+
+        /* --- Housekeeping (skip or convert) --- */
+        case OP_LINE: {
+            uint16_t line; memcpy(&line, pc, 2); pc += 2;
+            fc.last_line = line;
+            break; /* skip — no micro-op needed */
+        }
+        case OP_CHECKINT:
+            fc_emit(&fc, ROP_CHECKINT);
+            break;
+
+        /* --- Unsupported — fail conversion --- */
+        default:
+            bc_set_error(cs, "'!FAST: unsupported opcode 0x%02X at line %d", op, fc.last_line);
+            FC_FAIL;
+        }
+    }
+
+    /* Record final bc_to_rop mapping entry (for forward jumps to loop end) */
+    fc.bc_to_rop[fc.bc_len] = (uint16_t)fc.rop_len;
+
+    /* Patch forward jump fixups */
+    for (int i = 0; i < fc.fixup_count; i++) {
+        uint32_t rop_addr = fc.fixups[i].rop_addr;
+        uint32_t bc_target = fc.fixups[i].bc_target;
+        uint16_t rop_target;
+        if (bc_target >= fc.bc_len) {
+            /* Target is past loop end — point to EXIT at the end */
+            rop_target = (uint16_t)fc.rop_len;
+        } else {
+            rop_target = fc.bc_to_rop[bc_target];
+            if (rop_target == 0xFFFF) {
+                bc_set_error(cs, "'!FAST: jump target offset %u not mapped", bc_target);
+                FC_FAIL;
+            }
+        }
+        int16_t rel = (int16_t)((int32_t)rop_target - (int32_t)(rop_addr + 2));
+        fc.rop[rop_addr] = rel & 0xFF;
+        fc.rop[rop_addr + 1] = (rel >> 8) & 0xFF;
+    }
+
+    /* Append EXIT at the end (for forward jumps that target loop exit) */
+    fc_emit(&fc, ROP_EXIT);
+
+    if (fc.max_regs > MAX_FAST_REGS) {
+        bc_set_error(cs, "'!FAST: too many registers needed (%d > %d)", fc.max_regs, MAX_FAST_REGS);
+        FC_FAIL;
+    }
+
+    /* --- Replace loop bytecode with OP_FAST_LOOP --- */
+    cs->code_len = loop_start;
+
+    /* Calculate total payload size */
+    uint32_t global_map_size = fc.nglobals * 2;
+    uint32_t array_map_size = fc.narrays * 3; /* is_local:8 + slot:16 per array */
+    uint32_t const_data_size = fc.nconsts * 9; /* type:8 + value:64 per const */
+    uint32_t total_payload = 5 + global_map_size + array_map_size + const_data_size + fc.rop_len;
+    /* header: nregs:8 nlocals:8 nglobals:8 nconsts:8 narrays:8 = 5 bytes */
+
+    bc_emit_byte(cs, OP_FAST_LOOP);
+    bc_emit_u16(cs, (uint16_t)total_payload);
+    bc_emit_byte(cs, (uint8_t)fc.max_regs);
+    bc_emit_byte(cs, (uint8_t)fc.nlocals);
+    bc_emit_byte(cs, (uint8_t)fc.nglobals);
+    bc_emit_byte(cs, (uint8_t)fc.nconsts);
+    bc_emit_byte(cs, (uint8_t)fc.narrays);
+
+    /* Global register map */
+    for (int i = 0; i < fc.nglobals; i++)
+        bc_emit_u16(cs, fc.globals[i].slot);
+
+    /* Array reference map */
+    for (int i = 0; i < fc.narrays; i++) {
+        bc_emit_byte(cs, fc.arrays[i].is_local);
+        bc_emit_u16(cs, fc.arrays[i].slot);
+    }
+
+    /* Constant data */
+    for (int i = 0; i < fc.nconsts; i++) {
+        bc_emit_byte(cs, fc.consts[i].type);
+        if (fc.consts[i].type == T_INT)
+            bc_emit_i64(cs, fc.consts[i].ival);
+        else {
+            MMFLOAT fv = fc.consts[i].fval;
+            bc_emit_f64(cs, fv);
+        }
+    }
+
+    /* Micro-ops */
+    for (uint32_t i = 0; i < fc.rop_len; i++)
+        bc_emit_byte(cs, fc.rop[i]);
+
+    FC_OK;
+
+fc_cleanup:
+    #undef fc
+    #undef FC_FAIL
+    #undef FC_OK
+    BC_COMPILER_FREE(fcp);
+    return fc_result;
+}
+
 static void source_compile_do(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
     source_skip_space(&p);
@@ -2873,6 +3637,10 @@ static void source_compile_loop(BCSourceFrontend *fe, BCCompiler *cs, const char
         return;
     }
 
+    uint32_t loop_start = ne->addr1;
+    int do_fast = fe->fast_next_loop;
+    fe->fast_next_loop = 0;
+
     const char *p = *pp;
     source_skip_space(&p);
 
@@ -2883,6 +3651,13 @@ static void source_compile_loop(BCSourceFrontend *fe, BCCompiler *cs, const char
         for (int i = 0; i < ne->exit_fixup_count; i++)
             source_patch_jmp_here(cs, ne->exit_fixups[i]);
         bc_nest_pop(cs);
+        if (!cs->has_error) {
+            if (!source_convert_fast_loop(cs, loop_start, cs->code_len) && !do_fast) {
+                /* Auto-optimization failed — silently keep normal bytecode */
+                cs->has_error = 0;
+                cs->error_msg[0] = '\0';
+            }
+        }
         *pp = p;
         return;
     }
@@ -2904,6 +3679,12 @@ static void source_compile_loop(BCSourceFrontend *fe, BCCompiler *cs, const char
     for (int i = 0; i < ne->exit_fixup_count; i++)
         source_patch_jmp_here(cs, ne->exit_fixups[i]);
     bc_nest_pop(cs);
+    if (!cs->has_error) {
+        if (!source_convert_fast_loop(cs, loop_start, cs->code_len) && !do_fast) {
+            cs->has_error = 0;
+            cs->error_msg[0] = '\0';
+        }
+    }
     *pp = p;
 }
 
@@ -4841,7 +5622,15 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
         }
     }
 
-    if (source_line_empty_or_comment(p)) return;
+    if (source_line_empty_or_comment(p)) {
+        /* Check for '!FAST compiler directive */
+        const char *cp = p;
+        source_skip_space(&cp);
+        if (*cp == '\'' && strncasecmp(cp, "'!FAST", 6) == 0) {
+            fe->fast_next_loop = 1;
+        }
+        return;
+    }
 
     int line_no = explicit_line > 0 ? explicit_line : fe->line_no;
     cs->current_line = line_no;
@@ -5030,6 +5819,7 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
 
 int bc_compile_source(BCCompiler *cs, const char *source, const char *source_name) {
     BCSourceFrontend fe;
+    memset(&fe, 0, sizeof(fe));
     (void)source_name;
     fe.line_no = 1;
 

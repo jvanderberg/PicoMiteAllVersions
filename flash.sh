@@ -11,7 +11,8 @@
 set -e
 cd "$(dirname "$0")"
 
-PICO_SDK_PATH="${PICO_SDK_PATH:-$HOME/pico/pico-sdk}"
+# Always use the correct SDK — ignore any stale PICO_SDK_PATH in the environment
+PICO_SDK_PATH="$HOME/pico/pico-sdk"
 BUILD_DIR="build2350"
 
 BUILD=1

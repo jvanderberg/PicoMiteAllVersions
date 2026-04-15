@@ -137,6 +137,7 @@ typedef enum {
     OP_BRIDGE_FUN_S = 0x83,  /* fun_idx:16 arg_len:16 tokenized_args... — bridge to interpreter function (string result) */
     OP_STORE_LOCAL_ARR_F = 0x84, /* offset:16, ndim:8 */
     OP_STORE_LOCAL_ARR_S = 0x85, /* offset:16, ndim:8 */
+    OP_FAST_LOOP    = 0x86,  /* Register micro-op tight loop — see RegOp enum */
 
     /* PRINT */
     OP_PRINT_INT    = 0x88,  /* flags:8 (bit0=no newline, bit1=tab after) */
@@ -259,6 +260,101 @@ typedef enum {
     OP_END          = 0xFE,
     OP_HALT         = 0xFF,  /* STOP statement */
 } BCOpcode;
+
+/*
+ * Register micro-op opcodes for OP_FAST_LOOP.
+ *
+ * OP_FAST_LOOP encoding:
+ *   [OP_FAST_LOOP:8] [total_len:16] [nregs:8] [nlocals:8]
+ *   [nglobals:8] [nconsts:8]
+ *   [global_map: nglobals * (slot:16)]
+ *   [const_data: nconsts * (type:8 value:64)]
+ *   [micro_ops: until total_len]
+ *
+ * Register file:
+ *   regs[0..nlocals-1]                  = local frame variables
+ *   regs[nlocals..nlocals+nglobals-1]   = global variables
+ *   regs[nlocals+nglobals..+nconsts-1]  = constants
+ *   regs[above..]                       = temporaries
+ *
+ * On entry: locals and globals copied into registers, constants loaded.
+ * On exit: locals and globals copied back.
+ */
+typedef enum {
+    /* Control */
+    ROP_END         = 0,   /* 1 byte — end of micro-op block */
+    ROP_EXIT        = 1,   /* 1 byte — exit fast loop */
+    ROP_JMP         = 2,   /* [op][off:16] = 3 bytes — relative jump */
+    ROP_CHECKINT    = 3,   /* 1 byte — poll CTRL-C */
+
+    /* Integer arithmetic: [op][dst][src1][src2] = 4 bytes */
+    ROP_ADD_I       = 10,
+    ROP_SUB_I       = 11,
+    ROP_MUL_I       = 12,
+    ROP_IDIV_I      = 13,
+    ROP_MOD_I       = 14,
+
+    /* Float arithmetic: [op][dst][src1][src2] = 4 bytes */
+    ROP_ADD_F       = 15,
+    ROP_SUB_F       = 16,
+    ROP_MUL_F       = 17,
+    ROP_DIV_F       = 18,
+
+    /* Unary: [op][dst][src] = 3 bytes */
+    ROP_NEG_I       = 20,
+    ROP_NEG_F       = 21,
+    ROP_NOT         = 22,
+    ROP_INV         = 23,
+
+    /* Bitwise: [op][dst][src1][src2] = 4 bytes */
+    ROP_AND         = 25,
+    ROP_OR          = 26,
+    ROP_XOR         = 27,
+    ROP_SHL         = 28,
+    ROP_SHR         = 29,
+
+    /* Move/convert: [op][dst][src] = 3 bytes */
+    ROP_MOV         = 30,
+    ROP_CVT_I2F     = 31,
+    ROP_CVT_F2I     = 32,
+
+    /* Load immediate: [op][dst][value:64] = 10 bytes */
+    ROP_LOAD_IMM_I  = 35,
+    ROP_LOAD_IMM_F  = 36,
+
+    /* Fused fixed-point ops */
+    ROP_SQRSHR      = 40,  /* [op][dst][a][bits] = 4 bytes — (a*a)>>bits */
+    ROP_MULSHR      = 41,  /* [op][dst][a][b][bits] = 5 bytes — (a*b)>>bits */
+    ROP_MULSHRADD   = 42,  /* [op][dst][a][b][bits][c] = 6 bytes — (a*b)>>bits + c */
+
+    /* Integer comparison → 0/1: [op][dst][src1][src2] = 4 bytes */
+    ROP_EQ_I        = 45,
+    ROP_NE_I        = 46,
+    ROP_LT_I        = 47,
+    ROP_GT_I        = 48,
+    ROP_LE_I        = 49,
+    ROP_GE_I        = 50,
+
+    /* Conditional jump (integer): [op][src1][src2][off:16] = 5 bytes */
+    ROP_JCMP_EQ_I   = 55,
+    ROP_JCMP_NE_I   = 56,
+    ROP_JCMP_LT_I   = 57,
+    ROP_JCMP_GT_I   = 58,
+    ROP_JCMP_LE_I   = 59,
+    ROP_JCMP_GE_I   = 60,
+
+    /* Conditional jump on zero/nonzero: [op][src][off:16] = 4 bytes */
+    ROP_JZ          = 65,
+    ROP_JNZ         = 66,
+
+    /* 1D array access: [op][dst/val][arr_idx][idx_reg] = 4 bytes */
+    ROP_LOAD_ARR_I  = 70,  /* dst = array[arr_idx][regs[idx_reg]] */
+    ROP_STORE_ARR_I = 71,  /* array[arr_idx][regs[idx_reg]] = regs[val] */
+    ROP_LOAD_ARR_F  = 72,
+    ROP_STORE_ARR_F = 73,
+} RegOp;
+
+#define MAX_FAST_REGS 64
 
 /* Print flags */
 #define PRINT_NO_NEWLINE  0x01

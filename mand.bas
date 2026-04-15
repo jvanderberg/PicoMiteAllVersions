@@ -100,6 +100,7 @@ Sub Mandelbrot(block%(), startX%, startY%, delta%, bCount%, maxIter%)
         periodCount% = 0
         periodZX% = 0
         periodZY% = 0
+        '!FAST
         Do While iter% < maxIter%
           nextX% = zx2% - zy2% + cx%
           nextY% = (zx% * zy%) \ HALF_SCALE + cy%
