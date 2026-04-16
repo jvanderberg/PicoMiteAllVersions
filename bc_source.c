@@ -12,9 +12,20 @@
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 
+/* Maximum lines in an '!ASM block */
+#define ASM_MAX_LINES 256
+#define ASM_MAX_LINE_LEN 128
+
 typedef struct {
     int line_no;
     int fast_next_loop;   /* set by '!FAST directive, consumed by next loop */
+
+    /* '!ASM block accumulation state */
+    int asm_active;                                /* 1 while inside '!ASM...'!ENDASM */
+    int asm_line_count;
+    int asm_start_line;                            /* source line of '!ASM directive */
+    char asm_lines[ASM_MAX_LINES][ASM_MAX_LINE_LEN];
+    int  asm_line_nos[ASM_MAX_LINES];              /* source line numbers for errors */
 } BCSourceFrontend;
 
 #ifdef MMBASIC_HOST
@@ -3604,6 +3615,795 @@ fc_cleanup:
     return fc_result;
 }
 
+/* ======================================================================
+ * '!ASM inline assembler — text to register micro-ops
+ * ====================================================================== */
+
+/* Assembler state */
+typedef struct {
+    uint8_t  rop[4096];          /* micro-op output buffer */
+    uint32_t rop_len;
+
+    int      nlocals;            /* regs 0..nlocals-1 = local frame slots */
+
+    /* Constant pool */
+    struct { int64_t ival; double fval; uint8_t type; } consts[32];
+    int      nconsts;
+
+    /* Array reference map */
+    struct { uint8_t is_local; uint16_t slot; } arrays[16];
+    int      narrays;
+
+    int      max_regs;           /* high-water mark */
+
+    /* Labels */
+    struct { char name[32]; uint32_t rop_addr; int defined; } labels[64];
+    int      nlabels;
+
+    /* Forward jump fixups (label-based) */
+    struct { uint32_t rop_addr; int label_idx; } fixups[128];
+    int      fixup_count;
+} AsmCtx;
+
+static void asm_emit(AsmCtx *ctx, uint8_t b) {
+    if (ctx->rop_len < sizeof(ctx->rop)) ctx->rop[ctx->rop_len++] = b;
+}
+
+static void asm_emit_i16(AsmCtx *ctx, int16_t v) {
+    asm_emit(ctx, (uint8_t)(v & 0xFF));
+    asm_emit(ctx, (uint8_t)((v >> 8) & 0xFF));
+}
+
+/* Find or create a label entry. Returns index. */
+static int asm_find_label(AsmCtx *ctx, const char *name) {
+    for (int i = 0; i < ctx->nlabels; i++) {
+        if (strncasecmp(ctx->labels[i].name, name, 31) == 0) return i;
+    }
+    if (ctx->nlabels >= 64) return -1;
+    int idx = ctx->nlabels++;
+    strncpy(ctx->labels[idx].name, name, 31);
+    ctx->labels[idx].name[31] = '\0';
+    /* Lowercase for case-insensitive matching */
+    for (char *c = ctx->labels[idx].name; *c; c++) *c = tolower((unsigned char)*c);
+    ctx->labels[idx].rop_addr = 0;
+    ctx->labels[idx].defined = 0;
+    return idx;
+}
+
+/* Find or create a constant register (integer) */
+static uint8_t asm_const_reg_i(AsmCtx *ctx, int64_t val) {
+    int base = ctx->nlocals;
+    for (int i = 0; i < ctx->nconsts; i++) {
+        if (ctx->consts[i].type == T_INT && ctx->consts[i].ival == val)
+            return (uint8_t)(base + i);
+    }
+    if (ctx->nconsts >= 32) return 0;
+    int idx = ctx->nconsts++;
+    ctx->consts[idx].type = T_INT;
+    ctx->consts[idx].ival = val;
+    int total = ctx->nlocals + ctx->nconsts;
+    if (total > ctx->max_regs) ctx->max_regs = total;
+    return (uint8_t)(base + idx);
+}
+
+/* Find or create a constant register (float) */
+static uint8_t asm_const_reg_f(AsmCtx *ctx, double val) {
+    int base = ctx->nlocals;
+    for (int i = 0; i < ctx->nconsts; i++) {
+        if (ctx->consts[i].type == T_NBR) {
+            int64_t a, b;
+            memcpy(&a, &ctx->consts[i].fval, 8);
+            memcpy(&b, &val, 8);
+            if (a == b) return (uint8_t)(base + i);
+        }
+    }
+    if (ctx->nconsts >= 32) return 0;
+    int idx = ctx->nconsts++;
+    ctx->consts[idx].type = T_NBR;
+    ctx->consts[idx].fval = val;
+    int total = ctx->nlocals + ctx->nconsts;
+    if (total > ctx->max_regs) ctx->max_regs = total;
+    return (uint8_t)(base + idx);
+}
+
+/* Emit a jump to a label (forward or backward). Adds fixup if forward. */
+static void asm_emit_jump_to_label(AsmCtx *ctx, int label_idx) {
+    if (ctx->labels[label_idx].defined) {
+        /* Backward reference — compute relative offset */
+        int16_t rel = (int16_t)((int32_t)ctx->labels[label_idx].rop_addr -
+                                (int32_t)(ctx->rop_len + 2));
+        asm_emit_i16(ctx, rel);
+    } else {
+        /* Forward reference — fixup later */
+        if (ctx->fixup_count < 128) {
+            ctx->fixups[ctx->fixup_count].rop_addr = ctx->rop_len;
+            ctx->fixups[ctx->fixup_count].label_idx = label_idx;
+            ctx->fixup_count++;
+        }
+        asm_emit_i16(ctx, 0); /* placeholder */
+    }
+}
+
+/* Skip whitespace and comments in an assembly line */
+static void asm_skip_ws(const char **pp) {
+    while (**pp == ' ' || **pp == '\t') (*pp)++;
+}
+
+/* Parse an identifier (alphanumeric + underscore + dot for mnemonics, case-insensitive) */
+static int asm_parse_ident(const char **pp, char *buf, int bufsz) {
+    const char *p = *pp;
+    int len = 0;
+    while (*p && (isalnum((unsigned char)*p) || *p == '_' || *p == '.') && len < bufsz - 1) {
+        buf[len++] = tolower((unsigned char)*p);
+        p++;
+    }
+    buf[len] = '\0';
+    *pp = p;
+    return len;
+}
+
+/*
+ * Resolve an operand name:
+ *  1. Check .const names
+ *  2. Check local variable names (suffix-stripped)
+ * Returns register index, or -1 if not found.
+ */
+typedef struct {
+    char name[32];
+    uint8_t reg;
+    int is_const;     /* 1 if this is a .const entry */
+} AsmName;
+
+static int asm_resolve_operand(AsmCtx *ctx, AsmName *names, int nnames,
+                               BCCompiler *cs, const char *ident, int *is_const_out) {
+    *is_const_out = 0;
+
+    /* 1. Check .const names first */
+    for (int i = 0; i < nnames; i++) {
+        if (names[i].is_const && strncasecmp(names[i].name, ident, 31) == 0) {
+            *is_const_out = 1;
+            return names[i].reg;
+        }
+    }
+
+    /* 2. Check local variables (suffix-stripped) */
+    for (int i = 0; i < nnames; i++) {
+        if (!names[i].is_const && strncasecmp(names[i].name, ident, 31) == 0) {
+            return names[i].reg;
+        }
+    }
+
+    return -1;
+}
+
+/*
+ * Assemble lines and emit OP_FAST_LOOP block.
+ */
+static void source_assemble_block(BCSourceFrontend *fe, BCCompiler *cs) {
+    if (cs->current_subfun < 0) {
+        bc_set_error(cs, "'!ASM must be inside a SUB or FUNCTION");
+        return;
+    }
+
+    /* Heap-allocate: AsmCtx is large */
+    AsmCtx *ctx = (AsmCtx *)BC_COMPILER_ALLOC(sizeof(AsmCtx));
+    if (!ctx) { bc_set_error(cs, "'!ASM: out of memory"); return; }
+    memset(ctx, 0, sizeof(*ctx));
+
+    ctx->nlocals = cs->local_count;
+    ctx->max_regs = ctx->nlocals;
+
+    /* Build name table from locals (params + LOCAL vars, suffix-stripped) */
+    AsmName names[MAX_FAST_REGS];
+    int nnames = 0;
+
+    for (int i = 0; i < (int)cs->local_count && nnames < MAX_FAST_REGS; i++) {
+        char stripped[MAXVARLEN + 1];
+        int slen = (int)strlen(cs->locals[i].name);
+        /* Strip type suffix */
+        if (slen > 0) {
+            char last = cs->locals[i].name[slen - 1];
+            if (last == '%' || last == '!' || last == '$') slen--;
+        }
+        /* Strip () for arrays */
+        if (slen >= 2 && cs->locals[i].name[slen - 2] == '(' && cs->locals[i].name[slen - 1] == ')') slen -= 2;
+        if (slen > 31) slen = 31;
+        memcpy(stripped, cs->locals[i].name, slen);
+        stripped[slen] = '\0';
+
+        strncpy(names[nnames].name, stripped, 31);
+        names[nnames].name[31] = '\0';
+        names[nnames].reg = (uint8_t)i;
+        names[nnames].is_const = 0;
+        nnames++;
+    }
+
+    /* Two-pass: first pass processes .const and .array directives + label definitions.
+     * Second pass assembles instructions. */
+
+    /* --- Pass 1: directives and labels --- */
+    for (int ln = 0; ln < fe->asm_line_count; ln++) {
+        const char *p = fe->asm_lines[ln];
+        asm_skip_ws(&p);
+
+        /* Skip empty lines and comments */
+        if (*p == '\0' || *p == ';') continue;
+
+        /* .const directive */
+        if (*p == '.' && strncasecmp(p + 1, "const", 5) == 0 && !isalnum((unsigned char)p[6])) {
+            p += 6;
+            asm_skip_ws(&p);
+
+            char cname[32];
+            int clen = asm_parse_ident(&p, cname, sizeof(cname));
+            if (clen == 0) {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: expected constant name after .const");
+                goto asm_cleanup;
+            }
+
+            asm_skip_ws(&p);
+            if (*p == ',') p++;
+            asm_skip_ws(&p);
+
+            /* Parse value (integer or float) */
+            int is_negative = 0;
+            if (*p == '-') { is_negative = 1; p++; }
+
+            /* Check if it's a float (contains '.') */
+            const char *vstart = p;
+            int has_dot = 0;
+            while (*p && *p != ';' && *p != ',' && *p != ' ' && *p != '\t') {
+                if (*p == '.') has_dot = 1;
+                p++;
+            }
+            char vbuf[64];
+            int vlen = (int)(p - vstart);
+            if (vlen > 63) vlen = 63;
+            memcpy(vbuf, vstart, vlen);
+            vbuf[vlen] = '\0';
+
+            uint8_t reg;
+            if (has_dot) {
+                double fv = strtod(vbuf, NULL);
+                if (is_negative) fv = -fv;
+                reg = asm_const_reg_f(ctx, fv);
+            } else {
+                int64_t iv = strtoll(vbuf, NULL, 10);
+                if (is_negative) iv = -iv;
+                reg = asm_const_reg_i(ctx, iv);
+            }
+
+            /* Add to name table */
+            if (nnames < MAX_FAST_REGS) {
+                strncpy(names[nnames].name, cname, 31);
+                names[nnames].name[31] = '\0';
+                names[nnames].reg = reg;
+                names[nnames].is_const = 1;
+                nnames++;
+            }
+            continue;
+        }
+
+        /* .array directive */
+        if (*p == '.' && strncasecmp(p + 1, "array", 5) == 0 && !isalnum((unsigned char)p[6])) {
+            p += 6;
+            asm_skip_ws(&p);
+
+            /* Parse full BASIC name including suffix and parens: e.g. buf%() */
+            char fullname[MAXVARLEN + 1];
+            int flen = 0;
+            while (*p && *p != ';' && *p != ' ' && *p != '\t' && flen < MAXVARLEN) {
+                fullname[flen++] = *p++;
+            }
+            fullname[flen] = '\0';
+
+            /* Must end with () — strip them to get the lookup name */
+            if (flen < 3 || fullname[flen-2] != '(' || fullname[flen-1] != ')') {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: .array name must include type suffix and (), e.g. buf%%()");
+                goto asm_cleanup;
+            }
+
+            /* Find the array in locals or globals */
+            /* The full name with suffix but without () is used for lookup */
+            char lookup_name[MAXVARLEN + 1];
+            memcpy(lookup_name, fullname, flen - 2);
+            lookup_name[flen - 2] = '\0';
+            int lookup_len = flen - 2;
+
+            /* Also need the name with () for array matching */
+            int is_local = 0;
+            uint16_t slot = 0xFFFF;
+
+            /* Check locals first */
+            if (cs->current_subfun >= 0) {
+                for (int i = 0; i < (int)cs->local_count; i++) {
+                    /* locals include suffix in name, check with parens stripped */
+                    if (strncasecmp(cs->locals[i].name, fullname, flen) == 0 &&
+                        cs->locals[i].name[flen] == '\0') {
+                        is_local = 1;
+                        slot = (uint16_t)i;
+                        break;
+                    }
+                    /* Also try matching without parens (local name might not have them) */
+                    if (strncasecmp(cs->locals[i].name, lookup_name, lookup_len) == 0 &&
+                        (cs->locals[i].name[lookup_len] == '\0' ||
+                         (cs->locals[i].name[lookup_len] == '(' && cs->locals[i].name[lookup_len+1] == ')')) &&
+                        cs->locals[i].is_array) {
+                        is_local = 1;
+                        slot = (uint16_t)i;
+                        break;
+                    }
+                }
+            }
+
+            if (slot == 0xFFFF) {
+                /* Check globals */
+                slot = bc_find_slot(cs, fullname, flen);
+                if (slot == 0xFFFF) {
+                    /* Try without parens */
+                    slot = bc_find_slot(cs, lookup_name, lookup_len);
+                }
+                if (slot == 0xFFFF) {
+                    cs->current_line = fe->asm_line_nos[ln];
+                    bc_set_error(cs, "'!ASM: array '%s' not found", fullname);
+                    goto asm_cleanup;
+                }
+            }
+
+            /* Add to array map */
+            if (ctx->narrays >= 16) {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: too many arrays (max 16)");
+                goto asm_cleanup;
+            }
+            ctx->arrays[ctx->narrays].is_local = (uint8_t)is_local;
+            ctx->arrays[ctx->narrays].slot = slot;
+            ctx->narrays++;
+
+            continue;
+        }
+
+        /* Label definition: .name: */
+        if (*p == '.') {
+            const char *lstart = p + 1;
+            const char *lend = lstart;
+            while (*lend && (isalnum((unsigned char)*lend) || *lend == '_')) lend++;
+            if (*lend == ':') {
+                /* It's a label definition — just record it (positions filled in pass 2) */
+                /* We don't record positions here since we haven't assembled yet */
+                continue;
+            }
+        }
+
+        /* Everything else is an instruction — skip in pass 1 */
+    }
+
+    /* --- Pass 2: assemble instructions --- */
+    for (int ln = 0; ln < fe->asm_line_count; ln++) {
+        const char *p = fe->asm_lines[ln];
+        asm_skip_ws(&p);
+
+        if (*p == '\0' || *p == ';') continue;
+
+        /* Skip .const and .array directives */
+        if (*p == '.' && strncasecmp(p + 1, "const", 5) == 0 && !isalnum((unsigned char)p[6])) continue;
+        if (*p == '.' && strncasecmp(p + 1, "array", 5) == 0 && !isalnum((unsigned char)p[6])) continue;
+
+        /* Label definition */
+        if (*p == '.') {
+            const char *lstart = p + 1;
+            const char *lend = lstart;
+            while (*lend && (isalnum((unsigned char)*lend) || *lend == '_')) lend++;
+            if (*lend == ':') {
+                char lname[32];
+                int ll = (int)(lend - lstart);
+                if (ll > 31) ll = 31;
+                for (int i = 0; i < ll; i++) lname[i] = tolower((unsigned char)lstart[i]);
+                lname[ll] = '\0';
+
+                int idx = asm_find_label(ctx, lname);
+                if (idx < 0) {
+                    cs->current_line = fe->asm_line_nos[ln];
+                    bc_set_error(cs, "'!ASM: too many labels");
+                    goto asm_cleanup;
+                }
+                if (ctx->labels[idx].defined) {
+                    cs->current_line = fe->asm_line_nos[ln];
+                    bc_set_error(cs, "'!ASM: duplicate label '.%s'", lname);
+                    goto asm_cleanup;
+                }
+                ctx->labels[idx].defined = 1;
+                ctx->labels[idx].rop_addr = ctx->rop_len;
+                continue;
+            }
+        }
+
+        /* Parse mnemonic */
+        char mnemonic[16];
+        int mlen = asm_parse_ident(&p, mnemonic, sizeof(mnemonic));
+        if (mlen == 0) {
+            cs->current_line = fe->asm_line_nos[ln];
+            bc_set_error(cs, "'!ASM: expected instruction mnemonic");
+            goto asm_cleanup;
+        }
+        asm_skip_ws(&p);
+
+        /* Helper: parse one operand (name, literal, or label) */
+        #define ASM_MAX_OPERANDS 6
+        char operands[ASM_MAX_OPERANDS][32];
+        int op_is_label[ASM_MAX_OPERANDS];
+        int nops = 0;
+
+        while (*p && *p != ';' && nops < ASM_MAX_OPERANDS) {
+            asm_skip_ws(&p);
+            if (*p == '\0' || *p == ';') break;
+
+            op_is_label[nops] = 0;
+
+            if (*p == '.') {
+                /* Label reference */
+                p++; /* skip '.' */
+                char lname[32];
+                int ll = 0;
+                while (*p && (isalnum((unsigned char)*p) || *p == '_') && ll < 31) {
+                    lname[ll++] = tolower((unsigned char)*p);
+                    p++;
+                }
+                lname[ll] = '\0';
+                strncpy(operands[nops], lname, 31);
+                operands[nops][31] = '\0';
+                op_is_label[nops] = 1;
+                nops++;
+            } else if (*p == '-' || isdigit((unsigned char)*p)) {
+                /* Integer or float literal */
+                char litbuf[64];
+                int llen = 0;
+                if (*p == '-') litbuf[llen++] = *p++;
+                int has_dot = 0;
+                while (*p && (isdigit((unsigned char)*p) || *p == '.') && llen < 63) {
+                    if (*p == '.') has_dot = 1;
+                    litbuf[llen++] = *p++;
+                }
+                litbuf[llen] = '\0';
+
+                uint8_t reg;
+                if (has_dot) {
+                    reg = asm_const_reg_f(ctx, strtod(litbuf, NULL));
+                } else {
+                    reg = asm_const_reg_i(ctx, strtoll(litbuf, NULL, 10));
+                }
+                snprintf(operands[nops], 32, "%d", (int)reg);
+                /* Mark as already resolved (negative = raw register) */
+                op_is_label[nops] = -1; /* special: raw register index */
+                nops++;
+            } else if (isalpha((unsigned char)*p) || *p == '_') {
+                /* Name (variable or constant) */
+                char name[32];
+                asm_parse_ident(&p, name, sizeof(name));
+                strncpy(operands[nops], name, 31);
+                operands[nops][31] = '\0';
+                nops++;
+            } else {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: unexpected character '%c'", *p);
+                goto asm_cleanup;
+            }
+
+            asm_skip_ws(&p);
+            if (*p == ',') { p++; asm_skip_ws(&p); }
+        }
+
+        /* Resolve name operands to register indices */
+        uint8_t regs[ASM_MAX_OPERANDS];
+        int     reg_is_const[ASM_MAX_OPERANDS];
+        int     label_indices[ASM_MAX_OPERANDS];
+        memset(regs, 0, sizeof(regs));
+        memset(reg_is_const, 0, sizeof(reg_is_const));
+        memset(label_indices, -1, sizeof(label_indices));
+
+        for (int i = 0; i < nops; i++) {
+            if (op_is_label[i] == 1) {
+                /* Label — find/create label entry */
+                label_indices[i] = asm_find_label(ctx, operands[i]);
+                if (label_indices[i] < 0) {
+                    cs->current_line = fe->asm_line_nos[ln];
+                    bc_set_error(cs, "'!ASM: too many labels");
+                    goto asm_cleanup;
+                }
+            } else if (op_is_label[i] == -1) {
+                /* Raw register index (from literal) */
+                regs[i] = (uint8_t)atoi(operands[i]);
+                reg_is_const[i] = 1; /* literals are constants */
+            } else {
+                /* Name — resolve */
+                int is_const = 0;
+                int reg = asm_resolve_operand(ctx, names, nnames, cs, operands[i], &is_const);
+                if (reg < 0) {
+                    cs->current_line = fe->asm_line_nos[ln];
+                    bc_set_error(cs, "'!ASM: unknown name '%s'", operands[i]);
+                    goto asm_cleanup;
+                }
+                regs[i] = (uint8_t)reg;
+                reg_is_const[i] = is_const;
+            }
+        }
+
+        /* Resolve array operands for array instructions */
+        /* Find array index by bare name (match against .array declarations) */
+        #define ASM_RESOLVE_ARRAY(op_idx) do { \
+            int found = -1; \
+            /* Search for the bare name among declared arrays */ \
+            for (int ai = 0; ai < ctx->narrays; ai++) { \
+                /* Match bare name: strip suffix from locals[slot].name or slots[slot].name */ \
+                uint16_t aslot = ctx->arrays[ai].slot; \
+                const char *aname = NULL; \
+                if (ctx->arrays[ai].is_local) { \
+                    aname = cs->locals[aslot].name; \
+                } else { \
+                    aname = cs->slots[aslot].name; \
+                } \
+                /* Extract bare name (no suffix, no parens) */ \
+                char bare[32]; \
+                int bl = 0; \
+                while (aname[bl] && isalnum((unsigned char)aname[bl]) && bl < 31) { \
+                    bare[bl] = tolower((unsigned char)aname[bl]); \
+                    bl++; \
+                } \
+                bare[bl] = '\0'; \
+                if (strncasecmp(bare, operands[op_idx], 31) == 0) { \
+                    found = ai; break; \
+                } \
+            } \
+            if (found < 0) { \
+                cs->current_line = fe->asm_line_nos[ln]; \
+                bc_set_error(cs, "'!ASM: array '%s' not declared with .array", operands[op_idx]); \
+                goto asm_cleanup; \
+            } \
+            regs[op_idx] = (uint8_t)found; \
+        } while(0)
+
+        /* Check destination is not a constant */
+        #define ASM_CHECK_DST(idx) do { \
+            if (reg_is_const[idx]) { \
+                cs->current_line = fe->asm_line_nos[ln]; \
+                bc_set_error(cs, "'!ASM: cannot write to constant '%s'", operands[idx]); \
+                goto asm_cleanup; \
+            } \
+        } while(0)
+
+        /* Instruction dispatch */
+        /* 3-register integer arithmetic: addi, subi, muli, divi, modi */
+        if (strcmp(mnemonic, "addi") == 0 || strcmp(mnemonic, "subi") == 0 ||
+            strcmp(mnemonic, "muli") == 0 || strcmp(mnemonic, "divi") == 0 ||
+            strcmp(mnemonic, "modi") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 3 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "addi") == 0) rop = ROP_ADD_I;
+            else if (strcmp(mnemonic, "subi") == 0) rop = ROP_SUB_I;
+            else if (strcmp(mnemonic, "muli") == 0) rop = ROP_MUL_I;
+            else if (strcmp(mnemonic, "divi") == 0) rop = ROP_IDIV_I;
+            else                                     rop = ROP_MOD_I;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        /* 3-register float arithmetic: addf, subf, mulf, divf */
+        else if (strcmp(mnemonic, "addf") == 0 || strcmp(mnemonic, "subf") == 0 ||
+                 strcmp(mnemonic, "mulf") == 0 || strcmp(mnemonic, "divf") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 3 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "addf") == 0) rop = ROP_ADD_F;
+            else if (strcmp(mnemonic, "subf") == 0) rop = ROP_SUB_F;
+            else if (strcmp(mnemonic, "mulf") == 0) rop = ROP_MUL_F;
+            else                                     rop = ROP_DIV_F;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        /* Unary: negi, negf, not, inv */
+        else if (strcmp(mnemonic, "negi") == 0 || strcmp(mnemonic, "negf") == 0 ||
+                 strcmp(mnemonic, "not") == 0  || strcmp(mnemonic, "inv") == 0) {
+            if (nops != 2) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 2 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "negi") == 0) rop = ROP_NEG_I;
+            else if (strcmp(mnemonic, "negf") == 0) rop = ROP_NEG_F;
+            else if (strcmp(mnemonic, "not") == 0)  rop = ROP_NOT;
+            else                                     rop = ROP_INV;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]);
+        }
+        /* Bitwise: and, or, xor, shl, shr */
+        else if (strcmp(mnemonic, "and") == 0 || strcmp(mnemonic, "or") == 0 ||
+                 strcmp(mnemonic, "xor") == 0 || strcmp(mnemonic, "shl") == 0 ||
+                 strcmp(mnemonic, "shr") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 3 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "and") == 0) rop = ROP_AND;
+            else if (strcmp(mnemonic, "or") == 0)  rop = ROP_OR;
+            else if (strcmp(mnemonic, "xor") == 0) rop = ROP_XOR;
+            else if (strcmp(mnemonic, "shl") == 0) rop = ROP_SHL;
+            else                                    rop = ROP_SHR;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        /* Move / convert: mov, cvtif, cvtfi */
+        else if (strcmp(mnemonic, "mov") == 0 || strcmp(mnemonic, "cvtif") == 0 ||
+                 strcmp(mnemonic, "cvtfi") == 0) {
+            if (nops != 2) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 2 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "mov") == 0)    rop = ROP_MOV;
+            else if (strcmp(mnemonic, "cvtif") == 0)  rop = ROP_CVT_I2F;
+            else                                       rop = ROP_CVT_F2I;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]);
+        }
+        /* Fused fixed-point: sqrshr, mulshr, mulshradd */
+        else if (strcmp(mnemonic, "sqrshr") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: sqrshr requires 3 operands (dst, a, bits)"); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            asm_emit(ctx, ROP_SQRSHR); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        else if (strcmp(mnemonic, "mulshr") == 0) {
+            if (nops != 4) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: mulshr requires 4 operands (dst, a, b, bits)"); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            asm_emit(ctx, ROP_MULSHR); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]); asm_emit(ctx, regs[3]);
+        }
+        else if (strcmp(mnemonic, "mulshradd") == 0) {
+            if (nops != 5) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: mulshradd requires 5 operands (dst, a, b, bits, c)"); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            asm_emit(ctx, ROP_MULSHRADD); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]); asm_emit(ctx, regs[3]); asm_emit(ctx, regs[4]);
+        }
+        /* Integer comparisons: eqi, nei, lti, gti, lei, gei */
+        else if (strcmp(mnemonic, "eqi") == 0 || strcmp(mnemonic, "nei") == 0 ||
+                 strcmp(mnemonic, "lti") == 0 || strcmp(mnemonic, "gti") == 0 ||
+                 strcmp(mnemonic, "lei") == 0 || strcmp(mnemonic, "gei") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires 3 operands", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            uint8_t rop;
+            if      (strcmp(mnemonic, "eqi") == 0) rop = ROP_EQ_I;
+            else if (strcmp(mnemonic, "nei") == 0) rop = ROP_NE_I;
+            else if (strcmp(mnemonic, "lti") == 0) rop = ROP_LT_I;
+            else if (strcmp(mnemonic, "gti") == 0) rop = ROP_GT_I;
+            else if (strcmp(mnemonic, "lei") == 0) rop = ROP_LE_I;
+            else                                    rop = ROP_GE_I;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        /* Fused compare-and-jump: jeq, jne, jlt, jgt, jle, jge */
+        else if (strcmp(mnemonic, "jeq") == 0 || strcmp(mnemonic, "jne") == 0 ||
+                 strcmp(mnemonic, "jlt") == 0 || strcmp(mnemonic, "jgt") == 0 ||
+                 strcmp(mnemonic, "jle") == 0 || strcmp(mnemonic, "jge") == 0) {
+            if (nops != 3 || label_indices[2] < 0) {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: %s requires src1, src2, .label", mnemonic);
+                goto asm_cleanup;
+            }
+            uint8_t rop;
+            if      (strcmp(mnemonic, "jeq") == 0) rop = ROP_JCMP_EQ_I;
+            else if (strcmp(mnemonic, "jne") == 0) rop = ROP_JCMP_NE_I;
+            else if (strcmp(mnemonic, "jlt") == 0) rop = ROP_JCMP_LT_I;
+            else if (strcmp(mnemonic, "jgt") == 0) rop = ROP_JCMP_GT_I;
+            else if (strcmp(mnemonic, "jle") == 0) rop = ROP_JCMP_LE_I;
+            else                                    rop = ROP_JCMP_GE_I;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]);
+            asm_emit_jump_to_label(ctx, label_indices[2]);
+        }
+        /* Conditional jump: jz, jnz */
+        else if (strcmp(mnemonic, "jz") == 0 || strcmp(mnemonic, "jnz") == 0) {
+            if (nops != 2 || label_indices[1] < 0) {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: %s requires src, .label", mnemonic);
+                goto asm_cleanup;
+            }
+            uint8_t rop = (strcmp(mnemonic, "jz") == 0) ? ROP_JZ : ROP_JNZ;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]);
+            asm_emit_jump_to_label(ctx, label_indices[1]);
+        }
+        /* 1D Array access: loadi.a, storei.a, loadf.a, storef.a */
+        else if (strcmp(mnemonic, "loadi.a") == 0 || strcmp(mnemonic, "loadf.a") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires reg, array, idx", mnemonic); goto asm_cleanup; }
+            ASM_CHECK_DST(0);
+            ASM_RESOLVE_ARRAY(1);
+            uint8_t rop = (strcmp(mnemonic, "loadi.a") == 0) ? ROP_LOAD_ARR_I : ROP_LOAD_ARR_F;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        else if (strcmp(mnemonic, "storei.a") == 0 || strcmp(mnemonic, "storef.a") == 0) {
+            if (nops != 3) { cs->current_line = fe->asm_line_nos[ln]; bc_set_error(cs, "'!ASM: %s requires reg, array, idx", mnemonic); goto asm_cleanup; }
+            ASM_RESOLVE_ARRAY(1);
+            uint8_t rop = (strcmp(mnemonic, "storei.a") == 0) ? ROP_STORE_ARR_I : ROP_STORE_ARR_F;
+            asm_emit(ctx, rop); asm_emit(ctx, regs[0]); asm_emit(ctx, regs[1]); asm_emit(ctx, regs[2]);
+        }
+        /* Control flow */
+        else if (strcmp(mnemonic, "jmp") == 0) {
+            if (nops != 1 || label_indices[0] < 0) {
+                cs->current_line = fe->asm_line_nos[ln];
+                bc_set_error(cs, "'!ASM: jmp requires .label");
+                goto asm_cleanup;
+            }
+            asm_emit(ctx, ROP_JMP);
+            asm_emit_jump_to_label(ctx, label_indices[0]);
+        }
+        else if (strcmp(mnemonic, "exit") == 0) {
+            asm_emit(ctx, ROP_EXIT);
+        }
+        else if (strcmp(mnemonic, "checkint") == 0) {
+            asm_emit(ctx, ROP_CHECKINT);
+        }
+        else {
+            cs->current_line = fe->asm_line_nos[ln];
+            bc_set_error(cs, "'!ASM: unknown instruction '%s'", mnemonic);
+            goto asm_cleanup;
+        }
+
+        #undef ASM_MAX_OPERANDS
+    }
+
+    /* Append implicit ROP_EXIT */
+    asm_emit(ctx, ROP_EXIT);
+
+    /* Resolve forward jump fixups */
+    for (int i = 0; i < ctx->fixup_count; i++) {
+        int li = ctx->fixups[i].label_idx;
+        if (!ctx->labels[li].defined) {
+            bc_set_error(cs, "'!ASM: undefined label '.%s'", ctx->labels[li].name);
+            goto asm_cleanup;
+        }
+        uint32_t rop_addr = ctx->fixups[i].rop_addr;
+        int16_t rel = (int16_t)((int32_t)ctx->labels[li].rop_addr - (int32_t)(rop_addr + 2));
+        ctx->rop[rop_addr] = (uint8_t)(rel & 0xFF);
+        ctx->rop[rop_addr + 1] = (uint8_t)((rel >> 8) & 0xFF);
+    }
+
+    /* Check register limit */
+    if (ctx->max_regs > MAX_FAST_REGS) {
+        bc_set_error(cs, "'!ASM: too many registers (%d > %d)", ctx->max_regs, MAX_FAST_REGS);
+        goto asm_cleanup;
+    }
+
+    /* --- Emit OP_FAST_LOOP --- */
+    cs->current_line = fe->asm_start_line;
+    bc_add_linemap_entry(cs, (uint16_t)fe->asm_start_line, cs->code_len);
+    bc_emit_byte(cs, OP_LINE);
+    bc_emit_u16(cs, (uint16_t)fe->asm_start_line);
+
+    uint32_t array_map_size = ctx->narrays * 3;
+    uint32_t const_data_size = ctx->nconsts * 9;
+    uint32_t total_payload = 5 + array_map_size + const_data_size + ctx->rop_len;
+
+    bc_emit_byte(cs, OP_FAST_LOOP);
+    bc_emit_u16(cs, (uint16_t)total_payload);
+    bc_emit_byte(cs, (uint8_t)ctx->max_regs);
+    bc_emit_byte(cs, (uint8_t)ctx->nlocals);
+    bc_emit_byte(cs, 0);  /* nglobals = 0, ASM only supports locals */
+    bc_emit_byte(cs, (uint8_t)ctx->nconsts);
+    bc_emit_byte(cs, (uint8_t)ctx->narrays);
+
+    /* Array reference map */
+    for (int i = 0; i < ctx->narrays; i++) {
+        bc_emit_byte(cs, ctx->arrays[i].is_local);
+        bc_emit_u16(cs, ctx->arrays[i].slot);
+    }
+
+    /* Constant data */
+    for (int i = 0; i < ctx->nconsts; i++) {
+        bc_emit_byte(cs, ctx->consts[i].type);
+        if (ctx->consts[i].type == T_INT)
+            bc_emit_i64(cs, ctx->consts[i].ival);
+        else {
+            MMFLOAT fv = ctx->consts[i].fval;
+            bc_emit_f64(cs, fv);
+        }
+    }
+
+    /* Micro-ops */
+    for (uint32_t i = 0; i < ctx->rop_len; i++)
+        bc_emit_byte(cs, ctx->rop[i]);
+
+asm_cleanup:
+    #undef ASM_CHECK_DST
+    #undef ASM_RESOLVE_ARRAY
+    BC_COMPILER_FREE(ctx);
+}
+
 static void source_compile_do(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
     source_skip_space(&p);
@@ -3841,7 +4641,14 @@ static void source_compile_framebuffer(BCSourceFrontend *fe, BCCompiler *cs, con
     source_skip_space(&p);
 
     if (source_keyword(&p, "CREATE")) {
-        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, (uint8_t[]){BC_FB_OP_CREATE}, 1);
+        uint8_t create_flags = BC_FB_CREATE_NORMAL;
+        source_skip_space(&p);
+        if (source_keyword(&p, "FAST")) {
+            create_flags = BC_FB_CREATE_FAST;
+        }
+        aux[0] = BC_FB_OP_CREATE;
+        aux[1] = create_flags;
+        source_emit_syscall(cs, BC_SYS_GFX_FRAMEBUFFER, 0, aux, 2);
         *pp = p;
         return;
     }
@@ -5611,6 +6418,38 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
     const char *p = line;
     source_skip_space(&p);
 
+    /* If inside '!ASM block, accumulate lines until '!ENDASM */
+    if (fe->asm_active) {
+        const char *cp = p;
+        source_skip_space(&cp);
+        /* Check for line number prefix */
+        if (isdigit((unsigned char)*cp)) {
+            char *end = NULL;
+            (void)strtol(cp, &end, 10);
+            if (end != cp) { cp = end; source_skip_space(&cp); }
+        }
+        /* Check for '!ENDASM */
+        if (*cp == '\'' && strncasecmp(cp, "'!ENDASM", 8) == 0) {
+            fe->asm_active = 0;
+            source_assemble_block(fe, cs);
+            fe->asm_line_count = 0;
+            return;
+        }
+        /* Strip comment-only prefix if line starts with ' — it's ASM content */
+        /* Accumulate the raw line content (after any ' prefix) */
+        const char *content = cp;
+        if (*content == '\'') content++; /* strip leading ' if present */
+        if (fe->asm_line_count < ASM_MAX_LINES) {
+            strncpy(fe->asm_lines[fe->asm_line_count], content, ASM_MAX_LINE_LEN - 1);
+            fe->asm_lines[fe->asm_line_count][ASM_MAX_LINE_LEN - 1] = '\0';
+            fe->asm_line_nos[fe->asm_line_count] = fe->line_no;
+            fe->asm_line_count++;
+        } else {
+            bc_set_error(cs, "'!ASM block too large (max %d lines)", ASM_MAX_LINES);
+        }
+        return;
+    }
+
     int explicit_line = 0;
     if (isdigit((unsigned char)*p)) {
         char *end = NULL;
@@ -5628,6 +6467,13 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
         source_skip_space(&cp);
         if (*cp == '\'' && strncasecmp(cp, "'!FAST", 6) == 0) {
             fe->fast_next_loop = 1;
+        }
+        /* Check for '!ASM compiler directive */
+        if (*cp == '\'' && strncasecmp(cp, "'!ASM", 5) == 0 &&
+            (cp[5] == '\0' || cp[5] == ' ' || cp[5] == '\t' || cp[5] == '\r' || cp[5] == '\n')) {
+            fe->asm_active = 1;
+            fe->asm_line_count = 0;
+            fe->asm_start_line = fe->line_no;
         }
         return;
     }
@@ -5810,9 +6656,29 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     unsigned char continuation = 0;
     const char *p = source;
     char line[STRINGSIZE + 1];
+    int in_asm = 0;
 
     while (!cs->has_error &&
            source_read_logical_line(&p, line, sizeof(line), &physical_line, &line_no, &continuation)) {
+        /* Skip lines inside '!ASM blocks */
+        const char *lp = line;
+        source_skip_space(&lp);
+        /* Skip line number prefix */
+        if (isdigit((unsigned char)*lp)) {
+            char *end = NULL;
+            (void)strtol(lp, &end, 10);
+            if (end != lp) { lp = end; source_skip_space(&lp); }
+        }
+        if (in_asm) {
+            if (*lp == '\'' && strncasecmp(lp, "'!ENDASM", 8) == 0)
+                in_asm = 0;
+            continue;
+        }
+        if (*lp == '\'' && strncasecmp(lp, "'!ASM", 5) == 0 &&
+            (lp[5] == '\0' || lp[5] == ' ' || lp[5] == '\t' || lp[5] == '\r' || lp[5] == '\n')) {
+            in_asm = 1;
+            continue;
+        }
         source_predeclare_line(cs, line, line_no);
     }
 }
