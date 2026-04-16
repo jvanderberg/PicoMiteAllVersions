@@ -1558,7 +1558,7 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
 /* ======================================================================
  * bc_vm_execute — main dispatch loop using computed goto
  * ====================================================================== */
-void __not_in_flash_func(bc_vm_execute)(BCVMState *vm) {
+void bc_vm_execute(BCVMState *vm) {
 
     /* ---- Helper macros ---- */
 #define DISPATCH() goto *dispatch_table[*vm->pc++]
