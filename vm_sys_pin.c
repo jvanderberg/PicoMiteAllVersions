@@ -306,12 +306,14 @@ static const uint8_t vm_pin_gpio_map[30] = {
 extern volatile int ExtCurrentConfig[NBRPINS + 1];
 extern uint32_t pinmask;
 extern int last_adc;
-extern bool fast_timer_active;
 extern int BacklightSlice;
 extern int CameraSlice;
-extern int KeyboardlightSlice;
 #ifdef rp2350
+extern bool fast_timer_active;
 extern bool rp2350a;
+#if defined(PICOMITE)
+extern int KeyboardlightSlice;
+#endif
 #endif
 
 static int vm_pin_codemap(int64_t gpio_index) {
@@ -590,15 +592,17 @@ void vm_sys_pwm_configure(int slice, MMFLOAT frequency,
 
     if (slice < 0 || slice > vm_pwm_max_slice())
         error("Number out of bounds");
+#ifdef rp2350
     if (slice == 0 && fast_timer_active)
         error("Channel 0 in use for fast timer");
+#endif
     if (slice == BacklightSlice)
         error("Channel in use for backlight");
     if (slice == Option.AUDIO_SLICE)
         error("Channel in use for Audio");
     if (slice == CameraSlice)
         error("Channel in use for Camera");
-#ifdef PICOMITE
+#if defined(PICOMITE) && defined(rp2350)
     if (slice == KeyboardlightSlice)
         error("Channel in use for keyboard backlight");
 #endif

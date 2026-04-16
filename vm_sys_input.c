@@ -14,7 +14,7 @@
 extern int host_keydown(int n);
 #elif defined(USBKEYBOARD)
 extern int KeyDown[7];
-#elif defined(PICOCALC)
+#elif defined(PICOCALC) && defined(rp2350)
 extern int LocalKeyDown[7];
 #endif
 
@@ -30,7 +30,7 @@ int vm_sys_input_keydown(int n) {
     for (int i = 0; i < 6; i++)
         if (KeyDown[i]) count++;
     return count;
-#elif defined(PICOCALC)
+#elif defined(PICOCALC) && defined(rp2350)
     if (n == 8) return 0;
     if (n) return LocalKeyDown[n - 1];
     int count = 0;

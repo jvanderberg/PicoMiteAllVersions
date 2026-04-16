@@ -195,9 +195,9 @@ extern "C" {
             #define HEAPTOP 0x20078000
         #endif
     #else
-        #define HEAP_MEMORY_SIZE (128*1024) 
+        #define HEAP_MEMORY_SIZE (120*1024)
         #define MAXVARS             512                     // 8 + MAXVARLEN + MAXDIM * 2  (ie, 56 bytes) - these do not incl array members
-        #define FLASH_TARGET_OFFSET (832 * 1024) 
+        #define FLASH_TARGET_OFFSET (832 * 1024)
         #define MAX_CPU     420000
         #define MAXSUBFUN           256                     // each entry takes up 4 bytes
         #ifdef USBKEYBOARD
