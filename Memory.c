@@ -123,6 +123,8 @@ unsigned char *SecondFrame=video;
     unsigned char *WriteBuf=NULL;
     unsigned char *LayerBuf=NULL;
     unsigned char *FrameBuf=NULL;
+    unsigned char *ShadowBuf=NULL;
+    int fb_dma_chan=-1;
 #endif
 #ifdef GUICONTROLS
     struct s_ctrl CTRLS[MAXCONTROLS];

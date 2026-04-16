@@ -1105,7 +1105,11 @@ void cmd_framebuffer(void) {
     unsigned char *p = NULL;
 
     if ((p = checkstring(cmdline, (unsigned char *)"CREATE"))) {
-        checkend(p);
+        if (checkstring(p, (unsigned char *)"FAST")) {
+            /* FAST flag accepted but no-op on host (no DMA) */
+        } else {
+            checkend(p);
+        }
         host_framebuffer_create();
         return;
     }

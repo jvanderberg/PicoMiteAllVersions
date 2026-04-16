@@ -5101,6 +5101,9 @@ void fun_sprite(void) {
  * The following section will be excluded from the documentation.
  */
 #ifndef PICOMITEVGA
+#ifdef PICOMITE
+#include "hardware/dma.h"
+#endif
 void restorepanel(void){
     if(Option.DISPLAY_TYPE>I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel){
         if(Option.DISPLAY_ORIENTATION==PORTRAIT){
@@ -5189,6 +5192,8 @@ void closeframebuffer(char layer){
             SoftReset();
         }
     }
+    if(ShadowBuf){FreeMemory(ShadowBuf);ShadowBuf=NULL;}
+    if(fb_dma_chan>=0){dma_channel_unclaim(fb_dma_chan);fb_dma_chan=-1;}
 #endif
     if(FrameBuf)FreeMemory(FrameBuf);
     if(LayerBuf)FreeMemory(LayerBuf);
@@ -5547,7 +5552,16 @@ void cmd_framebuffer(void){
     unsigned char *p=NULL;
     if((p=checkstring(cmdline, (unsigned char *)"CREATE"))) {
         if(FrameBuf==NULL){
+            int fast = 0;
+            if(checkstring(p, (unsigned char *)"FAST")) fast = 1;
             FrameBuf=GetMemory(HRes*VRes/2);
+            if(fast){
+                ShadowBuf=GetMemory(HRes*VRes/2);
+                memset(ShadowBuf, 0, HRes*VRes/2);
+#ifdef PICOMITE
+                fb_dma_chan=dma_claim_unused_channel(true);
+#endif
+            }
         }
         else error("Framebuffer already exists");
     } else if((p=checkstring(cmdline, (unsigned char *)"WRITE"))) {
@@ -5662,9 +5676,13 @@ void cmd_framebuffer(void){
                 }
             }
 #endif
-            if(WriteBuf!=LayerBuf)restorepanel();         
+            if(WriteBuf!=LayerBuf)restorepanel();
             if(FrameBuf)FreeMemory(FrameBuf);
             FrameBuf=NULL;
+#ifdef PICOMITE
+            if(ShadowBuf){FreeMemory(ShadowBuf);ShadowBuf=NULL;}
+            if(fb_dma_chan>=0){dma_channel_unclaim(fb_dma_chan);fb_dma_chan=-1;}
+#endif
         } else if(checkstring(p, (unsigned char *)"L")){
 #ifdef PICOMITE
             if(mergerunning){
@@ -5756,7 +5774,6 @@ void cmd_framebuffer(void){
 // FASTGFX - double-buffered display with scanline diffing + DMA
 // ============================================================
 #ifdef PICOMITE
-#include "hardware/dma.h"
 
 static uint8_t *FastGFXBackBuf = NULL;
 static uint8_t *FastGFXFrontBuf = NULL;
@@ -5766,7 +5783,8 @@ static int fastgfx_dma_chan = -1;
 static uint32_t fastgfx_frame_us = 0;       // target frame time in microseconds (0 = unlimited)
 static uint64_t fastgfx_last_swap_us = 0;   // timestamp of last swap
 
-// Ping-pong line buffers for RGB565 conversion (max 320 pixels * 2 bytes)
+// Shared ping-pong line buffers for RGB565 conversion (max 320 pixels * 2 bytes)
+// Used by both FASTGFX and FRAMEBUFFER FAST merge paths.
 static uint16_t fastgfx_linebuf[2][320];
 
 // Determine which SPI instance the LCD is on
@@ -5885,6 +5903,156 @@ void __not_in_flash_func(fastgfx_swap_core1)(void) {
 
     __dmb();
     fastgfx_done = true;
+}
+
+/*
+ * merge_optimized — FRAMEBUFFER MERGE with scanline diff + DMA.
+ *
+ * Composite layer onto frame into a line buffer, diff against ShadowBuf,
+ * and DMA only changed regions. Used when ShadowBuf != NULL (FRAMEBUFFER CREATE FAST).
+ */
+void merge_optimized(uint8_t colour) {
+    if (LayerBuf == NULL || FrameBuf == NULL || ShadowBuf == NULL) return;
+
+    int stride = HRes / 2;
+    uint8_t highcolour = colour << 4;
+    uint8_t *s = LayerBuf;
+    uint8_t *d = FrameBuf;
+    uint8_t *shadow = ShadowBuf;
+
+    mutex_enter_blocking(&frameBufferMutex);
+
+    // Tear sync
+    if (Option.DISPLAY_TYPE == ILI9341 || Option.DISPLAY_TYPE == ST7796SP ||
+        Option.DISPLAY_TYPE == ST7796S || Option.DISPLAY_TYPE == ST7789B ||
+        Option.DISPLAY_TYPE == ILI9488 || Option.DISPLAY_TYPE == ILI9488P) {
+        while (GetLineILI9341() != 0) {}
+    }
+
+    // Single-pass: composite, diff against shadow, batch+send dirty regions
+    // Same flow as fastgfx_swap_core1 but with frame+layer compositing
+    spi_inst_t *spi = fastgfx_get_spi();
+    int dma_chan = fb_dma_chan;
+    int buf_idx = 0;
+    uint8_t LineBuf[stride];
+
+    // Ensure map[] is populated
+    if (map[15] == 0) {
+        for (int i = 0; i < 16; i++) {
+            uint8_t col0 = ((RGB121map[i] >> 16) & 0xF8) | ((RGB121map[i] >> 13) & 0x07);
+            uint8_t col1 = ((RGB121map[i] >>  5) & 0xE0) | ((RGB121map[i] >>  3) & 0x1F);
+            map[i] = col0 | (col1 << 8);
+        }
+    }
+
+    dma_channel_config dma_cfg = dma_channel_get_default_config(dma_chan);
+    channel_config_set_transfer_data_size(&dma_cfg, DMA_SIZE_8);
+    channel_config_set_read_increment(&dma_cfg, true);
+    channel_config_set_write_increment(&dma_cfg, false);
+    channel_config_set_dreq(&dma_cfg, spi_get_dreq(spi, true));
+
+    int y = 0;
+    while (y < VRes) {
+        // Composite this scanline
+        memcpy(LineBuf, d + y * stride, stride);
+        uint8_t *ss = s + y * stride;
+        for (int x = 0; x < stride; x++) {
+            uint8_t top = *ss & 0xF0;
+            uint8_t bottom = *ss++ & 0x0f;
+            if (top == highcolour && bottom == colour) continue;
+            if (top != highcolour && bottom != colour) LineBuf[x] = (top | bottom);
+            else if (top != highcolour) {
+                LineBuf[x] &= 0x0F;
+                LineBuf[x] |= top;
+            } else {
+                LineBuf[x] &= 0xF0;
+                LineBuf[x] |= bottom;
+            }
+        }
+
+        // Skip clean scanlines
+        if (memcmp(LineBuf, shadow + y * stride, stride) == 0) {
+            y++;
+            continue;
+        }
+
+        // Found a dirty scanline — scan ahead to find the batch extent
+        int y_start = y;
+        int x_min = stride;
+        int x_max = 0;
+
+        // Process this and consecutive dirty scanlines
+        while (y < VRes) {
+            // Composite (already done for first line of batch)
+            if (y != y_start) {
+                memcpy(LineBuf, d + y * stride, stride);
+                uint8_t *ss2 = s + y * stride;
+                for (int x = 0; x < stride; x++) {
+                    uint8_t top = *ss2 & 0xF0;
+                    uint8_t bottom = *ss2++ & 0x0f;
+                    if (top == highcolour && bottom == colour) continue;
+                    if (top != highcolour && bottom != colour) LineBuf[x] = (top | bottom);
+                    else if (top != highcolour) {
+                        LineBuf[x] &= 0x0F;
+                        LineBuf[x] |= top;
+                    } else {
+                        LineBuf[x] &= 0xF0;
+                        LineBuf[x] |= bottom;
+                    }
+                }
+                if (memcmp(LineBuf, shadow + y * stride, stride) == 0) break;
+            }
+
+            // Track dirty byte range, update only changed bytes in shadow
+            uint8_t *sh = shadow + y * stride;
+            for (int x = 0; x < stride; x++) {
+                if (LineBuf[x] != sh[x]) {
+                    if (x < x_min) x_min = x;
+                    if (x > x_max) x_max = x;
+                    sh[x] = LineBuf[x];
+                }
+            }
+            y++;
+        }
+        int y_end = y;
+
+        // Send dirty region — same as fastgfx_swap_core1
+        int px_start = x_min * 2;
+        int px_end = x_max * 2 + 1;
+        int pixel_count = px_end - px_start + 1;
+
+        DefineRegionSPI(px_start, y_start, px_end, y_end - 1, 1);
+
+        for (int sy = y_start; sy < y_end; sy++) {
+            uint16_t *lb = fastgfx_linebuf[buf_idx];
+            int out = 0;
+            for (int bx = x_min; bx <= x_max; bx++) {
+                uint8_t byte = shadow[sy * stride + bx];
+                lb[out++] = (uint16_t)map[byte & 0x0F];
+                lb[out++] = (uint16_t)map[(byte >> 4) & 0x0F];
+            }
+
+            dma_channel_wait_for_finish_blocking(dma_chan);
+            dma_channel_configure(
+                dma_chan,
+                &dma_cfg,
+                &spi_get_hw(spi)->dr,
+                (uint8_t *)lb,
+                pixel_count * 2,
+                true
+            );
+            buf_idx ^= 1;
+        }
+
+        dma_channel_wait_for_finish_blocking(dma_chan);
+        spi_finish(spi);
+        ClearCS(Option.LCD_CS);
+    }
+
+    mutex_exit(&frameBufferMutex);
+    mergedone = true;
+    __dmb();
+    low_x = 0; low_y = 0; high_x = HRes - 1; high_y = VRes - 1;
 }
 
 void bc_fastgfx_swap(void) {

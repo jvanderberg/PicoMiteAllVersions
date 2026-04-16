@@ -35,7 +35,7 @@ void vm_sys_graphics_pixel_execute(GfxPixelMode mode, const GfxPixelArg *args, i
 int vm_sys_graphics_read_pixel(int x, int y);
 
 void vm_sys_graphics_text_execute(const GfxTextArg *args, int field_count, const GfxTextOps *ops);
-void vm_sys_graphics_framebuffer_create(void);
+void vm_sys_graphics_framebuffer_create(int fast);
 void vm_sys_graphics_framebuffer_layer(int has_colour, int colour);
 void vm_sys_graphics_framebuffer_write(char which);
 void vm_sys_graphics_framebuffer_close(char which);

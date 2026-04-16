@@ -87,6 +87,8 @@ extern unsigned char *SecondLayer;
 extern unsigned char *WriteBuf;
 extern unsigned char *FrameBuf;
 extern unsigned char *LayerBuf;
+extern unsigned char *ShadowBuf;
+extern int fb_dma_chan;
 #endif
 extern uint32_t heap_memory_size;
 extern unsigned char *FRAMEBUFFER;

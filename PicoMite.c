@@ -3907,11 +3907,13 @@ void __not_in_flash_func(UpdateCore)()
                         busy_wait_until(delaytime);
                         delaytime=time_us_64()+timer;
                     }
-                    merge(colour);
+                    if(ShadowBuf) merge_optimized(colour);
+                    else merge(colour);
                 }
             } else if(command==2){
                 uint8_t colour=(uint8_t)multicore_fifo_pop_blocking();
-                merge(colour);
+                if(ShadowBuf) merge_optimized(colour);
+                else merge(colour);
             } else if(command==4){
                 int x1=multicore_fifo_pop_blocking();
                 int y1=multicore_fifo_pop_blocking();

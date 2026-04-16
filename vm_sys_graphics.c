@@ -18,6 +18,7 @@
 
 #ifndef MMBASIC_HOST
 #include "pico/multicore.h"
+#include "hardware/dma.h"
 #endif
 
 typedef struct VMGfxScratchBuffer {
@@ -120,6 +121,13 @@ static void vm_sys_graphics_fb_merge_now(uint8_t transparent) {
     int y;
 
     if (LayerBuf == NULL || FrameBuf == NULL) return;
+
+    /* If ShadowBuf is present (FRAMEBUFFER CREATE FAST), use DMA-optimized merge */
+    if (ShadowBuf != NULL) {
+        merge_optimized(transparent);
+        return;
+    }
+
     stride = HRes / 2;
     if (stride <= 0) return;
     linebuf = (uint8_t *)vm_sys_graphics_reserve_scratch(&vm_gfx_fb_line, (size_t)stride);
@@ -164,6 +172,9 @@ void vm_sys_graphics_reset(void) {
     vm_fb_copy_src = NULL;
     vm_fb_copy_pending = 0;
     if (WriteBuf == FrameBuf || WriteBuf == LayerBuf) restorepanel();
+    if (ShadowBuf) BC_FREE(ShadowBuf);
+    ShadowBuf = NULL;
+    if (fb_dma_chan >= 0) { dma_channel_unclaim(fb_dma_chan); fb_dma_chan = -1; }
     if (FrameBuf) BC_FREE(FrameBuf);
     if (LayerBuf) BC_FREE(LayerBuf);
     FrameBuf = NULL;
@@ -1796,9 +1807,10 @@ void vm_sys_graphics_service(void) {
 #endif
 }
 
-void vm_sys_graphics_framebuffer_create(void) {
+void vm_sys_graphics_framebuffer_create(int fast) {
 #ifdef MMBASIC_HOST
     host_framebuffer_create();
+    (void)fast;
 #else
     size_t bytes;
 
@@ -1808,6 +1820,12 @@ void vm_sys_graphics_framebuffer_create(void) {
     FrameBuf = (unsigned char *)BC_ALLOC(bytes);
     if (FrameBuf == NULL) error("Not enough memory");
     memset(FrameBuf, 0, bytes);
+    if (fast) {
+        ShadowBuf = (unsigned char *)BC_ALLOC(bytes);
+        if (ShadowBuf == NULL) error("Not enough memory");
+        memset(ShadowBuf, 0, bytes);
+        fb_dma_chan = dma_claim_unused_channel(true);
+    }
 #endif
 }
 
@@ -1863,6 +1881,8 @@ void vm_sys_graphics_framebuffer_close(char which) {
         if (WriteBuf == FrameBuf) restorepanel();
         BC_FREE(FrameBuf);
         FrameBuf = NULL;
+        if (ShadowBuf) { BC_FREE(ShadowBuf); ShadowBuf = NULL; }
+        if (fb_dma_chan >= 0) { dma_channel_unclaim(fb_dma_chan); fb_dma_chan = -1; }
     }
     if ((which == 'A' || which == BC_FB_TARGET_L) && LayerBuf != NULL) {
         if (WriteBuf == LayerBuf) restorepanel();

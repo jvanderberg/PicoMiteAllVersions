@@ -1028,9 +1028,11 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
         case BC_SYS_GFX_FRAMEBUFFER: {
             uint8_t op = *p++;
             switch (op) {
-                case BC_FB_OP_CREATE:
-                    vm_sys_graphics_framebuffer_create();
+                case BC_FB_OP_CREATE: {
+                    int fast = (int)*p++;
+                    vm_sys_graphics_framebuffer_create(fast);
                     return;
+                }
                 case BC_FB_OP_LAYER: {
                     int has_colour = (int)*p++;
                     int colour = 0;

@@ -478,6 +478,9 @@ typedef enum {
     BC_FB_OP_COPY,
 } BCFramebufferOp;
 
+#define BC_FB_CREATE_NORMAL   0
+#define BC_FB_CREATE_FAST     1
+
 #define BC_FB_TARGET_DEFAULT  0
 #define BC_FB_TARGET_N        'N'
 #define BC_FB_TARGET_F        'F'

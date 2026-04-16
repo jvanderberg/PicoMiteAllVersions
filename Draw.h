@@ -249,6 +249,9 @@ extern bool CollisionFound;
 extern void InitDisplayVirtual(void);
 extern void ConfigDisplayVirtual(unsigned char *p);
 extern void merge(uint8_t colour);
+#if defined(PICOMITE) && !defined(PICOMITEVGA)
+extern void merge_optimized(uint8_t colour);
+#endif
 extern void blitmerge (int x0, int y0, int w, int h, uint8_t colour);
 extern bool mergerunning;
 extern uint32_t mergetimer;
