@@ -19,11 +19,19 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include "host_terminal.h"
+#include "host_fs.h"
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
 static void host_print(const char *s, int len);
 static void host_prints(const char *s);
+
+/* host_sd_root is the REPL filesystem root. Declared early so file
+ * commands scattered through this file can see it. Defined below. */
+extern const char *host_sd_root;
+static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap);
+static void host_append_default_ext(char *path, size_t cap, const char *ext);
 
 static uint64_t host_now_us(void);
 static void host_sync_msec_timer(void);
@@ -131,12 +139,26 @@ int PromptBC = 0;
 volatile int PS2code = 0;
 /* ReadBuffer is a function pointer - defined in function pointers section below */
 volatile uint32_t realflashpointer = 0;
-unsigned char *SavedVarsFlash = NULL;
+/* Simulated erased-flash regions so Memory.c's scan loops terminate on the
+ * first iteration instead of segfaulting on NULL. */
+static unsigned char host_saved_vars_flash_buf[32] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+};
+static unsigned char host_cfunction_flash_buf[32] = {
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+};
+unsigned char *SavedVarsFlash = host_saved_vars_flash_buf;
 volatile unsigned int ScrewUpTimer = 0;
 /* ScrollLCDSPISCR is a function - see function stubs below */
 volatile int ScrollStart = 0;
-int StartEditChar = 0;
-unsigned char *StartEditPoint = NULL;
+/* StartEditChar / StartEditPoint are defined in Editor.c now that it is
+ * compiled into the host build. */
 unsigned char *TickInt[NBRSETTICKS] = {NULL};
 volatile int TickTimer[NBRSETTICKS] = {0};
 int TickPeriod[NBRSETTICKS] = {0};
@@ -144,6 +166,12 @@ volatile unsigned char TickActive[NBRSETTICKS] = {0};
 MMFLOAT VCC = 3.3;
 bool useoptionangle = 0;
 unsigned char WatchdogSet = 0;
+/* Break-key state, normally owned by PicoMite.c. Editor.c saves/restores it
+ * around the editing session. CTRL-C (0x03) is the MMBasic default. */
+unsigned char BreakKey = 3;
+/* MMAbort is toggled by interrupt handlers on device; on host nothing
+ * flips it, but the REPL loop and ExecuteProgram both read it. */
+volatile int MMAbort = 0;
 bool WAVcomplete = 0;
 char *WAVInterrupt = NULL;
 volatile unsigned int WDTimer = 0;
@@ -155,8 +183,9 @@ struct option_s Option = {0};
 /* PinDef array */
 const struct s_PinDef PinDef[NBRPINS + 1] = {{0}};
 
-/* CFunctionFlash / CFunctionLibrary */
-unsigned char *CFunctionFlash = NULL;
+/* CFunctionFlash / CFunctionLibrary — point at an "erased flash" buffer so
+ * scan loops terminate immediately (see host_cfunction_flash_buf above). */
+unsigned char *CFunctionFlash = host_cfunction_flash_buf;
 unsigned char *CFunctionLibrary = NULL;
 
 /* Timer/system variables */
@@ -1019,8 +1048,7 @@ void cmd_device(void) {}
 void cmd_DHT22(void) {}
 void cmd_disk(void) { host_cmd_single_path(vm_sys_file_drive, "Invalid disk"); }
 void cmd_ds18b20(void) {}
-void cmd_edit(void) {}
-void cmd_editfile(void) {}
+/* cmd_edit / cmd_editfile are provided by the real Editor.c now. */
 void cmd_endprogram(void) {}
 void bc_fastgfx_swap(void) {}
 void bc_fastgfx_sync(void) {
@@ -1084,10 +1112,26 @@ void cmd_fastgfx(void) {
 
     error("Syntax");
 }
+/* FILES — lists entries in host_sd_root (REPL mode) or the in-memory
+ * FAT disk (test harness). POSIX directory walking lives in host_fs.c
+ * to stay isolated from FatFS's clashing DIR type. */
+static void host_files_emit(const char *name) {
+    MMPrintString((char *)name);
+    MMPrintString("\r\n");
+}
+
 void cmd_files(void) {
-    char *pattern = NULL;
-    if (cmdline && *cmdline) pattern = (char *)getFstring(cmdline);
-    vm_sys_file_files(pattern);
+    char *pattern_arg = NULL;
+    if (cmdline && *cmdline) pattern_arg = (char *)getFstring(cmdline);
+
+    if (!host_sd_root) {
+        vm_sys_file_files(pattern_arg);
+        return;
+    }
+
+    if (host_fs_list_dir(host_sd_root, pattern_arg, host_files_emit) != 0) {
+        error("File error");
+    }
 }
 void cmd_flash(void) {}
 void cmd_flush(void) {}
@@ -1262,7 +1306,66 @@ void cmd_line(void) {
     if (argc == 11 && *argv[10]) c = getint(argv[10], 0, WHITE);
     DrawLine(x1, y1, x2, y2, w, c);
 }
-void cmd_load(void) {}
+/* Defined in host_main.c — reused here so cmd_load doesn't reimplement
+ * the host tokeniser path. */
+extern char *read_basic_source_file(const char *filename);
+extern int load_basic_source(const char *source);
+
+/* When set (REPL mode with --sd-root DIR, or cwd by default), file
+ * commands operate on the real filesystem rooted here rather than on
+ * the in-memory FAT disk. NULL for the test harness — commands that
+ * require filesystem access error rather than scribble on the user's
+ * real files. */
+const char *host_sd_root = NULL;
+
+static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap) {
+    if (!host_sd_root) { error("No SD root configured"); return; }
+    /* Absolute paths pass through unchanged. Relative paths get joined to
+     * host_sd_root with a single '/'. */
+    if (fname[0] == '/') {
+        if (strlen(fname) >= out_cap) error("File name too long");
+        strcpy(out, fname);
+        return;
+    }
+    size_t rl = strlen(host_sd_root);
+    size_t fl = strlen(fname);
+    int need_sep = (rl > 0 && host_sd_root[rl - 1] != '/');
+    if (rl + (need_sep ? 1 : 0) + fl + 1 > out_cap) error("File name too long");
+    memcpy(out, host_sd_root, rl);
+    if (need_sep) out[rl++] = '/';
+    memcpy(out + rl, fname, fl + 1);
+}
+
+static void host_append_default_ext(char *path, size_t cap, const char *ext) {
+    if (strchr(path, '.')) return;
+    size_t n = strlen(path);
+    size_t el = strlen(ext);
+    if (n + el + 1 > cap) return;
+    memcpy(path + n, ext, el + 1);
+}
+
+void cmd_load(void) {
+    char *fname = (char *)getFstring(cmdline);
+    if (!fname || !*fname) error("File name");
+
+    char path[4096];
+    host_resolve_sd_path(fname, path, sizeof(path));
+    host_append_default_ext(path, sizeof(path), ".bas");
+
+    char *source = read_basic_source_file(path);
+    if (!source) error("Cannot open file");
+
+    ClearRuntime(true);
+    int rc = load_basic_source(source);
+    free(source);
+    if (rc != 0) error("Cannot parse file");
+    PrepareProgram(false);
+    /* cmd_load tokenises into tknbuf as it loads, which corrupts the
+     * tknbuf that ExecuteProgram is currently iterating. Jump back to
+     * the prompt so ExecuteProgram doesn't read garbage off the end
+     * of our LOAD command. Matches the pattern used by cmd_new. */
+    longjmp(mark, 1);
+}
 void cmd_longString(void) {}
 void cmd_mkdir(void) { host_cmd_single_path(vm_sys_file_mkdir, "File name"); }
 void cmd_mouse(void) {}
@@ -1725,7 +1828,40 @@ void cmd_rbox(void) {}
 void cmd_refresh(void) {}
 void cmd_rmdir(void) { host_cmd_single_path(vm_sys_file_rmdir, "File name"); }
 void cmd_rtc(void) {}
-void cmd_save(void) {}
+/* SAVE "file.bas" — writes the current program (as source text) to the
+ * host filesystem under host_sd_root. Uses llist() from Commands.c to
+ * detokenise each program line back into BASIC source. Other SAVE forms
+ * (SAVE IMAGE, SAVE CONTEXT, etc.) are not implemented on host yet. */
+void cmd_save(void) {
+    char *fname = (char *)getFstring(cmdline);
+    if (!fname || !*fname) error("File name");
+
+    char path[4096];
+    host_resolve_sd_path(fname, path, sizeof(path));
+    host_append_default_ext(path, sizeof(path), ".bas");
+
+    FILE *fp = fopen(path, "w");
+    if (!fp) error("Cannot open file");
+
+    unsigned char buf[STRINGSIZE];
+    unsigned char *p = ProgMemory;
+    while (!(p[0] == 0 && p[1] == 0) && *p != 0xff) {
+        if (*p == T_NEWLINE) {
+            p = llist(buf, p);
+            /* llist skips the T_NEWLINE itself and writes the decoded line
+             * into buf, returning the cursor past the line. Drop auto-
+             * generated line numbers so the saved file is reloadable. */
+            unsigned char *src = buf;
+            while (*src >= '0' && *src <= '9') src++;
+            while (*src == ' ') src++;
+            fputs((char *)src, fp);
+            fputc('\n', fp);
+        } else {
+            p++;
+        }
+    }
+    fclose(fp);
+}
 void cmd_seek(void) {
     int fnbr;
     int pos;
@@ -2140,14 +2276,110 @@ static void host_prints(const char *s) {
     if (s) host_print(s, strlen(s));
 }
 
+/* =========================================================================
+ *  Escape-sequence decoding layered on top of host_terminal.c.
+ *  Active only when host_repl_mode is set; the test-harness path below
+ *  still consumes from host_key_script.
+ * ========================================================================= */
+
+extern int host_repl_mode;
+
+/* Parse what we have after seeing ESC. Returns a decoded keycode
+ * (UP/DOWN/F1/… or ESC itself) and consumes the bytes. */
+static int host_decode_escape_sequence(void) {
+    int c1 = host_read_byte_blocking_ms(30);
+    if (c1 < 0) return ESC;
+
+    if (c1 == '[') {
+        int c2 = host_read_byte_blocking_ms(30);
+        if (c2 < 0) return ESC;  /* malformed; swallow */
+        switch (c2) {
+            case 'A': return UP;
+            case 'B': return DOWN;
+            case 'C': return RIGHT;
+            case 'D': return LEFT;
+            case 'H': return HOME;
+            case 'F': return END;
+        }
+        if (c2 >= '0' && c2 <= '9') {
+            /* Numeric parameter. Collect digits until '~' or letter. */
+            int n = c2 - '0';
+            int c3;
+            while ((c3 = host_read_byte_blocking_ms(30)) >= 0) {
+                if (c3 >= '0' && c3 <= '9') { n = n * 10 + (c3 - '0'); continue; }
+                break;
+            }
+            if (c3 == '~') {
+                switch (n) {
+                    case 1:  return HOME;
+                    case 2:  return INSERT;
+                    case 3:  return DEL;
+                    case 4:  return END;
+                    case 5:  return PUP;
+                    case 6:  return PDOWN;
+                    case 15: return F5;
+                    case 17: return F6;
+                    case 18: return F7;
+                    case 19: return F8;
+                    case 20: return F9;
+                    case 21: return F10;
+                    case 23: return F11;
+                    case 24: return F12;
+                }
+            }
+        }
+        return ESC;  /* unknown CSI — swallow rather than confuse caller */
+    }
+
+    if (c1 == 'O') {
+        int c2 = host_read_byte_blocking_ms(30);
+        switch (c2) {
+            case 'P': return F1;
+            case 'Q': return F2;
+            case 'R': return F3;
+            case 'S': return F4;
+        }
+        return ESC;
+    }
+
+    /* ESC followed by a regular char (Alt-<key>) — drop the ESC, keep char. */
+    host_push_back_byte(c1);
+    return ESC;
+}
+
 int MMInkey(void) {
     host_runtime_check_timeout();
+
+    /* Test-harness path: pre-scripted key stream. */
     if (host_key_script_pos < host_key_script_len) {
         if (!host_keys_ready()) return -1;
         return (unsigned char)host_key_script[host_key_script_pos++];
     }
+
+    /* REPL path: live terminal. */
+    if (host_raw_mode_is_active()) {
+        int c = host_read_byte_nonblock();
+        if (c < 0) return -1;
+        if (c == 0x1b) return host_decode_escape_sequence();
+        if (c == 0x7f) return BKSP;       /* macOS/iTerm Backspace → BKSP */
+        if (c == '\n') return ENTER;      /* normalise LF → CR for MMBasic */
+        return c;
+    }
+
+    /* REPL piped into stdin (not a TTY) — read cooked, line-buffered.
+     * Used by CI and scripted tests that feed commands through a pipe.
+     * No escape-sequence decoding here; we just stream chars as-is,
+     * mapping LF to CR so EditInputLine's ENTER branch fires. */
+    if (host_repl_mode) {
+        int c = fgetc(stdin);
+        if (c == EOF) exit(0);
+        if (c == '\n') return ENTER;
+        return c;
+    }
+
     return -1;
 }
+
 int MMgetchar(void) {
     int ch;
     while ((ch = MMInkey()) == -1) {
@@ -2165,18 +2397,9 @@ char MMputchar(char c, int flush) {
 }
 void MMPrintString(char *s) { host_prints(s); }
 void SSPrintString(char *s) { host_prints(s); }
-void PRet(void) { host_prints("\r\n"); }
-void PInt(int64_t n) { char buf[32]; snprintf(buf, sizeof(buf), "%lld", (long long)n); host_prints(buf); }
-void PIntComma(int64_t n) { char buf[32]; snprintf(buf, sizeof(buf), "%lld, ", (long long)n); host_prints(buf); }
-void PFlt(MMFLOAT flt) { char buf[64]; snprintf(buf, sizeof(buf), "%g", flt); host_prints(buf); }
-void PFltComma(MMFLOAT n) { char buf[64]; snprintf(buf, sizeof(buf), "%g, ", n); host_prints(buf); }
-void PIntH(unsigned long long int n) { char buf[32]; snprintf(buf, sizeof(buf), "0x%llX", n); host_prints(buf); }
-void PIntHC(unsigned long long int n) { char buf[32]; snprintf(buf, sizeof(buf), "0x%llX, ", n); host_prints(buf); }
-void PIntB(unsigned long long int n) { (void)n; }
-void PIntBC(unsigned long long int n) { (void)n; }
-void SRet(void) {}
-void SInt(int64_t n) { (void)n; }
-void SIntComma(int64_t n) { (void)n; }
+/* PRet/PInt/PFlt/SRet/SInt/SIntComma/PIntComma/PIntH/PIntB/PIntHC/PIntBC/
+ * PFltComma are now in MMBasic_Print.c (shared with the device build),
+ * not stubbed here. */
 void MMfputs(unsigned char *p, int filenbr) {
     if (!p) return;
     if (filenbr == 0) {
@@ -2282,7 +2505,45 @@ char FileGetChar(int fnbr) {
     if (f_read(FileTable[fnbr].fptr, &ch, 1, &read) != FR_OK) error("File error");
     return read == 1 ? ch : 0;
 }
-int FileLoadProgram(unsigned char *fname, bool chain) { (void)fname; (void)chain; return 0; }
+/* FileLoadProgram is called by do_run() when the user types RUN "file.bas".
+ * It must parse the filename out of the fname buffer (quoted, optionally
+ * followed by a comma and cmd args), load the source, tokenise into
+ * ProgMemory, and return true on success. Shares the same resolve+read+
+ * tokenise path as cmd_load. */
+int FileLoadProgram(unsigned char *fname, bool chain) {
+    (void)chain;
+    if (!fname || !*fname) return 0;
+
+    /* do_run hands us a buffer formatted as "\"filename\",args" (see
+     * Commands.c:725). Extract the filename. */
+    char name[FF_MAX_LFN];
+    const unsigned char *p = fname;
+    if (*p == '"') {
+        p++;
+        size_t n = 0;
+        while (*p && *p != '"' && n + 1 < sizeof(name)) name[n++] = (char)*p++;
+        name[n] = '\0';
+    } else {
+        size_t n = 0;
+        while (*p && *p != ',' && n + 1 < sizeof(name)) name[n++] = (char)*p++;
+        name[n] = '\0';
+    }
+    if (!*name) return 0;
+
+    char path[FF_MAX_LFN];
+    host_resolve_sd_path(name, path, sizeof(path));
+    host_append_default_ext(path, sizeof(path), ".bas");
+
+    char *source = read_basic_source_file(path);
+    if (!source) return 0;
+
+    ClearRuntime(true);
+    int rc = load_basic_source(source);
+    free(source);
+    if (rc != 0) return 0;
+    PrepareProgram(false);
+    return 1;
+}
 int FileLoadSourceProgram(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
 int FileLoadSourceProgramVM(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
 int FileLoadCMM2Program(char *fname, bool message) { (void)fname; (void)message; return 0; }
@@ -2302,6 +2563,29 @@ char FilePutChar(char c, int fnbr) {
 }
 int FindFreeFileNbr(void) { return 1; }
 int ExistsFile(char *fname) { (void)fname; return 0; }
+/* Simulated flash operations. On the device these hit XIP flash; on host
+ * they write through to flash_prog_buf (allocated in host_main.c, 128 KB).
+ * Layout: first 64 KB is program area, second 64 KB is the CFunction area
+ * (erased = 0xFF). */
+extern uint8_t flash_prog_buf[];
+#define HOST_FLASH_SIZE        (256 * 1024)
+#define HOST_FLASH_PROG_SIZE   (HOST_FLASH_SIZE / 2)
+
+void flash_range_erase(uint32_t off, uint32_t count) {
+    if (off >= HOST_FLASH_SIZE) return;
+    if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
+    /* Device erase fills with 0xFF. The program region additionally gets
+     * a leading zero terminator written by cmd_new right after the erase,
+     * but host's ProgMemory scan accepts either 0 or 0xFF as end-of-program. */
+    memset(flash_prog_buf + off, 0xFF, count);
+}
+
+void flash_range_program(uint32_t off, const uint8_t *data, uint32_t count) {
+    if (off >= HOST_FLASH_SIZE) return;
+    if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
+    memcpy(flash_prog_buf + off, data, count);
+}
+
 void FlashWriteByte(unsigned char b) { (void)b; }
 void FlashWriteClose(void) {}
 void FlashWriteInit(int region) { (void)region; }
@@ -2528,8 +2812,20 @@ int codecheck(unsigned char *line) { (void)line; return 0; }
 int getslice(int pin) { (void)pin; return 0; }
 void setpwm(int pin, int *PWMChannel, int *PWMSlice, MMFLOAT frequency, MMFLOAT duty) { (void)pin; (void)PWMChannel; (void)PWMSlice; (void)frequency; (void)duty; }
 
-/* Editor stubs */
-void EditInputLine(void) {}
+/* host_repl_mode is still used by other host stubs to branch on "are we
+ * running the interactive REPL?". The bespoke EditInputLine previously
+ * here was replaced by the shared device implementation now in
+ * MMBasic_Prompt.c. */
+int host_repl_mode = 0;
+
+/* lfs_file_size is only reached from the FLASHFILE branch in Editor.c, which
+ * is unreachable on host (filesource[] is always FATFSFILE). Stubbed so the
+ * link succeeds. */
+lfs_soff_t lfs_file_size(lfs_t *lfs, lfs_file_t *fp) { (void)lfs; (void)fp; return 0; }
+
+/* setterminal writes VT100 escape codes to resize the host terminal. On a
+ * real desktop terminal we just leave the user's window size alone. */
+void setterminal(int height, int width) { (void)height; (void)width; }
 
 /* Misc stubs */
 void OtherOptions(void) {}

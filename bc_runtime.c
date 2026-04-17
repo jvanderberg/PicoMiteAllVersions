@@ -12,6 +12,15 @@
 #include "vm_device_support.h"
 #include "MMBasic.h"
 #include "vm_sys_file.h"
+
+/* Last-failed-alloc diagnostics, defined in Memory.c (device) or
+ * bc_alloc.c (host).  Used to enrich OOM error messages. */
+extern unsigned int bc_alloc_fail_size;
+extern unsigned int bc_alloc_fail_pages;
+extern unsigned int bc_alloc_fail_used;
+extern unsigned int bc_alloc_fail_free;
+extern unsigned int bc_alloc_fail_longest;
+extern unsigned int bc_alloc_fail_total;
 #include "vm_sys_graphics.h"
 #ifdef MMBASIC_HOST
 #include "vm_host_fat.h"
@@ -171,18 +180,25 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
+    bc_crash_checkpoint(BC_CK_VM_ALLOC_CS, "alloc BCCompiler");
     BCCompiler *cs = (BCCompiler *)BC_ALLOC(sizeof(BCCompiler));
+    bc_crash_checkpoint(BC_CK_VM_ALLOC_VM, "alloc BCVMState");
     BCVMState  *vm = (BCVMState  *)BC_ALLOC(sizeof(BCVMState));
     if (!cs || !vm) {
         if (cs) BC_FREE(cs);
         if (vm) BC_FREE(vm);
         bc_alloc_reset();
-        error("Not enough memory for VM");
+        error("NEM[vm:structs] cs=% vm=% want=% pg=% used=%/% free=% run=%",
+              (int)sizeof(BCCompiler), (int)sizeof(BCVMState),
+              (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
+              (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
+              (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
         return;
     }
     memset(cs, 0, sizeof(BCCompiler));
     memset(vm, 0, sizeof(BCVMState));
 
+    bc_crash_checkpoint(BC_CK_VM_COMP_ALLOC, "bc_compiler_alloc");
     if (bc_compiler_alloc(cs) != 0) {
         VMRUN_DBG("VM: compiler alloc failed\r\n");
 #ifndef MMBASIC_HOST
@@ -202,9 +218,15 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
             BC_FREE((void *)source);
             source = NULL;
         }
+#ifndef MMBASIC_HOST
+        if (source) { BC_FREE((void *)source); source = NULL; }
+#endif
         BC_FREE(cs);
         BC_FREE(vm);
-        error("Not enough memory for VM compiler");
+        error("NEM[vm:comptbl] want=% pg=% used=%/% free=% run=%",
+              (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
+              (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
+              (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
         return;
     }
     VMRUN_DBG("VM: compiler alloc ok\r\n");
@@ -219,6 +241,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
 
     bc_compiler_init(cs);
+    bc_crash_checkpoint(BC_CK_VM_COMPILE, "bc_compile_source");
     err = bc_compile_source(cs, source, source_name);
     if (err) {
         char msg[160];
@@ -232,6 +255,9 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
             BC_FREE((void *)source);
             source = NULL;
         }
+#ifndef MMBASIC_HOST
+        if (source) { BC_FREE((void *)source); source = NULL; }
+#endif
         BC_FREE(cs);
         BC_FREE(vm);
         error("$", msg);
@@ -254,12 +280,21 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
+    /* Source text is no longer needed after compile — free it before we
+     * allocate VM runtime tables + run the program.  On device the heap is
+     * unified so BC_FREE safely releases any pointer allocated via GetMemory
+     * or BC_ALLOC.  On host, honour the existing ownership-based free. */
     if (bc_compile_owns(source)) {
         source = NULL;
     } else if (bc_alloc_owns(source)) {
         BC_FREE((void *)source);
         source = NULL;
     }
+#ifndef MMBASIC_HOST
+    /* Device: unified MMHeap, BC_FREE == FreeMemory.  Caller must not free
+     * again after bc_run_source_string returns. */
+    if (source) { BC_FREE((void *)source); source = NULL; }
+#endif
 
     if (bc_compiler_compact(cs) != 0) {
         VMRUN_DBG("VM: compact failed\r\n");
@@ -277,7 +312,10 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
         bc_compile_release_all();
         BC_FREE(cs);
         BC_FREE(vm);
-        error("Not enough memory for VM image");
+        error("NEM[vm:compact] want=% pg=% used=%/% free=% run=%",
+              (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
+              (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
+              (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
         return;
     }
     VMRUN_DBG("VM: compact ok\r\n");
@@ -301,6 +339,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
+    bc_crash_checkpoint(BC_CK_VM_ALLOC, "bc_vm_alloc");
     if (bc_vm_alloc(vm) != 0) {
         VMRUN_DBG("VM: runtime alloc failed\r\n");
 #ifndef MMBASIC_HOST
@@ -317,7 +356,10 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
         bc_compile_release_all();
         BC_FREE(cs);
         BC_FREE(vm);
-        error("Not enough memory for VM runtime");
+        error("NEM[vm:runtime] want=% pg=% used=%/% free=% run=%",
+              (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
+              (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
+              (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
         return;
     }
     VMRUN_DBG("VM: runtime alloc ok\r\n");
@@ -331,6 +373,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
+    bc_crash_checkpoint(BC_CK_VM_INIT, "bc_vm_init");
     bc_vm_init(vm, cs);
     bc_bridge_reset_sync();
     VMRUN_DBG("VM: execute\r\n");
@@ -338,9 +381,11 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
     jmp_buf saved_mark;
     memcpy(saved_mark, mark, sizeof(jmp_buf));
 
+    bc_crash_checkpoint(BC_CK_VM_EXECUTE, "bc_vm_execute");
     if (setjmp(mark) == 0) {
         bc_vm_execute(vm);
     }
+    bc_crash_checkpoint(BC_CK_VM_CLEANUP, "vm_execute returned");
     VMRUN_DBG("VM: returned\r\n");
 
     memcpy(mark, saved_mark, sizeof(jmp_buf));
@@ -443,26 +488,52 @@ void cmd_frun(void) {
 
 #ifdef MMBASIC_HOST
     {
-        char path[FF_MAX_LFN + 1];
-        FIL file;
-        FRESULT res;
-        UINT bytes_read;
-        int fsize;
+        /* When the REPL has a real filesystem root configured, read through
+         * stdio so FRUN finds files the user can see (matches LOAD behavior).
+         * The test harness leaves host_sd_root == NULL and falls back to the
+         * in-memory FAT. */
+        extern const char *host_sd_root;
+        extern char *read_basic_source_file(const char *filename);
 
-        vm_host_fat_mount();
-        vm_sys_file_host_resolve_path(fname_buf, path, sizeof(path));
+        if (host_sd_root) {
+            char path[FF_MAX_LFN + 1];
+            const char *root = host_sd_root;
+            size_t rl = strlen(root);
+            int need_sep = (rl > 0 && root[rl - 1] != '/');
+            if (fname_buf[0] == '/') {
+                if (strlen(fname_buf) >= sizeof(path)) error("File name too long");
+                strcpy(path, fname_buf);
+            } else {
+                if (rl + (need_sep ? 1 : 0) + strlen(fname_buf) + 1 > sizeof(path))
+                    error("File name too long");
+                memcpy(path, root, rl);
+                if (need_sep) path[rl++] = '/';
+                strcpy(path + rl, fname_buf);
+            }
+            source = read_basic_source_file(path);
+            if (!source) error("File not found");
+        } else {
+            char path[FF_MAX_LFN + 1];
+            FIL file;
+            FRESULT res;
+            UINT bytes_read;
+            int fsize;
 
-        res = f_open(&file, path, FA_READ);
-        if (res != FR_OK) error("File not found");
+            vm_host_fat_mount();
+            vm_sys_file_host_resolve_path(fname_buf, path, sizeof(path));
 
-        fsize = (int)f_size(&file);
-        source = (char *)malloc(fsize + 1);
-        if (!source) { f_close(&file); error("Not enough memory"); }
+            res = f_open(&file, path, FA_READ);
+            if (res != FR_OK) error("File not found");
 
-        res = f_read(&file, source, (UINT)fsize, &bytes_read);
-        f_close(&file);
-        if (res != FR_OK) { free(source); error("File error"); }
-        source[bytes_read] = '\0';
+            fsize = (int)f_size(&file);
+            source = (char *)malloc(fsize + 1);
+            if (!source) { f_close(&file); error("Not enough memory"); }
+
+            res = f_read(&file, source, (UINT)fsize, &bytes_read);
+            f_close(&file);
+            if (res != FR_OK) { free(source); error("File error"); }
+            source[bytes_read] = '\0';
+        }
     }
 #else
     {
@@ -485,7 +556,7 @@ void cmd_frun(void) {
         }
 
         source = (char *)GetMemory(fsize + 1);
-        if (!source) { FileClose(fnbr); error("Not enough memory"); }
+        if (!source) { FileClose(fnbr); error("NEM[frun:src] want=%", fsize+1); }
 
         p = source;
         while (!FileEOF(fnbr)) {
@@ -506,7 +577,9 @@ void cmd_frun(void) {
 #ifdef MMBASIC_HOST
     free(source);
 #else
-    FreeMemorySafe((void **)&source);
+    /* On device, bc_run_source_string freed the source itself after compile
+     * to reclaim heap before the VM executed.  Nothing to free here. */
+    source = NULL;
 #endif
 }
 
@@ -560,7 +633,7 @@ void bc_run_file(const char *filename) {
         vm_sys_file_open(fname_buf, fnbr, VM_FILE_MODE_INPUT);
         fsize = vm_sys_file_lof(fnbr);
         source = (char *)bc_compile_alloc((size_t)fsize + 1);
-        if (!source) { vm_sys_file_close(fnbr); error("Not enough memory"); }
+        if (!source) { vm_sys_file_close(fnbr); error("NEM[run_file:src] want=%", fsize+1); }
         p = source;
         while (!vm_sys_file_eof(fnbr)) {
             c = vm_sys_file_getc(fnbr) & 0x7f;

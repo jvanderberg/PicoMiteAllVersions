@@ -33,7 +33,7 @@ LDFLAGS = -lm
 VPATH = ..
 
 # Core MMBasic sources (language runtime)
-CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c
+CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c Editor.c MMBasic_Prompt.c MMBasic_Print.c MMBasic_REPL.c
 CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c
 
 # Bytecode VM sources
@@ -42,7 +42,7 @@ BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
           bc_vm.c bc_runtime.c bc_debug.c
 
 # Host-specific sources
-HOST_SRCS = host_stubs_legacy.c host_main.c
+HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)
@@ -60,6 +60,12 @@ host_stubs_legacy.o: host_stubs_legacy.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 host_main.o: host_main.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+host_terminal.o: host_terminal.c host_terminal.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+host_fs.o: host_fs.c host_fs.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Core sources from parent directory

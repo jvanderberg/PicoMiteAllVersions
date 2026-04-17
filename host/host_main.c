@@ -19,6 +19,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+
+/* Forward-declared to avoid pulling in unistd.h here, which conflicts with
+ * MMBasic's own setmode(). */
+char *getcwd(char *buf, size_t size);
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bytecode.h"
@@ -39,9 +43,11 @@ uint32_t host_runtime_get_pixel(int x, int y);
 int host_runtime_width(void);
 int host_runtime_height(void);
 
-/* flash_progmemory is NULL on host -- we need to allocate backing storage */
+/* flash_progmemory is NULL on host -- we need to allocate backing storage.
+ * flash_prog_buf is non-static so host_stubs_legacy.c's simulated flash
+ * routines can write through to it. */
 extern const uint8_t *flash_progmemory;
-static uint8_t flash_prog_buf[256 * 1024];
+uint8_t flash_prog_buf[256 * 1024];
 
 /* Output capture buffer */
 #define CAPTURE_SIZE (64 * 1024)
@@ -225,7 +231,7 @@ static int compare_framebuffer_snapshot(const FramebufferSnapshot *expected) {
  * Load a .bas file into a NUL-terminated source buffer.
  * Caller must free the returned buffer.
  */
-static char *read_basic_source_file(const char *filename) {
+char *read_basic_source_file(const char *filename) {
     FILE *f = fopen(filename, "r");
     if (!f) {
         fprintf(stderr, "Cannot open %s\n", filename);
@@ -301,7 +307,7 @@ static int host_read_logical_line(const char **linep, char *out, size_t out_cap,
  * Tokenize source text into ProgMemory for the legacy interpreter path.
  * Returns 0 on success, -1 on error.
  */
-static int load_basic_source(const char *source) {
+int load_basic_source(const char *source) {
     /* Tokenize line by line into ProgMemory */
     unsigned char *pm = ProgMemory;
     const char *line = source;
@@ -430,8 +436,71 @@ typedef enum {
     MODE_INTERP_ONLY,
     MODE_VM_SOURCE_ONLY,
     MODE_IMMEDIATE,
-    MODE_TRY_COMPILE
+    MODE_TRY_COMPILE,
+    MODE_REPL
 } HostMode;
+
+extern int host_repl_mode;
+extern void host_raw_mode_enter(void);
+extern int host_terminal_get_size(int *rows, int *cols);
+extern int MMPromptPos;  /* defined in MMBasic_Prompt.c */
+
+/* When non-NULL, file operations in the host stubs (LOAD/SAVE/FILES/…)
+ * resolve paths relative to this directory on the real filesystem
+ * instead of going through the in-memory FAT that the test harness uses.
+ * Set by run_repl from cwd, or overridden with --sd-root. */
+extern const char *host_sd_root;
+
+extern void MMBasic_RunPromptLoop(void);
+
+/*
+ * Host entry to the interactive REPL. Sets up host-specific state
+ * (filesystem, pin table, terminal geometry, raw-mode stdin) and then
+ * hands off to the shared prompt loop in MMBasic_REPL.c — the same one
+ * the device calls from main(). Does not return; the loop longjmps
+ * internally on every command and never exits normally.
+ */
+static int run_repl(void) {
+    host_repl_mode = 1;
+
+    vm_host_fat_reset();
+    vm_sys_file_reset();
+    vm_sys_pin_reset();
+    ClearRuntime(true);
+    MMErrMsg[0] = '\0';
+    MMerrno = 0;
+
+    /* Terminal geometry. Option.Height/Width are signed char, so clamp
+     * to [SCREENHEIGHT, 127] / [SCREENWIDTH, 127]. Fall back if we can't
+     * detect a TTY size. */
+    int tty_rows = 0, tty_cols = 0;
+    if (host_terminal_get_size(&tty_rows, &tty_cols) != 0) {
+        tty_rows = SCREENHEIGHT;
+        tty_cols = SCREENWIDTH;
+    }
+    if (tty_cols < SCREENWIDTH)  tty_cols = SCREENWIDTH;
+    if (tty_rows < SCREENHEIGHT) tty_rows = SCREENHEIGHT;
+    if (tty_cols > 127) tty_cols = 127;
+    if (tty_rows > 127) tty_rows = 127;
+    Option.Width  = (char)tty_cols;
+    Option.Height = (char)tty_rows;
+
+    /* stdin raw mode so EditInputLine and EDIT read single keys. On
+     * piped input (not a TTY) this is a no-op and host MMInkey falls
+     * back to cooked line-buffered reads. */
+    host_raw_mode_enter();
+
+    host_runtime_begin();
+
+    printf("MMBasic for PicoMite -- host REPL\n");
+    printf("Type commands at the > prompt. Ctrl-D to exit.\n\n");
+    fflush(stdout);
+
+    MMBasic_RunPromptLoop();   /* does not return */
+
+    host_runtime_finish();
+    return 0;
+}
 
 int main(int argc, char **argv) {
     HostMode mode = MODE_SOURCE_COMPARE;
@@ -468,8 +537,9 @@ int main(int argc, char **argv) {
     const char *filename = NULL;
     const char *key_script = NULL;
     int key_delay_ms = 0;
+    const char *sd_root_arg = NULL;
 
-    /* First pass: scan for --immediate / --try-compile (no filename needed) */
+    /* First pass: scan for --immediate / --try-compile / --repl (no filename needed) */
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) {
             mode = MODE_IMMEDIATE;
@@ -477,17 +547,24 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) {
             mode = MODE_TRY_COMPILE;
             immediate_line = argv[++i];
+        } else if (strcmp(argv[i], "--repl") == 0) {
+            mode = MODE_REPL;
         }
     }
 
-    /* For non-immediate modes, first positional arg is the filename */
-    if (mode != MODE_IMMEDIATE && mode != MODE_TRY_COMPILE) {
+    /* For non-immediate / non-REPL modes, first positional arg is the filename */
+    if (mode != MODE_IMMEDIATE && mode != MODE_TRY_COMPILE && mode != MODE_REPL) {
         filename = argv[1];
     }
 
     for (int i = (filename ? 2 : 1); i < argc; ++i) {
         if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) { i++; continue; }
         if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) { i++; continue; }
+        if (strcmp(argv[i], "--repl") == 0) continue;
+        if (strcmp(argv[i], "--sd-root") == 0 && i + 1 < argc) {
+            sd_root_arg = argv[++i];
+            continue;
+        }
         if (strcmp(argv[i], "--interp") == 0) mode = MODE_INTERP_ONLY;
         else if (strcmp(argv[i], "--vm") == 0) mode = MODE_VM_SOURCE_ONLY;
         else if (strcmp(argv[i], "--vm-disasm") == 0) {
@@ -571,6 +648,18 @@ int main(int argc, char **argv) {
     /* Try-compile mode: test if a line compiles, exit 0=yes 1=no */
     if (mode == MODE_TRY_COMPILE) {
         return bc_try_compile_line(immediate_line) ? 0 : 1;
+    }
+
+    /* Interactive REPL on the terminal */
+    if (mode == MODE_REPL) {
+        static char repl_sd_root[4096];
+        if (sd_root_arg && *sd_root_arg) {
+            strncpy(repl_sd_root, sd_root_arg, sizeof(repl_sd_root) - 1);
+        } else if (getcwd(repl_sd_root, sizeof(repl_sd_root)) == NULL) {
+            strcpy(repl_sd_root, ".");
+        }
+        host_sd_root = repl_sd_root;
+        return run_repl();
     }
 
     char *source_text = read_basic_source_file(filename);
