@@ -3633,7 +3633,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
     if(Option.BackLightLevel)setBacklight(Option.BackLightLevel);
 #endif
 #endif
-    ErrorInPrompt = false;
+    /* ErrorInPrompt is a static inside MMBasic_RunPromptLoop; initialized there. */
     exception_set_exclusive_handler(HARDFAULT_EXCEPTION,sigbus);
     exception_set_exclusive_handler(SVCALL_EXCEPTION,sigbus);
     exception_set_exclusive_handler(PENDSV_EXCEPTION,sigbus);
@@ -3790,6 +3790,7 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
 #endif
 
    
+    extern void MMBasic_RunPromptLoop(void);
     MMBasic_RunPromptLoop();
 }
 void stripcomment(char *p){

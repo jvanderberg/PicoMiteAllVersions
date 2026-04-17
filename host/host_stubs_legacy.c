@@ -189,9 +189,9 @@ unsigned char WatchdogSet = 0;
 /* Break-key state, normally owned by PicoMite.c. Editor.c saves/restores it
  * around the editing session. CTRL-C (0x03) is the MMBasic default. */
 unsigned char BreakKey = 3;
-/* editactive is defined only under #ifdef PICOMITEVGA in Editor.c.
- * Provide it here so non-VGA builds (including host) link. */
-int editactive = 0;
+/* editactive is now always defined in Editor.c (outside PICOMITEVGA)
+ * because FullScreenEditor uses it unconditionally. Keep this comment
+ * as a landmark for anyone re-investigating the symbol. */
 /* MMAbort is toggled by interrupt handlers on device; on host nothing
  * flips it, but the REPL loop and ExecuteProgram both read it. */
 volatile int MMAbort = 0;

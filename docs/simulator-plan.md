@@ -1,12 +1,23 @@
 # MMBasic Simulator Plan
 
+> **User-facing docs:** [`simulator.md`](simulator.md) — quick start, build/run scripts, demos, troubleshooting.
+> This file is the design log (phases, decisions, trade-offs, debt).
+
 ## Status (as of 2026-04-17)
 
-- **Phase 0 — host REPL on terminal: ✅ DONE.** Interactive MMBasic over a real TTY using the device's `EditInputLine`. LOAD / SAVE / FILES / RUN / FRUN route through the host FS (`--sd-root`). 191/191 tests pass. Commits: `51bb8ce`, `da6d070`.
-- **Phase 1 — HTTP + WS framebuffer streaming: ✅ DONE.** `make sim` builds `mmbasic_sim` with vendored Mongoose + vanilla-JS frontend. Originally streamed full `FRMB` frames at ~60 Hz; now streams a **`CMDS` opcode stream** (CLS / RECT / PIXEL / SCROLL / BLIT) pushed immediately on every draw. FRMB is kept as a one-shot bootstrap for new clients.
+- **Phase 0 — host REPL on terminal: ✅ DONE.** Interactive MMBasic over a real TTY using the device's `EditInputLine`. LOAD / SAVE / FILES / RUN / FRUN route through the host FS (`--sd-root`). 192/192 tests pass. Commits: `51bb8ce`, `da6d070`.
+- **Phase 1 — HTTP + WS framebuffer streaming: ✅ DONE.** `./build_sim.sh` builds `mmbasic_sim` with vendored Mongoose + vanilla-JS frontend. Streams a **`CMDS` opcode stream** (CLS / RECT / PIXEL / SCROLL / BLIT) pushed immediately on every draw, with a one-shot `FRMB` full-frame bootstrap for new clients.
 - **Phase 2 — keyboard input: ✅ DONE.** Browser `keydown` → JSON `{op:"key",code}` → server key queue → host `MMInkey`. Tracks held keys by `ev.code` (not `ev.key`) so Shift+char releases cleanly. Paces auto-repeat (150 ms initial, 70 ms interval) so games like `pico_blocks` don't overshoot. F1–F12, arrows, Home/End/PgUp/PgDn, Ctrl-<letter>, Insert/Delete all mapped.
 - **Phase 3 — audio commands: ✅ DONE.** `PLAY TONE / STOP / SOUND / VOLUME / PAUSE / RESUME` translate to JSON TEXT frames on the same `/ws` socket and drive a WebAudio engine (`web/audio.js`). Both the interpreter's `cmd_play` (host copy) and the VM's `vm_sys_audio_play_tone/stop` syscalls share the emitter in `host/host_sim_audio.c`. File-based playback (`PLAY WAV / FLAC / MP3 / MODFILE`) is deferred to Phase 5.
-- **Phase 4 — polish: partially delivered** (see [Phase 4 progress](#phase-4--polish) below). Remaining: auto-open browser, file upload, FPS cap, status indicator.
+- **Phase 4 — polish: partially delivered** (see [Phase 4 progress](#phase-4--polish) below). Remaining: auto-open browser, file upload, FPS cap, WS-typing char drops past ~16 chars.
+- **Landed out of plan:**
+  - `--slowdown N µs` throttle firing on every interpreter CheckAbort and VM back-edge so `RUN` and `FRUN` pace evenly without distorting `PAUSE` / `TIMER`.
+  - `FRAMEBUFFER COPY F, N` now emits a BLIT CMDS op (was a silent memcpy — non-FASTGFX graphics demos appeared static).
+  - Real host `fun_time` / `fun_date` via `localtime_r`, with `MMBASIC_HOST_DATE` / `MMBASIC_HOST_TIME` env-var overrides for deterministic tests.
+  - VM compiler accepts `Rnd()` and `Rnd(expr)`, matching interpreter semantics. Regression test `t185_rnd_parens.bas`.
+  - `FileLoadProgram` errors via `error()` on missing file so "Cannot find file" reaches the framebuffer console, not just stderr. (Still a bespoke host stub — see below.)
+  - 13 bundled demos: `demo_gfx_*`, `demo_draw_*`, `demo_sound_*`, `demo_melody`.
+- **Known debt — file I/O divergence.** Host's `FileLoadProgram`, `cmd_load`, `cmd_save`, parts of `cmd_files` are bespoke reimplementations in `host/host_stubs_legacy.c` that bypass the HAL we already have (`BasicFileOpen` / `FileGetChar` / `SaveProgramToFlash`). Next reclamation target: extract `FileLoadProgram` (and friends) into shared sources so host uses the same code path as device. Analysis: every dependency already resolves on host.
 
 See [References](#references) for where things live.
 
@@ -216,7 +227,9 @@ The protocol is small enough that neither side needs a schema file — one comme
 
 ## Build integration
 
-- New target `make sim` (or `./host/build_sim.sh`) builds `mmbasic_sim` separately from `mmbasic_test`. Existing `host/build.sh` and `host/run_tests.sh` untouched.
+- `./host/build_sim.sh` (or `make sim`) builds `mmbasic_sim` separately from `mmbasic_test`. Existing `host/build.sh` and `host/run_tests.sh` untouched.
+- `./host/run_sim.sh` launches with sensible defaults (port 5150, web-root `../web`, sd-root repo root, 320×320).
+- Object files live in `host/sim_obj/` so the simulator build doesn't stomp on the test-harness build.
 - Mongoose adds no dependencies to the test harness. The web frontend has no build step and no dependencies at all — just static files.
 - CI continues to build and run only `mmbasic_test`.
 

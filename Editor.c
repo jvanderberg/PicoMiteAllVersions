@@ -72,9 +72,9 @@ int StartEditChar = 0;
 static bool markmode=false;
 extern void routinechecks(void);
 int8_t optioncolourcodesave;
+int editactive=0;
 #if !defined(LITE)
 #ifdef PICOMITEVGA
-int editactive=0;
 static int r_on=0;
 void DisplayPutClever(char c){
     if((DISPLAY_TYPE==SCREENMODE1 && markmode && Option.ColourCode && ytileheight==gui_font_height && gui_font_width % 8 ==0)){

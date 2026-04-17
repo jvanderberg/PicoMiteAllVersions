@@ -40,6 +40,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "gfx_pixel_shared.h"
 #include "gfx_cls_shared.h"
 #include "gfx_text_shared.h"
+#include "gfx_console_shared.h"
 #include "bc_alloc.h"
 #include "hardware/spi.h"
 #include "Memory.h"
