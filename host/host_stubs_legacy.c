@@ -43,12 +43,6 @@ static void host_fb_fill_buffer(uint32_t *buffer, uint32_t colour);
 static inline uint32_t host_colour24(int c);
 static inline void host_put_pixel(int x, int y, int c);
 static uint32_t *host_fb_current_target(void);
-#ifdef MMBASIC_SIM
-static void host_sim_emit_pixel(int x, int y, int colour);
-static void host_sim_emit_rect(int x1, int y1, int x2, int y2, int colour);
-static void host_sim_emit_scroll(int lines, int bg);
-static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels);
-#endif
 static void host_write_screenshot(const char *path);
 static void host_runtime_check_timeout(void);
 static int host_parse_escaped_char(const char **src);
@@ -552,167 +546,11 @@ static void host_scroll_lcd_fn(int lines) {
 
 /* host_sim_active: set to 1 when --sim mode is active (see
  * host_sim_server_start). Read by host_sim_audio.c and the drawing
- * primitives below to know whether to record events for the WS stream. */
+ * primitives below to know whether to record events for the WS stream.
+ *
+ * The tick thread, key queue, cmd stream, and emit_* recorders all live
+ * in host_sim_server.c; this file just declares the flag. */
 int host_sim_active = 0;
-
-#ifdef MMBASIC_SIM
-#include <pthread.h>
-#include <time.h>
-#include <stdatomic.h>
-
-/* Tick thread (host_sim_tick_body) + key queue (host_sim_push_key,
- * host_sim_pop_key) live in host_sim_server.c now — they belong to the
- * simulator runtime, not the stub surface. Declarations in
- * host_sim_server.h. */
-
-/*
- * Graphics command stream. Every mutation of the FRONT framebuffer
- * (host_framebuffer) is recorded here: CLS / RECT / PIXEL / SCROLL. The
- * server thread drains it on its 16ms timer and broadcasts the bytes as
- * one "CMDS" WebSocket message. The browser replays the commands into
- * its canvas — no pixel-diffing, no torn-frame snapshots.
- *
- * FASTGFX mode draws into host_fastgfx_back, not the front. Those draws
- * are intentionally NOT queued (the SWAP-time memcpy into the front IS
- * queued as a single RECT-like copy).
- *
- * Protocol (all fields little-endian):
- *   OP_CLS    = 0x01 : u32 color
- *   OP_RECT   = 0x02 : i16 x, i16 y, u16 w, u16 h, u32 color
- *   OP_PIXEL  = 0x03 : i16 x, i16 y, u32 color
- *   OP_SCROLL = 0x04 : i16 lines, u32 bg
- *   OP_BLIT   = 0x05 : i16 x, i16 y, u16 w, u16 h, [RGBA rows]  (FASTGFX swap)
- */
-#define HOST_SIM_OP_CLS    0x01
-#define HOST_SIM_OP_RECT   0x02
-#define HOST_SIM_OP_PIXEL  0x03
-#define HOST_SIM_OP_SCROLL 0x04
-#define HOST_SIM_OP_BLIT   0x05
-
-static pthread_mutex_t host_sim_cmd_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint8_t *host_sim_cmd_buf = NULL;
-static size_t host_sim_cmd_cap = 0;
-static size_t host_sim_cmd_len = 0;
-
-static int host_sim_cmds_target_is_front(void) {
-    /* Only record draws that land on the visible framebuffer. FASTGFX
-     * and FRAMEBUFFER/LAYER back buffers are invisible until a merge
-     * or copy, which come through a separate BLIT op. */
-    extern unsigned char *WriteBuf, *DisplayBuf;
-    return (WriteBuf == NULL || WriteBuf == DisplayBuf);
-}
-
-static void host_sim_cmd_append(const void *bytes, size_t len) {
-    if (!host_sim_active) return;
-    pthread_mutex_lock(&host_sim_cmd_lock);
-    if (host_sim_cmd_len + len > host_sim_cmd_cap) {
-        size_t new_cap = host_sim_cmd_cap ? host_sim_cmd_cap * 2 : 4096;
-        while (new_cap < host_sim_cmd_len + len) new_cap *= 2;
-        uint8_t *nb = realloc(host_sim_cmd_buf, new_cap);
-        if (!nb) { pthread_mutex_unlock(&host_sim_cmd_lock); return; }
-        host_sim_cmd_buf = nb;
-        host_sim_cmd_cap = new_cap;
-    }
-    memcpy(host_sim_cmd_buf + host_sim_cmd_len, bytes, len);
-    host_sim_cmd_len += len;
-    pthread_mutex_unlock(&host_sim_cmd_lock);
-}
-
-size_t host_sim_cmd_drain(uint8_t **out_buf, size_t *out_cap) {
-    pthread_mutex_lock(&host_sim_cmd_lock);
-    *out_buf = host_sim_cmd_buf;
-    *out_cap = host_sim_cmd_cap;
-    size_t n = host_sim_cmd_len;
-    host_sim_cmd_buf = NULL;
-    host_sim_cmd_cap = 0;
-    host_sim_cmd_len = 0;
-    pthread_mutex_unlock(&host_sim_cmd_lock);
-    return n;
-}
-
-static void host_sim_emit_cls(int colour) {
-    if (!host_sim_cmds_target_is_front()) return;
-    uint8_t buf[5];
-    buf[0] = HOST_SIM_OP_CLS;
-    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
-    memcpy(buf + 1, &c, 4);
-    host_sim_cmd_append(buf, sizeof(buf));
-}
-
-static void host_sim_emit_rect(int x1, int y1, int x2, int y2, int colour) {
-    if (!host_sim_cmds_target_is_front()) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
-    uint8_t buf[13];
-    buf[0] = HOST_SIM_OP_RECT;
-    int16_t x = (int16_t)x1, y = (int16_t)y1;
-    uint16_t w = (uint16_t)(x2 - x1 + 1);
-    uint16_t h = (uint16_t)(y2 - y1 + 1);
-    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
-    memcpy(buf + 1, &x, 2);
-    memcpy(buf + 3, &y, 2);
-    memcpy(buf + 5, &w, 2);
-    memcpy(buf + 7, &h, 2);
-    memcpy(buf + 9, &c, 4);
-    host_sim_cmd_append(buf, sizeof(buf));
-}
-
-static void host_sim_emit_pixel(int x, int y, int colour) {
-    if (!host_sim_cmds_target_is_front()) return;
-    uint8_t buf[9];
-    buf[0] = HOST_SIM_OP_PIXEL;
-    int16_t xs = (int16_t)x, ys = (int16_t)y;
-    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
-    memcpy(buf + 1, &xs, 2);
-    memcpy(buf + 3, &ys, 2);
-    memcpy(buf + 5, &c, 4);
-    host_sim_cmd_append(buf, sizeof(buf));
-}
-
-static void host_sim_emit_scroll(int lines, int bg) {
-    /* ScrollLCD operates on the front buffer unconditionally. */
-    uint8_t buf[7];
-    buf[0] = HOST_SIM_OP_SCROLL;
-    int16_t n = (int16_t)lines;
-    uint32_t c = (uint32_t)bg & 0x00FFFFFFu;
-    memcpy(buf + 1, &n, 2);
-    memcpy(buf + 3, &c, 4);
-    host_sim_cmd_append(buf, sizeof(buf));
-}
-
-static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels) {
-    uint8_t header[9];
-    header[0] = HOST_SIM_OP_BLIT;
-    int16_t xs = (int16_t)x, ys = (int16_t)y;
-    uint16_t ws = (uint16_t)w, hs = (uint16_t)h;
-    memcpy(header + 1, &xs, 2);
-    memcpy(header + 3, &ys, 2);
-    memcpy(header + 5, &ws, 2);
-    memcpy(header + 7, &hs, 2);
-    pthread_mutex_lock(&host_sim_cmd_lock);
-    size_t body_len = (size_t)w * (size_t)h * 4;
-    size_t total = sizeof(header) + body_len;
-    if (host_sim_cmd_len + total > host_sim_cmd_cap) {
-        size_t new_cap = host_sim_cmd_cap ? host_sim_cmd_cap * 2 : 4096;
-        while (new_cap < host_sim_cmd_len + total) new_cap *= 2;
-        uint8_t *nb = realloc(host_sim_cmd_buf, new_cap);
-        if (!nb) { pthread_mutex_unlock(&host_sim_cmd_lock); return; }
-        host_sim_cmd_buf = nb;
-        host_sim_cmd_cap = new_cap;
-    }
-    memcpy(host_sim_cmd_buf + host_sim_cmd_len, header, sizeof(header));
-    uint8_t *body = host_sim_cmd_buf + host_sim_cmd_len + sizeof(header);
-    for (size_t i = 0; i < (size_t)w * (size_t)h; ++i) {
-        uint32_t cv = pixels[i];
-        body[i * 4 + 0] = (uint8_t)((cv >> 16) & 0xFF);
-        body[i * 4 + 1] = (uint8_t)((cv >> 8) & 0xFF);
-        body[i * 4 + 2] = (uint8_t)(cv & 0xFF);
-        body[i * 4 + 3] = 0xFF;
-    }
-    host_sim_cmd_len += total;
-    pthread_mutex_unlock(&host_sim_cmd_lock);
-}
-#endif
 
 static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
     uint32_t *target = host_fb_current_target();

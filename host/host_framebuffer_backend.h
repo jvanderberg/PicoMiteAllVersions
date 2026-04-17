@@ -57,7 +57,7 @@ static void host_fb_merge_now(uint32_t transparent) {
 }
 
 #ifdef MMBASIC_SIM
-static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels);
+#include "host_sim_server.h"   /* host_sim_emit_blit / host_sim_emit_cls / host_sim_cmds_target_is_front */
 #endif
 
 static void host_fb_copy_now(uint32_t *src, uint32_t *dst) {
@@ -123,10 +123,8 @@ void host_framebuffer_shutdown_runtime(void) {
     WriteBuf = NULL;
 }
 
-#ifdef MMBASIC_SIM
-static void host_sim_emit_cls(int colour);
-static int host_sim_cmds_target_is_front(void);
-#endif
+/* host_sim_emit_cls / host_sim_cmds_target_is_front are declared above
+ * via host_sim_server.h under the same #ifdef MMBASIC_SIM. */
 
 void host_framebuffer_clear_target(int colour) {
     uint32_t *target = host_fb_current_target();
