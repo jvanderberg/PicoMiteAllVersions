@@ -769,8 +769,6 @@ int main(int argc, char **argv) {
         }
 
         extern int host_sim_active;
-        extern void host_sim_tick_start(void);
-        extern void host_sim_tick_stop(void);
         host_sim_active = 1;
         host_sim_tick_start();   /* 1ms housekeeping thread, matches device timer_callback */
 

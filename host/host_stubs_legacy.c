@@ -22,6 +22,7 @@
 #include "host_terminal.h"
 #include "host_fs.h"
 #include "host_sim_audio.h"
+#include "host_sim_server.h"
 #include "host_time.h"
 
 /* Forward declarations for output capture */
@@ -549,72 +550,20 @@ static void host_scroll_lcd_fn(int lines) {
     }
 }
 
-/*
- * Simulator-server key queue. Single producer (server thread, WS handler),
- * single consumer (main MMBasic thread via MMInkey). A pthread mutex is
- * plenty — contention is tiny (a few keystrokes/second).
- */
+/* host_sim_active: set to 1 when --sim mode is active (see
+ * host_sim_server_start). Read by host_sim_audio.c and the drawing
+ * primitives below to know whether to record events for the WS stream. */
 int host_sim_active = 0;
+
 #ifdef MMBASIC_SIM
 #include <pthread.h>
 #include <time.h>
-
-/*
- * --sim 1ms tick thread. Mirrors the software-visible counters that the
- * device's repeating timer IRQ bumps in PicoMite.c:826 `timer_callback`.
- * No hardware IRQ on host, so any interpreter code that reads these
- * timers (cursor blink, PAUSE, TIMER1..5, ON INTERRUPT ticks, …) would
- * see them frozen without this thread. Edit this body in lockstep with
- * the device's timer_callback when new counters are added upstream.
- */
 #include <stdatomic.h>
-static pthread_t host_sim_tick_thread;
-static atomic_int host_sim_tick_running;
 
-static void *host_sim_tick_body(void *unused) {
-    (void)unused;
-    struct timespec req = { 0, 1 * 1000 * 1000 };   /* 1 ms */
-    while (atomic_load(&host_sim_tick_running)) {
-        nanosleep(&req, NULL);
-        mSecTimer++;
-        AHRSTimer++;
-        InkeyTimer++;
-        PauseTimer++;
-        IntPauseTimer++;
-        ds18b20Timer++;
-        GPSTimer++;
-        I2CTimer++;
-        MouseTimer++;
-        if (clocktimer) clocktimer--;
-        if (Timer5) Timer5--;
-        if (Timer4) Timer4--;
-        if (Timer3) Timer3--;
-        if (Timer2) Timer2--;
-        if (Timer1) Timer1--;
-        if (++CursorTimer > CURSOR_OFF + CURSOR_ON) CursorTimer = 0;
-        if (ScrewUpTimer) ScrewUpTimer--;
-        if (WDTimer) WDTimer--;   /* on device triggers watchdog; here just counts */
-        for (int i = 0; i < NBRSETTICKS; ++i) if (TickActive[i]) TickTimer[i]++;
-    }
-    return NULL;
-}
-
-void host_sim_tick_start(void) {
-    if (atomic_load(&host_sim_tick_running)) return;
-    atomic_store(&host_sim_tick_running, 1);
-    if (pthread_create(&host_sim_tick_thread, NULL, host_sim_tick_body, NULL) != 0) {
-        atomic_store(&host_sim_tick_running, 0);
-    }
-}
-
-void host_sim_tick_stop(void) {
-    if (!atomic_load(&host_sim_tick_running)) return;
-    atomic_store(&host_sim_tick_running, 0);
-    pthread_join(host_sim_tick_thread, NULL);
-}
-#endif
-
-#ifdef MMBASIC_SIM
+/* Tick thread (host_sim_tick_body) + key queue (host_sim_push_key,
+ * host_sim_pop_key) live in host_sim_server.c now — they belong to the
+ * simulator runtime, not the stub surface. Declarations in
+ * host_sim_server.h. */
 
 /*
  * Graphics command stream. Every mutation of the FRONT framebuffer
@@ -762,35 +711,6 @@ static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixel
     }
     host_sim_cmd_len += total;
     pthread_mutex_unlock(&host_sim_cmd_lock);
-}
-#define HOST_SIM_KEYQ_LEN 128
-static struct {
-    pthread_mutex_t lock;
-    uint8_t buf[HOST_SIM_KEYQ_LEN];
-    int head, tail;
-    int inited;
-} host_sim_keyq = { .lock = PTHREAD_MUTEX_INITIALIZER };
-
-void host_sim_push_key(int code) {
-    if (code < 0 || code > 0xff) return;
-    pthread_mutex_lock(&host_sim_keyq.lock);
-    int next = (host_sim_keyq.head + 1) % HOST_SIM_KEYQ_LEN;
-    if (next != host_sim_keyq.tail) {
-        host_sim_keyq.buf[host_sim_keyq.head] = (uint8_t)code;
-        host_sim_keyq.head = next;
-    }
-    pthread_mutex_unlock(&host_sim_keyq.lock);
-}
-
-int host_sim_pop_key(void) {
-    int c = -1;
-    pthread_mutex_lock(&host_sim_keyq.lock);
-    if (host_sim_keyq.head != host_sim_keyq.tail) {
-        c = host_sim_keyq.buf[host_sim_keyq.tail];
-        host_sim_keyq.tail = (host_sim_keyq.tail + 1) % HOST_SIM_KEYQ_LEN;
-    }
-    pthread_mutex_unlock(&host_sim_keyq.lock);
-    return c;
 }
 #endif
 

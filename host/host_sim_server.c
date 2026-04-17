@@ -254,3 +254,114 @@ void host_sim_server_stop(void) {
     g_server.staging = NULL;
     g_server.staging_capacity = 0;
 }
+
+/* ------------------------------------------------------------------------
+ * 1ms tick thread — synthesizes the device's timer_callback (PicoMite.c:826)
+ * ------------------------------------------------------------------------ */
+
+/* These MMBasic globals are defined in host_stubs_legacy.c. Declared here
+ * rather than pulled from MMBasic_Includes.h to keep this file free of the
+ * full interpreter header tree. */
+extern volatile long long int mSecTimer;
+extern volatile unsigned int AHRSTimer;
+extern volatile unsigned int InkeyTimer;
+extern volatile unsigned int PauseTimer;
+extern volatile unsigned int IntPauseTimer;
+extern volatile int ds18b20Timer;
+extern volatile unsigned int GPSTimer;
+extern volatile unsigned int I2CTimer;
+extern volatile unsigned int MouseTimer;
+extern volatile unsigned int clocktimer;
+extern volatile unsigned int Timer1, Timer2, Timer3, Timer4, Timer5;
+extern volatile int CursorTimer;
+extern volatile unsigned int ScrewUpTimer;
+extern volatile unsigned int WDTimer;
+#ifndef NBRSETTICKS
+#define NBRSETTICKS 4
+#endif
+#ifndef CURSOR_ON
+#define CURSOR_ON 400
+#endif
+#ifndef CURSOR_OFF
+#define CURSOR_OFF 250
+#endif
+extern volatile int TickTimer[NBRSETTICKS];
+extern volatile unsigned char TickActive[NBRSETTICKS];
+
+static pthread_t host_sim_tick_thread;
+static atomic_int host_sim_tick_running;
+
+static void *host_sim_tick_body(void *unused) {
+    (void)unused;
+    struct timespec req = { 0, 1 * 1000 * 1000 };   /* 1 ms */
+    while (atomic_load(&host_sim_tick_running)) {
+        nanosleep(&req, NULL);
+        mSecTimer++;
+        AHRSTimer++;
+        InkeyTimer++;
+        PauseTimer++;
+        IntPauseTimer++;
+        ds18b20Timer++;
+        GPSTimer++;
+        I2CTimer++;
+        MouseTimer++;
+        if (clocktimer) clocktimer--;
+        if (Timer5) Timer5--;
+        if (Timer4) Timer4--;
+        if (Timer3) Timer3--;
+        if (Timer2) Timer2--;
+        if (Timer1) Timer1--;
+        if (++CursorTimer > CURSOR_OFF + CURSOR_ON) CursorTimer = 0;
+        if (ScrewUpTimer) ScrewUpTimer--;
+        if (WDTimer) WDTimer--;   /* on device triggers watchdog; here just counts */
+        for (int i = 0; i < NBRSETTICKS; ++i) if (TickActive[i]) TickTimer[i]++;
+    }
+    return NULL;
+}
+
+void host_sim_tick_start(void) {
+    if (atomic_load(&host_sim_tick_running)) return;
+    atomic_store(&host_sim_tick_running, 1);
+    if (pthread_create(&host_sim_tick_thread, NULL, host_sim_tick_body, NULL) != 0) {
+        atomic_store(&host_sim_tick_running, 0);
+    }
+}
+
+void host_sim_tick_stop(void) {
+    if (!atomic_load(&host_sim_tick_running)) return;
+    atomic_store(&host_sim_tick_running, 0);
+    pthread_join(host_sim_tick_thread, NULL);
+}
+
+/* ------------------------------------------------------------------------
+ * Key queue — single-producer (WS thread), single-consumer (main thread).
+ * ------------------------------------------------------------------------ */
+
+#define HOST_SIM_KEYQ_LEN 128
+static struct {
+    pthread_mutex_t lock;
+    uint8_t buf[HOST_SIM_KEYQ_LEN];
+    int head, tail;
+} host_sim_keyq = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+void host_sim_push_key(int code) {
+    if (code < 0 || code > 0xff) return;
+    pthread_mutex_lock(&host_sim_keyq.lock);
+    int next = (host_sim_keyq.head + 1) % HOST_SIM_KEYQ_LEN;
+    if (next != host_sim_keyq.tail) {
+        host_sim_keyq.buf[host_sim_keyq.head] = (uint8_t)code;
+        host_sim_keyq.head = next;
+    }
+    pthread_mutex_unlock(&host_sim_keyq.lock);
+}
+
+int host_sim_pop_key(void) {
+    int c = -1;
+    pthread_mutex_lock(&host_sim_keyq.lock);
+    if (host_sim_keyq.head != host_sim_keyq.tail) {
+        c = host_sim_keyq.buf[host_sim_keyq.tail];
+        host_sim_keyq.tail = (host_sim_keyq.tail + 1) % HOST_SIM_KEYQ_LEN;
+    }
+    pthread_mutex_unlock(&host_sim_keyq.lock);
+    return c;
+}
