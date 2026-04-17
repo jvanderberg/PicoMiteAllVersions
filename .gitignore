@@ -1,10 +1,13 @@
 build/
 build2350/
 build2350_vm_only/
+build_rp2040/
 host/*.o
 host/*.d
 host/mmbasic_test
 host/mmbasic_legacy_test
+host/mmbasic_sim
+host/sim_obj/
 *.uf2
 .DS_Store
 hardcopy.*
