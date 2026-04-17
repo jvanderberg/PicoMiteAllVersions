@@ -22,6 +22,7 @@
 #include "host_terminal.h"
 #include "host_fs.h"
 #include "host_sim_audio.h"
+#include "host_time.h"
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
@@ -34,8 +35,6 @@ extern const char *host_sd_root;
 static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap);
 static void host_append_default_ext(char *path, size_t cap, const char *ext);
 
-static uint64_t host_now_us(void);
-static void host_sync_msec_timer(void);
 static void host_fb_reset(int colour);
 static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c);
 static void host_fb_ensure(void);
@@ -383,44 +382,6 @@ static dma_hw_t _dma_hw_store = {0};
 static watchdog_hw_t _wdog_hw_store = {0};
 dma_hw_t *dma_hw = &_dma_hw_store;
 watchdog_hw_t *watchdog_hw = &_wdog_hw_store;
-
-static void host_sync_msec_timer_value(uint64_t now_us) {
-    mSecTimer = (long long)(now_us / 1000ULL);
-    /* CursorTimer ticks at 1kHz on device via the timer IRQ in
-     * PicoMite.c:884. On host there's no IRQ — synthesize it from the
-     * monotonic clock so ShowCursor's blink math works. */
-    CursorTimer = (int)((now_us / 1000ULL) % (CURSOR_OFF + CURSOR_ON));
-}
-
-static uint64_t host_now_us(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-}
-
-static void host_sync_msec_timer(void) {
-    host_sync_msec_timer_value(host_now_us());
-}
-
-uint64_t host_time_us_64(void) {
-    uint64_t now = host_now_us();
-    host_sync_msec_timer_value(now);
-    return now;
-}
-
-void host_sleep_us(uint64_t us) {
-    if (us == 0) {
-        host_sync_msec_timer();
-        return;
-    }
-
-    struct timespec req;
-    req.tv_sec = (time_t)(us / 1000000ULL);
-    req.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
-    while (nanosleep(&req, &req) != 0 && errno == EINTR) {
-    }
-    host_sync_msec_timer();
-}
 
 static void host_fb_ensure(void) {
     size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;

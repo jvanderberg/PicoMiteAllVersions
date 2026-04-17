@@ -108,6 +108,38 @@ Each phase ends with a green host build, green device build, and a commit. No ph
 
 **Exit gate:** dependency map lives in this doc, updated after survey.
 
+#### Phase 0 dependency map (2026-04-17 survey)
+
+Host stubs already defined in `host_stubs_legacy.c` for every `cmd_*`/`fun_*` that lives in the four target files — no "add a new stub" needed, only replace/delete as each file gets linked. `host/hardware/` already shims the pico-sdk headers referenced below (`flash.h`, `mutex.h`, `sync.h`, `time.h`, `multicore.h`, etc.).
+
+**Draw.c (9,721 lines).** Hardware touchpoints cluster in three families:
+- `multicore_fifo_push_blocking` — 23 calls across 8 functions (rp2350 dual-core LCD path; ClearScreen, set/closeframebuffer, bc_fastgfx_swap, merge/mergecolor, fun_mmcharheight, cmd_refresh).
+- `mutex_enter_blocking(&frameBufferMutex)` / `mutex_exit` — 4 pairs, merge/mergecolor/blit region (wrap `host_fb_begin/end`).
+- `__not_in_flash_func` — 6 macros on color conversion + fastgfx_swap_core1.
+- Preprocessor: `PICOMITEVGA` (35+ blocks — VGA/3D/HDMI; leave device-only), `PICOMITEWEB` (2), `rp2350` (5+), `PICOMITE` (gates the multicore/mutex blocks).
+- Whole-function `#ifndef MMBASIC_HOST` candidates: `fastgfx_swap_core1`, multicore-driven variants of `ClearScreen`/`setframebuffer`/`closeframebuffer`, `fun_getscanline` (VGA).
+- Mostly portable (per-block gating only): `cmd_box`, `cmd_circle`, `cmd_line`, `cmd_polygon`, `cmd_pixel`, `cmd_triangle`, `cmd_blitmemory`, `cmd_sprite`, `merge`/`mergecolor` (after mutex wrap), `fun_rgb`, `fun_mmhres`/`fun_mmvres`, `fun_mmcharwidth`/`fun_mmcharheight`.
+
+**FileIO.c (5,606 lines).** Almost entirely portable — device touch concentrated in flash-backed LittleFS:
+- `flash_range_program` (13), `flash_range_erase` (14), `fs_flash_{read,prog,erase,sync}` (4) — all already stubbed in `host/hardware/flash.h`.
+- `disable_interrupts_pico` / `enable_interrupts_pico` — defined inside FileIO.c (lines 311-327); wrap the whole pair in `#ifndef MMBASIC_HOST` (host: empty macros).
+- `frameBufferMutex` extern at line 58 — `#ifdef PICOMITE` gate.
+- `rp2350` mmap/psmap page-table blocks (5+) — device-only.
+- Per-handler: `cmd_open`, `cmd_close`, `cmd_seek`, `cmd_flush`, `fun_loc`/`lof`/`eof`/`inputstr`, `cmd_chdir`, `fun_cwd`, `fun_dir` all portable as-is; `cmd_autosave` has a dual path (flash save + file — gate flash branch); `cmd_LoadImage` / `cmd_LoadJPGImage` need device display output wrapped.
+
+**Audio.c (2,177 lines).** Hardware-bound — minimal portable surface. `cmd_play` (1037-1900) is the only command and it depends end-to-end on PWM (21 calls) / PIO (1) / flash. Strategy: HAL wraps `StartAudio`/`StopAudio`/DMA-buffer fill; on host, route to existing `host_sim_audio.c` PCM API. `iconvert`/`i2sconvert` are `__not_in_flash_func` but pure compute — portable.
+
+**MM_Misc.c (6,474 lines).** Mix of portable + hardware-bound. Portable: `cmd_sort`, `cmd_longString` + friends (`fun_LGetStr`, `fun_LGetByte`, etc.), `fun_format`, date/time (`cmd_date`/`fun_date`/`cmd_time`/`fun_time`/`fun_day`/`fun_datetime`/`fun_epoch` — all once `time_us_64()` is HAL-routed), `cmd_pause` (busy loop → host sleep), `cmd_poke`/`fun_peek` (host: restricted address range). Device-only: `cmd_settick`, `cmd_watchdog`, `fun_restart`, `cmd_csubinterrupt`, `cmd_ireturn`, INT1-INT4 GPIO setup (`gpio_set_irq_enabled` ×8 at 4602-4619), `cmd_cpu`, `fun_device`. Preprocessor: `PICOMITEVGA` (VGA recovery), `rp2350` (PRNG/mmap), `PICOCALC` (I2C keyboard), `USBKEYBOARD`.
+
+**Gating strategy** for the four files:
+1. Flash ops: define `disable_interrupts_pico`/`enable_interrupts_pico` as `((void)0)` macros on host; real flash_range_* are already no-op stubs.
+2. Multicore: `#ifdef PICOMITE` blocks in Draw.c already exist — extend with `#ifndef MMBASIC_HOST` where PICOMITE is defined on both (or rely on not defining PICOMITE when `MMBASIC_HOST` is set; verify current flag mix).
+3. `time_us_64()`: route through existing host shim (already stubbed).
+4. GPIO IRQ / PWM / PIO: wrap whole blocks / whole functions.
+5. `PICOMITEVGA` / `PICOMITEWEB`: not defined on host → blocks drop out naturally.
+
+Host stub line count impact (estimated from plan): Phase 2 ~1,200 lines deleted, Phase 3 ~300, Phase 4 ~75, Phase 5 ~200-400. Target final `host_noop_stubs.c` under 1,500 lines.
+
 ### Phase 1 — Pure moves out of `host_stubs_legacy.c`
 
 No behavior change. Just untangle the stubs file.
