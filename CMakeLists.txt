@@ -97,6 +97,7 @@ set(PICOMITE_VM_SHARED_GFX_SOURCES
 	gfx_pixel_shared.c
 	gfx_cls_shared.c
 	gfx_text_shared.c
+	gfx_console_shared.c
 )
 
 set(PICOMITE_VM_SOURCES

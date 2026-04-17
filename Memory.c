@@ -79,6 +79,14 @@ extern const uint8_t *flash_progmemory;
 #endif
 
 uint32_t heap_memory_size=HEAP_MEMORY_SIZE;
+
+/* Last failed allocation diagnostics.  Updated by TryGetMemory on OOM. */
+unsigned int bc_alloc_fail_size    = 0;
+unsigned int bc_alloc_fail_pages   = 0;
+unsigned int bc_alloc_fail_used    = 0;
+unsigned int bc_alloc_fail_free    = 0;
+unsigned int bc_alloc_fail_longest = 0;
+unsigned int bc_alloc_fail_total   = 0;
 #ifdef PICOMITEVGA
 #ifdef rp2350
 uint16_t *tilefcols;//=(uint16_t *)((uint32_t)FRAMEBUFFER+(MODE1SIZE_S*3));
@@ -822,7 +830,7 @@ void m_alloc(int type) {
 // The space only lasts for the length of the command.
 // A pointer to the space is saved in an array so that it can be returned at the end of the command
 void __not_in_flash_func(*GetTempMemory)(int NbrBytes) {
-    if(g_StrTmpIndex >= MAXTEMPSTRINGS) error("Not enough memory");
+    if(g_StrTmpIndex >= MAXTEMPSTRINGS) error("NEM[mem:strtmp] idx=% max=%", g_StrTmpIndex, MAXTEMPSTRINGS);
     g_StrTmpLocalIndex[g_StrTmpIndex] = g_LocalIndex;
     g_StrTmp[g_StrTmpIndex] = GetSystemMemory(NbrBytes);
     g_TempMemoryIsChanged = true;
@@ -1035,6 +1043,31 @@ void MIPS64 __not_in_flash_func(*GetSystemMemory)(int size) { //get memory from 
     error("Not enough Heap memory");
     return NULL;                                                    // keep the compiler happy
 }
+/* Scan the MMHeap bitmap.  Returns totals in pages.  Any out-ptr may be NULL. */
+void heap_scan_stats(unsigned int *used_pages,
+                     unsigned int *free_pages,
+                     unsigned int *largest_free_run,
+                     unsigned int *total_pages) {
+    unsigned int used = 0, free = 0, longest = 0, cur = 0;
+    unsigned char *addr;
+    unsigned int total = heap_memory_size / PAGESIZE;
+    for (addr = MMHeap; addr < MMHeap + heap_memory_size; addr += PAGESIZE) {
+        if (MBitsGet(addr) & PUSED) {
+            used++;
+            if (cur > longest) longest = cur;
+            cur = 0;
+        } else {
+            free++;
+            cur++;
+        }
+    }
+    if (cur > longest) longest = cur;
+    if (used_pages)        *used_pages = used;
+    if (free_pages)        *free_pages = free;
+    if (largest_free_run)  *largest_free_run = longest;
+    if (total_pages)       *total_pages = total;
+}
+
 void MIPS64 __not_in_flash_func(*GetMemory)(int size) {
 #ifdef rp2350
 #ifndef PICOMITEWEB
@@ -1063,7 +1096,12 @@ void MIPS64 __not_in_flash_func(*GetMemory)(int size) {
 #endif
     TempStringClearStart = 0;
     ClearTempMemory();                                               // hopefully this will give us enough to print the prompt
-    error("Not enough Heap memory");
+    {
+        unsigned int used, free, longest, total;
+        heap_scan_stats(&used, &free, &longest, &total);
+        error("NEM[mem:heap] want=% pg=% used=%/% free=% run=%",
+              size, (int)k, (int)used, (int)total, (int)free, (int)longest);
+    }
     return NULL;                                                    // keep the compiler happy
 }
 
@@ -1096,13 +1134,20 @@ void *TryGetMemory(int size) {
     if(PSRAMsize) return GetPSMemory(size);
 #endif
 #endif
+    /* Record last failed alloc stats for diagnostics */
+    bc_alloc_fail_size = size;
+    bc_alloc_fail_pages = k;
+    heap_scan_stats(&bc_alloc_fail_used,
+                    &bc_alloc_fail_free,
+                    &bc_alloc_fail_longest,
+                    &bc_alloc_fail_total);
     return NULL;
 }
 
 void *GetAlignedMemory(int size) {
    unsigned char *addr=MMHeap;
     while(((uint32_t)addr & (size-1)) && (!((MBitsGet(addr) & PUSED))) && ((uint32_t)addr<(uint32_t)MMHeap+heap_memory_size))addr+=PAGESIZE;
-    if((uint32_t)addr==(uint32_t)MMHeap+heap_memory_size)error("Not enough memory");
+    if((uint32_t)addr==(uint32_t)MMHeap+heap_memory_size)error("NEM[mem:align] want=%", size);
     unsigned char *retaddr=addr;
     for(;size>0;addr+=PAGESIZE, size-=PAGESIZE){
          if(!(MBitsGet(addr) & PUSED)){

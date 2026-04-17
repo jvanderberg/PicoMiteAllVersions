@@ -14,15 +14,23 @@
 
 #if defined(MMBASIC_HOST)
 
+#include "host_sim_audio.h"
+
 void vm_sys_audio_play_stop(void) {
+    host_sim_audio_stop();
 }
 
 void vm_sys_audio_play_tone(MMFLOAT left_hz, MMFLOAT right_hz,
                             int has_duration, int64_t duration_ms) {
-    (void)left_hz;
-    (void)right_hz;
-    (void)has_duration;
-    (void)duration_ms;
+    if (left_hz < 0.0 || left_hz > 22050.0 ||
+        right_hz < 0.0 || right_hz > 22050.0)
+        error("Valid is 0Hz to 20KHz");
+    if (has_duration && duration_ms < 0)
+        error("Number out of bounds");
+    if (has_duration && duration_ms == 0)
+        return;
+    host_sim_audio_tone((double)left_hz, (double)right_hz,
+                        has_duration, (long long)duration_ms);
 }
 
 #else

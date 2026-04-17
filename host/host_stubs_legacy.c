@@ -21,6 +21,7 @@
 #include <time.h>
 #include "host_terminal.h"
 #include "host_fs.h"
+#include "host_sim_audio.h"
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
@@ -36,6 +37,18 @@ static void host_append_default_ext(char *path, size_t cap, const char *ext);
 static uint64_t host_now_us(void);
 static void host_sync_msec_timer(void);
 static void host_fb_reset(int colour);
+static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c);
+static void host_fb_ensure(void);
+static void host_fb_fill_buffer(uint32_t *buffer, uint32_t colour);
+static inline uint32_t host_colour24(int c);
+static inline void host_put_pixel(int x, int y, int c);
+static uint32_t *host_fb_current_target(void);
+#ifdef MMBASIC_SIM
+static void host_sim_emit_pixel(int x, int y, int colour);
+static void host_sim_emit_rect(int x1, int y1, int x2, int y2, int colour);
+static void host_sim_emit_scroll(int lines, int bg);
+static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels);
+#endif
 static void host_write_screenshot(const char *path);
 static void host_runtime_check_timeout(void);
 static int host_parse_escaped_char(const char **src);
@@ -54,8 +67,9 @@ static void host_pixel_fail_msg(void *ctx, const char *msg);
 static void host_pixel_fail_range(void *ctx, const char *label, int value, int min, int max);
 
 static uint32_t *host_framebuffer = NULL;
+/* PicoCalc is a 320x320 square IPS LCD. */
 static int host_fb_width = 320;
-static int host_fb_height = 240;
+static int host_fb_height = 320;
 static int host_runtime_timeout_ms = 0;
 static uint64_t host_runtime_deadline_us = 0;
 static int host_runtime_timed_out_flag = 0;
@@ -70,6 +84,12 @@ static int host_config_key_delay_set = 0;
 static uint64_t host_key_ready_us = 0;
 static int host_fastgfx_active = 0;
 static int host_fastgfx_fps = 0;
+/* FASTGFX back buffer. When active, all graphics primitives draw here
+ * (via WriteBuf pointing at it), and bc_fastgfx_swap memcpys it into
+ * host_framebuffer so the WebSocket broadcaster only ever sees fully
+ * composited frames. Declared non-static (extern in backend.h) so the
+ * framebuffer dispatch can recognise it as a valid WriteBuf target. */
+uint32_t *host_fastgfx_back = NULL;
 static uint64_t host_fastgfx_next_sync_us = 0;
 static unsigned char host_font_metrics[2] = {6, 8};
 
@@ -112,7 +132,7 @@ short gui_font = 0;
 short gui_font_height = 8;
 short gui_font_width = 6;
 short HRes = 320;
-short VRes = 240;
+short VRes = 320;
 uint8_t I2C0locked = 0;
 uint8_t I2C1locked = 0;
 unsigned char IgnorePIN = 0;
@@ -366,6 +386,10 @@ watchdog_hw_t *watchdog_hw = &_wdog_hw_store;
 
 static void host_sync_msec_timer_value(uint64_t now_us) {
     mSecTimer = (long long)(now_us / 1000ULL);
+    /* CursorTimer ticks at 1kHz on device via the timer IRQ in
+     * PicoMite.c:884. On host there's no IRQ — synthesize it from the
+     * monotonic clock so ShowCursor's blink math works. */
+    CursorTimer = (int)((now_us / 1000ULL) % (CURSOR_OFF + CURSOR_ON));
 }
 
 static uint64_t host_now_us(void) {
@@ -422,6 +446,9 @@ static inline void host_put_pixel(int x, int y, int c) {
     if (!target) return;
     if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return;
     target[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
+#ifdef MMBASIC_SIM
+    host_sim_emit_pixel(x, y, c);
+#endif
 }
 
 static void host_draw_pixel_ptr(int x, int y, int c) {
@@ -443,6 +470,369 @@ int host_runtime_height(void) {
     return host_fb_height;
 }
 
+/*
+ * Simulator-server accessors. The --sim build runs a background Mongoose
+ * thread that reads the framebuffer and pushes RGBA frames over WebSocket.
+ * The MMBasic thread writes the buffer without locking; at worst a torn
+ * frame is visible for 16ms before the next broadcast overwrites it.
+ */
+size_t host_sim_framebuffer_copy(uint32_t *dst, size_t dst_pixels) {
+    if (!host_framebuffer) host_fb_ensure();
+    if (!host_framebuffer || !dst) return 0;
+    size_t have = (size_t)host_fb_width * (size_t)host_fb_height;
+    size_t n = dst_pixels < have ? dst_pixels : have;
+    memcpy(dst, host_framebuffer, n * sizeof(*dst));
+    return n;
+}
+
+void host_sim_framebuffer_dims(int *w, int *h) {
+    if (w) *w = host_fb_width;
+    if (h) *h = host_fb_height;
+}
+
+/* Override the simulated display resolution. Must be called before
+ * host_sim_server_start / any draw call — the framebuffer is allocated
+ * lazily on first use, so we just need to set the dimensions before that
+ * happens. HRes/VRes mirror host_fb_width/height so MMBasic's geometry
+ * math (Option.Width = HRes/font_width, etc.) sees the same values. */
+void host_sim_set_framebuffer_size(int w, int h) {
+    if (w < 80)   w = 80;
+    if (h < 60)   h = 60;
+    if (w > 2048) w = 2048;
+    if (h > 2048) h = 2048;
+    host_fb_width  = w;
+    host_fb_height = h;
+    HRes = (short)w;
+    VRes = (short)h;
+}
+
+/*
+ * Host-side backings for DrawRectangle, DrawBitmap, and ScrollLCD. These
+ * are the function pointers that gfx_console_shared.c's GUIPrintChar and
+ * DisplayPutC dispatch through. On device they're assigned to one of
+ * several display-specific implementations; on host they all draw into
+ * host_framebuffer via the existing primitives.
+ *
+ * Assigned in host_runtime_begin so bc_vm_init's per-run heap reset
+ * (which can NULL these out) doesn't leave them dangling.
+ */
+static void host_draw_rectangle_fn(int x1, int y1, int x2, int y2, int c) {
+    /* Device DrawRectangle fills [x1,x2) x [y1,y2) — note exclusive. */
+    if (x2 > x1) x2--;
+    if (y2 > y1) y2--;
+    host_fill_rect_pixels(x1, y1, x2, y2, c);
+}
+
+static void host_draw_bitmap_fn(int x1, int y1, int width, int height, int scale,
+                                int fc, int bc, unsigned char *bitmap) {
+    uint32_t *target = host_fb_current_target();
+    if (!target || !bitmap) return;
+    if (scale < 1) scale = 1;
+    int total_bits = width * height;
+    uint32_t fg = host_colour24(fc);
+    uint32_t bg = host_colour24(bc);
+    int want_bg = (bc >= 0);
+    for (int row = 0; row < height; ++row) {
+        for (int col = 0; col < width; ++col) {
+            int bit_number = row * width + col;
+            int on = (bitmap[bit_number / 8] >>
+                      ((total_bits - bit_number - 1) % 8)) & 1;
+            if (on) {
+                host_fill_rect_pixels(x1 + col * scale,
+                                      y1 + row * scale,
+                                      x1 + (col + 1) * scale - 1,
+                                      y1 + (row + 1) * scale - 1,
+                                      (int)fg);
+            } else if (want_bg) {
+                host_fill_rect_pixels(x1 + col * scale,
+                                      y1 + row * scale,
+                                      x1 + (col + 1) * scale - 1,
+                                      y1 + (row + 1) * scale - 1,
+                                      (int)bg);
+            }
+        }
+    }
+    (void)total_bits; (void)fg; (void)bg;
+}
+
+static void host_scroll_lcd_fn(int lines) {
+    /* Positive lines: shift content UP by that many pixel rows, clear bottom.
+     * Negative lines: shift content DOWN, clear top. The Editor uses the
+     * negative form in ScrollDown to reveal earlier lines when the user
+     * page-ups past the top of the viewport. */
+    host_fb_ensure();
+    if (!host_framebuffer || lines == 0) return;
+#ifdef MMBASIC_SIM
+    host_sim_emit_scroll(lines, gui_bcolour);
+#endif
+
+    int row_pixels = host_fb_width;
+    uint32_t fill = host_colour24(gui_bcolour);
+    int abs_lines = lines < 0 ? -lines : lines;
+    if (abs_lines >= host_fb_height) {
+        host_fb_fill_buffer(host_framebuffer, fill);
+        return;
+    }
+
+    if (lines > 0) {
+        memmove(host_framebuffer,
+                host_framebuffer + lines * row_pixels,
+                (size_t)(host_fb_height - lines) * (size_t)row_pixels * sizeof(uint32_t));
+        uint32_t *tail = host_framebuffer + (host_fb_height - lines) * row_pixels;
+        for (int i = 0; i < lines * row_pixels; ++i) tail[i] = fill;
+    } else {
+        memmove(host_framebuffer + abs_lines * row_pixels,
+                host_framebuffer,
+                (size_t)(host_fb_height - abs_lines) * (size_t)row_pixels * sizeof(uint32_t));
+        for (int i = 0; i < abs_lines * row_pixels; ++i) host_framebuffer[i] = fill;
+    }
+}
+
+/*
+ * Simulator-server key queue. Single producer (server thread, WS handler),
+ * single consumer (main MMBasic thread via MMInkey). A pthread mutex is
+ * plenty — contention is tiny (a few keystrokes/second).
+ */
+int host_sim_active = 0;
+#ifdef MMBASIC_SIM
+#include <pthread.h>
+#include <time.h>
+
+/*
+ * --sim 1ms tick thread. Mirrors the software-visible counters that the
+ * device's repeating timer IRQ bumps in PicoMite.c:826 `timer_callback`.
+ * No hardware IRQ on host, so any interpreter code that reads these
+ * timers (cursor blink, PAUSE, TIMER1..5, ON INTERRUPT ticks, …) would
+ * see them frozen without this thread. Edit this body in lockstep with
+ * the device's timer_callback when new counters are added upstream.
+ */
+#include <stdatomic.h>
+static pthread_t host_sim_tick_thread;
+static atomic_int host_sim_tick_running;
+
+static void *host_sim_tick_body(void *unused) {
+    (void)unused;
+    struct timespec req = { 0, 1 * 1000 * 1000 };   /* 1 ms */
+    while (atomic_load(&host_sim_tick_running)) {
+        nanosleep(&req, NULL);
+        mSecTimer++;
+        AHRSTimer++;
+        InkeyTimer++;
+        PauseTimer++;
+        IntPauseTimer++;
+        ds18b20Timer++;
+        GPSTimer++;
+        I2CTimer++;
+        MouseTimer++;
+        if (clocktimer) clocktimer--;
+        if (Timer5) Timer5--;
+        if (Timer4) Timer4--;
+        if (Timer3) Timer3--;
+        if (Timer2) Timer2--;
+        if (Timer1) Timer1--;
+        if (++CursorTimer > CURSOR_OFF + CURSOR_ON) CursorTimer = 0;
+        if (ScrewUpTimer) ScrewUpTimer--;
+        if (WDTimer) WDTimer--;   /* on device triggers watchdog; here just counts */
+        for (int i = 0; i < NBRSETTICKS; ++i) if (TickActive[i]) TickTimer[i]++;
+    }
+    return NULL;
+}
+
+void host_sim_tick_start(void) {
+    if (atomic_load(&host_sim_tick_running)) return;
+    atomic_store(&host_sim_tick_running, 1);
+    if (pthread_create(&host_sim_tick_thread, NULL, host_sim_tick_body, NULL) != 0) {
+        atomic_store(&host_sim_tick_running, 0);
+    }
+}
+
+void host_sim_tick_stop(void) {
+    if (!atomic_load(&host_sim_tick_running)) return;
+    atomic_store(&host_sim_tick_running, 0);
+    pthread_join(host_sim_tick_thread, NULL);
+}
+#endif
+
+#ifdef MMBASIC_SIM
+
+/*
+ * Graphics command stream. Every mutation of the FRONT framebuffer
+ * (host_framebuffer) is recorded here: CLS / RECT / PIXEL / SCROLL. The
+ * server thread drains it on its 16ms timer and broadcasts the bytes as
+ * one "CMDS" WebSocket message. The browser replays the commands into
+ * its canvas — no pixel-diffing, no torn-frame snapshots.
+ *
+ * FASTGFX mode draws into host_fastgfx_back, not the front. Those draws
+ * are intentionally NOT queued (the SWAP-time memcpy into the front IS
+ * queued as a single RECT-like copy).
+ *
+ * Protocol (all fields little-endian):
+ *   OP_CLS    = 0x01 : u32 color
+ *   OP_RECT   = 0x02 : i16 x, i16 y, u16 w, u16 h, u32 color
+ *   OP_PIXEL  = 0x03 : i16 x, i16 y, u32 color
+ *   OP_SCROLL = 0x04 : i16 lines, u32 bg
+ *   OP_BLIT   = 0x05 : i16 x, i16 y, u16 w, u16 h, [RGBA rows]  (FASTGFX swap)
+ */
+#define HOST_SIM_OP_CLS    0x01
+#define HOST_SIM_OP_RECT   0x02
+#define HOST_SIM_OP_PIXEL  0x03
+#define HOST_SIM_OP_SCROLL 0x04
+#define HOST_SIM_OP_BLIT   0x05
+
+static pthread_mutex_t host_sim_cmd_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t *host_sim_cmd_buf = NULL;
+static size_t host_sim_cmd_cap = 0;
+static size_t host_sim_cmd_len = 0;
+
+static int host_sim_cmds_target_is_front(void) {
+    /* Only record draws that land on the visible framebuffer. FASTGFX
+     * and FRAMEBUFFER/LAYER back buffers are invisible until a merge
+     * or copy, which come through a separate BLIT op. */
+    extern unsigned char *WriteBuf, *DisplayBuf;
+    return (WriteBuf == NULL || WriteBuf == DisplayBuf);
+}
+
+static void host_sim_cmd_append(const void *bytes, size_t len) {
+    if (!host_sim_active) return;
+    pthread_mutex_lock(&host_sim_cmd_lock);
+    if (host_sim_cmd_len + len > host_sim_cmd_cap) {
+        size_t new_cap = host_sim_cmd_cap ? host_sim_cmd_cap * 2 : 4096;
+        while (new_cap < host_sim_cmd_len + len) new_cap *= 2;
+        uint8_t *nb = realloc(host_sim_cmd_buf, new_cap);
+        if (!nb) { pthread_mutex_unlock(&host_sim_cmd_lock); return; }
+        host_sim_cmd_buf = nb;
+        host_sim_cmd_cap = new_cap;
+    }
+    memcpy(host_sim_cmd_buf + host_sim_cmd_len, bytes, len);
+    host_sim_cmd_len += len;
+    pthread_mutex_unlock(&host_sim_cmd_lock);
+}
+
+size_t host_sim_cmd_drain(uint8_t **out_buf, size_t *out_cap) {
+    pthread_mutex_lock(&host_sim_cmd_lock);
+    *out_buf = host_sim_cmd_buf;
+    *out_cap = host_sim_cmd_cap;
+    size_t n = host_sim_cmd_len;
+    host_sim_cmd_buf = NULL;
+    host_sim_cmd_cap = 0;
+    host_sim_cmd_len = 0;
+    pthread_mutex_unlock(&host_sim_cmd_lock);
+    return n;
+}
+
+static void host_sim_emit_cls(int colour) {
+    if (!host_sim_cmds_target_is_front()) return;
+    uint8_t buf[5];
+    buf[0] = HOST_SIM_OP_CLS;
+    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
+    memcpy(buf + 1, &c, 4);
+    host_sim_cmd_append(buf, sizeof(buf));
+}
+
+static void host_sim_emit_rect(int x1, int y1, int x2, int y2, int colour) {
+    if (!host_sim_cmds_target_is_front()) return;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    uint8_t buf[13];
+    buf[0] = HOST_SIM_OP_RECT;
+    int16_t x = (int16_t)x1, y = (int16_t)y1;
+    uint16_t w = (uint16_t)(x2 - x1 + 1);
+    uint16_t h = (uint16_t)(y2 - y1 + 1);
+    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
+    memcpy(buf + 1, &x, 2);
+    memcpy(buf + 3, &y, 2);
+    memcpy(buf + 5, &w, 2);
+    memcpy(buf + 7, &h, 2);
+    memcpy(buf + 9, &c, 4);
+    host_sim_cmd_append(buf, sizeof(buf));
+}
+
+static void host_sim_emit_pixel(int x, int y, int colour) {
+    if (!host_sim_cmds_target_is_front()) return;
+    uint8_t buf[9];
+    buf[0] = HOST_SIM_OP_PIXEL;
+    int16_t xs = (int16_t)x, ys = (int16_t)y;
+    uint32_t c = (uint32_t)colour & 0x00FFFFFFu;
+    memcpy(buf + 1, &xs, 2);
+    memcpy(buf + 3, &ys, 2);
+    memcpy(buf + 5, &c, 4);
+    host_sim_cmd_append(buf, sizeof(buf));
+}
+
+static void host_sim_emit_scroll(int lines, int bg) {
+    /* ScrollLCD operates on the front buffer unconditionally. */
+    uint8_t buf[7];
+    buf[0] = HOST_SIM_OP_SCROLL;
+    int16_t n = (int16_t)lines;
+    uint32_t c = (uint32_t)bg & 0x00FFFFFFu;
+    memcpy(buf + 1, &n, 2);
+    memcpy(buf + 3, &c, 4);
+    host_sim_cmd_append(buf, sizeof(buf));
+}
+
+static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels) {
+    uint8_t header[9];
+    header[0] = HOST_SIM_OP_BLIT;
+    int16_t xs = (int16_t)x, ys = (int16_t)y;
+    uint16_t ws = (uint16_t)w, hs = (uint16_t)h;
+    memcpy(header + 1, &xs, 2);
+    memcpy(header + 3, &ys, 2);
+    memcpy(header + 5, &ws, 2);
+    memcpy(header + 7, &hs, 2);
+    pthread_mutex_lock(&host_sim_cmd_lock);
+    size_t body_len = (size_t)w * (size_t)h * 4;
+    size_t total = sizeof(header) + body_len;
+    if (host_sim_cmd_len + total > host_sim_cmd_cap) {
+        size_t new_cap = host_sim_cmd_cap ? host_sim_cmd_cap * 2 : 4096;
+        while (new_cap < host_sim_cmd_len + total) new_cap *= 2;
+        uint8_t *nb = realloc(host_sim_cmd_buf, new_cap);
+        if (!nb) { pthread_mutex_unlock(&host_sim_cmd_lock); return; }
+        host_sim_cmd_buf = nb;
+        host_sim_cmd_cap = new_cap;
+    }
+    memcpy(host_sim_cmd_buf + host_sim_cmd_len, header, sizeof(header));
+    uint8_t *body = host_sim_cmd_buf + host_sim_cmd_len + sizeof(header);
+    for (size_t i = 0; i < (size_t)w * (size_t)h; ++i) {
+        uint32_t cv = pixels[i];
+        body[i * 4 + 0] = (uint8_t)((cv >> 16) & 0xFF);
+        body[i * 4 + 1] = (uint8_t)((cv >> 8) & 0xFF);
+        body[i * 4 + 2] = (uint8_t)(cv & 0xFF);
+        body[i * 4 + 3] = 0xFF;
+    }
+    host_sim_cmd_len += total;
+    pthread_mutex_unlock(&host_sim_cmd_lock);
+}
+#define HOST_SIM_KEYQ_LEN 128
+static struct {
+    pthread_mutex_t lock;
+    uint8_t buf[HOST_SIM_KEYQ_LEN];
+    int head, tail;
+    int inited;
+} host_sim_keyq = { .lock = PTHREAD_MUTEX_INITIALIZER };
+
+void host_sim_push_key(int code) {
+    if (code < 0 || code > 0xff) return;
+    pthread_mutex_lock(&host_sim_keyq.lock);
+    int next = (host_sim_keyq.head + 1) % HOST_SIM_KEYQ_LEN;
+    if (next != host_sim_keyq.tail) {
+        host_sim_keyq.buf[host_sim_keyq.head] = (uint8_t)code;
+        host_sim_keyq.head = next;
+    }
+    pthread_mutex_unlock(&host_sim_keyq.lock);
+}
+
+int host_sim_pop_key(void) {
+    int c = -1;
+    pthread_mutex_lock(&host_sim_keyq.lock);
+    if (host_sim_keyq.head != host_sim_keyq.tail) {
+        c = host_sim_keyq.buf[host_sim_keyq.tail];
+        host_sim_keyq.tail = (host_sim_keyq.tail + 1) % HOST_SIM_KEYQ_LEN;
+    }
+    pthread_mutex_unlock(&host_sim_keyq.lock);
+    return c;
+}
+#endif
+
 static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
     uint32_t *target = host_fb_current_target();
     if (!target) return;
@@ -461,6 +851,9 @@ static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
             row[x] = colour;
         }
     }
+#ifdef MMBASIC_SIM
+    host_sim_emit_rect(x1, y1, x2, y2, c);
+#endif
 }
 
 static void host_draw_line_pixels(int x1, int y1, int x2, int y2, int width, int c) {
@@ -906,6 +1299,9 @@ void host_runtime_begin(void) {
     host_framebuffer_reset_runtime(gui_bcolour);
     FontTable[0] = (unsigned char *)font1;
     DrawPixel = host_draw_pixel_ptr;
+    DrawRectangle = host_draw_rectangle_fn;
+    DrawBitmap = host_draw_bitmap_fn;
+    ScrollLCD = host_scroll_lcd_fn;
 }
 
 void host_runtime_finish(void) {
@@ -919,10 +1315,29 @@ int host_runtime_timed_out(void) {
     return host_runtime_timed_out_flag;
 }
 
+/*
+ * --slowdown throttle. Non-zero means sleep this many microseconds per
+ * poll-tick. The interpreter pokes host_runtime_check_timeout on every
+ * statement / MMInkey / routinechecks call; the VM pokes
+ * host_sim_apply_slowdown from bc_vm_poll_interrupts on every backward
+ * branch. host_sleep_us bumps the msec counter so PAUSE / TIMER / tick
+ * interrupts stay on real wall-clock time even when execution crawls.
+ */
+int host_sim_slowdown_us = 0;
+
+void host_sim_apply_slowdown(void) {
+    if (host_sim_slowdown_us > 0) host_sleep_us((uint64_t)host_sim_slowdown_us);
+}
+
 static void host_runtime_check_timeout(void) {
     host_framebuffer_service();
-    if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
+    host_sim_apply_slowdown();
+    /* Always refresh the msec/CursorTimer so code that polls without
+     * going through host_sleep_us (e.g. the Editor's ShowCursor+MMInkey
+     * loop) still sees time advance. On device the 1ms timer IRQ does
+     * this; here we piggy-back on every MMInkey/routinechecks call. */
     uint64_t now = host_time_us_64();
+    if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
     if (now < host_runtime_deadline_us) return;
 
     host_runtime_timed_out_flag = 1;
@@ -1053,7 +1468,20 @@ void cmd_disk(void) { host_cmd_single_path(vm_sys_file_drive, "Invalid disk"); }
 void cmd_ds18b20(void) {}
 /* cmd_edit / cmd_editfile are provided by the real Editor.c now. */
 void cmd_endprogram(void) {}
-void bc_fastgfx_swap(void) {}
+void bc_fastgfx_swap(void) {
+    /* Present the back buffer: copy it into host_framebuffer so local
+     * snapshots stay correct, and emit one BLIT command so browsers
+     * get a single full-frame update. Unlike the per-primitive stream
+     * this is one message per visible frame — browsers never see a
+     * torn or in-progress frame. */
+    host_fb_ensure();
+    if (!host_fastgfx_active || !host_fastgfx_back || !host_framebuffer) return;
+    size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
+    memcpy(host_framebuffer, host_fastgfx_back, pixels * sizeof(uint32_t));
+#ifdef MMBASIC_SIM
+    host_sim_emit_blit(0, 0, host_fb_width, host_fb_height, host_fastgfx_back);
+#endif
+}
 void bc_fastgfx_sync(void) {
     if (!host_fastgfx_active || host_fastgfx_fps <= 0) return;
     uint64_t frame_us = 1000000ULL / (uint64_t)host_fastgfx_fps;
@@ -1064,17 +1492,42 @@ void bc_fastgfx_sync(void) {
 }
 
 void bc_fastgfx_create(void) {
+    host_fb_ensure();
+    size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
+    if (!host_fastgfx_back) {
+        host_fastgfx_back = calloc(pixels, sizeof(uint32_t));
+        if (!host_fastgfx_back) error("Not enough memory");
+    }
+    /* Seed the back buffer with the current front contents so existing
+     * text/graphics aren't wiped out at the start of the first frame. */
+    if (host_framebuffer) memcpy(host_fastgfx_back, host_framebuffer, pixels * sizeof(uint32_t));
+    /* Point the graphics WriteBuf at the back buffer so every primitive
+     * draws into it until CLOSE. host_fb_current_target looks at
+     * WriteBuf to decide the destination. */
+    WriteBuf = (unsigned char *)host_fastgfx_back;
     host_fastgfx_active = 1;
     host_fastgfx_next_sync_us = 0;
 }
 
 void bc_fastgfx_close(void) {
     if (!host_fastgfx_active) error("FASTGFX not active");
+    /* Flip the final back contents out to the front so the last frame
+     * the game drew stays visible after CLOSE. */
+    if (host_fastgfx_back && host_framebuffer) {
+        size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
+        memcpy(host_framebuffer, host_fastgfx_back, pixels * sizeof(uint32_t));
+    }
+    free(host_fastgfx_back);
+    host_fastgfx_back = NULL;
+    WriteBuf = NULL;
     host_fastgfx_active = 0;
     host_fastgfx_next_sync_us = 0;
 }
 
 void bc_fastgfx_reset(void) {
+    free(host_fastgfx_back);
+    host_fastgfx_back = NULL;
+    WriteBuf = NULL;
     host_fastgfx_active = 0;
     host_fastgfx_next_sync_us = 0;
 }
@@ -1534,7 +1987,122 @@ void cmd_pixel(void) {
     gfx_pixel_execute((n == 1) ? GFX_PIXEL_MODE_SCALAR : GFX_PIXEL_MODE_VECTOR,
                       args, (argc + 1) / 2, &errors);
 }
-void cmd_play(void) {}
+/*
+ * Minimal PLAY implementation for the host simulator. Parses the same
+ * subcommands as Audio.c cmd_play(), validates arguments device-style,
+ * and emits JSON events over the WS transport so web/audio.js can
+ * reproduce the sound in WebAudio. File-based playback (WAV / FLAC /
+ * MP3 / MODFILE) is intentionally unimplemented — defer to Phase 5.
+ */
+static int host_play_parse_channel(unsigned char *arg, int *left, int *right) {
+    *left = 0; *right = 0;
+    if (checkstring(arg, (unsigned char *)"L")) { *left = 1; return 1; }
+    if (checkstring(arg, (unsigned char *)"R")) { *right = 1; return 1; }
+    if (checkstring(arg, (unsigned char *)"B")) { *left = *right = 1; return 1; }
+    char *p = (char *)getCstring(arg);
+    if (!strcasecmp(p, "L")) { *left = 1; return 1; }
+    if (!strcasecmp(p, "R")) { *right = 1; return 1; }
+    if (!strcasecmp(p, "B") || !strcasecmp(p, "M")) { *left = *right = 1; return 1; }
+    return 0;
+}
+
+static const char *host_play_parse_type(unsigned char *arg) {
+    if (checkstring(arg, (unsigned char *)"O")) return "O";
+    if (checkstring(arg, (unsigned char *)"Q")) return "Q";
+    if (checkstring(arg, (unsigned char *)"T")) return "T";
+    if (checkstring(arg, (unsigned char *)"W")) return "W";
+    if (checkstring(arg, (unsigned char *)"S")) return "S";
+    if (checkstring(arg, (unsigned char *)"P")) return "P";
+    if (checkstring(arg, (unsigned char *)"N")) return "N";
+    if (checkstring(arg, (unsigned char *)"U")) return "U";
+    char *p = (char *)getCstring(arg);
+    if (!strcasecmp(p, "O")) return "O";
+    if (!strcasecmp(p, "Q")) return "Q";
+    if (!strcasecmp(p, "T")) return "T";
+    if (!strcasecmp(p, "W")) return "W";
+    if (!strcasecmp(p, "S")) return "S";
+    if (!strcasecmp(p, "P")) return "P";
+    if (!strcasecmp(p, "N")) return "N";
+    if (!strcasecmp(p, "U")) return "U";
+    return NULL;
+}
+
+void cmd_play(void) {
+    unsigned char *tp;
+
+    if (checkstring(cmdline, (unsigned char *)"STOP")) {
+        host_sim_audio_stop();
+        return;
+    }
+    if (checkstring(cmdline, (unsigned char *)"PAUSE")) {
+        host_sim_audio_pause();
+        return;
+    }
+    if (checkstring(cmdline, (unsigned char *)"RESUME")) {
+        host_sim_audio_resume();
+        return;
+    }
+    if (checkstring(cmdline, (unsigned char *)"CLOSE")) {
+        host_sim_audio_stop();
+        return;
+    }
+    if ((tp = checkstring(cmdline, (unsigned char *)"VOLUME"))) {
+        getargs(&tp, 3, (unsigned char *)",");
+        if (argc < 1) error("Argument count");
+        int vl = 100, vr = 100;
+        if (*argv[0]) vl = getint(argv[0], 0, 100);
+        vr = vl;
+        if (argc == 3) vr = getint(argv[2], 0, 100);
+        host_sim_audio_volume(vl, vr);
+        return;
+    }
+    if ((tp = checkstring(cmdline, (unsigned char *)"TONE"))) {
+        getargs(&tp, 7, (unsigned char *)",");
+        if (!(argc == 3 || argc == 5 || argc == 7)) error("Argument count");
+        MMFLOAT f_left = getnumber(argv[0]);
+        MMFLOAT f_right = getnumber(argv[2]);
+        if (f_left < 0.0 || f_left > 22050.0) error("Valid is 0Hz to 20KHz");
+        if (f_right < 0.0 || f_right > 22050.0) error("Valid is 0Hz to 20KHz");
+        int has_dur = 0;
+        long long dur_ms = 0;
+        if (argc > 4) {
+            dur_ms = getint(argv[4], 0, INT_MAX);
+            has_dur = 1;
+            if (dur_ms == 0) return;
+        }
+        /* Interrupt arg (argv[6]) is ignored on host — WAV interrupts
+         * aren't plumbed through --sim. */
+        host_sim_audio_tone((double)f_left, (double)f_right, has_dur, dur_ms);
+        return;
+    }
+    if ((tp = checkstring(cmdline, (unsigned char *)"SOUND"))) {
+        getargs(&tp, 9, (unsigned char *)",");
+        if (!(argc == 5 || argc == 7 || argc == 9)) error("Argument count");
+        int slot = getint(argv[0], 1, 4);
+        int left = 0, right = 0;
+        if (!host_play_parse_channel(argv[2], &left, &right))
+            error("Position must be L, R, or B");
+        const char *type = host_play_parse_type(argv[4]);
+        if (!type) error("Invalid type");
+        if (!left && !right) error("Position must be L, R, or B");
+        if (argc == 5 && strcmp(type, "O") != 0) error("Argument count");
+        MMFLOAT f_in = 10.0;
+        if (argc >= 7) f_in = getnumber(argv[6]);
+        if (f_in < 1.0 || f_in > 20000.0) error("Valid is 1Hz to 20KHz");
+        int vol = 25;
+        if (argc == 9) vol = getint(argv[8], 0, 25);
+        const char *ch = (left && right) ? "B" : (left ? "L" : "R");
+        host_sim_audio_sound(slot, ch, type, (double)f_in, vol);
+        return;
+    }
+    if (checkstring(cmdline, (unsigned char *)"NEXT") ||
+        checkstring(cmdline, (unsigned char *)"PREVIOUS") ||
+        checkstring(cmdline, (unsigned char *)"LOAD SOUND")) {
+        /* No-op on host: no MOD/FLAC/MP3 player state to step through. */
+        return;
+    }
+    error("Unsupported on host: PLAY WAV/FLAC/MP3/MODFILE etc.");
+}
 void cmd_poke(void) {}
 static void host_fill_polygon_edges(const float *poly_x, const float *poly_y,
                                     int vertex_count, int count,
@@ -2143,7 +2711,19 @@ void fun_at(void) {}
 void fun_cwd(void) {}
 void fun_date(void) {
     sret = GetTempMemory(STRINGSIZE);
-    strcpy((char *)sret, "02-01-2024");
+    /* Tests set MMBASIC_HOST_DATE to pin a deterministic value across
+     * interpreter + VM comparison; otherwise fall back to wall clock. */
+    const char *mock = getenv("MMBASIC_HOST_DATE");
+    if (mock && *mock) {
+        strncpy((char *)sret, mock, 15);
+        ((char *)sret)[15] = '\0';
+    } else {
+        time_t now = time(NULL);
+        struct tm lt;
+        localtime_r(&now, &lt);
+        snprintf((char *)sret, 16, "%02d-%02d-%04d",
+                 lt.tm_mday, lt.tm_mon + 1, lt.tm_year + 1900);
+    }
     CtoM(sret);
     targ = T_STR;
 }
@@ -2237,7 +2817,16 @@ void fun_spi2(void) {}
 void fun_sprite(void) {}
 void fun_time(void) {
     sret = GetTempMemory(STRINGSIZE);
-    strcpy((char *)sret, "03:04:05");
+    const char *mock = getenv("MMBASIC_HOST_TIME");
+    if (mock && *mock) {
+        strncpy((char *)sret, mock, 15);
+        ((char *)sret)[15] = '\0';
+    } else {
+        time_t now = time(NULL);
+        struct tm lt;
+        localtime_r(&now, &lt);
+        snprintf((char *)sret, 16, "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+    }
     CtoM(sret);
     targ = T_STR;
 }
@@ -2260,7 +2849,9 @@ void CloseAllFiles(void) {}
 void CloseAudio(int all) { (void)all; }
 void closeframebuffer(char layer) { host_framebuffer_close(layer); }
 void clear320(void) {}
-void DisplayPutC(char c) { host_print(&c, 1); }
+/* DisplayPutC is now the real one from gfx_console_shared.c. It gates on
+ * Option.DISPLAY_CONSOLE and calls through the DrawBitmap / DrawRectangle
+ * function pointers set up in host_runtime_begin. */
 void enable_interrupts_pico(void) {}
 void disable_interrupts_pico(void) {}
 void initFonts(void) { FontTable[0] = (unsigned char *)font1; }
@@ -2274,7 +2865,15 @@ uint32_t __get_MSP(void) { return 0xFFFFFFFF; }  /* always pass stack overflow c
 /* Console I/O -- hooks into host_output_hook for output capture */
 extern void (*host_output_hook)(const char *text, int len);
 
+/* The bespoke --sim console emulator that once lived here has been
+ * removed. Console output now flows through the real device path:
+ *   MMputchar → putConsole → DisplayPutC → GUIPrintChar → DrawBitmap
+ * where DisplayPutC / GUIPrintChar are the shared functions in
+ * gfx_console_shared.c and DrawBitmap points at host_draw_bitmap_fn. */
+
 static void host_print(const char *s, int len) {
+    /* Bypass the console-routing machinery — this is only used by
+     * MMfputs(stdout) and output-capture, which want raw stdout only. */
     if (host_output_hook) host_output_hook(s, len);
     else fwrite(s, 1, len, stdout);
 }
@@ -2363,6 +2962,24 @@ int MMInkey(void) {
         return (unsigned char)host_key_script[host_key_script_pos++];
     }
 
+#ifdef MMBASIC_SIM
+    /* --sim path: keys injected by the WebSocket server from the browser.
+     * When the server is active we always prefer it; if the queue is
+     * empty and stdin isn't a live TTY, yield 1ms and return -1 so the
+     * caller's polling loop (Editor, INKEY$) doesn't pin a core. The
+     * sleep also advances CursorTimer so the blinker runs at a constant
+     * rate regardless of how hard the caller is polling. */
+    extern int host_sim_active;
+    if (host_sim_active) {
+        int c = host_sim_pop_key();
+        if (c >= 0) return c;
+        if (!host_raw_mode_is_active()) {
+            host_sleep_us(1000);
+            return -1;
+        }
+    }
+#endif
+
     /* REPL path: live terminal. */
     if (host_raw_mode_is_active()) {
         int c = host_read_byte_nonblock();
@@ -2394,32 +3011,72 @@ int MMInkey(void) {
     return -1;
 }
 
+/* Matches PicoMite.c:786-794: blink the cursor while waiting for a key,
+ * hide it once we have one. ShowCursor reads CursorTimer (ticked by
+ * host_sync_msec_timer_value); host_sleep_us() calls host_sync_msec_timer
+ * so CursorTimer advances on every spin. */
 int MMgetchar(void) {
     int ch;
-    while ((ch = MMInkey()) == -1) {
-        host_sleep_us(1000);
-    }
+    do {
+        ShowCursor(1);
+        ch = MMInkey();
+        if (ch == -1) host_sleep_us(1000);
+    } while (ch == -1);
+    ShowCursor(0);
     return ch;
 }
+/*
+ * Matches PicoMite.c:573-575 + 615-622 verbatim — both the dispatch and
+ * MMCharPos tracking. Keeping this shape means `SSPrintString`
+ * (serial-only, emits VT100 escapes from the Editor) never reaches
+ * DisplayPutC, and that the device's console-routing rules apply
+ * identically on host.
+ */
+void putConsole(int c, int flush) {
+    if (OptionConsole & 2) DisplayPutC((char)c);
+    if (OptionConsole & 1) SerialConsolePutC((char)c, flush);
+}
+
 char MMputchar(char c, int flush) {
-    if (host_output_hook) host_output_hook(&c, 1);
-    else {
-        fputc(c, stdout);
-        if (flush) fflush(stdout);
+    if (host_output_hook) {
+        host_output_hook(&c, 1);
+    } else {
+        putConsole(c, flush);
     }
+    if (isprint((unsigned char)c)) MMCharPos++;
+    if (c == '\r') MMCharPos = 1;
     return c;
 }
-void MMPrintString(char *s) { host_prints(s); }
-void SSPrintString(char *s) { host_prints(s); }
+
+void MMPrintString(char *s) {
+    while (*s) MMputchar(*s++, 0);
+    fflush(stdout);
+}
+
+void SSPrintString(char *s) {
+    /* Serial-only. The Editor emits VT100 escapes through this path; they
+     * must never reach DisplayPutC, or the screen console would render
+     * them as literal glyphs. */
+    while (*s) SerialConsolePutC(*s++, 0);
+    fflush(stdout);
+}
 /* PRet/PInt/PFlt/SRet/SInt/SIntComma/PIntComma/PIntH/PIntB/PIntHC/PIntBC/
  * PFltComma are now in MMBasic_Print.c (shared with the device build),
  * not stubbed here. */
+/*
+ * MMfputs / MMfputc: match FileIO.c:3254 / 3386 verbatim. When filenbr==0,
+ * route through MMputchar so output reaches both the terminal (stdout)
+ * and the framebuffer console (via putConsole → DisplayPutC), instead of
+ * going to stdout alone. PRINT, INPUT echo, CAT, and friends all land
+ * here.
+ */
 void MMfputs(unsigned char *p, int filenbr) {
     if (!p) return;
+    int i = *p++;
     if (filenbr == 0) {
-        host_print((char *)(p + 1), *p);
+        while (i--) MMputchar(*p++, 1);
     } else {
-        FilePutStr(*p, (char *)(p + 1), filenbr);
+        FilePutStr(i, (char *)p, filenbr);
     }
 }
 int MMfeof(int fnbr) {
@@ -2429,10 +3086,7 @@ int MMfeof(int fnbr) {
     return FileEOF(fnbr);
 }
 unsigned char MMfputc(unsigned char c, int fnbr) {
-    if (fnbr == 0) {
-        host_print((char *)&c, 1);
-        return c;
-    }
+    if (fnbr == 0) return (unsigned char)MMputchar((char)c, 1);
     return (unsigned char)FilePutChar((char)c, fnbr);
 }
 int MMfgetc(int filenbr) {
@@ -2469,10 +3123,21 @@ void MMgetline(int filenbr, char *p) {
     *p = 0;
 }
 void printoptions(void) {}
-void putConsole(int c, int flush) { char ch = c; host_print(&ch, 1); if (flush) fflush(stdout); }
+/* putConsole defined above — matches the device dispatch. */
 int getConsole(void) { return -1; }
 void myprintf(char *s) { host_prints(s); }
-char SerialConsolePutC(char c, int flush) { host_print(&c, 1); if (flush) fflush(stdout); return c; }
+char SerialConsolePutC(char c, int flush) {
+    /* Host's "serial port" is stdout. The output-capture hook has already
+     * been taken care of at the MMputchar level for console text.
+     *
+     * In raw mode OPOST is disabled, so '\n' on its own no longer returns
+     * the cursor to column 0 — without this translation, every prompt and
+     * error message stair-steps down the terminal. */
+    if (c == '\n' && host_raw_mode_is_active()) fputc('\r', stdout);
+    fputc(c, stdout);
+    if (flush) fflush(stdout);
+    return c;
+}
 int kbhitConsole(void) { return 0; }
 
 /* Host legacy file shim: interpreter core stays untouched; storage is the
@@ -2549,12 +3214,12 @@ int FileLoadProgram(unsigned char *fname, bool chain) {
     host_append_default_ext(path, sizeof(path), ".bas");
 
     char *source = read_basic_source_file(path);
-    if (!source) return 0;
+    if (!source) error("Cannot find file");
 
     ClearRuntime(true);
     int rc = load_basic_source(source);
     free(source);
-    if (rc != 0) return 0;
+    if (rc != 0) error("Cannot parse file");
     PrepareProgram(false);
     /* Same hygiene as cmd_load — don't leave the last file line in inpbuf
      * for the next EditInputLine to pick up. */
@@ -2726,7 +3391,9 @@ void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, int c, int fil
 void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, char *str) {
     host_draw_text(x, y, fnt, jh, jv, jo, fc, bc, str);
 }
-void ShowCursor(int show) { (void)show; }
+/* ShowCursor is now the real one from gfx_console_shared.c. It reads
+ * CursorTimer (ticked below in host_sync_msec_timer_value) and draws the
+ * blinking underline via DrawLine. */
 int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }
 void setmode(int mode, bool clear) { (void)mode; (void)clear; }
 int rgb(int r, int g, int b) { return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF); }

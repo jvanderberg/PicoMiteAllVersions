@@ -1,15 +1,48 @@
 # MMBasic Simulator Plan
 
-## Status (as of this session)
+## Status (as of 2026-04-17)
 
-- **Phase 0 — host REPL on terminal: ✅ DONE.** Interactive MMBasic over a real TTY, using the device's `EditInputLine` (history, arrow keys, F-keys, cursor editing, EDIT). LOAD / SAVE / FILES / RUN / FRUN work against a real host directory (`--sd-root` flag, default cwd). 191/191 existing tests still pass. Commits: `51bb8ce` (initial host REPL + monolith split), `da6d070` (REPL state-bug fixes).
-- **Phase 1 — web shell: 🚧 next up.** Everything below under "Phase 1" is what to build next.
+- **Phase 0 — host REPL on terminal: ✅ DONE.** Interactive MMBasic over a real TTY using the device's `EditInputLine`. LOAD / SAVE / FILES / RUN / FRUN route through the host FS (`--sd-root`). 191/191 tests pass. Commits: `51bb8ce`, `da6d070`.
+- **Phase 1 — HTTP + WS framebuffer streaming: ✅ DONE.** `make sim` builds `mmbasic_sim` with vendored Mongoose + vanilla-JS frontend. Originally streamed full `FRMB` frames at ~60 Hz; now streams a **`CMDS` opcode stream** (CLS / RECT / PIXEL / SCROLL / BLIT) pushed immediately on every draw. FRMB is kept as a one-shot bootstrap for new clients.
+- **Phase 2 — keyboard input: ✅ DONE.** Browser `keydown` → JSON `{op:"key",code}` → server key queue → host `MMInkey`. Tracks held keys by `ev.code` (not `ev.key`) so Shift+char releases cleanly. Paces auto-repeat (150 ms initial, 70 ms interval) so games like `pico_blocks` don't overshoot. F1–F12, arrows, Home/End/PgUp/PgDn, Ctrl-<letter>, Insert/Delete all mapped.
+- **Phase 3 — audio commands: ✅ DONE.** `PLAY TONE / STOP / SOUND / VOLUME / PAUSE / RESUME` translate to JSON TEXT frames on the same `/ws` socket and drive a WebAudio engine (`web/audio.js`). Both the interpreter's `cmd_play` (host copy) and the VM's `vm_sys_audio_play_tone/stop` syscalls share the emitter in `host/host_sim_audio.c`. File-based playback (`PLAY WAV / FLAC / MP3 / MODFILE`) is deferred to Phase 5.
+- **Phase 4 — polish: partially delivered** (see [Phase 4 progress](#phase-4--polish) below). Remaining: auto-open browser, file upload, FPS cap, status indicator.
 
 See [References](#references) for where things live.
 
+### Delivered since the original plan
+
+**Architecture / philosophy**
+- Reframed `host/` as **its own MMBasic port**, peer to PicoMite / Maximite / MMBasic-DOS / STM32H743, not "Pico for x86". See `memory/project_host_is_its_own_port.md`. When host/device diverge, the question isn't "make them match" — it's "is this the HAL (legitimate) or the core leaking into host-only code (extract to shared)?"
+- Extracted `DisplayPutC` / `GUIPrintChar` / `ShowCursor` from `Draw.c` → `gfx_console_shared.c`, shared by host and device. Driven by "why aren't we running device code as-is?"
+- Confirmed **PicoMite is resolution-independent**: set `HRes`/`VRes` + framebuffer dims before first draw and everything else (Option.Width, clipping, console geometry) follows. See `memory/project_resolution_independent.md`.
+
+**Wire protocol v3 — command stream**
+- `CMDS` opcode stream replaces per-frame RGBA blast. Opcodes: `0x01 CLS`, `0x02 RECT`, `0x03 PIXEL`, `0x04 SCROLL`, `0x05 BLIT`. Pushed immediately on draw, not on a timer.
+- New clients receive a one-shot `FRMB` full-frame bootstrap so they don't need the prior command history.
+- Server poll loop is `mg_mgr_poll(1ms)`; no throttling.
+- `FASTGFX` double-buffering works via a host back buffer (`host_fastgfx_back`); `bc_fastgfx_swap` memcpys to front and emits a single `BLIT`.
+
+**Host simulator behavior**
+- `--sim` entry in `host_main.c` configures PicoCalc-style defaults: 320×320, 8×12 font, green phosphor palette (`0x00FF00`), `OptionConsole=3` (UART + screen), `Option.DISPLAY_CONSOLE=1`, `Option.ColourCode=1`, `Option.Tab=4`.
+- `--resolution WxH` CLI option (default 320×320). Clamped to `[80×60, 2048×2048]`. Sets `HRes`/`VRes` + `host_fb_width`/`host_fb_height` before framebuffer allocation.
+- **1 ms tick thread** (`host_sim_tick_start`) mirrors device `timer_callback` (PicoMite.c:826): bumps `mSecTimer`, `CursorTimer`, `PauseTimer`, `Timer1..5`, `TickTimer[]`, `ScrewUpTimer`, etc. Makes PAUSE, TIMER, ON INTERRUPT TICK, and cursor blink work without per-hook patching.
+- `MMputchar` / `putConsole` / `SerialConsolePutC` now match device dispatch exactly. `SSPrintString` is serial-only (never hits `DisplayPutC`), so VT100 escapes stop polluting the framebuffer console.
+- `MMfputs` / `MMfputc` for `filenbr=0` route through `MMputchar` (matches `FileIO.c:3254/3386`), so PRINT output reaches both stdout *and* the framebuffer console.
+- `MMInkey` sleeps 1 ms when empty in `--sim` mode so the Editor poll loop doesn't pin a CPU.
+
+**Banner + terminal hygiene**
+- Boot banner matches device (`PicoMite MMBasic Host V6.01.00b10` + copyright lines + "Bytecode VM by Josh V") plus a short "Host REPL — Ctrl-D to exit." line.
+- `SerialConsolePutC` translates `\n` → `\r\n` when raw mode is active (OPOST is disabled there), fixing the stair-step of every prompt / error / editor message.
+
+**Web frontend**
+- Canvas pixel buffer matches server-reported dimensions (from FRMB/CMDS header). CSS sizing is set from JS via `DISPLAY_SCALE = 2` — **every framebuffer pixel renders as exactly 2×2 CSS px** regardless of resolution. Aspect ratio preserved.
+- `image-rendering: pixelated` keeps the scaling sharp.
+- Green-phosphor glow preserved via CSS `box-shadow`.
+
 ## Goal
 
-Browser-based desktop simulator for the PicoCalc/PicoMite. Same interpreter and VM as the device — only the I/O backend changes. The host binary embeds an HTTP + WebSocket server; a React frontend in the browser is the display, keyboard, and audio output.
+Browser-based desktop simulator for the PicoCalc/PicoMite. Same interpreter and VM as the device — only the I/O backend changes. The host binary embeds an HTTP + WebSocket server; a plain-JS frontend in the browser is the display, keyboard, and audio output.
 
 Design principles:
 - The interpreter and VM stay untouched. Even the device's main interactive loop stays where it is — we only redirect its inputs and outputs.
@@ -21,14 +54,14 @@ Design principles:
 
 ```
 ┌──────────────────────────┐    WebSocket     ┌──────────────────────────┐
-│  mmbasic_sim (C)         │ ◄─────────────►  │  Browser (React)         │
+│  mmbasic_sim (C)         │ ◄─────────────►  │  Browser (vanilla JS)    │
 │  ┌────────────────────┐  │                  │  ┌────────────────────┐  │
-│  │ MMBasic interpreter│  │  binary frames → │  │ <Display/> canvas  │  │
-│  │   + bytecode VM    │  │  ← key events    │  │ <Keyboard/>        │  │
-│  └────────────────────┘  │  audio cmds  →   │  │ <AudioEngine/>     │  │
-│  host_stubs (existing)   │                  │  │   (WebAudio)       │  │
-│  ┌────────────────────┐  │                  │  └────────────────────┘  │
-│  │ host_sim_server.c  │  │  HTTP: index.html, JS bundle, assets        │
+│  │ MMBasic interpreter│  │  binary frames → │  │ <canvas> + app.js  │  │
+│  │   + bytecode VM    │  │  ← key events    │  │ window keydown →   │  │
+│  └────────────────────┘  │  audio cmds  →   │  │ audio.js (WebAudio)│  │
+│  host_stubs (existing)   │                  │  └────────────────────┘  │
+│  ┌────────────────────┐  │                  │                          │
+│  │ host_sim_server.c  │  │  HTTP: index.html, app.js, style.css        │
 │  │ (Mongoose)         │  │                  │                          │
 │  └────────────────────┘  │                  │                          │
 └──────────────────────────┘                  └──────────────────────────┘
@@ -41,13 +74,15 @@ The REPL renders into the framebuffer using the existing on-screen text renderer
 | Decision | Choice | Rationale |
 |---|---|---|
 | HTTP + WS library | Mongoose (vendored, single .c/.h) | Designed for embedding in C apps; WS built in; battle-tested |
-| Frontend | React + Vite + TypeScript | Standard, easy multi-pane UI, good DX |
-| Framebuffer wire format | Raw RGBA 320×240×4 = 307 KB/frame | At 60fps = ~18 MB/s, trivial on loopback. Optimize later only if needed |
+| Frontend | Vanilla JS, no build step | Single `index.html` + ES modules. Zero toolchain. The frontend is a thin shell (canvas + WS) — React/Vite is overkill. The C server is the end-all-be-all; HTML is just the window. |
+| Framebuffer wire format | **CMDS opcode stream** + one-shot `FRMB` bootstrap for new clients | Originally raw RGBA full-frame; switched to immediate command push so idle frames cost nothing and animated frames avoid tearing / timer jitter |
+| Display resolution | `--resolution WxH`, default 320×320 | PicoMite is resolution-independent; keep it configurable at launch |
+| Client scaling | Integer pixel-doubling (2× via CSS) | Sharp edges, aspect-preserving, resolution-agnostic |
 | Audio | Commands → WebAudio | Avoids PCM streaming and underrun handling; matches MMBasic's tone-centric audio model |
 | REPL UI | Rendered into framebuffer | PicoCalc-faithful; reuses device's text-on-screen renderer; one source of truth |
 | Bind address | `127.0.0.1` by default | Safe default; `--listen 0.0.0.0` to share |
 | Auto-open browser | Yes, on `--sim` start | Better DX |
-| Frontend asset serving | `web/dist/` from disk in dev | Phase 5: `xxd -i` bundle into binary for single-file deploy |
+| Frontend asset serving | `web/` from disk in dev | Phase 5: `xxd -i` bundle into binary for single-file deploy |
 | Build target | Separate `mmbasic_sim` binary, new `make sim` | Existing CI / test harness untouched |
 | Terminal REPL | Permanent feature, not just scaffolding | Useful for CI, scripting, SSH; can coexist with `--sim` for incremental testing |
 
@@ -83,11 +118,11 @@ PicoMite.c: 5065 → 4131 lines (−934). Both `CMakeLists.txt` and `CMakeLists 
 - Graphics commands (`BOX`/`LINE`/`CIRCLE`/`PIXEL`/`POLYGON`/`TEXT`) use simplified scalar-only bespoke host implementations; device uses `gfx_*_shared.c` with array-form support. Phase 4 polish: wire host into the shared path with host draw callbacks.
 - HDMI/VGA display pipeline (`QVga*`, `HDMIloop0-3`, `HDMICore`, `dma_irq_handler0`) is still in `PicoMite.c`. Device-only; low priority to extract since host will never touch it.
 
-### Phase 1 — HTTP + WS server, framebuffer streaming 🚧 NEXT
+### Phase 1 — HTTP + WS server, framebuffer streaming ✅ DONE
 
 1. **Vendor Mongoose** at `host/vendor/mongoose.{c,h}` — single-file embeddable HTTP + WS server.
-2. **Scaffold `web/`** — Vite + React + TypeScript. Single `<Display/>` component that opens a WebSocket to `ws://<host>/ws`, receives binary RGBA frames, and draws each into a 320×240 `<canvas>` via `putImageData`. CSS `image-rendering: pixelated` + 2-3× scale.
-3. **New `host/host_sim_server.c`** — Mongoose event loop. HTTP serves `web/dist/` static files. WS endpoint at `/ws` handles connections and pushes frames.
+2. **Scaffold `web/`** — plain `index.html`, `app.js`, `style.css`. No build step. A single `<canvas>` element opens a WebSocket to `ws://<host>/ws`, receives binary RGBA frames, and draws each via `putImageData`. CSS `image-rendering: pixelated` + 2-3× scale.
+3. **New `host/host_sim_server.c`** — Mongoose event loop. HTTP serves `web/` static files directly from disk. WS endpoint at `/ws` handles connections and pushes frames.
 4. **Framebuffer-flip hook** in `host_stubs_legacy.c` — when `host_framebuffer` content changes (or on a 60Hz timer), call into the server to broadcast a binary WS message. The host framebuffer already exists as `uint32_t host_framebuffer[]` — it's what the test harness captures pixels from. No restructure needed, just a hook.
 5. **New `--sim [--port N] [--listen ADDR]` flag** in `host_main.c`. `--sim` implies `--repl` behavior (interactive session, not one-shot); pairing with `--repl` means terminal I/O + web display coexist — a useful intermediate state for testing before keyboard-over-WS exists.
 6. **Build target** — new `make sim` produces `mmbasic_sim` binary. `make` / `make test` stay on `mmbasic_test`. CI untouched.
@@ -96,92 +131,131 @@ PicoMite.c: 5065 → 4131 lines (−934). Both `CMakeLists.txt` and `CMakeLists 
 
 **Size check:** 320×240×4 = 307 KB/frame × 60 fps = ~18 MB/s. Loopback handles that trivially. If we ever care about WAN performance, switch to RGB565 (halves it) or dirty-rect deltas — but not in v1.
 
-### Phase 2 — Keyboard input
+**Delivered (Phase 1 notes):**
+- Mongoose 7.21 vendored at `host/vendor/mongoose.{c,h}`. License is GPL-2.0-or-commercial — fine for the host-only dev tool but would need a swap if we ever ship the sim in a closed-source context.
+- Server runs on a pthread; MMBasic stays on the main thread. Framebuffer broadcast is unlocked — the worst visible artifact is a torn frame for 16 ms.
+- Wire format: 8-byte header (`"FRMB"` + u16 width + u16 height, little-endian) followed by RGBA8 pixels. Browser decodes in `web/app.js`.
+- `--sim` currently pairs with the terminal REPL (like `--repl`) — typing BASIC at the terminal updates the browser. No auto-run of a `.bas` file yet; the `sample.bas` arg in the acceptance criteria is implemented via `RUN "sample.bas"` typed at the prompt. Dedicated `--sim file.bas` auto-run can be added when useful.
+- Multi-client: server broadcasts to every open WS connection; opening two tabs shows the same frames in both.
+- 191/191 existing tests still pass — `make` (test harness) and `make sim` share source but build into separate object dirs.
 
-- `<Keyboard/>` React component captures `keydown` on window, translates to PicoCalc keycodes, sends `{op:"key", code: N}` (JSON) over WS.
-- Map PicoCalc-specific keys (Fn modifier, special keys) to browser equivalents. Read keyboard driver source for exact keycode table (probably `i2c_keyboard.c` or similar); produce a shared `picocalc_keymap.{h,ts}`.
-- Server feeds events into the existing `host_keydown()` / `host_key_script` path. `INKEY$`, `KEYDOWN`, `INPUT` and the REPL's `EditInputLine` all work for free.
-- Acceptance: REPL fully usable in the browser. EDIT works.
+### Phase 2 — Keyboard input ✅ DONE
 
-### Phase 3 — Audio commands
+Delivered:
+- `web/app.js` attaches `keydown`/`keyup` listeners, translates to PicoMite keycodes (device codes from `Editor.h`: `BKSP=0x08`, `ENTER=0x0d`, `ESC=0x1b`, `UP=0x80`, `DOWN=0x81`, `LEFT=0x82`, `RIGHT=0x83`, `HOME=0x86`, `END=0x87`, `INSERT=0x84`, `PGUP=0x88`, `PGDN=0x89`, `F1..F12=0x91..0x9c`, `Ctrl-<letter>` = 1..26), and sends `{op:"key", code}` as JSON over WS.
+- Server parses JSON, drops byte into a pthread-mutex-protected key queue; `MMInkey` drains it in `--sim` mode.
+- **Held-key tracking by `ev.code` (physical key)** rather than `ev.key` (character) — fixes Shift+char sticky-key bug where `keydown` fires with `'"'` but `keyup` arrives with `"'"` (shift released first).
+- **Paced auto-repeat**: browser keydown auto-repeat (~30/s on macOS) is faster than device keyboard (~6/s). Simulator uses 150 ms initial delay, 70 ms interval (~14/s) via `setTimeout` chain. Games like `pico_blocks` paddle no longer overshoot.
+- `blur` handler drops all held-key timers so keys don't stick on tab-switch mid-press.
+- Acceptance met: REPL fully usable in the browser. EDIT works, line editor works, arrow keys + F-keys all functional.
 
-- New `host/host_sim_audio.c` replaces the no-op stubs in `vm_sys_audio.c` for host.
-- Each `vm_sys_audio_*` syscall translates to a JSON message:
-  - `{op:"tone", left_hz, right_hz, ms?}` — start tones (with optional duration)
-  - `{op:"stop"}` — silence
-  - `{op:"sound", channel, freq, wave, vol}` — `PLAY SOUND`
-- `<AudioEngine/>` keeps a pool of `OscillatorNode`s per channel, schedules with WebAudio's precise timing.
-- Defer `PLAY MODFILE` / `PLAY WAV` to v2 (needs file streaming, not commands).
+### Phase 3 — Audio commands ✅ DONE
+
+Delivered:
+
+- **`host/host_sim_audio.{c,h}`** — JSON event emitter. One thread-safe queue of JSON strings; producers are `cmd_play` (interpreter path) and `vm_sys_audio_play_tone/stop` (VM path); consumer is the Mongoose poll loop in `host_sim_server.c`, which pushes each string as a WebSocket TEXT frame to every client. In non-sim host builds all emitters compile as no-ops so `mmbasic_test` links unchanged.
+- **Real `cmd_play` on host** (replaces the Phase 0 stub in `host_stubs_legacy.c`). Handles `STOP / PAUSE / RESUME / CLOSE / VOLUME / TONE / SOUND`. Shares argument validation shape with `Audio.c` (same error messages for ranges / counts). `NEXT / PREVIOUS / LOAD SOUND` silently no-op; file-based forms (`WAV / FLAC / MP3 / MODFILE / …`) error out with "Unsupported on host".
+- **Wire protocol (server → client)** — JSON TEXT frames on the same `/ws` socket as the graphics CMDS:
+  - `{op:"tone", l, r, ms?}` — ms omitted = play forever until next STOP/TONE; ms=0 is a no-op (matches device).
+  - `{op:"sound", slot:1..4, ch:"L"|"R"|"B", type:"S|Q|T|W|O|P|N", f, vol:0..25}`.
+  - `{op:"volume", l, r}` (0..100), `{op:"stop"}`, `{op:"pause"}`, `{op:"resume"}`.
+- **`web/audio.js`** — WebAudio engine, imported as a module by `app.js`. Master L/R `GainNode`s feeding a `ChannelMerger` into `destination`. `PLAY TONE` uses a pair of `OscillatorNode`s (sine, one per side, 0 Hz = no-tone). `PLAY SOUND` keeps 4 slots × {L, R} voices; S/Q/T/W map to oscillator wave types, P = short looping random buffer (periodic-noise approximation), N = 1 s white-noise buffer, O = disconnect that side. Master gain is `(v/100)²` for perceptually-smooth volume changes. AudioContext creation deferred until the first keydown / click so browsers don't block startup.
+- **Demo programs** (`demo_sound_tones.bas`, `demo_sound_waves.bas`, `demo_sound_chord.bas`, `demo_melody.bas`, `demo_sound_sfx.bas`) exercise every code path. `demo_sound_waves` / `demo_sound_chord` / `demo_sound_sfx` require `RUN` (interpreter) because the VM's `source_compile_play` only natively handles TONE / STOP.
+
+**Deferred to Phase 5:** `PLAY MODFILE` / `PLAY WAV` / `PLAY FLAC` / `PLAY MP3` (needs binary streaming, not commands), `PLAY LOAD SOUND` (user-defined waveforms), VS1053 MIDI family.
 
 ### Phase 4 — Polish
 
-- Auto-open browser on `--sim` start (`open` on macOS, `xdg-open` on Linux, `start` on Windows).
+**Delivered:**
+- **Graphics primitives now share `gfx_*_shared.c`** — `gfx_box_shared.c`, `gfx_circle_shared.c`, `gfx_line_shared.c`, `gfx_pixel_shared.c`, `gfx_cls_shared.c`, `gfx_text_shared.c`, `gfx_console_shared.c`. Host wires its own `DrawRectangle` / `DrawBitmap` / `ScrollLCD` / `DrawPixel` backings into the same function-pointer table the device uses.
+- **Configurable resolution** (`--resolution WxH`) — arbitrary dimensions between 80×60 and 2048×2048. Pixel-doubled on client.
+- **Status indicator in UI** — `<div id="status">` shows "connecting…" / "connected" (green) / "disconnected — retrying…" (red). Auto-reconnect on drop.
+- **Command-stream wire protocol** — immediate push instead of full-frame broadcast; reduces bandwidth for mostly-static frames, eliminates tearing.
+- **FASTGFX double-buffering** on host — `host_fastgfx_back` + `bc_fastgfx_swap` for flicker-free animated games.
+
+**Remaining:**
+- Auto-open browser on `--sim` start (`open` / `xdg-open` / `start`).
 - Window title shows running program / interpreter status.
-- Configurable frame rate cap (`--fps N`).
-- Status indicator in UI: connected, running, error.
-- File upload: drag `.bas` file onto the page, server saves it to `host_sd_root`.
-- Wire graphics commands into `gfx_*_shared.c` so host supports array-form BOX/LINE/CIRCLE/etc. (removes ~400 lines of bespoke scalar-only host code).
+- Configurable frame rate cap (`--fps N`) — currently uncapped, which is mostly fine since CMDS is event-driven.
+- File upload: drag `.bas` onto the page, server saves to `host_sd_root`.
 
 ### Phase 5 — Optional extras
 
 - GPIO panel: side panel showing `host_pin_value[]` and `host_pin_mode[]` state. Could be interactive (click a pin to drive it).
-- Single-binary deploy: `xxd -i` the `web/dist/` bundle into a C header, embed in binary. `mmbasic_sim` becomes a single self-contained executable.
+- Single-binary deploy: `xxd -i` the `web/` files into a C header, embed in binary. `mmbasic_sim` becomes a single self-contained executable.
 - Serial console panel: separate `<Console/>` that mirrors anything written to the simulated USB CDC. Useful for serial-port-style interaction without disturbing the main display.
 - `PLAY MODFILE` / `PLAY WAV` via PCM streaming (binary WS frames + AudioWorklet).
 - HDMI/VGA display pipeline extraction from `PicoMite.c` (only if there's appetite for larger device testing).
 
-## Wire format
+## Wire format (v3, current)
 
-**Server → client:**
-- Binary message, 307,200 bytes: framebuffer RGBA, row-major. Always full frame in v1.
-- JSON message: `{op:"tone"|"stop"|"sound"|...}` for audio commands and status updates.
+**Server → client:** binary WS, two variants (see `web/app.js` comment header for full opcode byte layouts).
 
-**Client → server:**
-- JSON message: `{op:"key", code: N, down: bool}` for key events.
-- JSON message: `{op:"upload", name: "...", data: "<base64>"}` (phase 4).
+1. **`FRMB`** (full frame, sent once per client on connect to bootstrap):
+   - 4 bytes magic `"FRMB"`
+   - u16 width, u16 height (LE)
+   - RGBA8 pixel data, row-major, `w*h*4` bytes
 
-A shared `web/src/protocol.ts` defines message types; the C side uses ad-hoc encoding (small enough that a header isn't worth it).
+2. **`CMDS`** (command stream, the default path for all subsequent drawing):
+   - 4 bytes magic `"CMDS"`
+   - u16 canvas width, u16 canvas height (LE)
+   - Sequence of opcodes:
+     - `0x01 CLS` — u32 color (5 bytes total)
+     - `0x02 RECT` — i16 x, i16 y, u16 w, u16 h, u32 color (13 bytes)
+     - `0x03 PIXEL` — i16 x, i16 y, u32 color (9 bytes)
+     - `0x04 SCROLL` — i16 lines (+down / -up), u32 bg color (7 bytes)
+     - `0x05 BLIT` — i16 x, i16 y, u16 w, u16 h, RGBA[w\*h] (9 + w\*h\*4 bytes)
+
+Future JSON messages for audio commands will live alongside binary frames (Phase 3).
+
+**Client → server:** JSON.
+- `{op:"key", code: N}` — one byte, device-style codes (see Phase 2 section for the full table).
+- `{op:"upload", name:"...", data:"<base64>"}` — Phase 4, not yet implemented.
+
+The protocol is small enough that neither side needs a schema file — one comment block in `app.js` and matching code in `host_sim_server.c` is enough.
 
 ## Build integration
 
 - New target `make sim` (or `./host/build_sim.sh`) builds `mmbasic_sim` separately from `mmbasic_test`. Existing `host/build.sh` and `host/run_tests.sh` untouched.
-- Mongoose and the React build add no dependencies to the test harness.
+- Mongoose adds no dependencies to the test harness. The web frontend has no build step and no dependencies at all — just static files.
 - CI continues to build and run only `mmbasic_test`.
 
 ## Keymap
 
-PicoCalc keys are mostly ASCII. Function keys, Fn-modifier combinations, and special keys will be mapped on demand by reading the device's keyboard driver source — not pre-investigated. Phase 2 will produce a small `picocalc_keymap.{h,ts}` shared between server and client.
+PicoCalc keys are mostly ASCII. Function keys, Fn-modifier combinations, and special keys will be mapped on demand by reading the device's keyboard driver source — not pre-investigated. Phase 2 will produce a small `host/picocalc_keymap.h` and mirror it in `web/keymap.js`.
 
-## File layout (after Phase 1)
+## File layout (current)
 
 ```
 host/
-  host_main.c                # --sim / --repl / --sd-root / --listen / --port
-  host_sim_server.c          # NEW in Phase 1: Mongoose HTTP+WS, frame push, event dispatch
-  host_sim_audio.c           # NEW in Phase 3: vm_sys_audio_* → WS audio commands
-  host_stubs_legacy.c        # add framebuffer-flip hook, key inject hook
+  host_main.c                # --sim / --repl / --sd-root / --listen / --port / --resolution / --web-root
+  host_sim_server.c          # DONE: Mongoose HTTP+WS, FRMB bootstrap + CMDS broadcast, key queue, audio TEXT drain
+  host_sim_server.h          # DONE: host_sim_server_start/stop
+  host_sim_audio.{c,h}       # DONE Phase 3: PLAY* → queued JSON TEXT frames for WS broadcast
+  host_stubs_legacy.c        # HAL: framebuffer, draw primitives, CMDS emitters, tick thread, key queue, cmd_play
+  host_framebuffer_backend.h # DONE: FASTGFX back-buffer recognition, fill helpers
   host_terminal.{c,h}        # DONE: termios raw mode, escape decoding
   host_fs.{c,h}              # DONE: POSIX directory listing for FILES/LOAD/SAVE
-  vendor/mongoose.{c,h}      # NEW in Phase 1: vendored, MIT
-  Makefile                   # add `sim` target
+  vendor/mongoose.{c,h}      # DONE: vendored Mongoose 7.21, GPL-2.0 (host-only, not shipped on device)
+  Makefile                   # DONE: `make sim` target
 web/
-  package.json
-  vite.config.ts
-  tsconfig.json
-  index.html
-  src/
-    main.tsx
-    App.tsx
-    Display.tsx              # <canvas> + WS frame handler
-    Keyboard.tsx             # window keydown listener → WS
-    AudioEngine.tsx          # WebAudio command processor
-    protocol.ts              # message type definitions
-    ws.ts                    # WS client wrapper
+  index.html                 # canvas + script tag
+  app.js                     # WS client, FRMB/CMDS decode, key send, paced repeat (ES module)
+  style.css                  # canvas styling (sizing is set from JS)
+  audio.js                   # DONE Phase 3: WebAudio engine (tone / sound / stop / volume / pause / resume)
+gfx_box_shared.c             # DONE: shared with device
+gfx_circle_shared.c          # DONE: shared with device
+gfx_line_shared.c            # DONE: shared with device
+gfx_pixel_shared.c           # DONE: shared with device
+gfx_cls_shared.c             # DONE: shared with device
+gfx_text_shared.c            # DONE: shared with device
+gfx_console_shared.c         # DONE: DisplayPutC / GUIPrintChar / ShowCursor, shared with device
 MMBasic_Prompt.c             # DONE: EditInputLine + lastcmd + MMPromptPos
 MMBasic_Print.c              # DONE: PRet/PInt/PFlt/...
 MMBasic_REPL.c               # DONE: MMBasic_RunPromptLoop() + helpers
 docs/
   simulator-plan.md          # this doc
+  bridge-restoration-plan.md # separate (FRUN bridge work)
 ```
 
 ## Out of scope (for v1)
@@ -197,7 +271,7 @@ docs/
 
 Notes from building Phase 0 that a fresh conversation should know before touching Phase 1:
 
-- **`host_sd_root`** is the REPL's filesystem root, defined in `host_stubs_legacy.c`. `NULL` in the test harness (falls through to in-memory FatFS). Non-NULL in `--repl` mode (cwd by default, overridden by `--sd-root`). Phase 1's server should inherit this — serving `web/dist/` is a separate concern but the file-upload path in Phase 4 writes into `host_sd_root`.
+- **`host_sd_root`** is the REPL's filesystem root, defined in `host_stubs_legacy.c`. `NULL` in the test harness (falls through to in-memory FatFS). Non-NULL in `--repl` mode (cwd by default, overridden by `--sd-root`). Phase 1's server should inherit this — serving `web/` is a separate concern but the file-upload path in Phase 4 writes into `host_sd_root`.
 - **Framebuffer is `host_framebuffer`** — uint32_t RGBA buffer, allocated in `host_stubs_legacy.c`. Drawing primitives (`host_fill_rect_pixels`, `host_draw_line_pixels`, `host_draw_triangle_pixels`, `host_draw_char`, `host_draw_text`) write directly. No existing "flip" event; Phase 1 must introduce one. Simplest: a dirty flag + a 60Hz timer, or hook every framebuffer-writing primitive.
 - **Text rendering already goes through the framebuffer.** `MMPrintString` → host stdout, but device-style graphics PRINT and `TEXT` command draw into `host_framebuffer` via `host_draw_text`. So as soon as the canvas is hooked up, text-mode programs show correctly *and* the REPL text display (if `Option.DISPLAY_CONSOLE` is enabled) would appear.
 - **`Option.DISPLAY_CONSOLE`** is currently 0 in the REPL (console text goes to terminal, not framebuffer). Phase 1 should decide: keep as-is (browser shows only graphics, terminal shows text), or set to 1 (browser shows a PicoCalc-faithful combined console+graphics). The plan says "framebuffer is source of truth" — argues for setting it to 1 in `--sim` mode.

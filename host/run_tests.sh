@@ -13,6 +13,12 @@
 set -e
 cd "$(dirname "$0")"
 
+# Pin DATE$ / TIME$ to deterministic values so interpreter vs VM oracle
+# comparisons match. Real wall-clock time is used when these are unset
+# (e.g. under --sim, so the clock demo shows the actual time).
+export MMBASIC_HOST_DATE=${MMBASIC_HOST_DATE:-02-01-2024}
+export MMBASIC_HOST_TIME=${MMBASIC_HOST_TIME:-03:04:05}
+
 BINARY=${BINARY:-./mmbasic_test}
 if [ ! -x "$BINARY" ]; then
     echo "Binary not found. Building..."

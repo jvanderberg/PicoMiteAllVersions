@@ -195,9 +195,12 @@ extern "C" {
             #define HEAPTOP 0x20078000
         #endif
     #else
-        #define HEAP_MEMORY_SIZE (120*1024)
+        #define HEAP_MEMORY_SIZE (128*1024)
         #define MAXVARS             512                     // 8 + MAXVARLEN + MAXDIM * 2  (ie, 56 bytes) - these do not incl array members
-        #define FLASH_TARGET_OFFSET (832 * 1024)
+        /* The rp2040 PicoCalc/PicoMite bridge-restoration image exceeds
+         * 940 KiB. Push the persisted options/program area above 1 MiB
+         * so the first write of defaults doesn't erase running code. */
+        #define FLASH_TARGET_OFFSET (1024 * 1024)
         #define MAX_CPU     420000
         #define MAXSUBFUN           256                     // each entry takes up 4 bytes
         #ifdef USBKEYBOARD

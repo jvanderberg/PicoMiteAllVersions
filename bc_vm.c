@@ -567,6 +567,12 @@ static void vm_text_fail_range(void *ctx, int value, int min, int max) {
 
 static void bc_vm_poll_interrupts(void) {
     static uint32_t loop_poll_counter = 0;
+#if defined(MMBASIC_HOST)
+    /* Host --slowdown applies per-backward-branch so FRUN throttles at
+     * the same granularity as RUN. On device this is a no-op. */
+    extern void host_sim_apply_slowdown(void);
+    host_sim_apply_slowdown();
+#endif
     loop_poll_counter++;
     if ((loop_poll_counter & 0x3FFu) != 0) return;
     CheckAbort();

@@ -67,7 +67,7 @@ static void *vm_sys_graphics_reserve_scratch(VMGfxScratchBuffer *buffer, size_t 
     if (buffer->ptr != NULL && buffer->bytes >= bytes) return buffer->ptr;
 
     new_ptr = BC_ALLOC(bytes);
-    if (!new_ptr) error("Not enough memory");
+    if (!new_ptr) error("NEM[gfx:scratch] want=%", (int)bytes);
     if (buffer->ptr) BC_FREE(buffer->ptr);
     buffer->ptr = new_ptr;
     buffer->bytes = bytes;
@@ -1818,11 +1818,11 @@ void vm_sys_graphics_framebuffer_create(int fast) {
     if (HRes <= 0 || VRes <= 0) error("Display not configured");
     bytes = vm_sys_graphics_fb_bytes();
     FrameBuf = (unsigned char *)BC_ALLOC(bytes);
-    if (FrameBuf == NULL) error("Not enough memory");
+    if (FrameBuf == NULL) error("NEM[gfx:fb] want=%", (int)bytes);
     memset(FrameBuf, 0, bytes);
     if (fast) {
         ShadowBuf = (unsigned char *)BC_ALLOC(bytes);
-        if (ShadowBuf == NULL) error("Not enough memory");
+        if (ShadowBuf == NULL) error("NEM[gfx:shadow] want=%", (int)bytes);
         memset(ShadowBuf, 0, bytes);
         fb_dma_chan = dma_claim_unused_channel(true);
     }
@@ -1841,7 +1841,7 @@ void vm_sys_graphics_framebuffer_layer(int has_colour, int colour) {
     bytes = vm_sys_graphics_fb_bytes();
     if (has_colour) transparent = vm_sys_graphics_rgb121((uint32_t)colour);
     LayerBuf = (unsigned char *)BC_ALLOC(bytes);
-    if (LayerBuf == NULL) error("Not enough memory");
+    if (LayerBuf == NULL) error("NEM[gfx:layer] want=%", (int)bytes);
     memset(LayerBuf, (int)(transparent | (transparent << 4)), bytes);
 #endif
 }

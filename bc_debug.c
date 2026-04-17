@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include "bytecode.h"
+#include "bc_alloc.h"
 #include "vm_device_support.h"
 
 /* Global debug flag - when set, VM execution dumps stats + disassembly */
@@ -908,22 +909,44 @@ static BCCrashInfo bc_crash_info;
  * Printing ensures we see progress even if the display is cleared on reset.
  */
 void bc_crash_checkpoint(int stage, const char *label) {
+    /* If this is the first checkpoint since last clear, init rolling state */
+    if (bc_crash_info.magic != BC_CRASH_MAGIC) {
+        bc_crash_info.sp_lowest = 0xFFFFFFFFu;
+        bc_crash_info.trail_head = 0;
+        bc_crash_info.trail_count = 0;
+        for (int t = 0; t < BC_CRASH_TRAIL_LEN; t++) bc_crash_info.trail[t] = 0;
+    }
     bc_crash_info.magic = BC_CRASH_MAGIC;
+
+    /* Save previous label as context for the crash dump */
+    for (int j = 0; j < 31; j++) bc_crash_info.prev_label[j] = bc_crash_info.label[j];
+    bc_crash_info.prev_label[31] = '\0';
+
     bc_crash_info.checkpoint = (uint32_t)stage;
 
-    /* Capture ARM stack pointer */
+    /* Capture ARM stack pointer + track deepest (lowest) SP */
 #ifndef MMBASIC_HOST
     register uint32_t sp_val __asm("sp");
     bc_crash_info.sp = sp_val;
+    if (sp_val < bc_crash_info.sp_lowest) bc_crash_info.sp_lowest = sp_val;
 #else
     bc_crash_info.sp = 0;
 #endif
+
+    /* Snapshot heap usage (works on host too, returns 0 on device) */
+    bc_crash_info.heap_used     = (uint32_t)bc_alloc_bytes_used_peek();
+    bc_crash_info.heap_capacity = (uint32_t)bc_alloc_bytes_capacity();
 
     /* Zero the fault registers so stale values don't mislead */
     bc_crash_info.cfsr = 0;
     bc_crash_info.hfsr = 0;
     bc_crash_info.bfar = 0;
     bc_crash_info.mmfar = 0;
+
+    /* Push into checkpoint trail (ring buffer) */
+    bc_crash_info.trail[bc_crash_info.trail_head] = (uint8_t)stage;
+    bc_crash_info.trail_head = (uint8_t)((bc_crash_info.trail_head + 1) % BC_CRASH_TRAIL_LEN);
+    if (bc_crash_info.trail_count < BC_CRASH_TRAIL_LEN) bc_crash_info.trail_count++;
 
     /* Copy label */
     int i;
@@ -934,9 +957,33 @@ void bc_crash_checkpoint(int stage, const char *label) {
     /* Print checkpoint only when debug is enabled — otherwise the output
      * floods the small PicoCalc screen and hides program output. */
     if (bc_debug_enabled) {
-        dbg_print("VMRUN[%d] %s  SP=0x%08X\r\n", stage, label,
-                  (unsigned)bc_crash_info.sp);
+        dbg_print("VMRUN[%d] %s  SP=0x%08X  heap=%u/%u\r\n", stage, label,
+                  (unsigned)bc_crash_info.sp,
+                  (unsigned)bc_crash_info.heap_used,
+                  (unsigned)bc_crash_info.heap_capacity);
     }
+}
+
+/* Snapshot key compiler state into the crash breadcrumb.  Safe to call with
+ * cs==NULL. */
+void bc_crash_snapshot_cs(BCCompiler *cs) {
+    if (!cs) {
+        bc_crash_info.cs_code            = 0;
+        bc_crash_info.cs_code_len        = 0;
+        bc_crash_info.cs_code_capacity   = 0;
+        bc_crash_info.cs_linemap         = 0;
+        bc_crash_info.cs_linemap_count   = 0;
+        bc_crash_info.cs_current_line    = 0;
+        bc_crash_info.cs_has_error       = 0;
+        return;
+    }
+    bc_crash_info.cs_code            = (uint32_t)(uintptr_t)cs->code;
+    bc_crash_info.cs_code_len        = (uint32_t)cs->code_len;
+    bc_crash_info.cs_code_capacity   = 0;  /* not tracked in BCCompiler */
+    bc_crash_info.cs_linemap         = (uint32_t)(uintptr_t)cs->linemap;
+    bc_crash_info.cs_linemap_count   = (uint32_t)cs->linemap_count;
+    bc_crash_info.cs_current_line    = (uint32_t)cs->current_line;
+    bc_crash_info.cs_has_error       = (uint32_t)cs->has_error;
 }
 
 /*
@@ -966,6 +1013,31 @@ void bc_crash_dump_if_any(void) {
     dbg_print("  Last checkpoint: %d\r\n", (int)bc_crash_info.checkpoint);
     dbg_print("  Label:  %s\r\n", bc_crash_info.label);
     dbg_print("  SP:     0x%08X\r\n", (unsigned)bc_crash_info.sp);
+    dbg_print("  SPlow:  0x%08X\r\n", (unsigned)bc_crash_info.sp_lowest);
+    dbg_print("  Prev:   %s\r\n", bc_crash_info.prev_label);
+    dbg_print("  Heap:   %u / %u\r\n",
+              (unsigned)bc_crash_info.heap_used,
+              (unsigned)bc_crash_info.heap_capacity);
+    dbg_print("  CS.code=0x%08X len=%u line=%u err=%u\r\n",
+              (unsigned)bc_crash_info.cs_code,
+              (unsigned)bc_crash_info.cs_code_len,
+              (unsigned)bc_crash_info.cs_current_line,
+              (unsigned)bc_crash_info.cs_has_error);
+    dbg_print("  CS.linemap=0x%08X cnt=%u\r\n",
+              (unsigned)bc_crash_info.cs_linemap,
+              (unsigned)bc_crash_info.cs_linemap_count);
+    /* Print checkpoint trail (oldest -> newest) */
+    dbg_print("  Trail:  ");
+    {
+        int n = bc_crash_info.trail_count;
+        int head = bc_crash_info.trail_head;
+        int start = (head - n + BC_CRASH_TRAIL_LEN) % BC_CRASH_TRAIL_LEN;
+        for (int k = 0; k < n; k++) {
+            int idx = (start + k) % BC_CRASH_TRAIL_LEN;
+            dbg_print("%d ", (int)bc_crash_info.trail[idx]);
+        }
+    }
+    dbg_print("\r\n");
 
 #ifndef MMBASIC_HOST
     /* Decode CFSR */

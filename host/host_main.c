@@ -330,26 +330,14 @@ int load_basic_source(const char *source) {
 
         /* Skip empty lines */
         if (len > 0) {
-            /* Check if the line starts with a digit (user-provided line number).
-             * If so, use the line as-is.  Otherwise prepend an auto-incrementing
-             * line number so tokenise() generates a T_LINENBR. */
-            const char *p = logical;
-            while (p < logical + len && (*p == ' ' || *p == '\t')) p++;
-            int has_user_lineno = (p < logical + len && *p >= '0' && *p <= '9');
+            /* Match device behaviour (SaveProgramToFlash, PicoMite.c:3809):
+             * tokenise each line exactly as the user wrote it. If the source
+             * has an explicit line number the tokeniser picks it up; if not
+             * there's no T_LINENBR token. The Editor then shows the file
+             * without synthetic numbers eating horizontal space. */
+            memcpy(inpbuf, logical, len);
+            inpbuf[len] = '\0';
 
-            if (has_user_lineno) {
-                memcpy(inpbuf, logical, len);
-                inpbuf[len] = '\0';
-            } else {
-                char numbuf[16];
-                snprintf(numbuf, sizeof(numbuf), "%d ", lineno);
-                int nlen = strlen(numbuf);
-                memcpy(inpbuf, numbuf, nlen);
-                memcpy(inpbuf + nlen, logical, len);
-                inpbuf[nlen + len] = '\0';
-            }
-
-            /* Tokenize -- tokenise(0) adds T_NEWLINE and T_LINENBR */
             tokenise(0);
 
             /* Copy tokenized output to ProgMemory.
@@ -444,13 +432,21 @@ typedef enum {
     MODE_VM_SOURCE_ONLY,
     MODE_IMMEDIATE,
     MODE_TRY_COMPILE,
-    MODE_REPL
+    MODE_REPL,
+    MODE_SIM
 } HostMode;
+
+#ifdef MMBASIC_SIM
+#include <limits.h>
+#include "host_sim_server.h"
+#endif
 
 extern int host_repl_mode;
 extern void host_raw_mode_enter(void);
 extern int host_terminal_get_size(int *rows, int *cols);
 extern int MMPromptPos;  /* defined in MMBasic_Prompt.c */
+extern int gui_fcolour, gui_bcolour;
+extern int PromptFC, PromptBC;
 
 /* When non-NULL, file operations in the host stubs (LOAD/SAVE/FILES/…)
  * resolve paths relative to this directory on the real filesystem
@@ -459,6 +455,25 @@ extern int MMPromptPos;  /* defined in MMBasic_Prompt.c */
 extern const char *host_sd_root;
 
 extern void MMBasic_RunPromptLoop(void);
+
+/*
+ * Parse `--foo bar` or `--foo=bar`. On match returns the value and advances
+ * *pi past the consumed argv entry. Returns NULL if argv[*pi] isn't this
+ * option.
+ */
+static const char *opt_value(char **argv, int argc, int *pi, const char *name) {
+    int i = *pi;
+    size_t n = strlen(name);
+    if (strcmp(argv[i], name) == 0) {
+        if (i + 1 >= argc) return NULL;
+        *pi = i + 1;
+        return argv[i + 1];
+    }
+    if (strncmp(argv[i], name, n) == 0 && argv[i][n] == '=') {
+        return argv[i] + n + 1;
+    }
+    return NULL;
+}
 
 /*
  * Host entry to the interactive REPL. Sets up host-specific state
@@ -479,29 +494,44 @@ static int run_repl(void) {
 
     /* Terminal geometry. Option.Height/Width are signed char, so clamp
      * to [SCREENHEIGHT, 127] / [SCREENWIDTH, 127]. Fall back if we can't
-     * detect a TTY size. */
-    int tty_rows = 0, tty_cols = 0;
-    if (host_terminal_get_size(&tty_rows, &tty_cols) != 0) {
-        tty_rows = SCREENHEIGHT;
-        tty_cols = SCREENWIDTH;
+     * detect a TTY size.
+     *
+     * In --sim mode the framebuffer IS the console: keep whatever the sim
+     * init already set (40x20 at 8x12 glyphs) — don't auto-resize to the
+     * terminal, or the Editor will pick a status-bar string too wide for
+     * the 320-pixel display and spill into the content area. */
+    extern int host_sim_active;
+    if (!host_sim_active) {
+        int tty_rows = 0, tty_cols = 0;
+        if (host_terminal_get_size(&tty_rows, &tty_cols) != 0) {
+            tty_rows = SCREENHEIGHT;
+            tty_cols = SCREENWIDTH;
+        }
+        if (tty_cols < SCREENWIDTH)  tty_cols = SCREENWIDTH;
+        if (tty_rows < SCREENHEIGHT) tty_rows = SCREENHEIGHT;
+        if (tty_cols > 127) tty_cols = 127;
+        if (tty_rows > 127) tty_rows = 127;
+        Option.Width  = (char)tty_cols;
+        Option.Height = (char)tty_rows;
     }
-    if (tty_cols < SCREENWIDTH)  tty_cols = SCREENWIDTH;
-    if (tty_rows < SCREENHEIGHT) tty_rows = SCREENHEIGHT;
-    if (tty_cols > 127) tty_cols = 127;
-    if (tty_rows > 127) tty_rows = 127;
-    Option.Width  = (char)tty_cols;
-    Option.Height = (char)tty_rows;
+
+    /* Match the device boot banner (PicoMite.c MES_SIGNON + COPYRIGHT).
+     * Emit explicit CR+LF so the banner prints correctly whether OPOST
+     * is enabled or not. */
+    printf("\rPicoMite MMBasic Host V" VERSION "\r\n");
+    printf("Copyright " YEAR  " Geoff Graham\r\n");
+    printf("Copyright " YEAR2 " Peter Mather\r\n");
+    printf("Bytecode VM by Josh V\r\n\r\n");
+    printf("Host REPL — Ctrl-D to exit.\r\n\r\n");
+    fflush(stdout);
 
     /* stdin raw mode so EditInputLine and EDIT read single keys. On
      * piped input (not a TTY) this is a no-op and host MMInkey falls
-     * back to cooked line-buffered reads. */
+     * back to cooked line-buffered reads. Do this AFTER the banner —
+     * raw mode disables OPOST, so '\n' stops translating to '\r\n'. */
     host_raw_mode_enter();
 
     host_runtime_begin();
-
-    printf("MMBasic for PicoMite -- host REPL\n");
-    printf("Type commands at the > prompt. Ctrl-D to exit.\n\n");
-    fflush(stdout);
 
     MMBasic_RunPromptLoop();   /* does not return */
 
@@ -545,31 +575,66 @@ int main(int argc, char **argv) {
     const char *key_script = NULL;
     int key_delay_ms = 0;
     const char *sd_root_arg = NULL;
+    const char *listen_addr = "127.0.0.1";
+    int listen_port = 8080;
+    const char *resolution_arg = NULL;
+    const char *web_root = "web";
 
-    /* First pass: scan for --immediate / --try-compile / --repl (no filename needed) */
+    /* First pass: scan for --immediate / --try-compile / --repl / --sim
+     * (no filename needed for these modes). Accept `--foo=bar` as well as
+     * `--foo bar`. */
     for (int i = 1; i < argc; ++i) {
-        if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) {
-            mode = MODE_IMMEDIATE;
-            immediate_line = argv[++i];
-        } else if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) {
-            mode = MODE_TRY_COMPILE;
-            immediate_line = argv[++i];
+        if (strncmp(argv[i], "--immediate", 11) == 0) {
+            if (argv[i][11] == '=') {
+                mode = MODE_IMMEDIATE;
+                immediate_line = argv[i] + 12;
+            } else if (argv[i][11] == '\0' && i + 1 < argc) {
+                mode = MODE_IMMEDIATE;
+                immediate_line = argv[++i];
+            }
+        } else if (strncmp(argv[i], "--try-compile", 13) == 0) {
+            if (argv[i][13] == '=') {
+                mode = MODE_TRY_COMPILE;
+                immediate_line = argv[i] + 14;
+            } else if (argv[i][13] == '\0' && i + 1 < argc) {
+                mode = MODE_TRY_COMPILE;
+                immediate_line = argv[++i];
+            }
         } else if (strcmp(argv[i], "--repl") == 0) {
             mode = MODE_REPL;
+        } else if (strcmp(argv[i], "--sim") == 0) {
+            mode = MODE_SIM;
         }
     }
 
-    /* For non-immediate / non-REPL modes, first positional arg is the filename */
-    if (mode != MODE_IMMEDIATE && mode != MODE_TRY_COMPILE && mode != MODE_REPL) {
+    /* For non-immediate / non-REPL / non-SIM modes, first positional arg is
+     * the filename */
+    if (mode != MODE_IMMEDIATE && mode != MODE_TRY_COMPILE &&
+        mode != MODE_REPL && mode != MODE_SIM) {
         filename = argv[1];
     }
 
+    /* Accept both `--foo bar` and `--foo=bar`. opt_value() returns the
+     * value string on match (either the next argv entry, advancing i, or
+     * the text after the `=`), or NULL on no match. */
+    #define OPT_VALUE(name_) opt_value(argv, argc, &i, (name_))
+
     for (int i = (filename ? 2 : 1); i < argc; ++i) {
+        const char *v;
         if (strcmp(argv[i], "--immediate") == 0 && i + 1 < argc) { i++; continue; }
         if (strcmp(argv[i], "--try-compile") == 0 && i + 1 < argc) { i++; continue; }
+        if (strncmp(argv[i], "--immediate=", 12) == 0) continue;
+        if (strncmp(argv[i], "--try-compile=", 14) == 0) continue;
         if (strcmp(argv[i], "--repl") == 0) continue;
-        if (strcmp(argv[i], "--sd-root") == 0 && i + 1 < argc) {
-            sd_root_arg = argv[++i];
+        if (strcmp(argv[i], "--sim") == 0) continue;
+        if ((v = OPT_VALUE("--sd-root"))   != NULL) { sd_root_arg = v; continue; }
+        if ((v = OPT_VALUE("--listen"))    != NULL) { listen_addr = v; continue; }
+        if ((v = OPT_VALUE("--port"))      != NULL) { listen_port = atoi(v); continue; }
+        if ((v = OPT_VALUE("--web-root"))  != NULL) { web_root = v; continue; }
+        if ((v = OPT_VALUE("--resolution"))!= NULL) { resolution_arg = v; continue; }
+        if ((v = OPT_VALUE("--slowdown"))  != NULL) {
+            extern int host_sim_slowdown_us;
+            host_sim_slowdown_us = atoi(v);
             continue;
         }
         if (strcmp(argv[i], "--interp") == 0) mode = MODE_INTERP_ONLY;
@@ -668,6 +733,112 @@ int main(int argc, char **argv) {
         host_sd_root = repl_sd_root;
         return run_repl();
     }
+
+#ifdef MMBASIC_SIM
+    /* Simulator: HTTP+WS server + REPL on terminal */
+    if (mode == MODE_SIM) {
+        static char sim_sd_root[4096];
+        if (sd_root_arg && *sd_root_arg) {
+            strncpy(sim_sd_root, sd_root_arg, sizeof(sim_sd_root) - 1);
+        } else if (getcwd(sim_sd_root, sizeof(sim_sd_root)) == NULL) {
+            strcpy(sim_sd_root, ".");
+        }
+        host_sd_root = sim_sd_root;
+
+        /* Resolve --web-root to an absolute path. Mongoose rejects any
+         * path starting with `..` as unsafe (mg_path_is_sane), so relative
+         * paths like `../web` must be expanded. If the user didn't override,
+         * probe common locations first. */
+        static char resolved_web_root[PATH_MAX];
+        const char *final_web_root = web_root;
+        const char *candidates[] = { web_root, "web", "../web", NULL };
+        for (int ci = 0; candidates[ci]; ++ci) {
+            char probe[PATH_MAX];
+            snprintf(probe, sizeof(probe), "%s/index.html", candidates[ci]);
+            if (realpath(probe, resolved_web_root)) {
+                char *last_slash = strrchr(resolved_web_root, '/');
+                if (last_slash) *last_slash = '\0';
+                final_web_root = resolved_web_root;
+                break;
+            }
+        }
+        if (final_web_root == web_root) {
+            fprintf(stderr,
+                    "Warning: could not locate web root (tried '%s', 'web', '../web'). "
+                    "Pass --web-root DIR.\n", web_root);
+        }
+
+        extern int host_sim_active;
+        extern void host_sim_tick_start(void);
+        extern void host_sim_tick_stop(void);
+        host_sim_active = 1;
+        host_sim_tick_start();   /* 1ms housekeeping thread, matches device timer_callback */
+
+        /* --resolution WxH: override the simulated display size. Must run
+         * before anything reads HRes/VRes or touches the framebuffer. */
+        if (resolution_arg) {
+            int rw = 0, rh = 0;
+            if (sscanf(resolution_arg, "%dx%d", &rw, &rh) == 2 && rw > 0 && rh > 0) {
+                extern void host_sim_set_framebuffer_size(int, int);
+                host_sim_set_framebuffer_size(rw, rh);
+            } else {
+                fprintf(stderr, "Bad --resolution '%s' (expected WxH, e.g. 320x320)\n",
+                        resolution_arg);
+                return 1;
+            }
+        }
+
+        /* Turn on the on-screen console so MMputchar → putConsole →
+         * DisplayPutC writes text into the framebuffer. OptionConsole bit 1
+         * = UART, bit 2 = screen; keep both so the terminal REPL still
+         * shows output alongside the browser. */
+        extern unsigned char OptionConsole;
+        Option.DISPLAY_CONSOLE = 1;
+        OptionConsole = 3;
+
+        /* Font encoding: high nibble = font index, low nibble = scale.
+         * 0x01 = font 0 (8x12 font1) at 1x scale = 40 cols x 20 rows on
+         * the 320x240 framebuffer. Scale MUST be nonzero — on error,
+         * MMBasic.c calls SetFont(Option.DefaultFont) during recovery,
+         * and a scale of 0 would zero out gui_font_width/height and
+         * strand the cursor at column 0 forever. */
+        extern short gui_font_width, gui_font_height;
+        gui_font = 0x01;
+        gui_font_width = 8;
+        gui_font_height = 12;
+        Option.Width  = HRes / gui_font_width;
+        Option.Height = VRes / gui_font_height;
+        Option.Tab    = 4;
+        Option.DefaultFont = 0x01;
+        /* Enable BASIC-syntax highlighting in EDIT mode, like the real
+         * PicoCalc. Editor.c sets gui_fcolour per-token (cyan keywords,
+         * yellow comments, magenta strings, green numbers) and the shared
+         * GUIPrintChar picks it up. */
+        Option.ColourCode = 1;
+
+        /* PicoCalc-style green phosphor palette for the console. Must be
+         * mirrored into the Default* fields so MMBasic's ResetDisplay
+         * (called from the error path) restores the same look. */
+        gui_fcolour = 0x00FF00;
+        gui_bcolour = 0x000000;
+        PromptFC    = 0x00FF00;
+        PromptBC    = 0x000000;
+        Option.DefaultFC = 0x00FF00;
+        Option.DefaultBC = 0x000000;
+
+        if (host_sim_server_start(listen_addr, listen_port, final_web_root) != 0) {
+            fprintf(stderr, "Failed to start simulator server\n");
+            return 1;
+        }
+        fprintf(stderr, "Open http://%s:%d/ in your browser\r\n", listen_addr, listen_port);
+        int rc = run_repl();
+        host_sim_tick_stop();
+        host_sim_server_stop();
+        return rc;
+    }
+#else
+    (void)listen_addr; (void)listen_port; (void)web_root;
+#endif
 
     char *source_text = read_basic_source_file(filename);
     if (!source_text) return 1;

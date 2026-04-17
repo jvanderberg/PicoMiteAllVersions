@@ -54,6 +54,7 @@ add_executable(PicoMite
 	ffunicode.c
 	mmc_stm32.c
 	Draw.c
+	gfx_console_shared.c
 	Editor.c
 	XModem.c
 	MM_Misc.c

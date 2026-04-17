@@ -18,6 +18,11 @@ static void host_fb_bind_display(void) {
     if (LayerBuf == NULL) LayerBuf = DisplayBuf;
 }
 
+/* Declared in host_stubs_legacy.c; pointer may be NULL when FASTGFX
+ * isn't active. When set, WriteBuf usually points at it directly so the
+ * primitives draw into the FASTGFX back buffer instead of the front. */
+extern uint32_t *host_fastgfx_back;
+
 static uint32_t *host_fb_buffer_for_target(unsigned char *target) {
     if (!host_framebuffer) host_fb_ensure();
     if (!host_framebuffer) return NULL;
@@ -25,6 +30,8 @@ static uint32_t *host_fb_buffer_for_target(unsigned char *target) {
     if (target == NULL || target == DisplayBuf) return host_framebuffer;
     if (target == FrameBuf && host_fb_framebuffer) return host_fb_framebuffer;
     if (target == LayerBuf && host_fb_layerbuffer) return host_fb_layerbuffer;
+    if (host_fastgfx_back && target == (unsigned char *)host_fastgfx_back)
+        return host_fastgfx_back;
     return host_framebuffer;
 }
 
@@ -49,11 +56,23 @@ static void host_fb_merge_now(uint32_t transparent) {
     }
 }
 
+#ifdef MMBASIC_SIM
+static void host_sim_emit_blit(int x, int y, int w, int h, const uint32_t *pixels);
+#endif
+
 static void host_fb_copy_now(uint32_t *src, uint32_t *dst) {
     size_t pixels;
     if (!src || !dst) return;
     pixels = (size_t)host_fb_width * (size_t)host_fb_height;
     memcpy(dst, src, pixels * sizeof(*dst));
+#ifdef MMBASIC_SIM
+    /* If we just wrote the front buffer, tell the browser — otherwise
+     * FRAMEBUFFER COPY F,N updates pixels locally but nothing reaches
+     * the WS client. One BLIT per presented frame, same as FASTGFX. */
+    if (dst == host_framebuffer) {
+        host_sim_emit_blit(0, 0, host_fb_width, host_fb_height, dst);
+    }
+#endif
 }
 
 static void host_fb_complete_pending_copy(void) {
@@ -104,9 +123,17 @@ void host_framebuffer_shutdown_runtime(void) {
     WriteBuf = NULL;
 }
 
+#ifdef MMBASIC_SIM
+static void host_sim_emit_cls(int colour);
+static int host_sim_cmds_target_is_front(void);
+#endif
+
 void host_framebuffer_clear_target(int colour) {
     uint32_t *target = host_fb_current_target();
     host_fb_fill_buffer(target, host_colour24(colour));
+#ifdef MMBASIC_SIM
+    if (host_sim_cmds_target_is_front()) host_sim_emit_cls(colour);
+#endif
 }
 
 void host_framebuffer_create(void) {

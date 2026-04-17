@@ -204,7 +204,7 @@ void vm_sys_file_open(const char *filename, int fnbr, int mode) {
     if (mode != VM_FILE_MODE_INPUT) vm_file_ensure_parent_exists(path);
 
     vm_files[fnbr] = (FIL *)BC_ALLOC(sizeof(FIL));
-    if (!vm_files[fnbr]) error("Not enough memory");
+    if (!vm_files[fnbr]) error("NEM[file:fil_host] want=%", (int)sizeof(FIL));
     res = f_open(vm_files[fnbr], vm_host_fat_path(path), fmode);
     if (res != FR_OK) {
         BC_FREE(vm_files[fnbr]);
@@ -586,7 +586,7 @@ void vm_sys_file_open(const char *filename, int fnbr, int mode) {
     if (fs) {
         if (!InitSDCard()) error("SD Card not found");
         vm_files[fnbr].fat = (FIL *)BC_ALLOC(sizeof(FIL));
-        if (!vm_files[fnbr].fat) error("Not enough memory");
+        if (!vm_files[fnbr].fat) error("NEM[file:fil_fat] want=%", (int)sizeof(FIL));
         FSerror = f_open(vm_files[fnbr].fat, path, (BYTE)vm_file_fat_mode(mode));
         if (FSerror) {
             BC_FREE(vm_files[fnbr].fat);
@@ -596,7 +596,7 @@ void vm_sys_file_open(const char *filename, int fnbr, int mode) {
         vm_files[fnbr].source = FATFSFILE;
     } else {
         vm_files[fnbr].flash = (lfs_file_t *)BC_ALLOC(sizeof(lfs_file_t));
-        if (!vm_files[fnbr].flash) error("Not enough memory");
+        if (!vm_files[fnbr].flash) error("NEM[file:fil_lfs] want=%", (int)sizeof(lfs_file_t));
         FSerror = lfs_file_open(&lfs, vm_files[fnbr].flash, path, vm_file_lfs_mode(mode));
         if (FSerror < 0) {
             BC_FREE(vm_files[fnbr].flash);

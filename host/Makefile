@@ -34,7 +34,7 @@ VPATH = ..
 
 # Core MMBasic sources (language runtime)
 CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c Memory.c Editor.c MMBasic_Prompt.c MMBasic_Print.c MMBasic_REPL.c
-CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c
+CORE_SRCS += gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c gfx_console_shared.c
 
 # Bytecode VM sources
 BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
@@ -42,7 +42,7 @@ BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
           bc_vm.c bc_runtime.c bc_debug.c
 
 # Host-specific sources
-HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c
+HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c host_sim_audio.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)
@@ -50,10 +50,57 @@ DEPS = $(OBJS:.o=.d)
 
 TARGET = mmbasic_test
 
+# --- Simulator target ---------------------------------------------------
+# `make sim` builds mmbasic_sim, a superset of mmbasic_test that embeds
+# Mongoose and a background HTTP+WS server for --sim mode. The test
+# harness build is unaffected.
+SIM_TARGET  = mmbasic_sim
+SIM_EXTRA_SRCS = host_sim_server.c vendor/mongoose.c
+SIM_EXTRA_OBJS = $(SIM_EXTRA_SRCS:.c=.o)
+SIM_OBJS = $(OBJS) $(SIM_EXTRA_OBJS)
+SIM_CFLAGS  = $(CFLAGS) -DMMBASIC_SIM -pthread
+SIM_LDFLAGS = $(LDFLAGS) -pthread
+
 all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+
+sim: $(SIM_TARGET)
+
+# Simulator build: recompile host_main.o with -DMMBASIC_SIM.
+# Put --sim-only objects in a separate directory tree so we don't stomp
+# on the test-harness build.
+$(SIM_TARGET): $(SIM_OBJS:%.o=sim_obj/%.o)
+	$(CC) $(SIM_CFLAGS) -o $@ $^ $(SIM_LDFLAGS)
+
+sim_obj/host_stubs_legacy.o: host_stubs_legacy.c
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+sim_obj/host_main.o: host_main.c
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+sim_obj/host_terminal.o: host_terminal.c host_terminal.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+sim_obj/host_fs.o: host_fs.c host_fs.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+sim_obj/host_sim_server.o: host_sim_server.c host_sim_server.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+sim_obj/vendor/mongoose.o: vendor/mongoose.c vendor/mongoose.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -Wno-unused-parameter -Wno-sign-compare -c -o $@ $<
+
+sim_obj/%.o: ../%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
 
 # Host sources compile from current directory
 host_stubs_legacy.o: host_stubs_legacy.c
@@ -68,13 +115,21 @@ host_terminal.o: host_terminal.c host_terminal.h
 host_fs.o: host_fs.c host_fs.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+host_sim_audio.o: host_sim_audio.c host_sim_audio.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+sim_obj/host_sim_audio.o: host_sim_audio.c host_sim_audio.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
 # Core sources from parent directory
 %.o: ../%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(OBJS) $(DEPS) $(TARGET)
+	rm -f $(OBJS) $(DEPS) $(TARGET) $(SIM_TARGET)
+	rm -rf sim_obj
 
 -include $(DEPS)
 
-.PHONY: all clean
+.PHONY: all clean sim

@@ -980,6 +980,8 @@ void bc_dump_vm_state(BCVMState *vm);
 /* ------------------------------------------------------------------ */
 #define BC_CRASH_MAGIC 0xDEADC0DE
 
+#define BC_CRASH_TRAIL_LEN 12
+
 typedef struct {
     uint32_t magic;         /* BC_CRASH_MAGIC if valid crash data present */
     uint32_t checkpoint;    /* last checkpoint ID reached */
@@ -988,21 +990,52 @@ typedef struct {
     uint32_t hfsr;          /* ARM HFSR (hard fault status) */
     uint32_t bfar;          /* ARM BFAR (bus fault address) */
     uint32_t mmfar;         /* ARM MMFAR (mem-manage fault address) */
-    char     label[32];     /* checkpoint description string */
+    uint32_t sp_lowest;     /* lowest SP ever seen (deepest stack use) */
+    uint32_t heap_used;     /* snapshot of bc_alloc heap bytes used */
+    uint32_t heap_capacity; /* snapshot of bc_alloc heap capacity */
+    /* Compiler state snapshot (captured on each checkpoint) */
+    uint32_t cs_code;           /* address of cs->code buffer */
+    uint32_t cs_code_len;
+    uint32_t cs_code_capacity;
+    uint32_t cs_linemap;        /* address of cs->linemap */
+    uint32_t cs_linemap_count;
+    uint32_t cs_current_line;
+    uint32_t cs_has_error;
+    /* Ring buffer of recent checkpoint IDs (oldest→newest) */
+    uint8_t  trail[BC_CRASH_TRAIL_LEN];
+    uint8_t  trail_head;    /* index where next write goes */
+    uint8_t  trail_count;   /* how many valid entries (capped at TRAIL_LEN) */
+    uint8_t  _pad;
+    char     label[32];     /* latest checkpoint description string */
+    char     prev_label[32];/* previous checkpoint label (extra context) */
 } BCCrashInfo;
 
 /* Checkpoint stage IDs for VM program execution */
-#define BC_CK_VM_ENTRY       1
-#define BC_CK_VM_ALLOC_CS    2
-#define BC_CK_VM_ALLOC_VM    3
-#define BC_CK_VM_COMP_ALLOC  4
-#define BC_CK_VM_ALLOC       5
-#define BC_CK_VM_COMPILE     6
-#define BC_CK_VM_INIT        7
-#define BC_CK_VM_EXECUTE     8
-#define BC_CK_VM_CLEANUP     9
+#define BC_CK_VM_ENTRY            1
+#define BC_CK_VM_ALLOC_CS         2
+#define BC_CK_VM_ALLOC_VM         3
+#define BC_CK_VM_COMP_ALLOC       4
+#define BC_CK_VM_ALLOC            5
+#define BC_CK_VM_COMPILE          6
+#define BC_CK_VM_INIT             7
+#define BC_CK_VM_EXECUTE          8
+#define BC_CK_VM_CLEANUP          9
+/* Compile subphases (inside bc_compile_source) */
+#define BC_CK_COMPILE_PREDECLARE  10
+#define BC_CK_COMPILE_LINE        11
+#define BC_CK_COMPILE_EMIT_END    12
+#define BC_CK_COMPILE_FIXUPS      13
+#define BC_CK_COMPILE_DONE        14
+/* Inside source_compile_line */
+#define BC_CK_LINE_ENTER          20
+#define BC_CK_LINE_LINEMAP        21
+#define BC_CK_LINE_EMIT_OP_LINE   22
+#define BC_CK_LINE_STMT_LOOP      23
+#define BC_CK_LINE_STMT_CALL      24
+#define BC_CK_LINE_STMT_DONE      25
 
 void bc_crash_checkpoint(int stage, const char *label);
+void bc_crash_snapshot_cs(BCCompiler *cs);  /* snapshot compiler state */
 void bc_crash_save_fault(void);    /* called from sigbus() to capture ARM regs */
 void bc_crash_dump_if_any(void);   /* called at boot to print crash report */
 void bc_crash_clear(void);

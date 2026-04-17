@@ -8,6 +8,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -27,12 +28,38 @@ static void vm_sys_time_set_mstring(uint8_t *out, const char *text) {
 
 #ifdef MMBASIC_HOST
 
+/* Tests set MMBASIC_HOST_DATE / MMBASIC_HOST_TIME to pin deterministic
+ * values for the interpreter + VM comparison; otherwise fall back to
+ * wall clock so the --sim clock demo and friends show real time. */
+
 void vm_sys_time_date(uint8_t *out) {
-    vm_sys_time_set_mstring(out, "02-01-2024");
+    const char *mock = getenv("MMBASIC_HOST_DATE");
+    if (mock && *mock) {
+        vm_sys_time_set_mstring(out, mock);
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    char text[16];
+    snprintf(text, sizeof(text), "%02d-%02d-%04d",
+             lt.tm_mday, lt.tm_mon + 1, lt.tm_year + 1900);
+    vm_sys_time_set_mstring(out, text);
 }
 
 void vm_sys_time_time(uint8_t *out) {
-    vm_sys_time_set_mstring(out, "03:04:05");
+    const char *mock = getenv("MMBASIC_HOST_TIME");
+    if (mock && *mock) {
+        vm_sys_time_set_mstring(out, mock);
+        return;
+    }
+    time_t now = time(NULL);
+    struct tm lt;
+    localtime_r(&now, &lt);
+    char text[16];
+    snprintf(text, sizeof(text), "%02d:%02d:%02d",
+             lt.tm_hour, lt.tm_min, lt.tm_sec);
+    vm_sys_time_set_mstring(out, text);
 }
 
 #else

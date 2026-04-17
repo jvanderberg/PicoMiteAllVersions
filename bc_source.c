@@ -12,21 +12,43 @@
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 
-/* Maximum lines in an '!ASM block */
-#define ASM_MAX_LINES 256
+/* Maximum lines in an '!ASM block.  Heap-allocated on demand, so this is
+ * the cap on buffer size rather than a per-compile cost.  128 is plenty —
+ * real '!ASM blocks in this repo are <50 lines. */
+#define ASM_MAX_LINES 128
 #define ASM_MAX_LINE_LEN 128
 
 typedef struct {
     int line_no;
     int fast_next_loop;   /* set by '!FAST directive, consumed by next loop */
 
-    /* '!ASM block accumulation state */
+    /* '!ASM block accumulation state.  The line buffers are ~33 KB, which is
+     * far larger than the RP2040 core0 stack (2 KB), so they are heap-allocated
+     * on first use inside an '!ASM block and freed at '!ENDASM.  Keeping the
+     * frontend struct small keeps bc_compile_source stack-safe on rp2040. */
     int asm_active;                                /* 1 while inside '!ASM...'!ENDASM */
     int asm_line_count;
     int asm_start_line;                            /* source line of '!ASM directive */
-    char asm_lines[ASM_MAX_LINES][ASM_MAX_LINE_LEN];
-    int  asm_line_nos[ASM_MAX_LINES];              /* source line numbers for errors */
+    char (*asm_lines)[ASM_MAX_LINE_LEN];           /* [ASM_MAX_LINES] — alloc on demand */
+    int  *asm_line_nos;                            /* [ASM_MAX_LINES] — alloc on demand */
 } BCSourceFrontend;
+
+static int source_asm_buf_alloc(BCSourceFrontend *fe) {
+    if (fe->asm_lines && fe->asm_line_nos) return 0;
+    fe->asm_lines    = (char (*)[ASM_MAX_LINE_LEN])BC_ALLOC(sizeof(char) * ASM_MAX_LINES * ASM_MAX_LINE_LEN);
+    fe->asm_line_nos = (int *)BC_ALLOC(sizeof(int) * ASM_MAX_LINES);
+    if (!fe->asm_lines || !fe->asm_line_nos) {
+        if (fe->asm_lines)    { BC_FREE(fe->asm_lines);    fe->asm_lines    = NULL; }
+        if (fe->asm_line_nos) { BC_FREE(fe->asm_line_nos); fe->asm_line_nos = NULL; }
+        return -1;
+    }
+    return 0;
+}
+
+static void source_asm_buf_free(BCSourceFrontend *fe) {
+    if (fe->asm_lines)    { BC_FREE(fe->asm_lines);    fe->asm_lines    = NULL; }
+    if (fe->asm_line_nos) { BC_FREE(fe->asm_line_nos); fe->asm_line_nos = NULL; }
+}
 
 #ifdef MMBASIC_HOST
 int bc_opt_level = 1;
@@ -946,6 +968,21 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
 
         if (source_name_eq(name, name_len, "RND")) {
+            /* Interpreter's fun_rnd ignores its argument (Functions.c:950):
+             * Rnd, Rnd(), Rnd(n) all produce a fresh random in [0,1).
+             * Parse the optional arg for shape, then discard with DROP. */
+            if (*after_name == '(') {
+                p = after_name + 1;
+                source_skip_space(&p);
+                if (*p == ')') {
+                    p++;
+                } else {
+                    uint8_t arg_type = source_parse_expression(fe, cs, &p);
+                    source_emit_float_conversion(cs, arg_type);
+                    bc_emit_byte(cs, OP_POP);
+                    if (!source_expect_char(cs, &p, ')', "Expected ')' after RND argument")) return 0;
+                }
+            }
             bc_emit_byte(cs, OP_RND);
             *pp = p;
             return T_NBR;
@@ -6415,6 +6452,8 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
 }
 
 static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char *line) {
+    bc_crash_checkpoint(BC_CK_LINE_ENTER, "line: enter");
+    bc_crash_snapshot_cs(cs);
     const char *p = line;
     source_skip_space(&p);
 
@@ -6433,6 +6472,7 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
             fe->asm_active = 0;
             source_assemble_block(fe, cs);
             fe->asm_line_count = 0;
+            source_asm_buf_free(fe);
             return;
         }
         /* Strip comment-only prefix if line starts with ' — it's ASM content */
@@ -6471,6 +6511,10 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
         /* Check for '!ASM compiler directive */
         if (*cp == '\'' && strncasecmp(cp, "'!ASM", 5) == 0 &&
             (cp[5] == '\0' || cp[5] == ' ' || cp[5] == '\t' || cp[5] == '\r' || cp[5] == '\n')) {
+            if (source_asm_buf_alloc(fe) != 0) {
+                bc_set_error(cs, "Not enough memory for '!ASM buffer");
+                return;
+            }
             fe->asm_active = 1;
             fe->asm_line_count = 0;
             fe->asm_start_line = fe->line_no;
@@ -6480,11 +6524,15 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
 
     int line_no = explicit_line > 0 ? explicit_line : fe->line_no;
     cs->current_line = line_no;
+    bc_crash_checkpoint(BC_CK_LINE_LINEMAP, "line: add_linemap");
     bc_add_linemap_entry(cs, (uint16_t)line_no, cs->code_len);
+    bc_crash_checkpoint(BC_CK_LINE_EMIT_OP_LINE, "line: emit OP_LINE");
     bc_emit_byte(cs, OP_LINE);
     bc_emit_u16(cs, (uint16_t)line_no);
+    bc_crash_snapshot_cs(cs);
 
     while (*p && !cs->has_error) {
+        bc_crash_checkpoint(BC_CK_LINE_STMT_LOOP, "line: stmt loop");
         source_skip_space(&p);
         if (*p == '\0' || *p == '\'') break;
 
@@ -6503,7 +6551,9 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
         if (len > STRINGSIZE) len = STRINGSIZE;
         memcpy(stmt, start, len);
         stmt[len] = '\0';
+        bc_crash_checkpoint(BC_CK_LINE_STMT_CALL, "line: compile_statement");
         source_compile_statement(fe, cs, stmt);
+        bc_crash_checkpoint(BC_CK_LINE_STMT_DONE, "line: stmt returned");
 
         if (*p == ':') {
             p++;
@@ -6689,8 +6739,9 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
     (void)source_name;
     fe.line_no = 1;
 
+    bc_crash_checkpoint(BC_CK_COMPILE_PREDECLARE, "predeclare subfuns");
     source_predeclare_subfuns(cs, source);
-    if (cs->has_error) return -1;
+    if (cs->has_error) { source_asm_buf_free(&fe); return -1; }
 
     const char *p = source;
     int physical_line = 1;
@@ -6699,15 +6750,24 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
         char line[STRINGSIZE + 1];
         if (!source_read_logical_line(&p, line, sizeof(line), &physical_line, &fe.line_no, &continuation))
             break;
+        /* Per-line checkpoint so a crash points to the logical line being compiled. */
+        char _ck_lbl[32];
+        snprintf(_ck_lbl, sizeof(_ck_lbl), "compile line %d", fe.line_no);
+        bc_crash_checkpoint(BC_CK_COMPILE_LINE, _ck_lbl);
         source_compile_line(&fe, cs, line);
     }
 
     if (cs->has_error) {
         if (cs->error_line == 0) cs->error_line = fe.line_no;
+        source_asm_buf_free(&fe);
         return -1;
     }
 
+    bc_crash_checkpoint(BC_CK_COMPILE_EMIT_END, "emit OP_END");
     bc_emit_byte(cs, OP_END);
+    bc_crash_checkpoint(BC_CK_COMPILE_FIXUPS, "resolve fixups");
     bc_resolve_fixups(cs);
+    bc_crash_checkpoint(BC_CK_COMPILE_DONE, "compile done");
+    source_asm_buf_free(&fe);  /* no-op if never allocated */
     return cs->has_error ? -1 : 0;
 }

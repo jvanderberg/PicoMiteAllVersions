@@ -118,8 +118,23 @@ extern struct s_ctrl *Ctrl;             // list of the controls
 #define PAGESPERWORD    ((sizeof(unsigned int) * 8)/PAGEBITS)
 
 
-#define MRoundUp(a)     (((a) + (PAGESIZE - 1)) & (~(PAGESIZE - 1)))// round up to the nearest page size      [position 131:9]	
-#define MRoundUpK2(a)     (((a) + (PAGESIZE*8 - 1)) & (~(PAGESIZE*8 - 1)))// round up to the nearest page size      [position 131:9]	
+#define MRoundUp(a)     (((a) + (PAGESIZE - 1)) & (~(PAGESIZE - 1)))// round up to the nearest page size      [position 131:9]
+#define MRoundUpK2(a)     (((a) + (PAGESIZE*8 - 1)) & (~(PAGESIZE*8 - 1)))// round up to the nearest page size      [position 131:9]
+
+/* Scan MMHeap bitmap.  Any out-ptr may be NULL. Counts in 256-byte pages. */
+void heap_scan_stats(unsigned int *used_pages,
+                     unsigned int *free_pages,
+                     unsigned int *largest_free_run,
+                     unsigned int *total_pages);
+
+/* Last-failed-allocation diagnostics, updated by TryGetMemory on OOM.
+ * Used by bc_runtime.c error paths to enrich error messages. */
+extern unsigned int bc_alloc_fail_size;
+extern unsigned int bc_alloc_fail_pages;
+extern unsigned int bc_alloc_fail_used;
+extern unsigned int bc_alloc_fail_free;
+extern unsigned int bc_alloc_fail_longest;
+extern unsigned int bc_alloc_fail_total;
 #endif
 #endif
 
