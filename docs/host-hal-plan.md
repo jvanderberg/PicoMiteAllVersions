@@ -157,6 +157,30 @@ No behavior change. Just untangle the stubs file.
 
 The biggest phase. Brings graphics commands back to shared.
 
+#### Phase 2 progress notes (2026-04-17)
+
+Preparatory shims landed: `host/pico/mutex.h` (no-op mutex type + ops), `host/hardware/dma.h` (added `dma_channel_unclaim`, `dma_claim_unused_channel`, `dma_channel_wait_for_finish_blocking`), `host/pico/multicore.h` now includes `pico/mutex.h`.
+
+First attempt at a single big `#ifndef MMBASIC_HOST` wrap around the display-driver region revealed that Draw.c has **multiple `#ifndef PICOMITEVGA` blocks** scattered through the file, not one. Nesting a fresh `#ifndef MMBASIC_HOST` inside one of those blocks tripped over the PICOMITEVGA `#endif` and closed early, leaving the FASTGFX block unwrapped. The correct strategy — confirmed by successful PoC compile — is:
+
+1. For each enclosing `#ifndef PICOMITEVGA` block that contains device-only display code, change it to `#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)`.
+2. For standalone `#ifdef PICOMITE` blocks that are device-display-only (like the FASTGFX region at ~5671), change to `#if defined(PICOMITE) && !defined(MMBASIC_HOST)`.
+3. Preserve the `#else` branches that provide host-unsupported error stubs where they exist.
+
+Locations that need gating (known from Phase 0 + compile attempt):
+- `#ifndef PICOMITEVGA` at **line 308** — `initFonts`/`cmd_guiMX170` region, touches `InitDisplaySPI`, `InitDisplayI2C`, `GetTouch*`, `GetCalibration`.
+- `#ifndef PICOMITEVGA` at **line 429** — more init code.
+- `#ifndef PICOMITEVGA` at **line 4998** — closes at 5674. Contains `restorepanel`, `closeframebuffer`, `setframebuffer`, `copyframetoscreen`, `blitmerge`, `merge`, `cmd_framebuffer`. (PoC confirmed this gating works.)
+- `#ifdef PICOMITE` at **line 5679** — FASTGFX family + `cmd_fastgfx` (has `#else` host stub already). (PoC confirmed this gating works.)
+- Possibly more after scanning `#ifndef PICOMITEVGA` sites past 5674 (e.g. `cmd_blit` references `BDEC_bReadHeader`, `BMP_bDecode_memory` at lines 6107/6116 — may need function-level gating, or BMP decoder stubs).
+
+Remaining host link-stub needs (from failed link attempt): `setframebuffer`, `InitDisplayI2C`, `InitDisplaySPI`, `display_details` array, `GetCalibration`, `GetTouch`, `GetTouchAxis`, `GetTouchValue`, `BDEC_bReadHeader`, `BMP_bDecode_memory`. Roughly 10 symbols.
+
+**Phase 2 split recommendation:** land the infrastructure in one commit (shims + plan update), then split the Draw.c work into three smaller commits:
+- 2a: gate the PICOMITEVGA/FASTGFX blocks listed above.
+- 2b: add host stubs for the 10 missing symbols.
+- 2c: add Draw.c to CORE_SRCS, delete duplicated stubs, fix remaining link errors.
+
 1. Introduce `host_fb_hal.h`:
    ```c
    void host_fb_init(int w, int h);
