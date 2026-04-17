@@ -24,6 +24,7 @@
 #include "host_sim_audio.h"
 #include "host_sim_server.h"
 #include "host_time.h"
+#include "host_fb.h"
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
@@ -36,14 +37,6 @@ extern const char *host_sd_root;
 static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap);
 static void host_append_default_ext(char *path, size_t cap, const char *ext);
 
-static void host_fb_reset(int colour);
-static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c);
-static void host_fb_ensure(void);
-static void host_fb_fill_buffer(uint32_t *buffer, uint32_t colour);
-static inline uint32_t host_colour24(int c);
-static inline void host_put_pixel(int x, int y, int c);
-static uint32_t *host_fb_current_target(void);
-static void host_write_screenshot(const char *path);
 static void host_runtime_check_timeout(void);
 static int host_parse_escaped_char(const char **src);
 static void host_getargaddress(unsigned char *p, long long int **ip, MMFLOAT **fp, int *n);
@@ -60,10 +53,8 @@ static int host_box_arg_get_int(void *ctx, int index);
 static void host_pixel_fail_msg(void *ctx, const char *msg);
 static void host_pixel_fail_range(void *ctx, const char *label, int value, int min, int max);
 
-static uint32_t *host_framebuffer = NULL;
-/* PicoCalc is a 320x320 square IPS LCD. */
-static int host_fb_width = 320;
-static int host_fb_height = 320;
+/* Framebuffer state (host_framebuffer, dimensions, fastgfx_back) and the
+ * FRAMEBUFFER/LAYER backend live in host_fb.c; see host_fb.h. */
 static int host_runtime_timeout_ms = 0;
 static uint64_t host_runtime_deadline_us = 0;
 static int host_runtime_timed_out_flag = 0;
@@ -78,12 +69,6 @@ static int host_config_key_delay_set = 0;
 static uint64_t host_key_ready_us = 0;
 static int host_fastgfx_active = 0;
 static int host_fastgfx_fps = 0;
-/* FASTGFX back buffer. When active, all graphics primitives draw here
- * (via WriteBuf pointing at it), and bc_fastgfx_swap memcpys it into
- * host_framebuffer so the WebSocket broadcaster only ever sees fully
- * composited frames. Declared non-static (extern in backend.h) so the
- * framebuffer dispatch can recognise it as a valid WriteBuf target. */
-uint32_t *host_fastgfx_back = NULL;
 static uint64_t host_fastgfx_next_sync_us = 0;
 static unsigned char host_font_metrics[2] = {6, 8};
 
@@ -378,170 +363,17 @@ static watchdog_hw_t _wdog_hw_store = {0};
 dma_hw_t *dma_hw = &_dma_hw_store;
 watchdog_hw_t *watchdog_hw = &_wdog_hw_store;
 
-static void host_fb_ensure(void) {
-    size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
-    if (!host_framebuffer) {
-        host_framebuffer = calloc(pixels, sizeof(*host_framebuffer));
-    }
+/* Pixel primitive used by the rest of this file (draw_line, glyph, etc.).
+ * Keeps the same signature as the old static inline so call sites are
+ * unchanged. Will be deleted in Phase 2 along with the drawing helpers. */
+static void host_draw_pixel_ptr(int x, int y, int c) {
+    host_fb_put_pixel(x, y, c);
 }
 
 static inline int host_clamp_int(int value, int lo, int hi) {
     if (value < lo) return lo;
     if (value > hi) return hi;
     return value;
-}
-
-static inline uint32_t host_colour24(int c) {
-    return (uint32_t)c & 0x00FFFFFFu;
-}
-
-#include "host_framebuffer_backend.h"
-
-static inline void host_put_pixel(int x, int y, int c) {
-    uint32_t *target = host_fb_current_target();
-    if (!target) return;
-    if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return;
-    target[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_colour24(c);
-#ifdef MMBASIC_SIM
-    host_sim_emit_pixel(x, y, c);
-#endif
-}
-
-static void host_draw_pixel_ptr(int x, int y, int c) {
-    host_put_pixel(x, y, c);
-}
-
-uint32_t host_runtime_get_pixel(int x, int y) {
-    if (!host_framebuffer) host_fb_ensure();
-    if (!host_framebuffer) return 0;
-    if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return 0;
-    return host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
-}
-
-int host_runtime_width(void) {
-    return host_fb_width;
-}
-
-int host_runtime_height(void) {
-    return host_fb_height;
-}
-
-/*
- * Simulator-server accessors. The --sim build runs a background Mongoose
- * thread that reads the framebuffer and pushes RGBA frames over WebSocket.
- * The MMBasic thread writes the buffer without locking; at worst a torn
- * frame is visible for 16ms before the next broadcast overwrites it.
- */
-size_t host_sim_framebuffer_copy(uint32_t *dst, size_t dst_pixels) {
-    if (!host_framebuffer) host_fb_ensure();
-    if (!host_framebuffer || !dst) return 0;
-    size_t have = (size_t)host_fb_width * (size_t)host_fb_height;
-    size_t n = dst_pixels < have ? dst_pixels : have;
-    memcpy(dst, host_framebuffer, n * sizeof(*dst));
-    return n;
-}
-
-void host_sim_framebuffer_dims(int *w, int *h) {
-    if (w) *w = host_fb_width;
-    if (h) *h = host_fb_height;
-}
-
-/* Override the simulated display resolution. Must be called before
- * host_sim_server_start / any draw call — the framebuffer is allocated
- * lazily on first use, so we just need to set the dimensions before that
- * happens. HRes/VRes mirror host_fb_width/height so MMBasic's geometry
- * math (Option.Width = HRes/font_width, etc.) sees the same values. */
-void host_sim_set_framebuffer_size(int w, int h) {
-    if (w < 80)   w = 80;
-    if (h < 60)   h = 60;
-    if (w > 2048) w = 2048;
-    if (h > 2048) h = 2048;
-    host_fb_width  = w;
-    host_fb_height = h;
-    HRes = (short)w;
-    VRes = (short)h;
-}
-
-/*
- * Host-side backings for DrawRectangle, DrawBitmap, and ScrollLCD. These
- * are the function pointers that gfx_console_shared.c's GUIPrintChar and
- * DisplayPutC dispatch through. On device they're assigned to one of
- * several display-specific implementations; on host they all draw into
- * host_framebuffer via the existing primitives.
- *
- * Assigned in host_runtime_begin so bc_vm_init's per-run heap reset
- * (which can NULL these out) doesn't leave them dangling.
- */
-static void host_draw_rectangle_fn(int x1, int y1, int x2, int y2, int c) {
-    /* Device DrawRectangle fills [x1,x2) x [y1,y2) — note exclusive. */
-    if (x2 > x1) x2--;
-    if (y2 > y1) y2--;
-    host_fill_rect_pixels(x1, y1, x2, y2, c);
-}
-
-static void host_draw_bitmap_fn(int x1, int y1, int width, int height, int scale,
-                                int fc, int bc, unsigned char *bitmap) {
-    uint32_t *target = host_fb_current_target();
-    if (!target || !bitmap) return;
-    if (scale < 1) scale = 1;
-    int total_bits = width * height;
-    uint32_t fg = host_colour24(fc);
-    uint32_t bg = host_colour24(bc);
-    int want_bg = (bc >= 0);
-    for (int row = 0; row < height; ++row) {
-        for (int col = 0; col < width; ++col) {
-            int bit_number = row * width + col;
-            int on = (bitmap[bit_number / 8] >>
-                      ((total_bits - bit_number - 1) % 8)) & 1;
-            if (on) {
-                host_fill_rect_pixels(x1 + col * scale,
-                                      y1 + row * scale,
-                                      x1 + (col + 1) * scale - 1,
-                                      y1 + (row + 1) * scale - 1,
-                                      (int)fg);
-            } else if (want_bg) {
-                host_fill_rect_pixels(x1 + col * scale,
-                                      y1 + row * scale,
-                                      x1 + (col + 1) * scale - 1,
-                                      y1 + (row + 1) * scale - 1,
-                                      (int)bg);
-            }
-        }
-    }
-    (void)total_bits; (void)fg; (void)bg;
-}
-
-static void host_scroll_lcd_fn(int lines) {
-    /* Positive lines: shift content UP by that many pixel rows, clear bottom.
-     * Negative lines: shift content DOWN, clear top. The Editor uses the
-     * negative form in ScrollDown to reveal earlier lines when the user
-     * page-ups past the top of the viewport. */
-    host_fb_ensure();
-    if (!host_framebuffer || lines == 0) return;
-#ifdef MMBASIC_SIM
-    host_sim_emit_scroll(lines, gui_bcolour);
-#endif
-
-    int row_pixels = host_fb_width;
-    uint32_t fill = host_colour24(gui_bcolour);
-    int abs_lines = lines < 0 ? -lines : lines;
-    if (abs_lines >= host_fb_height) {
-        host_fb_fill_buffer(host_framebuffer, fill);
-        return;
-    }
-
-    if (lines > 0) {
-        memmove(host_framebuffer,
-                host_framebuffer + lines * row_pixels,
-                (size_t)(host_fb_height - lines) * (size_t)row_pixels * sizeof(uint32_t));
-        uint32_t *tail = host_framebuffer + (host_fb_height - lines) * row_pixels;
-        for (int i = 0; i < lines * row_pixels; ++i) tail[i] = fill;
-    } else {
-        memmove(host_framebuffer + abs_lines * row_pixels,
-                host_framebuffer,
-                (size_t)(host_fb_height - abs_lines) * (size_t)row_pixels * sizeof(uint32_t));
-        for (int i = 0; i < abs_lines * row_pixels; ++i) host_framebuffer[i] = fill;
-    }
 }
 
 /* host_sim_active: set to 1 when --sim mode is active (see
@@ -563,7 +395,7 @@ static void host_fill_rect_pixels(int x1, int y1, int x2, int y2, int c) {
     y2 = host_clamp_int(y2, 0, host_fb_height - 1);
     if (x1 > x2 || y1 > y2) return;
 
-    uint32_t colour = host_colour24(c);
+    uint32_t colour = host_fb_colour24(c);
     for (int y = y1; y <= y2; ++y) {
         uint32_t *row = target + (size_t)y * (size_t)host_fb_width;
         for (int x = x1; x <= x2; ++x) {
@@ -804,7 +636,7 @@ static void host_plot_text_pixel(int x, int y, int width, int height,
             break;
     }
 
-    host_put_pixel(px, py, colour);
+    host_fb_put_pixel(px, py, colour);
 }
 
 static void host_fill_text_cell(int x, int y, int width, int height,
@@ -892,31 +724,11 @@ static void host_draw_text(int x, int y, int fnt, int jh, int jv, int jo, int fc
     }
 }
 
-static void host_fb_reset(int colour) {
-    host_framebuffer_clear_target(colour);
-}
-
+/* Thin wrapper around host_fb_write_screenshot that honors the once-per-
+ * runtime-session guard; host_runtime_configure resets the flag. */
 static void host_write_screenshot(const char *path) {
     if (!path || !*path || host_screenshot_written) return;
-    host_fb_ensure();
-    if (!host_framebuffer) return;
-
-    FILE *fp = fopen(path, "wb");
-    if (!fp) return;
-
-    fprintf(fp, "P6\n%d %d\n255\n", host_fb_width, host_fb_height);
-    for (int y = 0; y < host_fb_height; ++y) {
-        for (int x = 0; x < host_fb_width; ++x) {
-            uint32_t pixel = host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
-            unsigned char rgb[3] = {
-                (unsigned char)((pixel >> 16) & 0xFF),
-                (unsigned char)((pixel >> 8) & 0xFF),
-                (unsigned char)(pixel & 0xFF),
-            };
-            fwrite(rgb, 1, 3, fp);
-        }
-    }
-    fclose(fp);
+    host_fb_write_screenshot(path);
     host_screenshot_written = 1;
 }
 
@@ -1018,9 +830,9 @@ void host_runtime_begin(void) {
     host_framebuffer_reset_runtime(gui_bcolour);
     FontTable[0] = (unsigned char *)font1;
     DrawPixel = host_draw_pixel_ptr;
-    DrawRectangle = host_draw_rectangle_fn;
-    DrawBitmap = host_draw_bitmap_fn;
-    ScrollLCD = host_scroll_lcd_fn;
+    DrawRectangle = host_fb_draw_rectangle;
+    DrawBitmap = host_fb_draw_bitmap;
+    ScrollLCD = host_fb_scroll_lcd;
 }
 
 void host_runtime_finish(void) {
@@ -3099,8 +2911,8 @@ void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect
         for (int px = x - radius - w - 1; px <= x + radius + w + 1; ++px) {
             MMFLOAT dx = (MMFLOAT)px - (MMFLOAT)x;
             MMFLOAT dist2 = dx * dx + dy * dy;
-            if (fill >= 0 && dist2 <= fill2) host_put_pixel(px, py, fill);
-            if (w > 0 && dist2 <= outer2 && dist2 >= inner2) host_put_pixel(px, py, c);
+            if (fill >= 0 && dist2 <= fill2) host_fb_put_pixel(px, py, fill);
+            if (w > 0 && dist2 <= outer2 && dist2 >= inner2) host_fb_put_pixel(px, py, c);
         }
     }
 }
@@ -3116,7 +2928,7 @@ void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int b
 int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }
 void setmode(int mode, bool clear) { (void)mode; (void)clear; }
 int rgb(int r, int g, int b) { return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF); }
-void DrawPixel16(int x, int y, int c) { host_put_pixel(x, y, c); }
+void DrawPixel16(int x, int y, int c) { host_fb_put_pixel(x, y, c); }
 void DrawRectangle16(int x1, int y1, int x2, int y2, int c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void DrawBitmap16(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char *bitmap) { (void)x1; (void)y1; (void)width; (void)height; (void)scale; (void)fc; (void)bc; (void)bitmap; }
 void ScrollLCD16(int lines) { (void)lines; }
@@ -3124,7 +2936,7 @@ void DrawBuffer16(int x1, int y1, int x2, int y2, unsigned char *p) { (void)x1; 
 void DrawBuffer16Fast(int x1, int y1, int x2, int y2, int blank, unsigned char *p) { (void)x1; (void)y1; (void)x2; (void)y2; (void)blank; (void)p; }
 void ReadBuffer16(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void ReadBuffer16Fast(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void DrawPixelNormal(int x, int y, int c) { host_put_pixel(x, y, c); }
+void DrawPixelNormal(int x, int y, int c) { host_fb_put_pixel(x, y, c); }
 void ReadBuffer2(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void copyframetoscreen(uint8_t *s, int xstart, int xend, int ystart, int yend, int odd) { (void)s; (void)xstart; (void)xend; (void)ystart; (void)yend; (void)odd; }
 void copybuffertoscreen(unsigned char *s, int lx, int ly, int hx, int hy) { (void)s; (void)lx; (void)ly; (void)hx; (void)hy; }
