@@ -30,6 +30,7 @@ char *getcwd(char *buf, size_t size);
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 #include "vm_host_fat.h"
+#include "hardware/flash.h"
 
 /* All needed externs come from Hardware_Includes.h / MMBasic.h */
 extern char MMErrMsg[];
@@ -308,7 +309,13 @@ static int host_read_logical_line(const char **linep, char *out, size_t out_cap,
  * Returns 0 on success, -1 on error.
  */
 int load_basic_source(const char *source) {
-    /* Tokenize line by line into ProgMemory */
+    /* Tokenize line by line into ProgMemory. Erase the program area first
+     * (matches device behavior: cmd_new and SaveProgramToFlash both call
+     * flash_range_erase before writing). Without this, loading a smaller
+     * program after a larger one leaves tail tokens from the old program
+     * in ProgMemory, and PrepareProgramExt -- which scans for 0xff to
+     * find end-of-program -- walks off into garbage and crashes. */
+    flash_range_erase(0, MAX_PROG_SIZE);
     unsigned char *pm = ProgMemory;
     const char *line = source;
     int physical_line = 1;

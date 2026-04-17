@@ -1043,8 +1043,8 @@ void FullScreenEditor(int xx, int yy, char *fname, int edit_buff_size, bool cmdf
                             PrintString("\033[0m");
                             BreakKey = BreakKeySave;
                             Option.ColourCode=optioncolourcodesave;
-#ifdef PICOMITEVGA
                             editactive=0;
+#ifdef PICOMITEVGA
                             Y_TILE=OptionY_TILESave;
                             ytileheight=ytileheightsave;
                             if(modmode){

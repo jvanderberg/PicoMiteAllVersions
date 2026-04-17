@@ -169,6 +169,9 @@ unsigned char WatchdogSet = 0;
 /* Break-key state, normally owned by PicoMite.c. Editor.c saves/restores it
  * around the editing session. CTRL-C (0x03) is the MMBasic default. */
 unsigned char BreakKey = 3;
+/* editactive is defined only under #ifdef PICOMITEVGA in Editor.c.
+ * Provide it here so non-VGA builds (including host) link. */
+int editactive = 0;
 /* MMAbort is toggled by interrupt handlers on device; on host nothing
  * flips it, but the REPL loop and ExecuteProgram both read it. */
 volatile int MMAbort = 0;
@@ -1360,6 +1363,10 @@ void cmd_load(void) {
     free(source);
     if (rc != 0) error("Cannot parse file");
     PrepareProgram(false);
+    /* load_basic_source leaves the last file line in inpbuf; the prompt
+     * loop's EditInputLine would then echo it as if the user had typed
+     * it. Clear before longjmp, same pattern as cmd_new. */
+    memset(inpbuf, 0, STRINGSIZE);
     /* cmd_load tokenises into tknbuf as it loads, which corrupts the
      * tknbuf that ExecuteProgram is currently iterating. Jump back to
      * the prompt so ExecuteProgram doesn't read garbage off the end
@@ -2360,6 +2367,13 @@ int MMInkey(void) {
     if (host_raw_mode_is_active()) {
         int c = host_read_byte_nonblock();
         if (c < 0) return -1;
+        /* Ctrl-D at the prompt (outside EDIT) exits cleanly, like a shell.
+         * Inside EDIT the device treats Ctrl-D as CTRLKEY('D') = RIGHT
+         * cursor, so we only intercept when editactive == 0. */
+        if (c == 4 && !editactive) {
+            MMPrintString("\r\n");
+            exit(0);
+        }
         if (c == 0x1b) return host_decode_escape_sequence();
         if (c == 0x7f) return BKSP;       /* macOS/iTerm Backspace → BKSP */
         if (c == '\n') return ENTER;      /* normalise LF → CR for MMBasic */
@@ -2542,6 +2556,9 @@ int FileLoadProgram(unsigned char *fname, bool chain) {
     free(source);
     if (rc != 0) return 0;
     PrepareProgram(false);
+    /* Same hygiene as cmd_load — don't leave the last file line in inpbuf
+     * for the next EditInputLine to pick up. */
+    memset(inpbuf, 0, STRINGSIZE);
     return 1;
 }
 int FileLoadSourceProgram(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
@@ -2601,7 +2618,20 @@ void SaveOptions(void) {}
 void ResetAllFlash(void) {}
 void ResetOptions(bool startup) { (void)startup; }
 void ResetFlashStorage(int umount) { (void)umount; }
-void SaveProgramToFlash(unsigned char *pm, int msg) { (void)pm; (void)msg; }
+/* Called from Editor.c's SaveToProgMemory() when the user hits F1/F2 to
+ * save their edits. `pm` points to NUL-terminated source text (EdBuff),
+ * not tokens, so reuse the same host_main tokeniser path that LOAD uses.
+ *
+ * Do NOT call ClearRuntime here: EdBuff is allocated via GetTempMemory
+ * inside edit(), and ClearRuntime frees temp memory — freeing the very
+ * buffer we're about to tokenise. SaveToProgMemory's caller runs
+ * ClearProgram(true) right after us for any runtime reset needed. */
+void SaveProgramToFlash(unsigned char *pm, int msg) {
+    (void)msg;
+    if (!pm) return;
+    load_basic_source((const char *)pm);
+    PrepareProgram(false);
+}
 void CheckSDCard(void) {}
 void CrunchData(unsigned char **p, int c) { (void)p; (void)c; }
 void ClearSavedVars(void) {}
