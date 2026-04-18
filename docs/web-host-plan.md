@@ -200,6 +200,22 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 
 **Verified:** Headless Chromium sees `FILES` list the 8 preloaded demos, `RUN "demo_hello.bas"` produces the expected FRUN output pixel-on-canvas, drag-drop injects `mine.bas` which `RUN` executes, and `SAVE "saved.bas"` followed by the download button delivers a ZIP containing both bundled + user-added files. Native `./run_tests.sh` still 201/201.
 
+### Phase 2.5 — Hardening and UI polish ✅ (2026-04-18)
+
+Not originally scoped as a phase; a cluster of fixes and quality-of-life features that emerged from actually using the Phase 1+2 build in a browser.
+
+**Cooperative yield in the interpreter hot loop.** ASYNCIFY only yields when the C stack reaches an `emscripten_sleep*` call. The REPL's `MMgetchar` yielded via `host_sleep_us(1000)`, but `CheckAbort` (called on every statement) and `MMInkey` polling (called every `INKEY$`) did not — so any `.bas` that either looped without `PAUSE` or waited for input via `Do While Inkey$="" : Loop` (e.g. `demo_gfx_mandel`'s "key to exit") hung the tab indefinitely. Fix: `wasm_yield_if_due()` in `host_runtime.c`, invoked from `host_runtime_check_timeout` — a throttled `emscripten_sleep(0)` at most every 16 ms of wall clock. Both hot paths converge on that function (interpreter statement loop via `CheckAbort`, busy-wait polls via `MMInkey`, VM back-edges via `bc_vm.c::CheckAbort`), so every hot loop gets a cooperative yield for ~1% overall overhead.
+
+**Red `LCD_error` overlay on every error.** `MMBasic.c::error` triggers `LCD_error` (a full-width red-on-black overlay intended for device builds where the serial console and the display are separate) whenever `Option.DISPLAY_CONSOLE == 0`. The WASM path sets it to 1 in `wasm_configure_display_console`, but `host_runtime_begin` snapshots `Option` into `flash_option_buf` *before* the override runs, and `error()` calls `LoadOptions()` on every error to reset `Option` — which reverted `DISPLAY_CONSOLE` to 0 and triggered the overlay. Fix: call `host_options_snapshot()` again in `wasm_boot` *after* `wasm_configure_display_console`, so the flash image holds the correct post-override state.
+
+**Resolution dropdown.** `<select>` with nine common sizes from 320×240 up to 1024×768. Changing the selection sets `?res=WxH` on the URL, persists to `localStorage`, and reloads — the framebuffer plane is allocated inside `host_runtime_begin` (before JS regains control) and the interpreter's `setjmp`/`longjmp` state doesn't tolerate re-init, so a full reload is the only safe path. C side: new `wasm_set_framebuffer_size(w, h)` export wrapping the existing `host_sim_set_framebuffer_size`; JS calls it between `Module` resolve and `wasm_boot`.
+
+**Memory dropdown.** `<select>` offering 128 KB (RP2040-faithful) through 8 MB, defaulting to 2 MB for a generous web-friendly heap. `configuration.h` sets `HEAP_MEMORY_SIZE` to 8 MB under `MMBASIC_WASM` (compile-time ceiling for `AllMemory[]` and `mmap[]`); the runtime `heap_memory_size` variable picks any value ≤ ceiling via a new `wasm_set_heap_size()` export that also bumps `bc_alloc`'s VM-heap capacity via a matching `bc_alloc_set_heap_capacity()` setter. `MEMORY` command in BASIC reports the selected size (128 KB selection = 156 KB free after the +28 KB `MAXVARS * sizeof(s_vartbl)` overhead; 2 MB selection = 2076 KB free).
+
+**Canvas sizing.** Pixel doubled at 2× by default, shrinks uniformly if 2× exceeds the viewport budget so aspect ratio is always preserved. `image-rendering: pixelated` keeps nearest-neighbour sampling even at non-integer scales. Canvas re-sizes on window resize. Dropped the old square-forcing CSS (`min(88vw, 88vh - 120px, 640px)` for both width and height) that distorted non-square framebuffers.
+
+**Status line.** Shows live resolution, heap size, and demo count: `Ready — 640×360, 2 MB heap, 8 demos in /sd/. Type FILES.`
+
 ### Phase 3 — Audio via Web Audio
 
 **Goal:** `PLAY TONE 440,1000` emits a 440 Hz beep for 1 s.
@@ -297,11 +313,13 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 
 1. Land this plan document on `web-host` branch. ✅
 2. Phase 0 scaffolding. ✅
-3. Phase 1 (canvas + raster REPL) — the riskiest phase because it proves ASYNCIFY + the shared-code link work at scale.
-4. Phase 2 (FS), Phase 3 (audio), Phase 4 (scheduling), Phase 5 (input), Phase 6 (graphics polish) — one commit each.
-5. Phase 7 (deploy) once everything works locally.
-6. Merge `web-host` → `main`. Promote the docs / link from the main README.
-7. Iterate on post-MVP items as user feedback comes in.
+3. Phase 1 (canvas + raster REPL). ✅
+4. Phase 2 (FS). ✅
+5. Phase 2.5 (hardening: yield hook, error overlay, resolution + memory dropdowns, canvas scaling, status line). ✅
+6. Phase 3 (audio), Phase 4 (scheduling), Phase 5 (input), Phase 6 (graphics polish) — one commit each.
+7. Phase 7 (deploy) once everything works locally.
+8. Merge `web-host` → `main`. Promote the docs / link from the main README.
+9. Iterate on post-MVP items as user feedback comes in.
 
 ## Success criteria
 
