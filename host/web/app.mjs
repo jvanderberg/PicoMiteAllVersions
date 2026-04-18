@@ -473,11 +473,12 @@ try {
     startRenderLoop(instance);
 
     const demos = listSd(instance);
-    setStatus(
-        demos.length
-            ? `Ready (${fbWidth}x${fbHeight}) — ${demos.length} demos in /sd/. Type FILES.`
-            : `Ready (${fbWidth}x${fbHeight}).`
-    );
+    const memLabel = memoryBytes >= 1024 * 1024
+        ? `${(memoryBytes / (1024 * 1024)).toFixed(memoryBytes % (1024 * 1024) ? 1 : 0)} MB`
+        : `${Math.round(memoryBytes / 1024)} KB`;
+    const parts = [`${fbWidth}×${fbHeight}`, `${memLabel} heap`];
+    if (demos.length) parts.push(`${demos.length} demos in /sd/`);
+    setStatus(`Ready — ${parts.join(', ')}. Type FILES.`);
 
     await instance.ccall('wasm_boot', null, [], [], { async: true });
 } catch (err) {
