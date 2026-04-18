@@ -216,6 +216,18 @@ Not originally scoped as a phase; a cluster of fixes and quality-of-life feature
 
 **Status line.** Shows live resolution, heap size, and demo count: `Ready — 640×360, 2 MB heap, 8 demos in /sd/. Type FILES.`
 
+**Yield-hook dedup.** `wasm_yield_if_due` was firing once per frame on top of `FASTGFX SYNC`'s own `host_sleep_us` (each yield = ~1 ms of ASYNCIFY unwind overhead, ~5% perf tax on a 50 FPS game). Now `host_sleep_us` stamps a shared `wasm_last_yield_us` after each `emscripten_sleep`, so the periodic check skips when the program has already sleep-yielded recently. Busy-wait loops still get the cooperative yield; cooperative games (e.g. pico_blocks at 50 FPS) pay nothing extra.
+
+**Terminal cleanup on signal death.** `host_terminal.c` installed `atexit` to restore termios, but `atexit` only fires on normal `exit()` — a SIGTERM / SIGINT / SIGHUP / SIGQUIT / SIGPIPE / SIGABRT left stdin in raw mode, which stair-stepped the shell's prompt. Added signal handlers that call the restore hook, then re-raise with the default disposition so the exit status still reflects the signal. Native-host only; WASM doesn't link `host_terminal.c`.
+
+**Persistent /sd/ via IDBFS.** Files the user SAVEs (or the Editor's F1-save path) now survive reloads. `host/demos/` moves from `/sd/` preload to `/bundle/` preload and gets copied into `/sd/` on first boot (gated by a `localStorage` flag, with an "empty /sd/ triggers repopulate" self-heal for stale flags). New **⟲ Reset /sd/** toolbar button wipes every user file and repopulates from the bundle. Flush strategy: `visibilitychange` + `beforeunload` + a 2 s `setInterval`.
+
+**Editor file-load on IDBFS.** `host_fs_posix_try_open` used `fstat(fileno(fp))` to cache the file size that `Editor.c::f_size(FileTable[fnbr].fptr)` reads back. On emscripten's MEMFS/IDBFS the fd-backed fstat returns `size=0` for freshly-opened read FILE*s until the first read touches data — only path-backed `stat()` sees the real size. Result: EDIT loaded an empty buffer and the backup copy came out 0 bytes. Fix: `stat(path, ...)` before `fopen()`, regardless of mode. Now FILES and Editor agree on sizes immediately after SAVE.
+
+**Makefile.wasm demo dependency tracking.** `--preload-file demos@/bundle` is a linker flag, not a compile input, so `make` didn't notice when `host/demos/*.bas` changed — `picomite.data` stayed frozen on the previous bundle. Added `$(wildcard demos/*.bas)` as a link prerequisite so touching or adding a demo triggers a relink.
+
+**Bundled `mand.bas` mandelbrot explorer.** Rewrote the interactive mandelbrot renderer (fixed-point inner loop, 16-ply BLINDS interlacing, zoom history stack, palette switcher) to pull `SCREEN_W`/`SCREEN_H` from `MM.HRES`/`MM.VRES` and pick a uniform complex-units-per-pixel scale so both the initial view *and* every zoom stay aspect-correct on any viewport. Zoom cursor is a W×H rectangle matching the viewport ratio, so zooming preserves square pixels through arbitrary depth.
+
 ### Phase 3 — Audio via Web Audio
 
 **Goal:** `PLAY TONE 440,1000` emits a 440 Hz beep for 1 s.
