@@ -232,8 +232,6 @@ typedef enum {
     OP_STR_DATE       = 0xE4, /* — push str DATE$ */
     OP_STR_TIME       = 0xE5, /* — push str TIME$ */
     OP_KEYDOWN        = 0xE6, /* pop int n, push int KEYDOWN(n) */
-    OP_PLAY_STOP      = 0xE7, /* — PLAY STOP */
-    OP_PLAY_TONE      = 0xE8, /* argc:8 — PLAY TONE left, right[, duration] */
     OP_SETPIN         = 0xE9, /* mode:16 option:16 — pop pin, SETPIN pin, mode[, option] */
     OP_PIN_READ       = 0xEA, /* pop pin, push int PIN(pin) */
     OP_PIN_WRITE      = 0xEB, /* pop value, pop pin, PIN(pin)=value */
@@ -369,7 +367,6 @@ typedef enum {
 #define BC_FILE_PRINT_STR     5  /* fn:16, pop string */
 #define BC_FILE_PRINT_NEWLINE 6  /* fn:16 */
 #define BC_FILE_LINE_INPUT    7  /* is_local:8 slot:16 fn:16 */
-#define BC_FILE_FILES         8  /* has_pattern:8, pop optional pattern$ */
 #define BC_FILE_DRIVE         9  /* pop drive$ */
 #define BC_FILE_SEEK         10  /* fn:16, pop position */
 #define BC_FILE_MKDIR        11  /* pop path$ */
@@ -439,8 +436,6 @@ typedef enum {
     BC_SYS_DATE_STR,
     BC_SYS_TIME_STR,
     BC_SYS_KEYDOWN,
-    BC_SYS_PLAY_STOP,
-    BC_SYS_PLAY_TONE,
     BC_SYS_SETPIN,
     BC_SYS_PIN_READ,
     BC_SYS_PIN_WRITE,
@@ -455,7 +450,6 @@ typedef enum {
     BC_SYS_FILE_PRINT_STR,
     BC_SYS_FILE_PRINT_NEWLINE,
     BC_SYS_FILE_LINE_INPUT,
-    BC_SYS_FILE_FILES,
     BC_SYS_FILE_DRIVE,
     BC_SYS_FILE_SEEK,
     BC_SYS_FILE_MKDIR,

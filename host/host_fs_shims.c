@@ -1,0 +1,435 @@
+/*
+ * host_fs_shims.c — host-side filesystem HAL.
+ *
+ * Holds the FatFS walker wrappers (host_f_findfirst/findnext/closedir/
+ * unlink/rename/mkdir/chdir/getcwd) that let FileIO.c's cmd_files /
+ * cmd_copy / cmd_kill / fun_dir / fun_cwd walk real POSIX directories
+ * when host_sd_root is set; the POSIX-backed per-fnbr file table
+ * (host_fs_posix_* — serviced by FileIO.c's BasicFileOpen preamble);
+ * and the simulated flash / LFS / existence-check stubs that let the
+ * rest of the interpreter link unchanged.
+ *
+ * flash_option_contents is RAM-backed; host_options_snapshot() syncs
+ * the live Option back into it so LoadOptions inside error() restores
+ * the correct host configuration rather than a zero-filled default.
+ */
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+
+#include "MMBasic_Includes.h"
+#include "Hardware_Includes.h"
+#include "host_fs.h"
+#include "host_fs_hal.h"
+
+/* Defined in host_main.c — used by FileLoadProgram when SaveProgramToFlash
+ * feeds buffered source through the host tokeniser path. */
+extern int load_basic_source(const char *source);
+
+/* When set (REPL mode with --sd-root DIR, or cwd by default), file
+ * commands operate on the real filesystem rooted here rather than on
+ * the in-memory FAT disk. NULL for the test harness — commands that
+ * require filesystem access error rather than scribble on the user's
+ * real files. */
+const char *host_sd_root = NULL;
+
+static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap) {
+    if (!host_sd_root) { error("No SD root configured"); return; }
+    /* Absolute paths pass through unchanged. Relative paths get joined to
+     * host_sd_root with a single '/'. */
+    if (fname[0] == '/') {
+        if (strlen(fname) >= out_cap) error("File name too long");
+        strcpy(out, fname);
+        return;
+    }
+    size_t rl = strlen(host_sd_root);
+    size_t fl = strlen(fname);
+    int need_sep = (rl > 0 && host_sd_root[rl - 1] != '/');
+    if (rl + (need_sep ? 1 : 0) + fl + 1 > out_cap) error("File name too long");
+    memcpy(out, host_sd_root, rl);
+    if (need_sep) out[rl++] = '/';
+    memcpy(out + rl, fname, fl + 1);
+}
+
+/* =========================================================================
+ * FatFS directory-walker wrappers.
+ *
+ * FileIO.c's cmd_files, cmd_copy, cmd_kill, fun_dir need f_findfirst /
+ * f_findnext / f_closedir. In REPL / --sim mode (host_sd_root set) we
+ * walk the user's real directory via host_fs_walk_* (POSIX) and populate
+ * the FatFS FILINFO the caller expects. That way cmd_files' sort,
+ * pagination, and formatting — all of which live in FileIO.c — run
+ * unchanged on host-hosted file trees.
+ *
+ * Without host_sd_root the test harness wants the vm_host_fat RAM disk,
+ * so we delegate straight to FatFS.
+ *
+ * FatFS date/time packing (ff.h: fdate = yr-1980<<9 | mon<<5 | day,
+ * ftime = hr<<11 | min<<5 | sec/2). Zero-filled when mtime decode fails;
+ * cmd_files prints "00:00 00-00-1980" but doesn't crash.
+ * ======================================================================= */
+static host_fs_walker_t *host_find_walker = NULL;
+
+FRESULT host_f_findfirst(DIR *dp, FILINFO *fi, const TCHAR *path, const TCHAR *pattern);
+FRESULT host_f_findnext(DIR *dp, FILINFO *fi);
+FRESULT host_f_closedir(DIR *dp);
+static void host_strip_fatfs_drive(const char *in, char *out, int out_cap);
+void host_join_sd_root(const char *relpath, char *out, int out_cap);
+
+static void host_fill_finfo_from_posix(FILINFO *fi, const char *name,
+                                       int is_dir, unsigned long long size,
+                                       long long mtime_epoch) {
+    memset(fi, 0, sizeof(*fi));
+    snprintf(fi->fname, sizeof(fi->fname), "%s", name);
+    fi->fattrib = is_dir ? AM_DIR : 0;
+    fi->fsize = (FSIZE_t)size;
+    time_t t = (time_t)mtime_epoch;
+    struct tm lt;
+    if (localtime_r(&t, &lt) != NULL) {
+        int yr = lt.tm_year + 1900;
+        if (yr < 1980) yr = 1980;
+        fi->fdate = (WORD)(((yr - 1980) << 9) | ((lt.tm_mon + 1) << 5) | lt.tm_mday);
+        fi->ftime = (WORD)((lt.tm_hour << 11) | (lt.tm_min << 5) | (lt.tm_sec / 2));
+    }
+}
+
+FRESULT host_f_findfirst(DIR *dp, FILINFO *fi, const TCHAR *path,
+                         const TCHAR *pattern) {
+    if (!host_sd_root) return f_findfirst(dp, fi, path, pattern);
+    /* FileIO.c hands us a FatFS-style path like "/build" or just "/"
+     * (drive prefix already stripped by fullpath(). Join it onto
+     * host_sd_root so FILES / COPY / KILL / DIR$ see the subdirectory
+     * the user has CHDIR'd into. */
+    char target[FF_MAX_LFN];
+    host_join_sd_root(path, target, sizeof(target));
+    if (host_find_walker) host_fs_walk_close(host_find_walker);
+    host_find_walker = host_fs_walk_open(target, pattern);
+    if (!host_find_walker) { memset(fi, 0, sizeof(*fi)); return FR_NO_PATH; }
+    return host_f_findnext(dp, fi);
+}
+
+FRESULT host_f_findnext(DIR *dp, FILINFO *fi) {
+    if (!host_sd_root) return f_findnext(dp, fi);
+    (void)dp;
+    if (!host_find_walker) { memset(fi, 0, sizeof(*fi)); return FR_NO_FILE; }
+    char name[FF_MAX_LFN + 1];
+    int is_dir = 0;
+    unsigned long long size = 0;
+    long long mtime = 0;
+    if (!host_fs_walk_next(host_find_walker, name, (int)sizeof(name),
+                           &is_dir, &size, &mtime)) {
+        memset(fi, 0, sizeof(*fi));
+        fi->fname[0] = 0;
+        return FR_OK;   /* FatFS signals end-of-dir by empty fname, FR_OK */
+    }
+    host_fill_finfo_from_posix(fi, name, is_dir, size, mtime);
+    return FR_OK;
+}
+
+FRESULT host_f_closedir(DIR *dp) {
+    if (!host_sd_root) return f_closedir(dp);
+    (void)dp;
+    if (host_find_walker) {
+        host_fs_walk_close(host_find_walker);
+        host_find_walker = NULL;
+    }
+    return FR_OK;
+}
+
+/* Whole-path wrappers. cmd_kill, cmd_name, cmd_mkdir, cmd_chdir, cmd_copy,
+ * fun_cwd all call these. Without host_sd_root we go straight to FatFS
+ * (vm_host_fat RAM disk for the test harness). With host_sd_root we
+ * resolve the path against the user's root directory and hit POSIX.
+ *
+ * The path argument FileIO.c hands us has a FatFS drive prefix (e.g.
+ * "0:/foo.bas" from getfullfilename). We strip that so POSIX paths
+ * work cleanly under host_sd_root. */
+static void host_strip_fatfs_drive(const char *in, char *out, int out_cap) {
+    if (out_cap <= 0) return;
+    /* Skip "N:" drive prefix if present. */
+    if (in[0] && in[1] == ':') in += 2;
+    /* Skip leading "/" so host_resolve_sd_path will join under host_sd_root. */
+    while (*in == '/') in++;
+    snprintf(out, out_cap, "%s", in);
+}
+
+void host_join_sd_root(const char *relpath, char *out, int out_cap) {
+    char stripped[FF_MAX_LFN];
+    host_strip_fatfs_drive(relpath, stripped, sizeof(stripped));
+    host_resolve_sd_path(stripped, out, (size_t)out_cap);
+}
+
+FRESULT host_f_unlink(const TCHAR *path) {
+    if (!host_sd_root) return f_unlink(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_unlink(p) == 0 ? FR_OK : FR_NO_FILE;
+}
+
+FRESULT host_f_rename(const TCHAR *from, const TCHAR *to) {
+    if (!host_sd_root) return f_rename(from, to);
+    char a[FF_MAX_LFN], b[FF_MAX_LFN];
+    host_join_sd_root(from, a, sizeof(a));
+    host_join_sd_root(to, b, sizeof(b));
+    return host_fs_rename(a, b) == 0 ? FR_OK : FR_NO_FILE;
+}
+
+FRESULT host_f_mkdir(const TCHAR *path) {
+    if (!host_sd_root) return f_mkdir(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_mkdir(p) == 0 ? FR_OK : FR_EXIST;
+}
+
+FRESULT host_f_chdir(const TCHAR *path) {
+    if (!host_sd_root) return f_chdir(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_chdir(p) == 0 ? FR_OK : FR_NO_PATH;
+}
+
+FRESULT host_f_getcwd(TCHAR *buff, UINT len) {
+    if (!host_sd_root) return f_getcwd(buff, len);
+    char tmp[FF_MAX_LFN];
+    if (host_fs_getcwd(tmp, (int)sizeof(tmp)) != 0) return FR_INT_ERR;
+    /* Prepend drive prefix so Editor.c / PRINT CWD$ format works. */
+    snprintf(buff, len, "0:%s", tmp);
+    return FR_OK;
+}
+
+/* =========================================================================
+ * POSIX file table servicing host_fs_hal.h.
+ *
+ * FileIO.c's primitives (BasicFileOpen, FileGetChar, FilePutChar,
+ * FileClose, FileEOF, cmd_seek, cmd_flush, fun_loc, fun_lof) each begin
+ * with a small #ifdef MMBASIC_HOST preamble that hands off to the
+ * host_fs_posix_* routine below if this fnbr has a POSIX entry.
+ * ======================================================================= */
+static FILE *host_posix_files[MAXOPENFILES + 1] = {0};
+
+int host_fs_posix_active(int fnbr) {
+    return fnbr >= 1 && fnbr <= MAXOPENFILES && host_posix_files[fnbr] != NULL;
+}
+
+int host_fs_posix_try_open(char *fname, int fnbr, int mode) {
+    if (!host_sd_root) return 0;
+    char path[STRINGSIZE];
+    host_resolve_sd_path(fname, path, sizeof(path));
+    const char *m = (mode & FA_WRITE) ? ((mode & FA_CREATE_ALWAYS) ? "wb"
+                                       : (mode & FA_OPEN_APPEND)  ? "ab" : "rb+")
+                                      : "rb";
+    FILE *fp = fopen(path, m);
+    if (!fp) error("File error");
+    struct stat st;
+    size_t size = 0;
+    if (fstat(fileno(fp), &st) == 0) size = (size_t)st.st_size;
+    FileTable[fnbr].fptr = calloc(1, sizeof(FIL));
+    if (!FileTable[fnbr].fptr) { fclose(fp); error("Not enough memory"); }
+    /* Fill obj.objsize so Editor.c's f_size(fptr) returns the real size. */
+    FileTable[fnbr].fptr->obj.objsize = (FSIZE_t)size;
+    host_posix_files[fnbr] = fp;
+    filesource[fnbr] = FATFSFILE;
+    return 1;
+}
+
+char host_fs_posix_get_char(int fnbr) {
+    int c = fgetc(host_posix_files[fnbr]);
+    return c == EOF ? 0 : (char)c;
+}
+
+char host_fs_posix_put_char(char c, int fnbr) {
+    if (fputc((unsigned char)c, host_posix_files[fnbr]) == EOF) error("File error");
+    return c;
+}
+
+void host_fs_posix_put_str(int count, char *s, int fnbr) {
+    if (count <= 0) return;
+    if (fwrite(s, 1, (size_t)count, host_posix_files[fnbr]) != (size_t)count)
+        error("File error");
+}
+
+int host_fs_posix_eof(int fnbr) {
+    FILE *fp = host_posix_files[fnbr];
+    /* ANSI feof only returns true after a read that hit EOF — BASIC's EOF
+     * wants a lookahead. Peek one byte, push it back. */
+    int c = fgetc(fp);
+    if (c == EOF) return 1;
+    ungetc(c, fp);
+    return 0;
+}
+
+void host_fs_posix_close(int fnbr) {
+    fclose(host_posix_files[fnbr]);
+    host_posix_files[fnbr] = NULL;
+    free(FileTable[fnbr].fptr);
+    FileTable[fnbr].fptr = NULL;
+    filesource[fnbr] = NONEFILE;
+}
+
+int64_t host_fs_posix_loc(int fnbr) {
+    return (int64_t)ftell(host_posix_files[fnbr]);
+}
+
+int64_t host_fs_posix_lof(int fnbr) {
+    return (int64_t)FileTable[fnbr].fptr->obj.objsize;
+}
+
+void host_fs_posix_seek(int fnbr, int64_t offset) {
+    /* BASIC SEEK is 1-based. FileIO.c's cmd_seek adjusts before calling. */
+    if (fseek(host_posix_files[fnbr], (long)offset, SEEK_SET) != 0)
+        error("File error");
+}
+
+void host_fs_posix_flush(int fnbr) {
+    fflush(host_posix_files[fnbr]);
+}
+
+/* POSIX-backed existence check. The Editor's file-load path (EDIT "foo.bas")
+ * needs this to return truthful answers — otherwise `edit` leaves its p
+ * pointer NULL and dereferences it at Editor.c:511. Also relied on by
+ * cmd_run "file", AUTOSAVE recovery, etc. When no --sd-root is configured
+ * (host_sd_root == NULL) we fall back to the CWD so the tree-of-.bas files
+ * in the repo root just work for direct-run invocations. */
+int ExistsFile(char *fname) {
+    if (!fname || !*fname) return 0;
+    char path[STRINGSIZE];
+    if (host_sd_root) {
+        size_t rl = strlen(host_sd_root);
+        size_t fl = strlen(fname);
+        int need_sep = (fname[0] != '/' && rl > 0 && host_sd_root[rl - 1] != '/');
+        if (fname[0] == '/') {
+            snprintf(path, sizeof(path), "%s", fname);
+        } else if (rl + (need_sep ? 1 : 0) + fl + 1 > sizeof(path)) {
+            return 0;
+        } else {
+            snprintf(path, sizeof(path), "%s%s%s",
+                     host_sd_root, need_sep ? "/" : "", fname);
+        }
+    } else {
+        snprintf(path, sizeof(path), "%s", fname);
+    }
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
+}
+
+int ExistsDir(char *p, char *q, int *filesystem) {
+    (void)p; (void)q; (void)filesystem;
+    return 0;
+}
+
+/* =========================================================================
+ * Simulated flash operations.
+ *
+ * On the device these hit XIP flash; on host they write through to
+ * flash_prog_buf (allocated in host_main.c, 128 KB). Layout: first
+ * 64 KB is program area, second 64 KB is the CFunction area
+ * (erased = 0xFF).
+ * ======================================================================= */
+extern uint8_t flash_prog_buf[];
+#define HOST_FLASH_SIZE        (256 * 1024)
+#define HOST_FLASH_PROG_SIZE   (HOST_FLASH_SIZE / 2)
+
+void flash_range_erase(uint32_t off, uint32_t count) {
+    if (off >= HOST_FLASH_SIZE) return;
+    if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
+    /* Device erase fills with 0xFF. The program region additionally gets
+     * a leading zero terminator written by cmd_new right after the erase,
+     * but host's ProgMemory scan accepts either 0 or 0xFF as end-of-program. */
+    memset(flash_prog_buf + off, 0xFF, count);
+}
+
+void flash_range_program(uint32_t off, const uint8_t *data, uint32_t count) {
+    if (off >= HOST_FLASH_SIZE) return;
+    if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
+    memcpy(flash_prog_buf + off, data, count);
+}
+
+/* SaveProgramToFlash lives in PicoMite.c on device; on host that file
+ * isn't linked so we provide a tokenise-in-place shim. Called from the
+ * Editor (F1 Save) and from FileIO.c's cmd_load / FileLoadProgram with
+ * EdBuff or an assembled source buffer. `pm` is NUL-terminated source
+ * text, NOT tokens, so route it through the host tokeniser path.
+ *
+ * Do NOT call ClearRuntime here: EdBuff is allocated via GetTempMemory
+ * inside edit(), and ClearRuntime frees temp memory — freeing the very
+ * buffer we're about to tokenise. */
+void SaveProgramToFlash(unsigned char *pm, int msg) {
+    (void)msg;
+    if (!pm) return;
+    load_basic_source((const char *)pm);
+    PrepareProgram(false);
+}
+
+/* LFS stubs — FileIO.c references the full littlefs surface. On host
+ * nothing actually stores to flash via LFS (BasicFileOpen routes through
+ * POSIX / FatFS instead), but every reachable call site has to link. */
+int lfs_file_close(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+int lfs_file_open(lfs_t *l, lfs_file_t *file, const char *path, int flags) { (void)l; (void)file; (void)path; (void)flags; return -1; }
+lfs_ssize_t lfs_file_read(lfs_t *l, lfs_file_t *file, void *buf, lfs_size_t size) { (void)l; (void)file; (void)buf; (void)size; return 0; }
+lfs_soff_t lfs_file_seek(lfs_t *l, lfs_file_t *file, lfs_soff_t off, int whence) { (void)l; (void)file; (void)off; (void)whence; return 0; }
+lfs_ssize_t lfs_file_write(lfs_t *l, lfs_file_t *file, const void *buf, lfs_size_t size) { (void)l; (void)file; (void)buf; (void)size; return 0; }
+lfs_ssize_t lfs_fs_size(lfs_t *l) { (void)l; return 0; }
+int lfs_remove(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
+int lfs_stat(lfs_t *l, const char *path, struct lfs_info *info) { (void)l; (void)path; (void)info; return -1; }
+int lfs_dir_open(lfs_t *l, lfs_dir_t *dir, const char *path) { (void)l; (void)dir; (void)path; return -1; }
+int lfs_dir_close(lfs_t *l, lfs_dir_t *dir) { (void)l; (void)dir; return 0; }
+int lfs_dir_read(lfs_t *l, lfs_dir_t *dir, struct lfs_info *info) { (void)l; (void)dir; (void)info; return 0; }
+int lfs_file_rewind(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+int lfs_file_sync(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+lfs_soff_t lfs_file_tell(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+int lfs_format(lfs_t *l, const struct lfs_config *cfg) { (void)l; (void)cfg; return 0; }
+int lfs_mount(lfs_t *l, const struct lfs_config *cfg) { (void)l; (void)cfg; return 0; }
+int lfs_unmount(lfs_t *l) { (void)l; return 0; }
+lfs_ssize_t lfs_getattr(lfs_t *l, const char *path, uint8_t type, void *buf, lfs_size_t size) { (void)l; (void)path; (void)type; (void)buf; (void)size; return -1; }
+int lfs_setattr(lfs_t *l, const char *path, uint8_t type, const void *buf, lfs_size_t size) { (void)l; (void)path; (void)type; (void)buf; (void)size; return 0; }
+int lfs_removeattr(lfs_t *l, const char *path, uint8_t type) { (void)l; (void)path; (void)type; return 0; }
+int lfs_mkdir(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
+int lfs_rename(lfs_t *l, const char *oldpath, const char *newpath) { (void)l; (void)oldpath; (void)newpath; return 0; }
+
+/* lfs_file_size is only reached from the FLASHFILE branch in Editor.c, which
+ * is unreachable on host (filesource[] is always FATFSFILE). Stubbed so the
+ * link succeeds. */
+lfs_soff_t lfs_file_size(lfs_t *lfs, lfs_file_t *fp) { (void)lfs; (void)fp; return 0; }
+
+/* =========================================================================
+ * Flash layout externs referenced from FileIO.c.
+ *
+ * On device these live at fixed XIP addresses (linker script); on host
+ * there's no flash so we back them with RAM buffers.
+ *
+ * flash_option_contents is memcpy()'d into Option by LoadOptions — NOT
+ * just at startup but every time error() fires (see MMBasic.c:2835).
+ * Host-specific terminal geometry (Option.Width / Height /
+ * DISPLAY_CONSOLE / …) gets set by host_main.c at boot; if this
+ * buffer is blank, every error wipes those fields and the framebuffer
+ * console goes silent + cmd_files' wrap-at-Width collapses to zero.
+ *
+ * The fix: host_options_snapshot() (called by host_runtime_begin
+ * after everyone has finished mutating Option) copies the current
+ * Option back into this buffer so subsequent LoadOptions calls
+ * restore the initialized state, not the zero-filled one.
+ *
+ * We still start zero-filled (not 0xFF) because Option.PIN is an int
+ * and all-0xFF would be 0xFFFFFFFF which trips the PIN-lockdown
+ * prompt in MMBasic_REPL.c:196.
+ *
+ * flash_target_buf uses 0xFF fill — PrepareProgramExt walks it looking
+ * for the CFunction terminator, and 0xFF is correct "erased" semantics.
+ * ======================================================================= */
+static uint8_t host_flash_option_buf[sizeof(struct option_s)];
+static uint8_t host_flash_target_buf[4096];
+const uint8_t *flash_option_contents = host_flash_option_buf;
+const uint8_t *flash_target_contents = host_flash_target_buf;
+__attribute__((constructor))
+static void host_flash_contents_init(void) {
+    memset(host_flash_option_buf, 0x00, sizeof(host_flash_option_buf));
+    memset(host_flash_target_buf, 0xFF, sizeof(host_flash_target_buf));
+}
+
+void host_options_snapshot(void) {
+    memcpy(host_flash_option_buf, &Option, sizeof(Option));
+}

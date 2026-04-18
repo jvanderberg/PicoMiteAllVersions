@@ -40,11 +40,11 @@ CORE_SRCS += Draw.c FileIO.c Audio.c
 
 # Bytecode VM sources
 BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
-          vm_sys_input.c vm_sys_graphics.c vm_sys_time.c vm_sys_audio.c vm_sys_pin.c vm_sys_file.c bc_source.c bc_compiler_core.c \
+          vm_sys_input.c vm_sys_graphics.c vm_sys_time.c vm_sys_pin.c vm_sys_file.c bc_source.c bc_compiler_core.c \
           bc_vm.c bc_runtime.c bc_debug.c
 
 # Host-specific sources
-HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c host_sim_audio.c host_time.c host_fb.c host_keys.c
+HOST_SRCS = host_runtime.c host_fastgfx.c host_fs_shims.c host_peripheral_stubs.c host_main.c host_terminal.c host_fs.c host_sim_audio.c host_time.c host_fb.c host_keys.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)

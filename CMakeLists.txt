@@ -112,7 +112,6 @@ set(PICOMITE_VM_SOURCES
 	vm_sys_input.c
 	vm_sys_graphics.c
 	vm_sys_time.c
-	vm_sys_audio.c
 	vm_sys_pin.c
 	vm_sys_file.c
 	${PICOMITE_VM_SHARED_GFX_SOURCES}

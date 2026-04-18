@@ -215,8 +215,6 @@ static const char *opcode_name(uint8_t op) {
         case OP_STR_DATE:     return "STR_DATE";
         case OP_STR_TIME:     return "STR_TIME";
         case OP_KEYDOWN:      return "KEYDOWN";
-        case OP_PLAY_STOP:    return "PLAY_STOP";
-        case OP_PLAY_TONE:    return "PLAY_TONE";
         case OP_SETPIN:       return "SETPIN";
         case OP_PIN_READ:     return "PIN_READ";
         case OP_PIN_WRITE:    return "PIN_WRITE";
@@ -471,7 +469,6 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_STR_DATE:
         case OP_STR_TIME:
         case OP_KEYDOWN:
-        case OP_PLAY_STOP:
         case OP_PIN_READ:
         case OP_PIN_WRITE:
         case OP_MATH_MULSHR:
@@ -497,12 +494,6 @@ void bc_disassemble(BCCompiler *cs) {
         case OP_SERVO: {
             uint8_t present = code[pc++];
             dbg_print("  %04X: %-16s present=0x%02X\r\n", start, name, (unsigned)present);
-            break;
-        }
-
-        case OP_PLAY_TONE: {
-            uint8_t argc = code[pc++];
-            dbg_print("  %04X: %-16s argc=%u\r\n", start, name, (unsigned)argc);
             break;
         }
 

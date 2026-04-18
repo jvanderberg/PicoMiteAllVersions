@@ -18,7 +18,6 @@
 #include "vm_sys_input.h"
 #include "vm_sys_graphics.h"
 #include "vm_sys_time.h"
-#include "vm_sys_audio.h"
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 
@@ -756,25 +755,6 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
             while (readusclock() < until) CheckAbort();
             return;
         }
-        case BC_SYS_PLAY_STOP:
-            vm_sys_audio_play_stop();
-            return;
-        case BC_SYS_PLAY_TONE: {
-            int64_t duration_ms = 0;
-            int has_duration = 0;
-            MMFLOAT right_hz;
-            MMFLOAT left_hz;
-            if (argc != 2 && argc != 3)
-                bc_vm_error(vm, "Invalid PLAY TONE argument count");
-            if (argc == 3) {
-                duration_ms = bc_vm_pop_numeric_i_value(vm);
-                has_duration = 1;
-            }
-            right_hz = bc_vm_pop_numeric_f_value(vm);
-            left_hz = bc_vm_pop_numeric_f_value(vm);
-            vm_sys_audio_play_tone(left_hz, right_hz, has_duration, duration_ms);
-            return;
-        }
         case BC_SYS_SETPIN: {
             int mode = (int)bc_vm_read_i16_at(&p);
             int option = (int)bc_vm_read_i16_at(&p);
@@ -904,18 +884,6 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
             int fnbr = (int)bc_vm_read_u16_at(&p);
             uint8_t *dest = bc_vm_string_lvalue(vm, is_local, slot);
             vm_sys_file_line_input(fnbr, dest);
-            return;
-        }
-        case BC_SYS_FILE_FILES: {
-            uint8_t has_pattern = *p++;
-            char pattern[STRINGSIZE + 1];
-            const char *pattern_arg = NULL;
-            if (has_pattern) {
-                uint8_t *s = bc_vm_pop_string_value(vm);
-                bc_vm_mstr_to_c_checked(vm, s, pattern, 0, "File name");
-                pattern_arg = pattern;
-            }
-            vm_sys_file_files(pattern_arg);
             return;
         }
         case BC_SYS_FILE_DRIVE: {
@@ -1810,8 +1778,6 @@ void bc_vm_execute(BCVMState *vm) {
         [OP_STR_DATE]       = &&op_str_date,
         [OP_STR_TIME]       = &&op_str_time,
         [OP_KEYDOWN]        = &&op_keydown,
-        [OP_PLAY_STOP]      = &&op_play_stop,
-        [OP_PLAY_TONE]      = &&op_play_tone,
         [OP_SETPIN]         = &&op_setpin,
         [OP_PIN_READ]       = &&op_pin_read,
         [OP_PIN_WRITE]      = &&op_pin_write,
@@ -4042,29 +4008,6 @@ op_pause: {
     DISPATCH();
 }
 
-op_play_stop:
-    vm_sys_audio_play_stop();
-    DISPATCH();
-
-op_play_tone: {
-    uint8_t argc = *vm->pc++;
-    int64_t duration_ms = 0;
-    int has_duration = 0;
-    MMFLOAT right_hz;
-    MMFLOAT left_hz;
-
-    if (argc != 2 && argc != 3)
-        bc_vm_error(vm, "Invalid PLAY TONE argument count");
-    if (argc == 3) {
-        duration_ms = POP_NUMERIC_I();
-        has_duration = 1;
-    }
-    right_hz = POP_NUMERIC_F();
-    left_hz = POP_NUMERIC_F();
-    vm_sys_audio_play_tone(left_hz, right_hz, has_duration, duration_ms);
-    DISPATCH();
-}
-
 op_setpin: {
     int mode = (int)READ_I16();
     int option = (int)READ_I16();
@@ -4208,21 +4151,6 @@ op_file: {
             int fnbr = (int)READ_U16();
             uint8_t *dest = bc_vm_string_lvalue(vm, is_local, slot);
             vm_sys_file_line_input(fnbr, dest);
-            break;
-        }
-        case BC_FILE_FILES: {
-            uint8_t has_pattern = *vm->pc++;
-            char pattern[STRINGSIZE + 1];
-            const char *pattern_arg = NULL;
-            if (has_pattern) {
-                uint8_t *s = POP_S();
-                int len = s ? s[0] : 0;
-                if (len < 0 || len > STRINGSIZE) bc_vm_error(vm, "File name");
-                memcpy(pattern, s + 1, len);
-                pattern[len] = '\0';
-                pattern_arg = pattern;
-            }
-            vm_sys_file_files(pattern_arg);
             break;
         }
         case BC_FILE_DRIVE: {

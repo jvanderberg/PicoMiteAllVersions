@@ -573,20 +573,37 @@ with externs where other MM_Misc.c code still references them.
   that PicoMite.c previously emitted inline, in the same order, via
   the same `MMPrintString`. Instruction stream should match.
 
-### Phase 7 — Cleanup & rename
+### Phase 7 — Cleanup & rename — ✅ DONE (2026-04-18)
 
-- Rename `host_stubs_legacy.c` → `host_noop_stubs.c` (final name).
-- Split further if warranted: `host_gfx_hal.c`, `host_fs_hal.c`, `host_peripheral_stubs.c`.
-- Remove the `(void)` unused-parameter suppressions that no longer apply.
-- Update `host/README.md` with the HAL architecture.
-- Update `CLAUDE.md` memory: Host build is no longer "its own MMBasic port" — it's a HAL target using the shared interpreter source.
-- **Remove dead native syscalls** moved to OP_BRIDGE_CMD:
-  - `vm_sys_file_files` + `BC_SYS_FILE_FILES` (Phase 3, FILES).
-  - `vm_sys_audio_play_stop` / `vm_sys_audio_play_tone` +
-    `BC_SYS_PLAY_STOP` / `BC_SYS_PLAY_TONE` (Phase 4, PLAY).
-  - bc_vm.c dispatch cases for the above.
+**Dead native syscalls removed (moved to OP_BRIDGE_CMD in earlier phases):**
+- `vm_sys_file_files` + `BC_SYS_FILE_FILES` + `BC_FILE_FILES` (Phase 3, FILES) — removed from bc_vm.c (both the bc_vm_syscall switch case and the op_file subop case), bytecode.h enums, and vm_sys_file.c (both host and device branches). Dragged `vm_file_match_pattern` + `vm_file_resolve_dir_and_pattern` helpers with it (no other callers).
+- `vm_sys_audio_play_stop` / `vm_sys_audio_play_tone` + `BC_SYS_PLAY_STOP` / `BC_SYS_PLAY_TONE` + `OP_PLAY_STOP` / `OP_PLAY_TONE` (Phase 4, PLAY) — removed from bc_vm.c dispatch (switch case + computed-goto labels + dispatch table entries), bc_debug.c disassembler, bytecode.h enums. Entire `vm_sys_audio.{c,h}` file deleted; dropped from CMakeLists.txt / CMakeLists 2350.txt / host/Makefile. `#include "vm_sys_audio.h"` dropped from bc_vm.c.
 
-**Exit gate:** no file over 1000 lines in `host/`, README current, one commit.
+**Dead-code sweep in host_stubs_legacy.c:**
+- Removed ~515 lines of legacy drawing helpers (`host_fill_rect_pixels`, `host_draw_line_pixels`, `host_calc_triangle_edge`, `host_draw_triangle_pixels`, `host_glyph_rows`, `host_draw_char`, `host_font_glyph_bit`, `host_plot_text_pixel`, `host_fill_text_cell`, `host_draw_font_char`, `host_draw_text`) plus `host_font_metrics` and `host_clamp_int` — all leftover from before Draw.c was ported to compile on host. No callers anywhere in the codebase.
+- Removed `HostBoxArgCtx` + `host_box_arg_get_int` + `host_pixel_fail_msg` + `host_pixel_fail_range` + `host_fill_polygon_edges` + `host_draw_polygon_points` + `host_getargaddress` + `host_cmd_single_path` + `host_file_copy_mode_from_string` — all defined but never called.
+
+**File split** — `host_stubs_legacy.c` (2,405 lines) split into four focused files, all under 1000 lines:
+
+| File | Lines | Contents |
+|---|---|---|
+| `host_runtime.c` (renamed residual) | ~750 | Runtime lifecycle (`host_runtime_configure`/`_begin`/`_finish`/`_timed_out`/`_check_timeout`/`host_sim_apply_slowdown`/`host_write_screenshot`), console I/O (`MMInkey`/`MMgetchar`/`putConsole`/`MMputchar`/`MMPrintString`/`SSPrintString`/`MMfopen`/`MMfclose`/`MMgetline`/`myprintf`/`SerialConsolePutC`/`kbhitConsole`/`host_print`/`host_prints`/`host_decode_escape_sequence`), hardware-world zero-inited globals (Option, PinDef, FontTable, dma_hw, watchdog_hw, PWMxApin, etc.), `CheckAbort`/`routinechecks`/`check_interrupt`/`ClearExternalIO`/`SoftReset`/`uSec`/`__get_MSP`/`closeframebuffer`/`initMouse0`/`restorepanel`/`clear320`, `host_repl_mode`, `mmbasic_timegm`/`mmbasic_gmtime`. |
+| `host_fastgfx.c` (new) | ~260 | `bc_fastgfx_swap`/`sync`/`create`/`close`/`reset`/`set_fps`, `cmd_fastgfx`, `cmd_framebuffer`. Exposes `host_fastgfx_reset_state()` for `host_runtime_begin` to reset internal state. |
+| `host_fs_shims.c` (new) | ~435 | `host_f_findfirst`/`findnext`/`closedir`/`unlink`/`rename`/`mkdir`/`chdir`/`getcwd` FatFS walkers, `host_fs_posix_*` per-fnbr file table, `host_sd_root`, `host_resolve_sd_path`, `ExistsFile`/`ExistsDir`, `flash_range_erase`/`program`, `SaveProgramToFlash`, full LFS stub surface, `host_flash_contents_init`/`host_options_snapshot` + flash buffers. |
+| `host_peripheral_stubs.c` (new) | ~470 | All no-op `cmd_*`/`fun_*` for hardware host doesn't carry; `cmd_pwm`/`cmd_Servo`/`cmd_setpin`/`fun_pin`/`fun_keydown` route through VM pin HAL. `ExtCfg`/`ExtSet`/`ExtInp`/`PinSetBit`/`GetPinStatus`/`CallCFuncInt*`/`IrInit`/`KeypadCheck`/`codemap`/etc., GPS globals, `AES_*`, `xreg*`, memory stubs, `SerialOpen`/`Close`/`Getchar`, `UnloadFont`/`setmode`/`copyframetoscreen`/`copybuffertoscreen`/`merge`/`blitmerge`, `setterminal`/`OtherOptions`/`disable_sd`, `DisplayNotSet`/`ScrollLCDSPISCR`/`Display_Refresh`/`cmd_guiBasic`, `display_details`/`BDEC_bReadHeader`/`BMP_bDecode_memory`. |
+
+The residual got named `host_runtime.c` instead of the plan's `host_noop_stubs.c` because after splitting the no-ops into `host_peripheral_stubs.c`, the remaining content is all runtime glue — `host_runtime.c` fits better. Naming decision documented here; plan overridden.
+
+**Docs updated:**
+- `host/README.md` — file layout table + module-by-module responsibilities updated to reflect the new split; test count bumped 168→201; added paragraph framing the host build as a HAL target.
+- `project_host_is_its_own_port.md` memory rewritten — host is no longer "its own port", it's a HAL target under shared MMBasic source. Lists which files are shared vs host-owned after the refactor.
+- `MEMORY.md` index line updated to match.
+
+**Exit gate results:**
+- `./build.sh` — clean (3 pre-existing MIPS16 attribute warnings + 1 Option.Height narrowing — all known).
+- `./run_tests.sh` (default compare) — **201/201** green.
+- `wc -l host/*.c host/*.h` — no file over 1000 lines (host_main.c is 948, largest).
+- Device build: not re-verified this phase. Changes to bytecode.h / bc_vm.c / bc_debug.c / vm_sys_file.c touch both host and device; gated `#else` device paths are unchanged in shape (only the dead enum values / switch cases / op labels removed). Device bytecode keeps working because no live code emitted `OP_PLAY_*` / `BC_SYS_PLAY_*` / `BC_FILE_FILES` / `BC_SYS_FILE_FILES` since Phases 3-4.
 
 ## What does *not* change
 

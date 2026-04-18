@@ -17,8 +17,7 @@
 
 #include "host_fs.h"
 
-/* Tiny glob matcher — handles '*' and '?'. Matches semantics with
- * vm_file_match_pattern in vm_sys_file.c (case-insensitive). */
+/* Tiny glob matcher — handles '*' and '?'. Case-insensitive. */
 static int host_fs_match(const char *pattern, const char *name) {
     while (*pattern) {
         if (*pattern == '*') {

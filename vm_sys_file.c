@@ -34,31 +34,6 @@ static int vm_file_drive_index(const char *s) {
     return (s[0] == 'B' || s[0] == 'b') ? 1 : 0;
 }
 
-static int vm_file_match_pattern(const char *pattern, const char *name) {
-    while (*pattern) {
-        if (*pattern == '*') {
-            pattern++;
-            if (!*pattern) return 1;
-            while (*name) {
-                if (vm_file_match_pattern(pattern, name)) return 1;
-                name++;
-            }
-            return 0;
-        }
-        if (*pattern == '?') {
-            if (!*name) return 0;
-            pattern++;
-            name++;
-            continue;
-        }
-        if (toupper((unsigned char)*pattern) != toupper((unsigned char)*name))
-            return 0;
-        pattern++;
-        if (*name) name++;
-    }
-    return *name == '\0';
-}
-
 static void vm_file_normalize_resolved_path(char *path) {
     char temp[FF_MAX_LFN] = {0};
     char *parts[64];
@@ -142,26 +117,6 @@ void vm_sys_file_host_resolve_path(const char *filename, char *path, int path_si
     (void)fs;
     strncpy(path, full, FF_MAX_LFN - 1);
     path[FF_MAX_LFN - 1] = '\0';
-}
-
-static void vm_file_resolve_dir_and_pattern(const char *spec, int *fs_out, char *dir, char *pattern) {
-    char full[FF_MAX_LFN] = {0};
-    char *slash;
-
-    vm_file_resolve_path(spec && *spec ? spec : "*", fs_out, full);
-    slash = strrchr(full, '/');
-    if (slash && slash != full) {
-        *slash = '\0';
-        strncpy(dir, full, FF_MAX_LFN - 1);
-        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
-    } else if (slash == full) {
-        strcpy(dir, "/");
-        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
-    } else {
-        strncpy(dir, vm_cwd[*fs_out], FF_MAX_LFN - 1);
-        strncpy(pattern, full, FF_MAX_LFN - 1);
-    }
-    if (pattern[0] == '\0') strcpy(pattern, "*");
 }
 
 static void vm_file_ensure_parent_exists(const char *path) {
@@ -411,29 +366,6 @@ void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
     if (res != FR_OK) error("File error");
 }
 
-void vm_sys_file_files(const char *pattern) {
-    int fs;
-    char dir[FF_MAX_LFN] = {0};
-    char pat[FF_MAX_LFN] = {0};
-    DIR dj;
-    FILINFO info;
-    FRESULT res;
-
-    vm_file_resolve_dir_and_pattern(pattern && *pattern ? pattern : "*", &fs, dir, pat);
-    (void)fs;
-    res = vm_host_fat_mount();
-    if (res != FR_OK) error("Host FAT init failed");
-    res = f_opendir(&dj, vm_host_fat_path(dir));
-    if (res != FR_OK) error("File error");
-    while ((res = f_readdir(&dj, &info)) == FR_OK && info.fname[0]) {
-        if (!vm_file_match_pattern(pat, info.fname)) continue;
-        MMPrintString(info.fname);
-        MMPrintString("\r\n");
-    }
-    f_closedir(&dj);
-    if (res != FR_OK) error("File error");
-}
-
 #else
 
 typedef struct {
@@ -512,26 +444,6 @@ static void vm_file_resolve_path(const char *filename, int *fs_out, char *path) 
 
     vm_file_normalize_resolved_path(path);
     *fs_out = fs;
-}
-
-static void vm_file_resolve_dir_and_pattern(const char *spec, int *fs_out, char *dir, char *pattern) {
-    char full[FF_MAX_LFN] = {0};
-    char *slash;
-
-    vm_file_resolve_path(spec && *spec ? spec : "*", fs_out, full);
-    slash = strrchr(full, '/');
-    if (slash && slash != full) {
-        *slash = '\0';
-        strncpy(dir, full, FF_MAX_LFN - 1);
-        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
-    } else if (slash == full) {
-        strcpy(dir, "/");
-        strncpy(pattern, slash + 1, FF_MAX_LFN - 1);
-    } else {
-        strncpy(dir, filepath[*fs_out], FF_MAX_LFN - 1);
-        strncpy(pattern, full, FF_MAX_LFN - 1);
-    }
-    if (pattern[0] == '\0') strcpy(pattern, "*");
 }
 
 static int vm_file_lfs_mode(int mode) {
@@ -907,42 +819,6 @@ void vm_sys_file_copy(const char *from_name, const char *to_name, int mode) {
     f_close(&fat_src);
     lfs_file_close(&lfs, &lfs_dst);
     if (lrc < 0 || FSerror) vm_file_error(lrc < 0 ? lrc : FSerror, "File error");
-}
-
-void vm_sys_file_files(const char *pattern) {
-    int fs;
-    char dir[FF_MAX_LFN] = {0};
-    char pat[FF_MAX_LFN] = {0};
-
-    vm_file_resolve_dir_and_pattern(pattern && *pattern ? pattern : "*", &fs, dir, pat);
-    if (fs) {
-        DIR dj;
-        FILINFO info;
-        if (!InitSDCard()) error("SD Card not found");
-        FSerror = f_opendir(&dj, dir);
-        if (FSerror) vm_file_error(FSerror, "File error");
-        while ((FSerror = f_readdir(&dj, &info)) == FR_OK && info.fname[0]) {
-            if (!vm_file_match_pattern(pat, info.fname)) continue;
-            MMPrintString(info.fname);
-            MMPrintString("\r\n");
-        }
-        f_closedir(&dj);
-        if (FSerror) vm_file_error(FSerror, "File error");
-        return;
-    }
-
-    lfs_dir_t dirh;
-    struct lfs_info info;
-    int rc = lfs_dir_open(&lfs, &dirh, dir);
-    if (rc < 0) vm_file_error(rc, "File error");
-    while ((rc = lfs_dir_read(&lfs, &dirh, &info)) > 0) {
-        if (!strcmp(info.name, ".") || !strcmp(info.name, "..")) continue;
-        if (!vm_file_match_pattern(pat, info.name)) continue;
-        MMPrintString(info.name);
-        MMPrintString("\r\n");
-    }
-    lfs_dir_close(&lfs, &dirh);
-    if (rc < 0) vm_file_error(rc, "File error");
 }
 
 #endif
