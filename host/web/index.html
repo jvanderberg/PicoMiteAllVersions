@@ -3,12 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PicoMite Web</title>
+    <title>MMBasic Web</title>
     <link rel="stylesheet" href="./picomite.css">
 </head>
 <body>
     <div id="status">Loading WASM module…</div>
-    <canvas id="screen" tabindex="0" width="320" height="320" aria-label="PicoMite screen"></canvas>
+    <canvas id="screen" tabindex="0" width="320" height="320" aria-label="MMBasic screen"></canvas>
+    <div id="toolbar">
+        <label class="button">
+            <input type="file" id="upload" multiple accept=".bas,.inc,.txt">
+            <span>⬆ Load .bas</span>
+        </label>
+        <button type="button" id="download-sd">⬇ Download all</button>
+        <span id="hint">Drop .bas files anywhere on the page to import.</span>
+    </div>
+    <div id="drop-overlay" hidden>Drop to import into /sd/</div>
     <script type="module" src="./app.mjs"></script>
 </body>
 </html>

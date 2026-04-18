@@ -4,6 +4,8 @@
     --fg: #e6e6e6;
     --accent: #6fd;
     --muted: #6a6a6a;
+    --panel: #17191d;
+    --panel-border: #2a2d33;
 }
 
 * { box-sizing: border-box; }
@@ -31,12 +33,11 @@ html, body {
 
 #status.error { color: #ff6464; }
 
-/* The framebuffer's native resolution is what the interpreter thinks it
- * has — 320x320 by default. Scale it up with CSS for legibility while
- * keeping pixels sharp. */
+/* Framebuffer at native resolution; CSS-scaled up with pixel-perfect
+ * nearest-neighbour. The min() keeps the canvas square on any viewport. */
 #screen {
-    width: min(90vw, 90vh, 640px);
-    height: min(90vw, 90vh, 640px);
+    width: min(88vw, 88vh - 120px, 640px);
+    height: min(88vw, 88vh - 120px, 640px);
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
@@ -48,3 +49,54 @@ html, body {
 #screen:focus {
     border-color: var(--accent);
 }
+
+#toolbar {
+    margin-top: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 1rem;
+    font-size: 0.8rem;
+}
+
+.button, #toolbar button {
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 0.4rem 0.7rem;
+    cursor: pointer;
+    font: inherit;
+    user-select: none;
+}
+
+.button:hover, #toolbar button:hover {
+    border-color: var(--accent);
+}
+
+.button input[type="file"] {
+    display: none;
+}
+
+#hint {
+    color: var(--muted);
+    padding-left: 0.5rem;
+}
+
+#drop-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 11, 13, 0.85);
+    border: 3px dashed var(--accent);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.5rem;
+    pointer-events: none;
+    z-index: 10;
+}
+
+#drop-overlay[hidden] { display: none; }

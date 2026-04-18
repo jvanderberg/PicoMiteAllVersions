@@ -1,14 +1,26 @@
-// PicoMite web loader.
+// MMBasic Web loader.
 //
-// Boots the WASM module, wires keyboard → wasm_push_key, and blits the
-// host_fb framebuffer onto #screen on every requestAnimationFrame tick.
-// Phase 1 does a full-framebuffer putImageData per frame; dirty-rect
-// optimisation lands in Phase 6 if profiling demands it.
+// Boots the WASM module, wires keyboard → wasm_push_key, blits the
+// host_fb framebuffer onto #screen on every requestAnimationFrame, and
+// exposes file I/O via drag-drop + upload button + download-all.
+//
+// Files live under /sd/ in emscripten's MEMFS. Bundled demos are
+// packed into picomite.data via --preload-file demos@/sd. Drag-drop
+// and the upload button write fresh files into /sd/. The download
+// button packages every .bas-ish file under /sd/ as a ZIP.
+//
+// Persistence is intentional: MEMFS resets on reload. Users who want
+// to keep work save via the download button. See web-host plan
+// "No persistence by design" risk.
 
 import Module from './picomite.mjs';
 
 const statusEl = document.getElementById('status');
 const canvas = document.getElementById('screen');
+const uploadInput = document.getElementById('upload');
+const downloadBtn = document.getElementById('download-sd');
+const dropOverlay = document.getElementById('drop-overlay');
+const hintEl = document.getElementById('hint');
 const ctx = canvas.getContext('2d', { alpha: false });
 
 function setStatus(text, isError = false) {
@@ -16,13 +28,7 @@ function setStatus(text, isError = false) {
     statusEl.classList.toggle('error', isError);
 }
 
-// --- MMBasic key code mapping --------------------------------------------
-//
-// Values match Hardware_Includes.h (UP=0x80 … PDOWN=0x89, F1=0x91 …
-// F12=0x9C). Printable characters pass through as their ASCII code.
-// host_runtime.c's MMInkey reads these from the ring via
-// host_read_byte_nonblock; no escape-sequence decoding needed because we
-// deliver already-decoded codes.
+// --- MMBasic key-code mapping --------------------------------------------
 
 const SPECIAL_KEYS = {
     Enter:      0x0D,
@@ -53,16 +59,12 @@ function mapKeyEvent(event) {
     return -1;
 }
 
-// --- Framebuffer blit loop -----------------------------------------------
+// --- Framebuffer blit ----------------------------------------------------
 
 let fbPtr = 0, fbWidth = 0, fbHeight = 0, imageData = null;
 
 function blitFrame(instance) {
     if (!fbPtr) return;
-    // host_framebuffer is uint32_t[] with 0x00RRGGBB in each cell (the
-    // low 24 bits carry the colour; high byte is always zero on host).
-    // Canvas ImageData wants R,G,B,A bytes — portable conversion that
-    // doesn't depend on the WASM heap's endianness.
     const src = instance.HEAPU32.subarray(fbPtr >>> 2, (fbPtr >>> 2) + fbWidth * fbHeight);
     const dst = imageData.data;
     for (let i = 0, j = 0; i < src.length; i++, j += 4) {
@@ -89,9 +91,6 @@ function startRenderLoop(instance) {
 function wireKeyboard(instance) {
     const pushKey = instance.cwrap('wasm_push_key', null, ['number']);
 
-    // Single listener on the canvas (tabindex="0" makes it focusable).
-    // Window-level fallback isn't needed because we focus the canvas at
-    // boot and on click.
     canvas.addEventListener('keydown', (event) => {
         const code = mapKeyEvent(event);
         if (code < 0) return;
@@ -103,13 +102,229 @@ function wireKeyboard(instance) {
     canvas.focus();
 }
 
+// --- File I/O ------------------------------------------------------------
+
+const SD_ROOT = '/sd';
+
+function flashHint(msg, durationMs = 2500) {
+    hintEl.textContent = msg;
+    setTimeout(() => {
+        hintEl.textContent = 'Drop .bas files anywhere on the page to import.';
+    }, durationMs);
+}
+
+async function importFile(instance, file) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    // Strip any path; keep just the base name. MEMFS under /sd is flat.
+    const name = file.name.split(/[/\\]/).pop();
+    try {
+        instance.FS.writeFile(`${SD_ROOT}/${name}`, buf);
+        return name;
+    } catch (e) {
+        console.error('import failed for', name, e);
+        return null;
+    }
+}
+
+async function importFiles(instance, files) {
+    const imported = [];
+    for (const f of Array.from(files)) {
+        const name = await importFile(instance, f);
+        if (name) imported.push(name);
+    }
+    if (imported.length === 1) {
+        flashHint(`Loaded ${imported[0]} — type FILES to list.`, 3500);
+    } else if (imported.length > 1) {
+        flashHint(`Loaded ${imported.length} files — type FILES to list.`, 3500);
+    }
+    return imported;
+}
+
+function listSd(instance) {
+    try {
+        return instance.FS.readdir(SD_ROOT)
+            .filter(n => n !== '.' && n !== '..');
+    } catch (e) {
+        return [];
+    }
+}
+
+function isReadableFile(instance, path) {
+    try {
+        const stat = instance.FS.stat(path);
+        return (stat.mode & 0xF000) === 0x8000;  // S_IFREG
+    } catch (e) {
+        return false;
+    }
+}
+
+// Minimal store-only ZIP writer. Good enough for a handful of tiny
+// .bas files — no compression, no ZIP64, no encryption. Saves pulling
+// in a 30 KB dep like fflate when the payload is a few KB.
+function buildZip(entries) {
+    const enc = new TextEncoder();
+    const parts = [];
+    const central = [];
+    let offset = 0;
+
+    const crc32Table = buildCrcTable();
+    function crc32(bytes) {
+        let c = ~0 >>> 0;
+        for (let i = 0; i < bytes.length; i++) {
+            c = crc32Table[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+        }
+        return (~c) >>> 0;
+    }
+
+    for (const { name, data } of entries) {
+        const nameBytes = enc.encode(name);
+        const crc = crc32(data);
+        const localHeader = new ArrayBuffer(30 + nameBytes.length);
+        const lh = new DataView(localHeader);
+        lh.setUint32(0,  0x04034b50, true);   // local file header signature
+        lh.setUint16(4,  20, true);            // version needed
+        lh.setUint16(6,  0, true);             // flags
+        lh.setUint16(8,  0, true);             // method = store
+        lh.setUint16(10, 0, true);             // time
+        lh.setUint16(12, 0, true);             // date
+        lh.setUint32(14, crc, true);
+        lh.setUint32(18, data.length, true);
+        lh.setUint32(22, data.length, true);
+        lh.setUint16(26, nameBytes.length, true);
+        lh.setUint16(28, 0, true);
+        new Uint8Array(localHeader, 30).set(nameBytes);
+        parts.push(new Uint8Array(localHeader));
+        parts.push(data);
+
+        const ch = new ArrayBuffer(46 + nameBytes.length);
+        const chv = new DataView(ch);
+        chv.setUint32(0,  0x02014b50, true);
+        chv.setUint16(4,  20, true);
+        chv.setUint16(6,  20, true);
+        chv.setUint16(8,  0, true);
+        chv.setUint16(10, 0, true);
+        chv.setUint16(12, 0, true);
+        chv.setUint16(14, 0, true);
+        chv.setUint32(16, crc, true);
+        chv.setUint32(20, data.length, true);
+        chv.setUint32(24, data.length, true);
+        chv.setUint16(28, nameBytes.length, true);
+        chv.setUint16(30, 0, true);
+        chv.setUint16(32, 0, true);
+        chv.setUint16(34, 0, true);
+        chv.setUint16(36, 0, true);
+        chv.setUint32(38, 0, true);
+        chv.setUint32(42, offset, true);
+        new Uint8Array(ch, 46).set(nameBytes);
+        central.push(new Uint8Array(ch));
+
+        offset += 30 + nameBytes.length + data.length;
+    }
+
+    const centralSize = central.reduce((n, b) => n + b.length, 0);
+    const eocd = new ArrayBuffer(22);
+    const ev = new DataView(eocd);
+    ev.setUint32(0,  0x06054b50, true);
+    ev.setUint16(4,  0, true);
+    ev.setUint16(6,  0, true);
+    ev.setUint16(8,  entries.length, true);
+    ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, offset, true);
+    ev.setUint16(20, 0, true);
+
+    return new Blob([...parts, ...central, new Uint8Array(eocd)],
+                    { type: 'application/zip' });
+}
+
+function buildCrcTable() {
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+        table[i] = c >>> 0;
+    }
+    return table;
+}
+
+function triggerDownload(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Release the object URL on the next tick so the download has
+    // actually started.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function wireFileIO(instance) {
+    // Upload button (for mobile / touch where drag-drop is awkward).
+    uploadInput.addEventListener('change', async (e) => {
+        const files = e.target.files;
+        if (!files || !files.length) return;
+        await importFiles(instance, files);
+        uploadInput.value = '';  // allow re-picking the same file
+    });
+
+    // Drag-drop on the whole window.
+    let dragDepth = 0;
+    window.addEventListener('dragenter', (e) => {
+        if (!e.dataTransfer || !e.dataTransfer.types.includes('Files')) return;
+        dragDepth++;
+        dropOverlay.hidden = false;
+        e.preventDefault();
+    });
+    window.addEventListener('dragleave', (e) => {
+        if (--dragDepth <= 0) {
+            dragDepth = 0;
+            dropOverlay.hidden = true;
+        }
+        e.preventDefault();
+    });
+    window.addEventListener('dragover', (e) => {
+        if (e.dataTransfer && e.dataTransfer.types.includes('Files')) e.preventDefault();
+    });
+    window.addEventListener('drop', async (e) => {
+        dragDepth = 0;
+        dropOverlay.hidden = true;
+        if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+        e.preventDefault();
+        await importFiles(instance, e.dataTransfer.files);
+        canvas.focus();
+    });
+
+    // Download all: pack everything in /sd/ into a ZIP.
+    downloadBtn.addEventListener('click', () => {
+        const names = listSd(instance);
+        const entries = [];
+        for (const n of names) {
+            const path = `${SD_ROOT}/${n}`;
+            if (!isReadableFile(instance, path)) continue;
+            try {
+                const data = instance.FS.readFile(path);
+                entries.push({ name: n, data });
+            } catch (e) {
+                console.warn('skip', path, e);
+            }
+        }
+        if (!entries.length) {
+            flashHint('No files in /sd/ to download.');
+            return;
+        }
+        const zip = buildZip(entries);
+        const date = new Date().toISOString().slice(0, 10);
+        triggerDownload(zip, `mmbasic-web-${date}.zip`);
+        flashHint(`Downloaded ${entries.length} files.`);
+    });
+}
+
 // --- Boot ---------------------------------------------------------------
 
 try {
     const instance = await Module({
-        // Route libc stdout/stderr into the console — only for diagnostics.
-        // Console output visible to the user is rendered into the
-        // framebuffer by gfx_console_shared.c, not here.
         print:    (line) => console.log('[picomite]', line),
         printErr: (line) => console.warn('[picomite]', line),
     });
@@ -123,13 +338,16 @@ try {
     imageData = ctx.createImageData(fbWidth, fbHeight);
 
     wireKeyboard(instance);
+    wireFileIO(instance);
     startRenderLoop(instance);
 
-    setStatus(`PicoMite WASM ready (${fbWidth}x${fbHeight}) — click the screen, then type.`);
+    const demos = listSd(instance);
+    setStatus(
+        demos.length
+            ? `Ready (${fbWidth}x${fbHeight}) — ${demos.length} demos in /sd/. Type FILES.`
+            : `Ready (${fbWidth}x${fbHeight}).`
+    );
 
-    // wasm_boot does not return — MMBasic_RunPromptLoop holds the event
-    // loop until the user navigates away, yielding back to JS via
-    // emscripten_sleep (ASYNCIFY) on every blocking read.
     await instance.ccall('wasm_boot', null, [], [], { async: true });
 } catch (err) {
     setStatus('Fatal: ' + (err?.message || err), true);

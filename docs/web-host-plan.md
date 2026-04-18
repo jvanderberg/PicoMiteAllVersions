@@ -175,7 +175,7 @@ The key insight: MMBasic's `PRINT` path on device already lands on `DrawPixel`/`
 
 **Known warning:** `wasm-ld: warning: function signature mismatch: CallCFunction` — MMBasic.c declares `uint64_t CallCFunction(...)` and host_runtime.c stubs it as `void CallCFunction(...)`. Pre-existing in the native build (gcc doesn't flag it); CFunctions aren't exercised under host/WASM. Fix belongs in a CFunction-support phase or as follow-up cleanup.
 
-### Phase 2 — Filesystem (preload bundle + drag-drop import + download export)
+### Phase 2 — Filesystem (preload bundle + drag-drop import + download export) ✅ (2026-04-18)
 
 **Goal:** `FILES`, `LOAD "t001.bas"`, `RUN`, `SAVE` work. User brings their own files in by dragging onto the page; takes them home by downloading.
 
@@ -195,6 +195,10 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 - No persistence across reloads is a *feature*, not a bug, for this iteration. It makes the mental model obvious ("the page is a sandbox; save to your disk to keep anything") and avoids a pile of edge cases (quota exceeded, stale OPFS state, browser deleting your files after 60 days of inactivity, etc.).
 - If persistence becomes desirable later, it slots in as a post-MVP phase: mount OPFS at `/home/` and add a "Copy to persistent storage" action. The `host_fs_shims.c` routing doesn't care which MEMFS-equivalent backend is at a given path.
 - Upload from a `<input type="file" multiple>` picker is a nice addition alongside drag-drop for mobile / touch where drag-drop is awkward. Same underlying path (`FS.writeFile`). Trivial to add; mention in the Phase 2 follow-on list.
+
+**Landed:** `host/Makefile.wasm` adds `--preload-file demos@/sd`, `-sFORCE_FILESYSTEM=1`, and `"FS"` to `EXPORTED_RUNTIME_METHODS`; emscripten packs `host/demos/` (8 curated `.bas` files, 6.8 KB) into `picomite.data` and mounts it at `/sd/` on boot. `host/web/app.mjs` grew three surfaces: an `<input type="file">` upload button, whole-window drag-drop with a visible overlay, and a "Download all" button that packs `/sd/` into a ZIP via a tiny in-line store-only ZIP writer (no compression library dep). The host C side needed zero changes — `host_fs_shims.c`'s existing POSIX routing talks to emscripten MEMFS unchanged.
+
+**Verified:** Headless Chromium sees `FILES` list the 8 preloaded demos, `RUN "demo_hello.bas"` produces the expected FRUN output pixel-on-canvas, drag-drop injects `mine.bas` which `RUN` executes, and `SAVE "saved.bas"` followed by the download button delivers a ZIP containing both bundled + user-added files. Native `./run_tests.sh` still 201/201.
 
 ### Phase 3 — Audio via Web Audio
 
