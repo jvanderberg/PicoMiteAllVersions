@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 
 #include "host_terminal.h"
@@ -34,6 +35,35 @@ static void host_raw_mode_restore(void) {
     tcsetattr(STDIN_FILENO, TCSANOW, &host_orig_termios);
     fcntl(STDIN_FILENO, F_SETFL, host_stdin_saved_flags);
     host_raw_mode_active = 0;
+}
+
+/*
+ * Signal handler that restores termios then re-raises the signal with
+ * its default disposition. atexit() only fires on normal exit() — a
+ * SIGTERM / SIGHUP / SIGPIPE / Ctrl-\ leaves OPOST disabled, ICANON
+ * off, and stdin non-blocking, so the user's shell stair-steps newlines
+ * until they run `stty sane`. Catching the common terminating signals
+ * and calling the restore hook closes that hole. SIGKILL and SIGSTOP
+ * can't be caught, but those are rare in practice. */
+static void host_raw_mode_signal(int sig) {
+    host_raw_mode_restore();
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void host_raw_mode_install_signal_handlers(void) {
+    static int installed = 0;
+    if (installed) return;
+    installed = 1;
+    /* SA_RESTART isn't necessary — we don't return to the syscall
+     * that was interrupted, we re-raise to die. Use signal() instead
+     * of sigaction() to keep the footprint small. */
+    signal(SIGINT,  host_raw_mode_signal);
+    signal(SIGTERM, host_raw_mode_signal);
+    signal(SIGHUP,  host_raw_mode_signal);
+    signal(SIGQUIT, host_raw_mode_signal);
+    signal(SIGPIPE, host_raw_mode_signal);
+    signal(SIGABRT, host_raw_mode_signal);
 }
 
 void host_raw_mode_enter(void) {
@@ -60,6 +90,7 @@ void host_raw_mode_enter(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 
     atexit(host_raw_mode_restore);
+    host_raw_mode_install_signal_handlers();
     host_raw_mode_active = 1;
 }
 
