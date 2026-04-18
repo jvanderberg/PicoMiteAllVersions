@@ -738,6 +738,21 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
         case BC_SYS_MM_FONTHEIGHT:
             bc_vm_push_int(vm, gui_font_height);
             return;
+        case BC_SYS_PRINT_AT: {
+            /* PRINT @(x, y) — move text cursor to pixel (x, y). Stack has
+             * x at depth 1, y at top (pushed left-to-right by compiler).
+             * Mirrors fun_at in Draw.c without the VT100 SerialConsole
+             * emit: on sim/wasm the canvas reads CurrentX/Y directly,
+             * and on the hardware device DisplayPutC / GUIPrintChar do
+             * the same. The VT100 escape only mattered for terminal-
+             * cursor mirroring in the REPL, which FRUN'd programs
+             * don't care about. */
+            int64_t y = bc_vm_pop_numeric_i_value(vm);
+            int64_t x = bc_vm_pop_numeric_i_value(vm);
+            CurrentX = (int)x;
+            CurrentY = (int)y;
+            return;
+        }
         case BC_SYS_DATE_STR: {
             uint8_t *buf = vm_get_str_temp(vm);
             vm_sys_time_date(buf);

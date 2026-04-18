@@ -2238,6 +2238,62 @@ static void source_compile_print(BCSourceFrontend *fe, BCCompiler *cs, const cha
             continue;
         }
 
+        /* @(x,y) — move the text cursor to pixel (x,y). PRINT-only
+         * syntax; fun_at on the interpreter side rejects it elsewhere.
+         * Emit a PRINT_AT syscall and loop back — @ doesn't contribute
+         * output, it just has the side effect of setting CurrentX/Y so
+         * the next argument's glyphs land there. Optional third arg
+         * (PrintPixelMode) is accepted and ignored: the VM's canvas
+         * path doesn't implement inverse/underline modes yet, but we
+         * swallow it so programs written for the device still compile. */
+        if (*p == '@') {
+            p++;
+            source_skip_space(&p);
+            if (*p != '(') {
+                bc_set_error(cs, "Expected '(' after @");
+                *pp = p;
+                return;
+            }
+            p++;
+            uint8_t xt = source_parse_expression(fe, cs, &p);
+            if (cs->has_error) { *pp = p; return; }
+            source_emit_int_conversion(cs, xt);
+            source_skip_space(&p);
+            if (*p != ',') {
+                bc_set_error(cs, "Expected ',' after x in @(x,y)");
+                *pp = p;
+                return;
+            }
+            p++;
+            uint8_t yt = source_parse_expression(fe, cs, &p);
+            if (cs->has_error) { *pp = p; return; }
+            source_emit_int_conversion(cs, yt);
+            source_skip_space(&p);
+            if (*p == ',') {
+                /* PrintPixelMode — parse and discard (see above) */
+                p++;
+                uint8_t mt = source_parse_expression(fe, cs, &p);
+                if (cs->has_error) { *pp = p; return; }
+                source_emit_int_conversion(cs, mt);
+                bc_emit_byte(cs, OP_POP);
+                source_skip_space(&p);
+            }
+            if (*p != ')') {
+                bc_set_error(cs, "Expected ')' in @(x,y)");
+                *pp = p;
+                return;
+            }
+            p++;
+            source_emit_syscall_noaux(cs, BC_SYS_PRINT_AT, 0);
+            suppress_newline = 1;  /* @ alone shouldn't emit a newline */
+            source_skip_space(&p);
+            if (*p == ',' || *p == ';') continue;
+            /* No separator after @(x,y) — the next token is the value
+             * to print at that position. Fall through to the normal
+             * expression path, which reads it on the next loop turn. */
+            continue;
+        }
+
         suppress_newline = 0;
         uint8_t type = source_parse_expression(fe, cs, &p);
         if (cs->has_error) {
@@ -5844,30 +5900,9 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
     }
 
     if (source_keyword(&p, "PRINT")) {
-        /* Scan for `@` — the fun_at cursor-position form (PRINT @(x,y)
-         * "text"). The VM's expression parser doesn't know it, so bridge
-         * the whole statement to the interpreter. PRINT without `@` stays
-         * on the VM fast path so bridged PRINT doesn't need to resolve
-         * user-defined SUB/FUN names that the VM's compiler knows about
-         * but the interpreter's subfun[] doesn't (FRUN never runs
-         * PrepareProgram on ProgMemory). The string-literal skip keeps
-         * an `@` inside "..." from tripping the check. */
-        int has_at = 0;
-        for (const char *scan = p; *scan && *scan != '\''; scan++) {
-            if (*scan == '"') {
-                scan++;
-                while (*scan && *scan != '"') scan++;
-                if (!*scan) break;
-                continue;
-            }
-            if (*scan == '@') { has_at = 1; break; }
-        }
-        if (!has_at) {
-            source_compile_print(fe, cs, &p);
-            source_statement_end(cs, p);
-            return;
-        }
-        /* fall through to OP_BRIDGE_CMD — PRINT @(x,y) via interpreter */
+        source_compile_print(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
     }
 
     if (source_keyword(&p, "OPTION")) {
