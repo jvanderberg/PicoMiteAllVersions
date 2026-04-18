@@ -20,6 +20,7 @@ const canvas = document.getElementById('screen');
 const uploadInput = document.getElementById('upload');
 const downloadBtn = document.getElementById('download-sd');
 const resolutionSelect = document.getElementById('resolution');
+const memorySelect = document.getElementById('memory');
 const dropOverlay = document.getElementById('drop-overlay');
 const hintEl = document.getElementById('hint');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -70,6 +71,49 @@ function reloadWithResolution(label) {
     try { localStorage.setItem(RES_KEY, label); } catch (_) {}
     const url = new URL(window.location.href);
     url.searchParams.set('res', label);
+    window.location.href = url.toString();
+}
+
+// --- Memory selection ----------------------------------------------------
+
+const DEFAULT_MEM = 2097152;           // 2 MB — generous web default
+const MEM_KEY = 'picomite.mem';
+const MEM_MIN = 32 * 1024;
+const MEM_MAX = 8 * 1024 * 1024;       // matches HEAP_MEMORY_SIZE ceiling in configuration.h
+
+function parseMem(s) {
+    const n = parseInt(String(s || '').trim(), 10);
+    if (!Number.isFinite(n)) return null;
+    if (n < MEM_MIN || n > MEM_MAX) return null;
+    return n;
+}
+
+function pickMemory() {
+    const params = new URLSearchParams(window.location.search);
+    return parseMem(params.get('mem'))
+        ?? parseMem(localStorage.getItem(MEM_KEY))
+        ?? DEFAULT_MEM;
+}
+
+function applyMemorySelect(bytes) {
+    // If the exact byte count isn't in the option list, synth a custom
+    // entry that preserves the URL-provided value.
+    const opt = Array.from(memorySelect.options).find(o => +o.value === bytes);
+    if (opt) {
+        memorySelect.value = String(bytes);
+    } else {
+        const custom = document.createElement('option');
+        custom.value = String(bytes);
+        custom.textContent = `${Math.round(bytes / 1024)} KB (custom)`;
+        memorySelect.appendChild(custom);
+        memorySelect.value = String(bytes);
+    }
+}
+
+function reloadWithMemory(bytes) {
+    try { localStorage.setItem(MEM_KEY, String(bytes)); } catch (_) {}
+    const url = new URL(window.location.href);
+    url.searchParams.set('mem', String(bytes));
     window.location.href = url.toString();
 }
 
@@ -396,14 +440,23 @@ try {
         reloadWithResolution(resolutionSelect.value);
     });
 
+    const memoryBytes = pickMemory();
+    applyMemorySelect(memoryBytes);
+    memorySelect.addEventListener('change', () => {
+        reloadWithMemory(parseInt(memorySelect.value, 10));
+    });
+
     const instance = await Module({
         print:    (line) => console.log('[picomite]', line),
         printErr: (line) => console.warn('[picomite]', line),
     });
 
-    // Set framebuffer size BEFORE wasm_boot — host_runtime_begin
-    // allocates the plane at the current host_fb_width/height.
+    // Both setters MUST run before wasm_boot — InitBasic inside
+    // wasm_boot reads heap_memory_size to size the mmap bitmap, and
+    // host_runtime_begin allocates the framebuffer from
+    // host_fb_width/height.
     instance._wasm_set_framebuffer_size(resolution.w, resolution.h);
+    instance._wasm_set_heap_size(memoryBytes);
 
     fbWidth  = instance._wasm_framebuffer_width();
     fbHeight = instance._wasm_framebuffer_height();

@@ -76,6 +76,28 @@ static int wasm_consume_break(void) {
 }
 
 /*
+ * Runtime-selectable heap size. Clamped to [32 KB, HEAP_MEMORY_SIZE]
+ * where the upper bound is the compile-time ceiling in configuration.h
+ * (8 MB on WASM). Page-aligned down so the mmap machinery sees an
+ * integer number of pages. Must be called BEFORE InitBasic/ClearRuntime
+ * — wasm_boot's first steps — so the bitmap setup uses the selected
+ * size.
+ */
+extern uint32_t heap_memory_size;
+void bc_alloc_set_heap_capacity(size_t bytes);  /* in bc_alloc.c under MMBASIC_HOST */
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_heap_size(int bytes) {
+    /* PAGESIZE is a macro in Memory.h (#define PAGESIZE 256). Use it
+     * directly rather than shadowing with a local. */
+    if (bytes < 32 * 1024) bytes = 32 * 1024;
+    if (bytes > (int)HEAP_MEMORY_SIZE) bytes = HEAP_MEMORY_SIZE;
+    bytes &= ~(PAGESIZE - 1);
+    heap_memory_size = (uint32_t)bytes;
+    bc_alloc_set_heap_capacity((size_t)bytes);
+}
+
+/*
  * Mirrors the MODE_REPL branch of host_main.c: set up the flash buffer,
  * InitBasic, configure runtime/keys, point host_sd_root at MEMFS, then
  * run_repl (inlined — host_main.c's run_repl isn't linked under WASM).

@@ -93,6 +93,14 @@ void bc_alloc_reset(void) {
     heap_inited = 0;
 }
 
+/* Runtime override of the VM heap budget. Called from host_wasm_main.c's
+ * wasm_set_heap_size so the interpreter MMHeap and the VM heap resize
+ * together on the web host. 0 = unlimited. */
+void bc_alloc_set_heap_capacity(size_t bytes) {
+    heap_inited = 1;
+    heap_capacity = bytes;
+}
+
 void *bc_compile_alloc(size_t size) {
     return bc_alloc(size);
 }

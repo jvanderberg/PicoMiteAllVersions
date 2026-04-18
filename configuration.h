@@ -213,6 +213,16 @@ extern "C" {
     #endif
 #endif
 
+/* WASM build ceiling: override the device-sized compile-time heap with
+ * a big buffer and let the runtime `heap_memory_size` variable (settable
+ * via wasm_set_heap_size) pick any size ≤ this ceiling. The JS
+ * dropdown defaults to 2 MB and offers RP2040/RP2350-faithful 128 KB /
+ * 300 KB for testing device behaviour. AllMemory[] and mmap[] are both
+ * sized by HEAP_MEMORY_SIZE at compile time, so this sets the max. */
+#ifdef MMBASIC_WASM
+#undef HEAP_MEMORY_SIZE
+#define HEAP_MEMORY_SIZE (8 * 1024 * 1024)
+#endif
 
 #define MMFLOAT double
 #define FLOAT3D float
