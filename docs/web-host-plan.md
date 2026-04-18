@@ -228,7 +228,7 @@ Not originally scoped as a phase; a cluster of fixes and quality-of-life feature
 
 **Bundled `mand.bas` mandelbrot explorer.** Rewrote the interactive mandelbrot renderer (fixed-point inner loop, 16-ply BLINDS interlacing, zoom history stack, palette switcher) to pull `SCREEN_W`/`SCREEN_H` from `MM.HRES`/`MM.VRES` and pick a uniform complex-units-per-pixel scale so both the initial view *and* every zoom stay aspect-correct on any viewport. Zoom cursor is a W×H rectangle matching the viewport ratio, so zooming preserves square pixels through arbitrary depth.
 
-### Phase 3 — Audio via Web Audio
+### Phase 3 — Audio via Web Audio ✅ (2026-04-18)
 
 **Goal:** `PLAY TONE 440,1000` emits a 440 Hz beep for 1 s.
 
@@ -243,6 +243,21 @@ Not originally scoped as a phase; a cluster of fixes and quality-of-life feature
 - Display a banner "Click anywhere to enable audio" until the user gesture unblocks the audio context.
 
 **Exit gate:** A test program playing a melody (PLAY TONE + PAUSE sequence) produces audible output. Four-voice `PLAY SOUND` chord sounds right. Audio does not stutter during graphics-heavy programs.
+
+**Landed:**
+- `host/host_wasm_audio.c` — new TU, `#ifdef MMBASIC_WASM`-gated, exports the same `host_sim_audio_*` symbols `Audio.c`'s host body calls. Each entry drops through `EM_ASM` into `window.picomiteAudio.{tone,sound,stop,volume,pause,resume}`. The drain API (used by `host_sim_server.c` on the native `--sim` target) is kept as a zero-queue stub for symbol completeness.
+- `host/web/ui/audio.js` — WebAudio engine ported from `web/audio.js` (the `--sim` module), stripped of the JSON/WebSocket layer. Exposes `window.picomiteAudio` directly. Keeps the independent `PLAY TONE` graph and 4-slot × {L,R} `PLAY SOUND` voices; "logarithmic" volume map `(v/100)²`; gesture-armed `AudioContext` resume on capture-phase `keydown`/`mousedown`/`touchstart`/`pointerdown`.
+- `host/web/index.html` — loads `./ui/audio.js` via plain `<script>` **before** `app.mjs` so `window.picomiteAudio` is installed before the WASM module boots. Adds a small `#audio-hint` banner ("Click or press a key to enable audio") that `ui/audio.js` auto-hides once the context transitions to `running`.
+- `host/web/picomite.css` — `#audio-hint` styles (centered bottom pill, hidden by default; `hidden` attribute hides entirely).
+- `host/Makefile.wasm` — drops `host_sim_audio.c` from `HOST_PORTABLE_SRCS`, adds `host_wasm_audio.c` to `HOST_WASM_SRCS`. Native `mmbasic_test` / `mmbasic_sim` Makefiles are untouched; they still link `host_sim_audio.c` so the WebSocket JSON path is entirely unchanged.
+
+**Verified:**
+- `./build_wasm.sh` clean build, no new warnings (only the pre-existing `CallCFunction` signature mismatch).
+- Native `./build.sh && ./run_tests.sh` → 210/210 passed.
+- `./build_sim.sh` → `mmbasic_sim` links; `host_sim_audio.o` still present in the link line, so the JSON/WebSocket audio bus is untouched.
+- `host/web/smoke_audio.mjs` — headless Chromium boots the page, types `PLAY TONE 440,440,500` / `PLAY SOUND 1,B,Q,220,20` / `PLAY STOP` into the raster REPL, and confirms `window.picomiteAudio` receives each call with the expected args. Exit 0 = pass.
+
+**Deferred (Phase 9 post-MVP):** `PLAY WAV/FLAC/MP3/MOD/MIDI` — need JS-side `decodeAudioData` + a buffering strategy compatible with PAUSE/RESUME, plus C-side wiring since `cmd_play` on host currently rejects these at parse time.
 
 ### Phase 4 — Cooperative scheduling & timing
 

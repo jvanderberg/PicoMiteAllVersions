@@ -123,6 +123,27 @@ html, body {
 
 #drop-overlay[hidden] { display: none; }
 
+/* Small, unobtrusive banner shown when the AudioContext is suspended.
+ * Browsers block audio until a user gesture — without this, PLAY TONE
+ * silently does nothing on first load. Dismisses on first keypress /
+ * click (ui/audio.js clears it once the context is running). */
+#audio-hint {
+    position: fixed;
+    left: 50%;
+    bottom: 0.75rem;
+    transform: translateX(-50%);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    color: var(--accent);
+    font-size: 0.8rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 4px;
+    pointer-events: none;
+    z-index: 8;
+}
+
+#audio-hint[hidden] { display: none; }
+
 #config-dialog {
     background: var(--panel);
     color: var(--fg);
