@@ -26,7 +26,9 @@ SCREEN_H = MM.VRES
 MANDEL_W = SCREEN_W
 MANDEL_H = SCREEN_H - MENU_H
 BLOCK_W = MANDEL_W
-OVERLAY_MAX = MANDEL_W * 4
+' Worst-case perimeter of the zoom box is 2*(W+H); used to size the
+' overlay save/restore buffers. Old formula assumed a square box.
+OVERLAY_MAX = 2 * (MANDEL_W + MANDEL_H)
 
 ' -- Default fractal region. 3x3 in complex plane, centred at (-0.5, 0).
 '    ResetViewport recomputes a uniform (complex-units-per-pixel) scale
@@ -297,34 +299,36 @@ Sub DrawMenu()
   Text 6, 2, "Z)oom  O)ut  R)eset  P)alette  Esc", , , , MENU_FG, MENU_BG
 End Sub
 
-Sub DrawZoomBox(boxX%, boxY%, boxSize%)
+Sub DrawZoomBox(boxX%, boxY%, boxW%, boxH%)
   Local Integer idx, xPix, yPix
 
   idx = 0
-  For xPix = boxX% To boxX% + boxSize% - 1
+  ' top + bottom edges
+  For xPix = boxX% To boxX% + boxW% - 1
     overlayX%(idx) = xPix
     overlayY%(idx) = boxY%
     overlayClr%(idx) = Pixel(xPix, boxY%)
     Pixel xPix, boxY%, CURSOR_CLR
     idx = idx + 1
   Next xPix
-  For xPix = boxX% To boxX% + boxSize% - 1
+  For xPix = boxX% To boxX% + boxW% - 1
     overlayX%(idx) = xPix
-    overlayY%(idx) = boxY% + boxSize% - 1
-    overlayClr%(idx) = Pixel(xPix, boxY% + boxSize% - 1)
-    Pixel xPix, boxY% + boxSize% - 1, CURSOR_CLR
+    overlayY%(idx) = boxY% + boxH% - 1
+    overlayClr%(idx) = Pixel(xPix, boxY% + boxH% - 1)
+    Pixel xPix, boxY% + boxH% - 1, CURSOR_CLR
     idx = idx + 1
   Next xPix
-  For yPix = boxY% + 1 To boxY% + boxSize% - 2
+  ' left + right edges (skip corners already done above)
+  For yPix = boxY% + 1 To boxY% + boxH% - 2
     overlayX%(idx) = boxX%
     overlayY%(idx) = yPix
     overlayClr%(idx) = Pixel(boxX%, yPix)
     Pixel boxX%, yPix, CURSOR_CLR
     idx = idx + 1
-    overlayX%(idx) = boxX% + boxSize% - 1
+    overlayX%(idx) = boxX% + boxW% - 1
     overlayY%(idx) = yPix
-    overlayClr%(idx) = Pixel(boxX% + boxSize% - 1, yPix)
-    Pixel boxX% + boxSize% - 1, yPix, CURSOR_CLR
+    overlayClr%(idx) = Pixel(boxX% + boxW% - 1, yPix)
+    Pixel boxX% + boxW% - 1, yPix, CURSOR_CLR
     idx = idx + 1
   Next yPix
   overlayCnt = idx
@@ -401,44 +405,54 @@ Sub RenderViewport()
 End Sub
 
 Sub DoZoom()
-  Local Integer boxSize, moveStep, boxX, boxY, done, key, pixLeft, pixTop, pixRight, pixBottom
+  Local Integer boxW, boxH, moveStep, boxX, boxY, done, key, pixLeft, pixTop, pixRight, pixBottom
   Local Float newXMin, newXMax, newYMin, newYMax
 
-  boxSize = MANDEL_W \ 3
-  If MANDEL_H \ 3 < boxSize Then boxSize = MANDEL_H \ 3
-  If boxSize < 12 Then boxSize = 12
-  moveStep = ClampInt(boxSize \ 6, 1, boxSize)
-  boxX = (MANDEL_W - boxSize) \ 2
-  boxY = MANDEL_TOP + (MANDEL_H - boxSize) \ 2
+  ' Box matches the viewport aspect ratio so zooming doesn't distort
+  ' complex-plane pixels. Target roughly a third of the smaller axis,
+  ' then scale the other axis to keep the aspect.
+  If MANDEL_W < MANDEL_H Then
+    boxW = MANDEL_W \ 3
+    boxH = (boxW * MANDEL_H) \ MANDEL_W
+  Else
+    boxH = MANDEL_H \ 3
+    boxW = (boxH * MANDEL_W) \ MANDEL_H
+  EndIf
+  If boxW < 12 Then boxW = 12
+  If boxH < 12 Then boxH = 12
 
-  DrawZoomBox boxX, boxY, boxSize
+  moveStep = ClampInt(boxW \ 6, 1, boxW)
+  boxX = (MANDEL_W - boxW) \ 2
+  boxY = MANDEL_TOP + (MANDEL_H - boxH) \ 2
+
+  DrawZoomBox boxX, boxY, boxW, boxH
   done = 0
   Do While done = 0
     key = GetKey()
     Select Case key
       Case 128
         UndrawZoomBox
-        boxY = ClampInt(boxY - moveStep, MANDEL_TOP, MANDEL_TOP + MANDEL_H - boxSize)
-        DrawZoomBox boxX, boxY, boxSize
+        boxY = ClampInt(boxY - moveStep, MANDEL_TOP, MANDEL_TOP + MANDEL_H - boxH)
+        DrawZoomBox boxX, boxY, boxW, boxH
       Case 129
         UndrawZoomBox
-        boxY = ClampInt(boxY + moveStep, MANDEL_TOP, MANDEL_TOP + MANDEL_H - boxSize)
-        DrawZoomBox boxX, boxY, boxSize
+        boxY = ClampInt(boxY + moveStep, MANDEL_TOP, MANDEL_TOP + MANDEL_H - boxH)
+        DrawZoomBox boxX, boxY, boxW, boxH
       Case 130
         UndrawZoomBox
-        boxX = ClampInt(boxX - moveStep, 0, MANDEL_W - boxSize)
-        DrawZoomBox boxX, boxY, boxSize
+        boxX = ClampInt(boxX - moveStep, 0, MANDEL_W - boxW)
+        DrawZoomBox boxX, boxY, boxW, boxH
       Case 131
         UndrawZoomBox
-        boxX = ClampInt(boxX + moveStep, 0, MANDEL_W - boxSize)
-        DrawZoomBox boxX, boxY, boxSize
+        boxX = ClampInt(boxX + moveStep, 0, MANDEL_W - boxW)
+        DrawZoomBox boxX, boxY, boxW, boxH
       Case 13
         UndrawZoomBox
         PushViewport
         pixLeft = boxX
-        pixRight = boxX + boxSize - 1
+        pixRight = boxX + boxW - 1
         pixTop = boxY - MANDEL_TOP
-        pixBottom = pixTop + boxSize - 1
+        pixBottom = pixTop + boxH - 1
         newXMin = xMin + currDX * pixLeft
         newXMax = xMin + currDX * pixRight
         newYMin = yMin + currDY * pixTop
