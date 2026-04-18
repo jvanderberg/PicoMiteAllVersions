@@ -2826,8 +2826,6 @@ op_enter_frame: {
 }
 
 op_leave_frame: {
-    /* Local string buffers stay alive until VM teardown so string FUNCTION
-       return values cannot be invalidated before OP_RET_FUN copies them. */
     if (vm->csp > 0) {
         BCCallFrame *cf = &vm->call_stack[vm->csp - 1];
         vm->locals_top = vm->frame_base;
@@ -2838,9 +2836,32 @@ op_leave_frame: {
                     bc_array_release(&vm->local_arrays[i]);
             }
             if (i < VM_MAX_LOCALS) {
-                if (vm->local_types[i] == T_STR && vm->locals[i].s &&
-                    !bc_stack_references_string(vm, vm->locals[i].s)) {
-                    BC_FREE(vm->locals[i].s);
+                if (vm->local_types[i] == T_STR && vm->locals[i].s) {
+                    uint8_t *local_buf = vm->locals[i].s;
+                    if (!vm->local_array_is_alias[i]) {
+                        /* If the stack still references this local buffer,
+                         * copy the string into the VM's str_temp ring and
+                         * redirect every stack entry that pointed at the
+                         * local buffer. Then free it. Without the
+                         * redirect+free, every FUNCTION call that returns
+                         * a string leaks its STRINGSIZE local slot — the
+                         * return value lives on the stack, caller consumes
+                         * it via op_print_str / Mstrcpy, stack reference
+                         * goes away, and nothing owns the buffer anymore
+                         * (rnd_chr$() in a render loop blew the BASIC
+                         * heap in a few hundred calls). */
+                        uint8_t *temp = NULL;
+                        for (int s = 0; s <= vm->sp; s++) {
+                            if (vm->stack_types[s] == T_STR && vm->stack[s].s == local_buf) {
+                                if (!temp) {
+                                    temp = vm_get_str_temp(vm);
+                                    Mstrcpy(temp, local_buf);
+                                }
+                                vm->stack[s].s = temp;
+                            }
+                        }
+                        BC_FREE(local_buf);
+                    }
                     vm->locals[i].s = NULL;
                 }
                 vm->local_types[i] = 0;
@@ -2868,7 +2889,9 @@ op_ret_sub: {
 op_ret_fun: {
     if (vm->csp <= 0)
         bc_vm_error(vm, "RETURN FUN without matching CALL");
-    /* Return value is on TOS — save it */
+    /* Return value is on TOS — save it. op_leave_frame has already
+     * redirected any stack slots that pointed at local string buffers
+     * into str_temp, so ret_val.s (if T_STR) is stable here. */
     BCValue ret_val = vm->stack[vm->sp];
     uint8_t ret_type = vm->stack_types[vm->sp];
 
