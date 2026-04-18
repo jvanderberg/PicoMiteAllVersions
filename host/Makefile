@@ -42,7 +42,7 @@ BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c ff.c ffunicode.c ffsystem.c \
           bc_vm.c bc_runtime.c bc_debug.c
 
 # Host-specific sources
-HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c host_sim_audio.c host_time.c host_fb.c
+HOST_SRCS = host_stubs_legacy.c host_main.c host_terminal.c host_fs.c host_sim_audio.c host_time.c host_fb.c host_keys.c
 
 SRCS = $(HOST_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(SRCS:.c=.o)
@@ -133,6 +133,13 @@ host_fb.o: host_fb.c host_fb.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 sim_obj/host_fb.o: host_fb.c host_fb.h
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
+host_keys.o: host_keys.c host_keys.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+sim_obj/host_keys.o: host_keys.c host_keys.h
 	@mkdir -p $(dir $@)
 	$(CC) $(SIM_CFLAGS) -c -o $@ $<
 

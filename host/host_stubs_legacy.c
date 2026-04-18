@@ -25,6 +25,7 @@
 #include "host_sim_server.h"
 #include "host_time.h"
 #include "host_fb.h"
+#include "host_keys.h"
 
 /* Forward declarations for output capture */
 extern void (*host_output_hook)(const char *text, int len);
@@ -38,9 +39,7 @@ static void host_resolve_sd_path(const char *fname, char *out, size_t out_cap);
 static void host_append_default_ext(char *path, size_t cap, const char *ext);
 
 static void host_runtime_check_timeout(void);
-static int host_parse_escaped_char(const char **src);
 static void host_getargaddress(unsigned char *p, long long int **ip, MMFLOAT **fp, int *n);
-static int host_keys_ready(void);
 static int host_parse_pin_arg(unsigned char *arg);
 
 typedef struct {
@@ -60,13 +59,8 @@ static uint64_t host_runtime_deadline_us = 0;
 static int host_runtime_timed_out_flag = 0;
 static int host_screenshot_written = 0;
 static char host_screenshot_path[1024] = {0};
-static char host_key_script[512] = {0};
-static size_t host_key_script_len = 0;
-static size_t host_key_script_pos = 0;
-static char host_config_key_script[512] = {0};
-static int host_config_key_delay_ms = 0;
-static int host_config_key_delay_set = 0;
-static uint64_t host_key_ready_us = 0;
+/* Scripted-key state (host_key_script / host_config_key_*) moved to
+ * host_keys.c; see host_keys.h for the consume/peek API. */
 static int host_fastgfx_active = 0;
 static int host_fastgfx_fps = 0;
 static uint64_t host_fastgfx_next_sync_us = 0;
@@ -732,68 +726,8 @@ static void host_write_screenshot(const char *path) {
     host_screenshot_written = 1;
 }
 
-static int host_parse_escaped_char(const char **src) {
-    const char *p = *src;
-    if (*p != '\\') {
-        int ch = (unsigned char)*p;
-        if (*p) p++;
-        *src = p;
-        return ch;
-    }
-
-    p++;
-    switch (*p) {
-        case 'n': *src = p + 1; return '\n';
-        case 'r': *src = p + 1; return '\r';
-        case 't': *src = p + 1; return '\t';
-        case '\\': *src = p + 1; return '\\';
-        case 'x':
-            if (isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
-                char hex[3] = {p[1], p[2], 0};
-                *src = p + 3;
-                return (int)strtol(hex, NULL, 16);
-            }
-            break;
-        default:
-            break;
-    }
-
-    *src = p;
-    return '\\';
-}
-
-static void host_load_key_script(void) {
-    const char *env = host_config_key_script[0] ? host_config_key_script : getenv("MMBASIC_HOST_KEYS");
-    const char *delay_env = getenv("MMBASIC_HOST_KEYS_AFTER_MS");
-    host_key_script_len = 0;
-    host_key_script_pos = 0;
-    host_key_ready_us = 0;
-    if (!env || !*env) return;
-
-    const char *p = env;
-    while (*p && host_key_script_len + 1 < sizeof(host_key_script)) {
-        host_key_script[host_key_script_len++] = (char)host_parse_escaped_char(&p);
-    }
-    host_key_script[host_key_script_len] = '\0';
-
-    int delay_ms = 0;
-    if (host_config_key_delay_set) delay_ms = host_config_key_delay_ms;
-    else if (delay_env && *delay_env) delay_ms = atoi(delay_env);
-    if (delay_ms < 0) delay_ms = 0;
-    host_key_ready_us = host_time_us_64() + (uint64_t)delay_ms * 1000ULL;
-}
-
-static int host_keys_ready(void) {
-    if (host_key_script_pos >= host_key_script_len) return 0;
-    if (host_key_ready_us && host_time_us_64() < host_key_ready_us) return 0;
-    return 1;
-}
-
-int host_keydown(int n) {
-    if (n == 0) return host_keys_ready() ? 1 : 0;
-    if (n >= 1 && n <= 6) return host_keys_ready() ? (unsigned char)host_key_script[host_key_script_pos] : 0;
-    return 0;
-}
+/* host_parse_escaped_char, host_load_key_script, host_keys_ready,
+ * host_keydown, host_runtime_configure_keys all moved to host_keys.c. */
 
 void host_runtime_configure(int timeout_ms, const char *screenshot_path) {
     host_runtime_timeout_ms = timeout_ms;
@@ -805,23 +739,13 @@ void host_runtime_configure(int timeout_ms, const char *screenshot_path) {
     }
 }
 
-void host_runtime_configure_keys(const char *keys, int delay_ms) {
-    host_config_key_script[0] = '\0';
-    host_config_key_delay_set = 0;
-    if (keys && *keys) {
-        snprintf(host_config_key_script, sizeof(host_config_key_script), "%s", keys);
-        host_config_key_delay_set = 1;
-    }
-    host_config_key_delay_ms = delay_ms < 0 ? 0 : delay_ms;
-}
-
 void host_runtime_begin(void) {
     host_runtime_timed_out_flag = 0;
     host_screenshot_written = 0;
     host_fastgfx_active = 0;
     host_fastgfx_fps = 0;
     host_fastgfx_next_sync_us = 0;
-    host_load_key_script();
+    host_runtime_keys_load();
     timeroffset = host_time_us_64();
     host_runtime_deadline_us = 0;
     if (host_runtime_timeout_ms > 0) {
@@ -2487,10 +2411,12 @@ static int host_decode_escape_sequence(void) {
 int MMInkey(void) {
     host_runtime_check_timeout();
 
-    /* Test-harness path: pre-scripted key stream. */
-    if (host_key_script_pos < host_key_script_len) {
-        if (!host_keys_ready()) return -1;
-        return (unsigned char)host_key_script[host_key_script_pos++];
+    /* Test-harness path: pre-scripted key stream. Returns -2 if no
+     * script is queued (fall through), -1 if queued-but-waiting, or
+     * the next consumed char. */
+    {
+        int scripted = host_runtime_keys_consume();
+        if (scripted != -2) return scripted;
     }
 
 #ifdef MMBASIC_SIM
