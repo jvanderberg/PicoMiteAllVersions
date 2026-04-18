@@ -482,13 +482,32 @@ Many commands here are fundamentally hardware-bound (watchdog, RTC, TIMER ticks)
 
 **Exit gate:** `cmd_pause` / `cmd_timer` / `cmd_settick` tests pass on host with shared source.
 
-### Phase 6 — REPL & banner unification
+### Phase 6 — REPL & banner unification — ✅ DONE (2026-04-17)
 
-`host_main.c:517-525` emits a divergent banner. `PicoMite.c:3793` uses the shared `MMBasic_RunPromptLoop`. Extract the banner into `MMBasic_REPL.c` as `MMBasic_PrintBanner(void)`, call from both entry points.
+- `MMBasic_PrintBanner(void)` added to `MMBasic_REPL.c`. Emits the
+  first line + `MMBASIC_COPYRIGHT` (+ host trailer on host) via
+  `MMPrintString`. Device first line = runtime `banner` array (still
+  patched for rp2350a/b variants in PicoMite.c); host first line =
+  `"\rPicoMite MMBasic Host V" VERSION "\r\n"` followed by
+  `"Host REPL — Ctrl-D to exit.\r\n\r\n"`.
+- `MMBASIC_COPYRIGHT` macro moved from PicoMite.c (where it was
+  `#define COPYRIGHT ...`) into `Version.h`. One authoritative
+  definition for the Geoff/Peter/Josh trailer.
+- `host/host_main.c`: the five-line `printf` block replaced with a
+  single `MMBasic_PrintBanner()` call.
+- `PicoMite.c:3713-3722`: both `MMPrintString(banner); MMPrintString(COPYRIGHT);`
+  pairs collapsed to `MMBasic_PrintBanner()`.
 
-Minor — maybe 30 lines — but closes the last REPL-shaped gap.
-
-**Exit gate:** banner matches device, `--sim` + raw TTY + piped modes all still start correctly.
+**Exit gate results:**
+- Host: piped / REPL / `--sim` all emit the banner correctly
+  (verified `echo QUIT | ./mmbasic_test --repl` prints banner +
+  copyright + "Host REPL" trailer).
+- `./run_tests.sh` — 197/197 green.
+- `make sim` — links clean.
+- Device build: not re-verified this phase. `MMBasic_PrintBanner`'s
+  device branch uses the same `banner` / `MMBASIC_COPYRIGHT` text
+  that PicoMite.c previously emitted inline, in the same order, via
+  the same `MMPrintString`. Instruction stream should match.
 
 ### Phase 7 — Cleanup & rename
 

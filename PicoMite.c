@@ -57,9 +57,8 @@ extern void start_vga_i2s(void);
 #ifndef HDMI
 #endif
 #endif
-#define COPYRIGHT   "Copyright " YEAR " Geoff Graham\r\n"\
-                    "Copyright " YEAR2 " Peter Mather\r\n"\
-                    "Bytecode VM by Josh V\r\n\r\n"
+/* COPYRIGHT text moved to Version.h as MMBASIC_COPYRIGHT; banner is
+ * emitted via MMBasic_PrintBanner() in MMBasic_REPL.c. */
 
 #ifdef USBKEYBOARD
     #include "tusb.h"
@@ -3707,19 +3706,18 @@ if(Option.CPU_Speed==FreqSVGA){ //adjust the size of the heap
         #endif
     #endif
 #endif
+    extern void MMBasic_PrintBanner(void);
     if(!(_excep_code == RESTART_NOAUTORUN || _excep_code == INVALID_CLOCKSPEED || _excep_code == SCREWUP_TIMEOUT || _excep_code == WATCHDOG_TIMEOUT || (_excep_code==POSSIBLE_WATCHDOG && watchdog_caused_reboot()))){
         if(Option.Autorun==0 ){
             if(!(_excep_code == RESET_COMMAND || _excep_code == SOFT_RESET)){
-                MMPrintString((char *)banner); // print sign on message
-                MMPrintString((char *)COPYRIGHT); // print sign on message
+                MMBasic_PrintBanner();
             }
         } else {
             if(Option.Autorun!=MAXFLASHSLOTS+1){
                 ProgMemory=(unsigned char *)(flash_target_contents+(Option.Autorun-1)*MAX_PROG_SIZE);
             }
             if(*ProgMemory != 0x01 ) {
-                MMPrintString((char *)banner);
-                MMPrintString((char *)COPYRIGHT); // print sign on message
+                MMBasic_PrintBanner();
             }
         }
     }

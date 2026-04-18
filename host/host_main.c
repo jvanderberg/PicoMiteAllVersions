@@ -515,14 +515,9 @@ static int run_repl(void) {
         Option.Height = (char)tty_rows;
     }
 
-    /* Match the device boot banner (PicoMite.c MES_SIGNON + COPYRIGHT).
-     * Emit explicit CR+LF so the banner prints correctly whether OPOST
-     * is enabled or not. */
-    printf("\rPicoMite MMBasic Host V" VERSION "\r\n");
-    printf("Copyright " YEAR  " Geoff Graham\r\n");
-    printf("Copyright " YEAR2 " Peter Mather\r\n");
-    printf("Bytecode VM by Josh V\r\n\r\n");
-    printf("Host REPL — Ctrl-D to exit.\r\n\r\n");
+    /* Shared REPL banner (MMBasic_REPL.c). */
+    extern void MMBasic_PrintBanner(void);
+    MMBasic_PrintBanner();
     fflush(stdout);
 
     /* stdin raw mode so EditInputLine and EDIT read single keys. On

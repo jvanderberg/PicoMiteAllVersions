@@ -35,6 +35,12 @@ list all
 #ifdef rp2350
 #define CHIP    "RP2350 "
 #else
-#define CHIP    "RP2040"     
+#define CHIP    "RP2040"
 #endif
+
+/* Trailing copyright lines — identical across device and host so the
+ * REPL banner function (MMBasic_PrintBanner) can emit them once. */
+#define MMBASIC_COPYRIGHT   "Copyright " YEAR " Geoff Graham\r\n"\
+                            "Copyright " YEAR2 " Peter Mather\r\n"\
+                            "Bytecode VM by Josh V\r\n\r\n"
 /*  @endcond */

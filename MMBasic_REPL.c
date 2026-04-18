@@ -20,6 +20,23 @@
 /* Defined in MMBasic_Prompt.c. */
 extern int MMPromptPos;
 
+/* Sign-on banner. Called once at entry by both PicoMite.c (device) and
+ * host_main.c (host) so the text lives in one place. Device uses the
+ * runtime `banner` array (patched for rp2350a/b variants, etc.);
+ * host emits a "Host V<VERSION>" line. Copyright trailer is shared
+ * (Version.h MMBASIC_COPYRIGHT). */
+void MMBasic_PrintBanner(void) {
+#ifdef MMBASIC_HOST
+    MMPrintString("\rPicoMite MMBasic Host V" VERSION "\r\n");
+    MMPrintString(MMBASIC_COPYRIGHT);
+    MMPrintString("Host REPL — Ctrl-D to exit.\r\n\r\n");
+#else
+    extern char banner[];
+    MMPrintString(banner);
+    MMPrintString(MMBASIC_COPYRIGHT);
+#endif
+}
+
 /* Token-table decoder — used to tell whether the line the user just typed
  * is a RUN / FRUN / EDIT / AUTOSAVE so we can treat them specially. */
 CommandToken commandtbl_decode(const unsigned char *p){
