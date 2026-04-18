@@ -113,22 +113,15 @@ function mapKeyEvent(event) {
 
 let fbPtr = 0, fbWidth = 0, fbHeight = 0, imageData = null;
 
-// Reserve room for header (#status ≈ 40 px) + toolbar (≈ 80 px) + a
-// little padding. Feel free to tune — the canvas is centred either way.
-const VIEWPORT_CHROME_PX = 140;
+// Canvas always renders at exactly 2× the framebuffer in CSS pixels.
+// The page scrolls if that exceeds the viewport; preserving pixel
+// shape trumps fitting.
+const DISPLAY_SCALE = 2;
 
 function fitCanvas() {
     if (!fbWidth || !fbHeight) return;
-    const maxW = Math.max(160, Math.floor(window.innerWidth  * 0.92));
-    const maxH = Math.max(160, window.innerHeight - VIEWPORT_CHROME_PX);
-    // Always at least 2× (pixel-doubled) for crispness; grow to the
-    // largest integer scale that fits the viewport budget. If even 2×
-    // exceeds the viewport, the canvas overflows and the page scrolls
-    // — pixel doubling wins over fitting.
-    const fit = Math.min(maxW / fbWidth, maxH / fbHeight);
-    const scale = Math.max(2, Math.floor(fit));
-    canvas.style.width  = `${fbWidth  * scale}px`;
-    canvas.style.height = `${fbHeight * scale}px`;
+    canvas.style.width  = `${fbWidth  * DISPLAY_SCALE}px`;
+    canvas.style.height = `${fbHeight * DISPLAY_SCALE}px`;
 }
 
 function blitFrame(instance) {
