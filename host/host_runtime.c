@@ -447,22 +447,23 @@ void host_sim_apply_slowdown(void) {
 }
 
 #ifdef MMBASIC_WASM
-/* Last wall-clock time we unwound to JS. Reset at runtime begin so the
- * first statement of a run doesn't eat a full yield period of slack. */
-static uint64_t wasm_last_yield_us = 0;
+/* Shared with host_time.c: host_sleep_us stamps this after every
+ * emscripten_sleep, so `wasm_yield_if_due` below skips redundant
+ * unwinds when the program is already cooperatively sleeping
+ * (PAUSE, FASTGFX SYNC, etc). */
+extern uint64_t wasm_last_yield_us;
 
 /* Yield to the browser event loop at most every ~16 ms of wall clock
- * (~60 Hz). Called on every statement (via CheckAbort → routinechecks
- * → host_runtime_check_timeout) AND on every INKEY$ poll (via MMInkey's
+ * (~60 Hz), but only if no other sleep has yielded in that window.
+ * Called on every statement (via CheckAbort → routinechecks →
+ * host_runtime_check_timeout) AND on every INKEY$ poll (via MMInkey's
  * first line), so busy-wait BASIC — `DO : LOOP UNTIL INKEY$ <> ""` —
- * and long-running loops both stay responsive. Without this, the
- * browser never sees a rAF tick or a keydown, and the tab appears to
- * hang until the program exits.
+ * and long-running loops stay responsive.
  *
  * emscripten_sleep(0) under ASYNCIFY unwinds the C stack, runs one
- * event-loop iteration, and resumes. Net overhead is the ASYNCIFY
- * save/restore plus a single JS microtask — typically <1 ms per yield
- * at this rate. */
+ * event-loop iteration, and resumes. Skipping it when a recent
+ * host_sleep_us already yielded avoids a ~1 ms per-frame overhead
+ * on games that call FASTGFX SYNC every frame (e.g. pico_blocks). */
 static void wasm_yield_if_due(uint64_t now_us) {
     if (now_us - wasm_last_yield_us < 16000ULL) return;
     wasm_last_yield_us = now_us;

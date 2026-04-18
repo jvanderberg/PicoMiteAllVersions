@@ -51,6 +51,15 @@ uint64_t host_time_us_64(void) {
     return now;
 }
 
+#ifdef MMBASIC_WASM
+/* Shared with host_runtime.c's wasm_yield_if_due: any path that actually
+ * yields to JS (host_sleep_us, FASTGFX SYNC's host_sleep_us, PAUSE,
+ * emscripten_sleep(0) in wasm_yield_if_due) stamps this so the periodic
+ * yield hook skips redundant unwinds. Games like pico_blocks that call
+ * FASTGFX SYNC every 20 ms never pay for a second yield on CheckAbort. */
+uint64_t wasm_last_yield_us = 0;
+#endif
+
 void host_sleep_us(uint64_t us) {
     if (us == 0) {
         host_sync_msec_timer();
@@ -66,6 +75,9 @@ void host_sleep_us(uint64_t us) {
     unsigned ms = (unsigned)((us + 999ULL) / 1000ULL);
     if (ms == 0) ms = 1;
     emscripten_sleep(ms);
+    /* Tell the periodic yield hook we just unwound to JS, so it doesn't
+     * fire again for another 16 ms. */
+    wasm_last_yield_us = host_now_us();
 #else
     struct timespec req;
     req.tv_sec = (time_t)(us / 1000000ULL);
