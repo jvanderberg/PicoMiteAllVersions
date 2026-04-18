@@ -82,7 +82,6 @@ volatile unsigned int AHRSTimer = 0;
 volatile int ConsoleTxBufHead = 0;
 volatile int ConsoleTxBufTail = 0;
 uint32_t core1stack[256] = {[0] = 0x12345678};
-volatile e_CurrentlyPlaying CurrentlyPlaying = P_NOTHING;
 volatile int DISPLAY_TYPE = 0;
 /* DisplayNotSet is a function - see function stubs below */
 uint32_t dma_rx_chan = 0;
@@ -162,8 +161,7 @@ unsigned char BreakKey = 3;
 /* MMAbort is toggled by interrupt handlers on device; on host nothing
  * flips it, but the REPL loop and ExecuteProgram both read it. */
 volatile int MMAbort = 0;
-bool WAVcomplete = 0;
-char *WAVInterrupt = NULL;
+/* WAVcomplete / WAVInterrupt / CurrentlyPlaying defined in Audio.c host body. */
 volatile unsigned int WDTimer = 0;
 /* Display_Refresh is a function - see function stubs below */
 
@@ -1369,122 +1367,6 @@ static void host_pixel_fail_range(void *ctx, const char *label, int value, int m
     error("% is invalid (valid is % to %)", value, min, max);
 }
 
-/*
- * Minimal PLAY implementation for the host simulator. Parses the same
- * subcommands as Audio.c cmd_play(), validates arguments device-style,
- * and emits JSON events over the WS transport so web/audio.js can
- * reproduce the sound in WebAudio. File-based playback (WAV / FLAC /
- * MP3 / MODFILE) is intentionally unimplemented — defer to Phase 5.
- */
-static int host_play_parse_channel(unsigned char *arg, int *left, int *right) {
-    *left = 0; *right = 0;
-    if (checkstring(arg, (unsigned char *)"L")) { *left = 1; return 1; }
-    if (checkstring(arg, (unsigned char *)"R")) { *right = 1; return 1; }
-    if (checkstring(arg, (unsigned char *)"B")) { *left = *right = 1; return 1; }
-    char *p = (char *)getCstring(arg);
-    if (!strcasecmp(p, "L")) { *left = 1; return 1; }
-    if (!strcasecmp(p, "R")) { *right = 1; return 1; }
-    if (!strcasecmp(p, "B") || !strcasecmp(p, "M")) { *left = *right = 1; return 1; }
-    return 0;
-}
-
-static const char *host_play_parse_type(unsigned char *arg) {
-    if (checkstring(arg, (unsigned char *)"O")) return "O";
-    if (checkstring(arg, (unsigned char *)"Q")) return "Q";
-    if (checkstring(arg, (unsigned char *)"T")) return "T";
-    if (checkstring(arg, (unsigned char *)"W")) return "W";
-    if (checkstring(arg, (unsigned char *)"S")) return "S";
-    if (checkstring(arg, (unsigned char *)"P")) return "P";
-    if (checkstring(arg, (unsigned char *)"N")) return "N";
-    if (checkstring(arg, (unsigned char *)"U")) return "U";
-    char *p = (char *)getCstring(arg);
-    if (!strcasecmp(p, "O")) return "O";
-    if (!strcasecmp(p, "Q")) return "Q";
-    if (!strcasecmp(p, "T")) return "T";
-    if (!strcasecmp(p, "W")) return "W";
-    if (!strcasecmp(p, "S")) return "S";
-    if (!strcasecmp(p, "P")) return "P";
-    if (!strcasecmp(p, "N")) return "N";
-    if (!strcasecmp(p, "U")) return "U";
-    return NULL;
-}
-
-void cmd_play(void) {
-    unsigned char *tp;
-
-    if (checkstring(cmdline, (unsigned char *)"STOP")) {
-        host_sim_audio_stop();
-        return;
-    }
-    if (checkstring(cmdline, (unsigned char *)"PAUSE")) {
-        host_sim_audio_pause();
-        return;
-    }
-    if (checkstring(cmdline, (unsigned char *)"RESUME")) {
-        host_sim_audio_resume();
-        return;
-    }
-    if (checkstring(cmdline, (unsigned char *)"CLOSE")) {
-        host_sim_audio_stop();
-        return;
-    }
-    if ((tp = checkstring(cmdline, (unsigned char *)"VOLUME"))) {
-        getargs(&tp, 3, (unsigned char *)",");
-        if (argc < 1) error("Argument count");
-        int vl = 100, vr = 100;
-        if (*argv[0]) vl = getint(argv[0], 0, 100);
-        vr = vl;
-        if (argc == 3) vr = getint(argv[2], 0, 100);
-        host_sim_audio_volume(vl, vr);
-        return;
-    }
-    if ((tp = checkstring(cmdline, (unsigned char *)"TONE"))) {
-        getargs(&tp, 7, (unsigned char *)",");
-        if (!(argc == 3 || argc == 5 || argc == 7)) error("Argument count");
-        MMFLOAT f_left = getnumber(argv[0]);
-        MMFLOAT f_right = getnumber(argv[2]);
-        if (f_left < 0.0 || f_left > 22050.0) error("Valid is 0Hz to 20KHz");
-        if (f_right < 0.0 || f_right > 22050.0) error("Valid is 0Hz to 20KHz");
-        int has_dur = 0;
-        long long dur_ms = 0;
-        if (argc > 4) {
-            dur_ms = getint(argv[4], 0, INT_MAX);
-            has_dur = 1;
-            if (dur_ms == 0) return;
-        }
-        /* Interrupt arg (argv[6]) is ignored on host — WAV interrupts
-         * aren't plumbed through --sim. */
-        host_sim_audio_tone((double)f_left, (double)f_right, has_dur, dur_ms);
-        return;
-    }
-    if ((tp = checkstring(cmdline, (unsigned char *)"SOUND"))) {
-        getargs(&tp, 9, (unsigned char *)",");
-        if (!(argc == 5 || argc == 7 || argc == 9)) error("Argument count");
-        int slot = getint(argv[0], 1, 4);
-        int left = 0, right = 0;
-        if (!host_play_parse_channel(argv[2], &left, &right))
-            error("Position must be L, R, or B");
-        const char *type = host_play_parse_type(argv[4]);
-        if (!type) error("Invalid type");
-        if (!left && !right) error("Position must be L, R, or B");
-        if (argc == 5 && strcmp(type, "O") != 0) error("Argument count");
-        MMFLOAT f_in = 10.0;
-        if (argc >= 7) f_in = getnumber(argv[6]);
-        if (f_in < 1.0 || f_in > 20000.0) error("Valid is 1Hz to 20KHz");
-        int vol = 25;
-        if (argc == 9) vol = getint(argv[8], 0, 25);
-        const char *ch = (left && right) ? "B" : (left ? "L" : "R");
-        host_sim_audio_sound(slot, ch, type, (double)f_in, vol);
-        return;
-    }
-    if (checkstring(cmdline, (unsigned char *)"NEXT") ||
-        checkstring(cmdline, (unsigned char *)"PREVIOUS") ||
-        checkstring(cmdline, (unsigned char *)"LOAD SOUND")) {
-        /* No-op on host: no MOD/FLAC/MP3 player state to step through. */
-        return;
-    }
-    error("Unsupported on host: PLAY WAV/FLAC/MP3/MODFILE etc.");
-}
 void cmd_poke(void) {}
 static void host_fill_polygon_edges(const float *poly_x, const float *poly_y,
                                     int vertex_count, int count,
@@ -1885,7 +1767,7 @@ void CheckAbort(void) { host_runtime_check_timeout(); }
 int check_interrupt(void) { return 0; }
 void ClearExternalIO(void) {}
 /* CloseAllFiles is provided by FileIO.c. */
-void CloseAudio(int all) { (void)all; }
+/* CloseAudio is provided by Audio.c host body. */
 void closeframebuffer(char layer) { host_framebuffer_close(layer); }
 void clear320(void) {}
 /* DisplayPutC is now the real one from gfx_console_shared.c. It gates on

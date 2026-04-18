@@ -138,7 +138,7 @@ Host stubs already defined in `host_stubs_legacy.c` for every `cmd_*`/`fun_*` th
 4. GPIO IRQ / PWM / PIO: wrap whole blocks / whole functions.
 5. `PICOMITEVGA` / `PICOMITEWEB`: not defined on host → blocks drop out naturally.
 
-Host stub line count impact (estimated from plan): Phase 2 ~1,200 lines deleted, Phase 3 ~300, Phase 4 ~75, Phase 5 ~200-400. Target final `host_noop_stubs.c` under 1,500 lines.
+Host stub line count impact (estimated from plan): Phase 2 ~1,200 lines deleted, Phase 3 ~300, Phase 4 ~115, Phase 5 ~200-400. Target final `host_noop_stubs.c` under 1,500 lines.
 
 ### Phase 1 — Pure moves out of `host_stubs_legacy.c` — ✅ DONE (2026-04-17)
 
@@ -399,16 +399,67 @@ bridging):
 - Device build: not re-verified here (all new host regions use `#ifdef
   MMBASIC_HOST`; the device `#else` / default paths are unchanged).
 
-### Phase 4 — `Audio.c` compiles on host
+### Phase 4 — `Audio.c` compiles on host — ✅ DONE (2026-04-17)
 
-`Audio.c` has zero direct peripheral calls by grep — the hardware interaction is through helper functions (`StartAudio`, `StopAudio`, etc.) defined elsewhere.
+Scope correction from the original plan: `Audio.c` is *not* HAL-clean.
+Grep turned up 31 direct hardware calls (PWM×21, flash×2, PIO×1) plus
+heavy dependencies on single-header decoder libs (`dr_wav`, `dr_flac`,
+`dr_mp3`, `hxcmod`) and the VS1053 driver. Making all of that compile on
+host would be a multi-week refactor with no runtime value — the sim's
+audio backend is WebAudio, not a DMA ring buffer.
 
-1. Introduce `host_audio_hal.h` with the existing host audio API (`host_sim_audio_play`, etc.) as the HAL.
-2. Stub the helper functions (`StartAudio`, `StopAudio`, DMA audio buffer setup) via the HAL.
-3. Add `Audio.c` to `CORE_SRCS`.
-4. **Delete** `cmd_play` from `host_noop_stubs.c` (75 lines).
+**Approach taken: file-level split inside `Audio.c` instead of per-function
+gating.** Device body stays 100% textually unchanged; host gets a short
+tail section that re-uses the existing `host_sim_audio_*` JSON emitter.
 
-**Exit gate:** `play_tone.bas` test runs, `--sim` mode plays audio to browser.
+**Shape:**
+```c
+/* Audio.c */
+#include "MMBasic_Includes.h"
+#include "Hardware_Includes.h"
+
+#ifndef MMBASIC_HOST
+/* 2,140-line device body — decoder libs, PWM pipeline, full cmd_play */
+...
+#else  /* MMBASIC_HOST */
+#include "host_sim_audio.h"
+/* Audio globals host needs (CurrentlyPlaying, PWM_FREQ, vol_left/right,
+ * SoundPlay, PhaseM_*, PhaseAC_*, mono, WAV_fnbr, WAVInterrupt,
+ * WAVcomplete) — defined once here instead of scattered through
+ * host_stubs_legacy.c. */
+void MIPS16 cmd_play(void) { /* STOP/PAUSE/RESUME/CLOSE/VOLUME/TONE/
+                              * SOUND route to host_sim_audio_*;
+                              * file-playback subcommands error. */ }
+void CloseAudio(int all) { host_sim_audio_stop(); CurrentlyPlaying = P_NOTHING; }
+void StopAudio(void)     { host_sim_audio_stop(); CurrentlyPlaying = P_NOTHING; }
+void checkWAVinput(void) {}
+void audio_checks(void)  {}
+#endif
+```
+
+**Stubs deletion** — ~115 lines from `host_stubs_legacy.c`:
+- `cmd_play` + `host_play_parse_channel` + `host_play_parse_type`
+  helpers (113 lines).
+- `CloseAudio` stub.
+- Duplicate globals: `CurrentlyPlaying`, `WAVcomplete`, `WAVInterrupt`.
+
+**Makefile** — added `Audio.c` to `CORE_SRCS`.
+
+**What's NOT in Phase 4** (deferred indefinitely — no clear value):
+- PLAY WAV/FLAC/MP3/MODFILE/MIDI on host. Emitting encoded audio frames
+  over a WebSocket to a WebAudio player is its own subsystem.
+- PLAY ARRAY and NOTE. Ditto.
+- VS1053 support on host. Host has no SPI IC to drive.
+
+**Exit gate results:**
+- `cd host && ./build.sh` — clean, 3 pre-existing warnings only (the
+  `__attribute__((optimize))` unknown-attribute warning on MIPS16 —
+  already present for other core files).
+- `./run_tests.sh` (default compare) — **197/197** green.
+- `make sim` — links clean; `mmbasic_sim` binary produced.
+- `t115_play_tone_stop_native` — still PASS after the cmd_play move.
+- Device build: not re-verified this phase. All additions gated by
+  `#ifdef MMBASIC_HOST`; device sees the unchanged original body.
 
 ### Phase 5 — `MM_Misc.c` (partial)
 
