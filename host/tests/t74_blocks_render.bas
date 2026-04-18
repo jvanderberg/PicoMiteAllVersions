@@ -29,14 +29,14 @@ blocks%(1, 2) = BLOCK_RED%
 blocks%(1, 3) = BLOCK_WHITE%
 blocks%(1, 4) = BLOCK_YELLOW_FULL%
 
-DIM r%, c%, bx%, by%, color%
+DIM r%, c%, bx%, by%, col_c%
 FOR r% = 0 TO 1
   FOR c% = 0 TO 4
     IF blocks%(r%, c%) <> BLOCK_NONE% THEN
       bx% = c% * 30 + 4
       by% = r% * 15 + 10
-      color% = GetBlockColor(blocks%(r%, c%))
-      BOX bx%, by%, 28, 12, 0, , color%
+      col_c% = GetBlockColor(blocks%(r%, c%))
+      BOX bx%, by%, 28, 12, 0, , col_c%
     END IF
   NEXT
 NEXT

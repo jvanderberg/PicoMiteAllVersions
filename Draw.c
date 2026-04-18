@@ -305,7 +305,7 @@ void MIPS16 cmd_guiMX170(void) {
         if(Option.Refresh)Display_Refresh();
         return;
     }
-#ifndef PICOMITEVGA
+#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)
 #ifdef GUICONTROLS
     if((p = checkstring(cmdline, (unsigned char *)"BEEP"))) {
         if(Option.TOUCH_Click == 0) error("Click option not set");
@@ -426,7 +426,7 @@ void MIPS16 cmd_guiMX170(void) {
             PFlt(((MMFLOAT)count)/(((MMFLOAT)(time_us_64()-start))/1000000.0));MMPrintString(" Circles per Second");
             return;
         }
-#ifndef PICOMITEVGA
+#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)
         if((checkstring(p, (unsigned char *)"TOUCH"))) {
             int x, y;
             ClearScreen(gui_bcolour);
@@ -4991,11 +4991,16 @@ void fun_sprite(void) {
     }
     targ = T_INT;
 }
-/* 
+/*
  * @cond
  * The following section will be excluded from the documentation.
  */
-#ifndef PICOMITEVGA
+#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)
+/* Host build: restorepanel / closeframebuffer / setframebuffer /
+ * copyframetoscreen / blitmerge / merge / cmd_framebuffer all live in
+ * host_stubs_legacy.c (write into host_framebuffer directly instead of
+ * DMAing bytes to a physical LCD controller). This block closes at the
+ * original PICOMITEVGA #endif further down. */
 #ifdef PICOMITE
 #include "hardware/dma.h"
 #endif
@@ -5668,7 +5673,10 @@ void cmd_framebuffer(void){
 // ============================================================
 // FASTGFX - double-buffered display with scanline diffing + DMA
 // ============================================================
-#ifdef PICOMITE
+#if defined(PICOMITE) && !defined(MMBASIC_HOST)
+/* Host build: bc_fastgfx_create/swap/close/reset/set_fps and cmd_fastgfx
+ * live in host_stubs_legacy.c; they present/copy host_framebuffer
+ * directly instead of DMA-ing dirty scanlines to an LCD controller. */
 
 static uint8_t *FastGFXBackBuf = NULL;
 static uint8_t *FastGFXFrontBuf = NULL;
@@ -6062,7 +6070,9 @@ void cmd_fastgfx(void) {
         error("Syntax");
     }
 }
-#else
+#elif !defined(MMBASIC_HOST)
+/* Host build has its own cmd_fastgfx in host_stubs_legacy.c that drives
+ * the host_framebuffer-backed bc_fastgfx_* helpers. */
 void cmd_fastgfx(void) {
     error("FASTGFX not supported on this platform");
 }
@@ -6114,7 +6124,7 @@ void cmd_blit(void) {
         FileClose(fnbr);
         return;
     }
-#ifndef PICOMITEVGA
+#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)
     if((p=checkstring(cmdline, (unsigned char *)"MERGE"))) { //merge the layer onto the physical display
         if(!LayerBuf)error("Layer not created");
         if(!FrameBuf)error("Framebuffer not created");

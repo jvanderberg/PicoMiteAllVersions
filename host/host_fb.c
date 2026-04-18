@@ -223,6 +223,28 @@ void host_fb_draw_bitmap(int x1, int y1, int width, int height, int scale,
     (void)total_bits; (void)fg; (void)bg;
 }
 
+void host_fb_read_buffer(int x1, int y1, int x2, int y2, unsigned char *c) {
+    /* Backs the ReadBuffer function pointer — fun_pixel calls this with
+     * a 1x1 rect and a local `int p` as the output, expecting 4 bytes
+     * of packed RGB (low 24 bits). host_framebuffer already stores
+     * 0x00RRGGBB uint32_ts, so a straight memcpy does the right thing. */
+    if (!c) return;
+    if (!host_framebuffer) host_fb_ensure();
+    if (!host_framebuffer) return;
+    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
+    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    for (int y = y1; y <= y2; ++y) {
+        for (int x = x1; x <= x2; ++x) {
+            uint32_t px = 0;
+            if (x >= 0 && y >= 0 && x < host_fb_width && y < host_fb_height) {
+                px = host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
+            }
+            memcpy(c, &px, sizeof(px));
+            c += sizeof(px);
+        }
+    }
+}
+
 void host_fb_scroll_lcd(int lines) {
     /* Positive lines: shift content UP by that many pixel rows, clear bottom.
      * Negative lines: shift content DOWN, clear top. The Editor uses the

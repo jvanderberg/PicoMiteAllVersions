@@ -67,13 +67,19 @@ void host_framebuffer_wait(void);
 void host_framebuffer_copy(char from, char to, int background);
 void host_framebuffer_service(void);
 
-/* Host-side backings for DrawRectangle / DrawBitmap / ScrollLCD function
- * pointers that gfx_console_shared.c's GUIPrintChar / DisplayPutC
- * dispatch through. Assigned in host_runtime_begin. */
+/* Host-side backings for DrawRectangle / DrawBitmap / ScrollLCD / Read
+ * Buffer function pointers that gfx_console_shared.c's GUIPrintChar /
+ * DisplayPutC dispatch through. Assigned in host_runtime_begin.
+ *
+ * host_fb_read_buffer backs the ReadBuffer function pointer that
+ * fun_pixel / fun_map / FRAMEBUFFER COPY N use to sample the visible
+ * plane. It writes one 4-byte BGR-packed pixel per sample, matching
+ * the device's uint32_t layout. */
 void host_fb_draw_rectangle(int x1, int y1, int x2, int y2, int c);
 void host_fb_draw_bitmap(int x1, int y1, int width, int height, int scale,
                          int fc, int bc, unsigned char *bitmap);
 void host_fb_scroll_lcd(int lines);
+void host_fb_read_buffer(int x1, int y1, int x2, int y2, unsigned char *c);
 
 /* Test harness pixel assert + sim server snapshot. */
 uint32_t host_runtime_get_pixel(int x, int y);

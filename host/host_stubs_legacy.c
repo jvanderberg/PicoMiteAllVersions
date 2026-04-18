@@ -15,7 +15,8 @@
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 #include "vm_host_fat.h"
-#include "font1.h"
+/* font1.h defines `font1[]` inline — pulled in exclusively by Draw.c
+ * now that FontTable initialisation lives there. */
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
@@ -81,8 +82,6 @@ volatile int ConsoleTxBufHead = 0;
 volatile int ConsoleTxBufTail = 0;
 uint32_t core1stack[256] = {[0] = 0x12345678};
 volatile e_CurrentlyPlaying CurrentlyPlaying = P_NOTHING;
-short CurrentX = 0;
-short CurrentY = 0;
 volatile int DISPLAY_TYPE = 0;
 /* DisplayNotSet is a function - see function stubs below */
 uint32_t dma_rx_chan = 0;
@@ -94,7 +93,6 @@ long long int *ds18b20Timers = NULL;
 volatile int ExtCurrentConfig[NBRPINS + 1] = {0};
 union uFileTable FileTable[MAXOPENFILES + 1] = {{0}};
 const uint8_t *flash_progmemory = NULL;
-unsigned char *FontTable[16] = {(unsigned char *)font1};
 int FSerror = 0;
 int GPSchannel = 0;
 int gui_bcolour = 0;
@@ -104,8 +102,6 @@ int last_fcolour = 0xFFFFFF;
 short gui_font = 0;
 short gui_font_height = 8;
 short gui_font_width = 6;
-short HRes = 320;
-short VRes = 320;
 uint8_t I2C0locked = 0;
 uint8_t I2C1locked = 0;
 unsigned char IgnorePIN = 0;
@@ -113,8 +109,6 @@ unsigned char *InterruptReturn = NULL;
 int InterruptUsed = 0;
 int last_adc = 0;
 lfs_t lfs;
-bool mergerunning = 0;
-uint32_t mergetimer = 0;
 int MMCharPos = 0;
 int mmI2Cvalue = 0;
 int mmOWvalue = 0;
@@ -125,7 +119,6 @@ MMFLOAT optionangle = 0;
 bool optionfastaudio = 0;
 bool optionfulltime = 0;
 bool optionlogging = 0;
-int PrintPixelMode = 0;
 int PromptFont = 1;
 int PromptFC = 0xFFFFFF;
 int PromptBC = 0;
@@ -230,20 +223,12 @@ lfs_dir_t lfs_dir;
 struct lfs_info lfs_info;
 int lfs_FileFnbr = 0;
 short DisplayHRes = 0, DisplayVRes = 0;
-volatile short low_y = 0, high_y = 0, low_x = 0, high_x = 0;
-uint8_t sprite_transparent = 0;
-char CMM1 = 0;
 int ScreenSize = 0;
 unsigned char *DisplayBuf = NULL;
 unsigned char *SecondLayer = NULL;
 unsigned char *SecondFrame = NULL;
 char LCDAttrib = 0;
-struct D3D *struct3d[MAX3D + 1] = {NULL};
 s_camera camera[MAXCAM + 1] = {{0}};
-struct spritebuffer spritebuff[MAXBLITBUF + 1] = {{0}};
-struct blitbuffer blitbuff[MAXBLITBUF + 1] = {{0}};
-char *COLLISIONInterrupt = NULL;
-bool CollisionFound = 0;
 int RGB121map[16] = {0};
 
 /* Interrupt-related */
@@ -312,15 +297,6 @@ bool screen320 = 0;
 /* g_myrand provided by MATHS.c */
 
 /* Function pointers for draw */
-void (*DrawPixel)(int x1, int y1, int c) = NULL;
-void (*DrawRectangle)(int x1, int y1, int x2, int y2, int c) = NULL;
-void (*DrawBitmap)(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char *bitmap) = NULL;
-void (*ReadBuffer)(int x1, int y1, int x2, int y2, unsigned char *c) = NULL;
-void (*ReadBufferFast)(int x1, int y1, int x2, int y2, unsigned char *c) = NULL;
-void (*DrawBLITBuffer)(int x1, int y1, int x2, int y2, unsigned char *c) = NULL;
-void (*ReadBLITBuffer)(int x1, int y1, int x2, int y2, unsigned char *c) = NULL;
-void (*ScrollLCD)(int lines) = NULL;
-void (*DrawBuffer)(int x1, int y1, int x2, int y2, unsigned char *c) = NULL;
 
 /* PINMAP */
 #ifdef rp2350
@@ -752,11 +728,29 @@ void host_runtime_begin(void) {
         host_runtime_deadline_us = timeroffset + (uint64_t)host_runtime_timeout_ms * 1000ULL;
     }
     host_framebuffer_reset_runtime(gui_bcolour);
-    FontTable[0] = (unsigned char *)font1;
+    /* FontTable[] is initialised in Draw.c now (static initialiser).
+     *
+     * Tell Draw.c "a display IS configured" so the 16 `DISPLAY_TYPE == 0
+     * → error "Display not configured"` checks in cmd_box / cmd_pixel /
+     * cmd_cls / … pass. DISP_USER (28) is the generic user-defined
+     * display type that relies entirely on the DrawPixel / DrawRectangle
+     * function pointers below — which is exactly the host model. It
+     * falls outside every specific-panel range in Draw.c (I2C_PANEL+1 …
+     * BufferedPanel, SSDPANEL … VIRTUAL, NEXTGEN+), so none of the
+     * hardware-specific code paths fire.
+     *
+     * HRes/VRes are now defined in Draw.c (initialised to 0 there for
+     * device boot); re-sync them to the host framebuffer dimensions so
+     * MMBasic's geometry math + the VM's HRes/VRes checks see the same
+     * values as the framebuffer plane. */
+    Option.DISPLAY_TYPE = DISP_USER;
+    HRes = (short)host_fb_width;
+    VRes = (short)host_fb_height;
     DrawPixel = host_draw_pixel_ptr;
     DrawRectangle = host_fb_draw_rectangle;
     DrawBitmap = host_fb_draw_bitmap;
     ScrollLCD = host_fb_scroll_lcd;
+    ReadBuffer = host_fb_read_buffer;
 }
 
 void host_runtime_finish(void) {
@@ -806,31 +800,11 @@ static void host_runtime_check_timeout(void) {
  *  Stub Functions -- cmd_* (hardware commands): void cmd_xxx(void) {}
  * ========================================================================= */
 
-void cmd_3D(void) {}
+/* cmd_3D, cmd_arc, cmd_blit, cmd_blitmemory, cmd_box now come from
+ * Draw.c (gated with MMBASIC_HOST for the display-driver pieces). */
 void cmd_adc(void) {}
-void cmd_arc(void) {}
 void cmd_autosave(void) {}
 void cmd_backlight(void) {}
-void cmd_blit(void) {}
-void cmd_blitmemory(void) {}
-void cmd_box(void) {
-    int x1, y1, width, height, w = 1, c = gui_fcolour, f = -1;
-    int wmod, hmod;
-    getargs(&cmdline, 13, (unsigned char *)",");
-    if (!(argc & 1) || argc < 7) error("Argument count");
-    x1 = getinteger(argv[0]);
-    y1 = getinteger(argv[2]);
-    width = getinteger(argv[4]);
-    height = getinteger(argv[6]);
-    wmod = (width > 0) ? -1 : 1;
-    hmod = (height > 0) ? -1 : 1;
-    if (argc > 7 && *argv[8]) w = getint(argv[8], 0, 100);
-    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    if (argc == 13 && *argv[12]) f = getint(argv[12], -1, WHITE);
-    if (width != 0 && height != 0) {
-        DrawBox(x1, y1, x1 + width + wmod, y1 + height + hmod, w, c, f);
-    }
-}
 static void host_cmd_single_path(void (*fn)(const char *), const char *msg) {
     char *path = (char *)getFstring(cmdline);
     if (!path || !*path) error((char *)msg);
@@ -856,20 +830,6 @@ static int host_parse_pin_arg(unsigned char *arg) {
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
 void cmd_chdir(void) { host_cmd_single_path(vm_sys_file_chdir, "File name"); }
-void cmd_circle(void) {
-    int x, y, r, w = 1, c = gui_fcolour, f = -1;
-    MMFLOAT a = 1.0;
-    getargs(&cmdline, 13, (unsigned char *)",");
-    if (!(argc & 1) || argc < 5) error("Argument count");
-    x = getinteger(argv[0]);
-    y = getinteger(argv[2]);
-    r = getinteger(argv[4]);
-    if (argc > 5 && *argv[6]) w = getint(argv[6], 0, 100);
-    if (argc > 7 && *argv[8]) a = getnumber(argv[8]);
-    if (argc > 9 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    if (argc > 11 && *argv[12]) f = getint(argv[12], -1, WHITE);
-    DrawCircle(x, y, r, w, c, f, a);
-}
 void cmd_Classic(void) {}
 void cmd_close(void) {
     int i, fnbr;
@@ -883,14 +843,6 @@ void cmd_close(void) {
         FileClose(fnbr);
     }
 }
-void cmd_cls(void) {
-    int colour = gui_bcolour;
-    if (cmdline && *cmdline) colour = getint(cmdline, 0, WHITE);
-    ClearScreen(colour);
-    CurrentX = 0;
-    CurrentY = 0;
-}
-void cmd_colour(void) {}
 void cmd_configure(void) {}
 void cmd_copy(void) {
     char split[2];
@@ -1046,16 +998,6 @@ void cmd_files(void) {
 }
 void cmd_flash(void) {}
 void cmd_flush(void) {}
-void cmd_font(void) {
-    getargs(&cmdline, 3, (unsigned char *)",");
-    if (argc < 1) error("Argument count");
-    if (*argv[0] == '#') ++argv[0];
-    if (argc == 3)
-        SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | getint(argv[2], 1, 15));
-    else
-        SetFont(((getint(argv[0], 1, FONT_TABLE_SIZE) - 1) << 4) | 1);
-    PromptFont = gui_font;
-}
 void cmd_framebuffer(void) {
     unsigned char *p = NULL;
 
@@ -1185,7 +1127,6 @@ void cmd_framebuffer(void) {
 
     error("Syntax");
 }
-void cmd_guiMX170(void) {}
 void cmd_i2c(void) {}
 void cmd_i2c2(void) {}
 void cmd_in(void) {}
@@ -1202,21 +1143,6 @@ void cmd_kill(void) { host_cmd_single_path(vm_sys_file_kill, "File name"); }
 void cmd_label(void) {}
 void cmd_lcd(void) {}
 void cmd_library(void) {}
-void cmd_line(void) {
-    int x1, y1, x2, y2, w = 1, c = gui_fcolour;
-    getargs(&cmdline, 11, (unsigned char *)",");
-    if (!(argc & 1) || argc < 7) error("Argument count");
-    x1 = getinteger(argv[0]);
-    y1 = getinteger(argv[2]);
-    x2 = getinteger(argv[4]);
-    y2 = getinteger(argv[6]);
-    if (argc > 7 && *argv[8]) {
-        w = getint(argv[8], -100, 100);
-        if (!w) return;
-    }
-    if (argc == 11 && *argv[10]) c = getint(argv[10], 0, WHITE);
-    DrawLine(x1, y1, x2, y2, w, c);
-}
 /* Defined in host_main.c — reused here so cmd_load doesn't reimplement
  * the host tokeniser path. */
 extern char *read_basic_source_file(const char *filename);
@@ -1404,44 +1330,6 @@ static void host_pixel_fail_range(void *ctx, const char *label, int value, int m
     error("% is invalid (valid is % to %)", value, min, max);
 }
 
-void cmd_pixel(void) {
-    GfxPixelArg args[GFX_PIXEL_ARG_COUNT] = {0};
-    HostBoxArgCtx arg_ctx[GFX_PIXEL_ARG_COUNT] = {0};
-    GfxPixelErrorSink errors;
-    int n = 0;
-
-    getargs(&cmdline, 5, (unsigned char *)",");
-    if (!(argc == 3 || argc == 5)) error("Argument count");
-    errors.ctx = NULL;
-    errors.fail_msg = host_pixel_fail_msg;
-    errors.fail_range = host_pixel_fail_range;
-
-    arg_ctx[0].expr = argv[0];
-    host_getargaddress(argv[0], &arg_ctx[0].ip, &arg_ctx[0].fp, &n);
-    args[0].present = 1;
-    args[0].count = n;
-    args[0].ctx = &arg_ctx[0];
-    args[0].get_int = host_box_arg_get_int;
-
-    arg_ctx[1].expr = argv[2];
-    if (n != 1) host_getargaddress(argv[2], &arg_ctx[1].ip, &arg_ctx[1].fp, &n);
-    else n = 1;
-    args[1].present = 1;
-    args[1].count = n;
-    args[1].ctx = &arg_ctx[1];
-    args[1].get_int = host_box_arg_get_int;
-
-    if (argc == 5 && *argv[4]) {
-        arg_ctx[2].expr = argv[4];
-        host_getargaddress(argv[4], &arg_ctx[2].ip, &arg_ctx[2].fp, &args[2].count);
-        args[2].present = 1;
-        args[2].ctx = &arg_ctx[2];
-        args[2].get_int = host_box_arg_get_int;
-    }
-
-    gfx_pixel_execute((n == 1) ? GFX_PIXEL_MODE_SCALAR : GFX_PIXEL_MODE_VECTOR,
-                      args, (argc + 1) / 2, &errors);
-}
 /*
  * Minimal PLAY implementation for the host simulator. Parses the same
  * subcommands as Audio.c cmd_play(), validates arguments device-style,
@@ -1668,136 +1556,6 @@ static void host_draw_polygon_points(const int *x_values, const int *y_values,
     free(poly_y);
 }
 
-void cmd_polygon(void) {
-    long long int *polycount = NULL, *xptr = NULL, *yptr = NULL, *cptr = NULL, *fptr = NULL;
-    MMFLOAT *polycountf = NULL, *xfptr = NULL, *yfptr = NULL, *cfptr = NULL, *ffptr = NULL;
-    int n = 0, nx = 0, ny = 0, nc = 0, nf = 0;
-    int c = gui_fcolour, f = -1;
-
-    getargs(&cmdline, 9, (unsigned char *)",");
-    host_getargaddress(argv[0], &polycount, &polycountf, &n);
-
-    if (n == 1) {
-        int xcount = getinteger(argv[0]);
-        int xtot = xcount;
-        int *x_values;
-        int *y_values;
-        int i;
-
-        if ((xcount < 3 || xcount > 9999) && xcount != 0) error("Invalid number of vertices");
-        host_getargaddress(argv[2], &xptr, &xfptr, &nx);
-        if (xcount == 0) xcount = xtot = nx;
-        if (nx < xtot) error("X Dimensions %", nx);
-        host_getargaddress(argv[4], &yptr, &yfptr, &ny);
-        if (ny < xtot) error("Y Dimensions %", ny);
-        if (argc > 5 && *argv[6]) c = getint(argv[6], 0, WHITE);
-        if (argc > 7 && *argv[8]) f = getint(argv[8], 0, WHITE);
-
-        x_values = (int *)malloc((size_t)xcount * sizeof(int));
-        y_values = (int *)malloc((size_t)xcount * sizeof(int));
-        if (!x_values || !y_values) {
-            if (x_values) free(x_values);
-            if (y_values) free(y_values);
-            error("Not enough memory");
-        }
-        for (i = 0; i < xcount; i++) {
-            x_values[i] = (xfptr == NULL ? (int)xptr[i] : (int)xfptr[i]);
-            y_values[i] = (yfptr == NULL ? (int)yptr[i] : (int)yfptr[i]);
-        }
-        host_draw_polygon_points(x_values, y_values, xcount, c, f, 1);
-        free(x_values);
-        free(y_values);
-        if (Option.Refresh) Display_Refresh();
-        return;
-    }
-
-    {
-        int *cc = (int *)malloc((size_t)n * sizeof(int));
-        int *ff = (int *)malloc((size_t)n * sizeof(int));
-        int xtot = 0;
-        int xmax = 0;
-        int xstart = 0;
-        int i, actual_n = 0;
-
-        if (!cc || !ff) {
-            if (cc) free(cc);
-            if (ff) free(ff);
-            error("Not enough memory");
-        }
-
-        for (i = 0; i < n; i++) {
-            int count = (polycountf == NULL ? (int)polycount[i] : (int)polycountf[i]);
-            if (count > xmax) xmax = count;
-            if (!count) break;
-            xtot += count;
-            if (count < 3 || count > 9999) error("Invalid number of vertices, polygon %", i);
-            actual_n++;
-        }
-        n = actual_n;
-        host_getargaddress(argv[2], &xptr, &xfptr, &nx);
-        if (nx < xtot) error("X Dimensions %", nx);
-        host_getargaddress(argv[4], &yptr, &yfptr, &ny);
-        if (ny < xtot) error("Y Dimensions %", ny);
-
-        if (argc > 5 && *argv[6]) {
-            host_getargaddress(argv[6], &cptr, &cfptr, &nc);
-            if (nc == 1) {
-                c = getint(argv[6], 0, WHITE);
-                for (i = 0; i < n; i++) cc[i] = c;
-            } else {
-                if (nc < n) error("Foreground colour Dimensions");
-                for (i = 0; i < n; i++) {
-                    cc[i] = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
-                    if (cc[i] < 0 || cc[i] > WHITE) error("% is invalid (valid is % to %)", cc[i], 0, WHITE);
-                }
-            }
-        } else {
-            for (i = 0; i < n; i++) cc[i] = gui_fcolour;
-        }
-
-        if (argc > 7 && *argv[8]) {
-            host_getargaddress(argv[8], &fptr, &ffptr, &nf);
-            if (nf == 1) {
-                f = getint(argv[8], 0, WHITE);
-                for (i = 0; i < n; i++) ff[i] = f;
-            } else {
-                if (nf < n) error("Background colour Dimensions");
-                for (i = 0; i < n; i++) {
-                    ff[i] = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
-                    if (ff[i] < 0 || ff[i] > WHITE) error("% is invalid (valid is % to %)", ff[i], 0, WHITE);
-                }
-            }
-        }
-
-        for (i = 0; i < n; i++) {
-            int xcount = (polycountf == NULL ? (int)polycount[i] : (int)polycountf[i]);
-            int fill_colour = (argc > 7 && *argv[8]) ? ff[i] : -1;
-            int *x_values = (int *)malloc((size_t)xcount * sizeof(int));
-            int *y_values = (int *)malloc((size_t)xcount * sizeof(int));
-            int j;
-
-            if (!x_values || !y_values) {
-                if (x_values) free(x_values);
-                if (y_values) free(y_values);
-                free(cc);
-                free(ff);
-                error("Not enough memory");
-            }
-            for (j = 0; j < xcount; j++) {
-                x_values[j] = (xfptr == NULL ? (int)xptr[xstart + j] : (int)xfptr[xstart + j]);
-                y_values[j] = (yfptr == NULL ? (int)yptr[xstart + j] : (int)yfptr[xstart + j]);
-            }
-            host_draw_polygon_points(x_values, y_values, xcount, cc[i], fill_colour, 1);
-            free(x_values);
-            free(y_values);
-            xstart += xcount;
-        }
-
-        free(cc);
-        free(ff);
-    }
-    if (Option.Refresh) Display_Refresh();
-}
 void cmd_port(void) {}
 void cmd_program(void) {}
 void cmd_pull(void) {}
@@ -1854,8 +1612,6 @@ void cmd_pwm(void) {
         vm_sys_pwm_configure(slice, frequency, has_duty1, duty1, has_duty2, duty2, phase, defer);
     }
 }
-void cmd_rbox(void) {}
-void cmd_refresh(void) {}
 void cmd_rmdir(void) { host_cmd_single_path(vm_sys_file_rmdir, "File name"); }
 void cmd_rtc(void) {}
 /* SAVE "file.bas" — writes the current program (as source text) to the
@@ -2014,140 +1770,14 @@ void cmd_sideset(void) {}
 void cmd_sort(void) {}
 void cmd_spi(void) {}
 void cmd_spi2(void) {}
-void cmd_sprite(void) {}
 void cmd_sync(void) {}
-int GetJustification(char *p, int *jh, int *jv, int *jo) {
-    switch (toupper((unsigned char)*p++)) {
-        case 'L': *jh = JUSTIFY_LEFT; break;
-        case 'C': *jh = JUSTIFY_CENTER; break;
-        case 'R': *jh = JUSTIFY_RIGHT; break;
-        case 0: return true;
-        default: p--;
-    }
-    skipspace(p);
-    switch (toupper((unsigned char)*p++)) {
-        case 'T': *jv = JUSTIFY_TOP; break;
-        case 'M': *jv = JUSTIFY_MIDDLE; break;
-        case 'B': *jv = JUSTIFY_BOTTOM; break;
-        case 0: return true;
-        default: p--;
-    }
-    skipspace(p);
-    switch (toupper((unsigned char)*p++)) {
-        case 'N': *jo = ORIENT_NORMAL; break;
-        case 0: return true;
-        default: return false;
-    }
-    return *p == 0;
-}
 
-void cmd_text(void) {
-    int x, y, font, scale, fc, bc;
-    char *s;
-    int jh = JUSTIFY_LEFT, jv = JUSTIFY_TOP, jo = ORIENT_NORMAL;
-
-    getargs(&cmdline, 17, (unsigned char *)",");
-    if (!(argc & 1) || argc < 5) error("Argument count");
-    x = getinteger(argv[0]);
-    y = getinteger(argv[2]);
-    s = (char *)getCstring(argv[4]);
-
-    if (argc > 5 && *argv[6]) {
-        if (!GetJustification((char *)argv[6], &jh, &jv, &jo)) {
-            if (!GetJustification((char *)getCstring(argv[6]), &jh, &jv, &jo)) {
-                error("Justification");
-            }
-        }
-    }
-
-    font = (gui_font >> 4) + 1;
-    scale = gui_font & 0x0F;
-    if (scale == 0) scale = 1;
-    fc = gui_fcolour;
-    bc = gui_bcolour;
-    if (argc > 7 && *argv[8]) font = getint(argv[8], 1, FONT_TABLE_SIZE);
-    if (argc > 9 && *argv[10]) scale = getint(argv[10], 1, 15);
-    if (argc > 11 && *argv[12]) fc = getint(argv[12], 0, WHITE);
-    if (argc == 15 && *argv[14]) bc = getint(argv[14], -1, WHITE);
-    (void)font;
-    (void)jo;
-    GUIPrintString(x, y, scale, jh, jv, jo, fc, bc, s);
-}
 void cmd_time(void) {}
 void cmd_timer(void) {
     uint64_t mytime = host_time_us_64();
     while (*cmdline && tokenfunction(*cmdline) != op_equal) cmdline++;
     if (!*cmdline) error("Syntax");
     timeroffset = mytime - (uint64_t)getint(++cmdline, 0, (int)(mytime / 1000ULL)) * 1000ULL;
-}
-void cmd_triangle(void) {
-    int x1, y1, x2, y2, x3, y3, c = gui_fcolour, f = -1, n = 0, i, nc = 0, nf = 0;
-    long long int *x1ptr = NULL, *y1ptr = NULL, *x2ptr = NULL, *y2ptr = NULL, *x3ptr = NULL, *y3ptr = NULL;
-    long long int *cptr = NULL, *fptr = NULL;
-    MMFLOAT *x1fptr = NULL, *y1fptr = NULL, *x2fptr = NULL, *y2fptr = NULL, *x3fptr = NULL, *y3fptr = NULL;
-    MMFLOAT *cfptr = NULL, *ffptr = NULL;
-
-    getargs(&cmdline, 15, (unsigned char *)",");
-    if (!(argc & 1) || argc < 11) error("Argument count");
-
-    host_getargaddress(argv[0], &x1ptr, &x1fptr, &n);
-    if (n != 1) {
-        int cn = n;
-        host_getargaddress(argv[2], &y1ptr, &y1fptr, &n); if (n < cn) cn = n;
-        host_getargaddress(argv[4], &x2ptr, &x2fptr, &n); if (n < cn) cn = n;
-        host_getargaddress(argv[6], &y2ptr, &y2fptr, &n); if (n < cn) cn = n;
-        host_getargaddress(argv[8], &x3ptr, &x3fptr, &n); if (n < cn) cn = n;
-        host_getargaddress(argv[10], &y3ptr, &y3fptr, &n); if (n < cn) cn = n;
-        n = cn;
-    }
-
-    if (n == 1) {
-        x1 = getinteger(argv[0]);
-        y1 = getinteger(argv[2]);
-        x2 = getinteger(argv[4]);
-        y2 = getinteger(argv[6]);
-        x3 = getinteger(argv[8]);
-        y3 = getinteger(argv[10]);
-        if (argc >= 13 && *argv[12]) c = getint(argv[12], BLACK, WHITE);
-        if (argc == 15) f = getint(argv[14], -1, WHITE);
-        DrawTriangle(x1, y1, x2, y2, x3, y3, c, f);
-    } else {
-        if (argc >= 13 && *argv[12]) {
-            host_getargaddress(argv[12], &cptr, &cfptr, &nc);
-            if (nc == 1) c = getint(argv[12], 0, WHITE);
-            else if (nc > 1) {
-                if (nc < n) n = nc;
-                for (i = 0; i < nc; i++) {
-                    c = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
-                    if (c < 0 || c > WHITE) error("% is invalid (valid is % to %)", c, 0, WHITE);
-                }
-            }
-        }
-        if (argc == 15) {
-            host_getargaddress(argv[14], &fptr, &ffptr, &nf);
-            if (nf == 1) f = getint(argv[14], -1, WHITE);
-            else if (nf > 1) {
-                if (nf < n) n = nf;
-                for (i = 0; i < nf; i++) {
-                    f = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
-                    if (f < -1 || f > WHITE) error("% is invalid (valid is % to %)", f, -1, WHITE);
-                }
-            }
-        }
-        for (i = 0; i < n; i++) {
-            x1 = (x1fptr == NULL ? (int)x1ptr[i] : (int)x1fptr[i]);
-            y1 = (y1fptr == NULL ? (int)y1ptr[i] : (int)y1fptr[i]);
-            x2 = (x2fptr == NULL ? (int)x2ptr[i] : (int)x2fptr[i]);
-            y2 = (y2fptr == NULL ? (int)y2ptr[i] : (int)y2fptr[i]);
-            x3 = (x3fptr == NULL ? (int)x3ptr[i] : (int)x3fptr[i]);
-            y3 = (y3fptr == NULL ? (int)y3ptr[i] : (int)y3fptr[i]);
-            if (x1 == -1 && y1 == -1 && x2 == -1 && y2 == -1 && x3 == -1 && y3 == -1) return;
-            if (nc > 1) c = (cfptr == NULL ? (int)cptr[i] : (int)cfptr[i]);
-            if (nf > 1) f = (ffptr == NULL ? (int)fptr[i] : (int)ffptr[i]);
-            DrawTriangle(x1, y1, x2, y2, x3, y3, c, f);
-        }
-    }
-    if (Option.Refresh) Display_Refresh();
 }
 void cmd_update(void) {}
 void cmd_var(void) {}
@@ -2162,7 +1792,6 @@ void cmd_xmodem(void) {}
  *  Stub Functions -- fun_* (hardware functions): void fun_xxx(void) {}
  * ========================================================================= */
 
-void fun_at(void) {}
 void fun_cwd(void) {}
 void fun_date(void) {
     sret = GetTempMemory(STRINGSIZE);
@@ -2228,48 +1857,10 @@ void fun_pin(void) {
     targ = T_INT;
 }
 void fun_pio(void) {}
-void fun_pixel(void) {}
 void fun_port(void) {}
 void fun_pulsin(void) {}
-void fun_rgb(void) {
-    getargs(&ep, 5, (unsigned char *)",");
-    if (argc == 5) {
-        iret = rgb(getint(argv[0], 0, 255), getint(argv[2], 0, 255), getint(argv[4], 0, 255));
-    } else if (argc == 1) {
-        if(checkstring(argv[0], (unsigned char *)"WHITE"))        iret = WHITE;
-        else if(checkstring(argv[0], (unsigned char *)"YELLOW"))  iret = YELLOW;
-        else if(checkstring(argv[0], (unsigned char *)"LILAC"))   iret = LILAC;
-        else if(checkstring(argv[0], (unsigned char *)"BROWN"))   iret = BROWN;
-        else if(checkstring(argv[0], (unsigned char *)"FUCHSIA")) iret = FUCHSIA;
-        else if(checkstring(argv[0], (unsigned char *)"RUST"))    iret = RUST;
-        else if(checkstring(argv[0], (unsigned char *)"MAGENTA")) iret = MAGENTA;
-        else if(checkstring(argv[0], (unsigned char *)"RED"))     iret = RED;
-        else if(checkstring(argv[0], (unsigned char *)"CYAN"))    iret = CYAN;
-        else if(checkstring(argv[0], (unsigned char *)"GREEN"))   iret = GREEN;
-        else if(checkstring(argv[0], (unsigned char *)"CERULEAN"))iret = CERULEAN;
-        else if(checkstring(argv[0], (unsigned char *)"MIDGREEN"))iret = MIDGREEN;
-        else if(checkstring(argv[0], (unsigned char *)"COBALT"))  iret = COBALT;
-        else if(checkstring(argv[0], (unsigned char *)"MYRTLE"))  iret = MYRTLE;
-        else if(checkstring(argv[0], (unsigned char *)"BLUE"))    iret = BLUE;
-        else if(checkstring(argv[0], (unsigned char *)"BLACK"))   iret = BLACK;
-        else if(checkstring(argv[0], (unsigned char *)"GRAY"))    iret = GRAY;
-        else if(checkstring(argv[0], (unsigned char *)"GREY"))    iret = GRAY;
-        else if(checkstring(argv[0], (unsigned char *)"LIGHTGRAY")) iret = LITEGRAY;
-        else if(checkstring(argv[0], (unsigned char *)"LIGHTGREY")) iret = LITEGRAY;
-        else if(checkstring(argv[0], (unsigned char *)"ORANGE"))  iret = ORANGE;
-        else if(checkstring(argv[0], (unsigned char *)"PINK"))    iret = PINK;
-        else if(checkstring(argv[0], (unsigned char *)"GOLD"))    iret = GOLD;
-        else if(checkstring(argv[0], (unsigned char *)"SALMON"))  iret = SALMON;
-        else if(checkstring(argv[0], (unsigned char *)"BEIGE"))   iret = BEIGE;
-        else error("Invalid colour: $", argv[0]);
-    } else {
-        error("Syntax");
-    }
-    targ = T_INT;
-}
 void fun_spi(void) {}
 void fun_spi2(void) {}
-void fun_sprite(void) {}
 void fun_time(void) {
     sret = GetTempMemory(STRINGSIZE);
     const char *mock = getenv("MMBASIC_HOST_TIME");
@@ -2299,7 +1890,6 @@ void fun_touch(void) {}
 void CheckAbort(void) { host_runtime_check_timeout(); }
 int check_interrupt(void) { return 0; }
 void ClearExternalIO(void) {}
-void ClearScreen(int c) { host_framebuffer_clear_target(c); }
 void CloseAllFiles(void) {}
 void CloseAudio(int all) { (void)all; }
 void closeframebuffer(char layer) { host_framebuffer_close(layer); }
@@ -2309,7 +1899,6 @@ void clear320(void) {}
  * function pointers set up in host_runtime_begin. */
 void enable_interrupts_pico(void) {}
 void disable_interrupts_pico(void) {}
-void initFonts(void) { FontTable[0] = (unsigned char *)font1; }
 void initMouse0(int sensitivity) { (void)sensitivity; }
 void restorepanel(void) { WriteBuf = NULL; }
 void routinechecks(void) { host_runtime_check_timeout(); }
@@ -2784,100 +2373,15 @@ int lfs_remove(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
 int lfs_stat(lfs_t *l, const char *path, struct lfs_info *info) { (void)l; (void)path; (void)info; return -1; }
 
 /* Drawing stubs */
-void SetFont(int f) {
-    int scale = f & 0x0F;
-    if (scale == 0) scale = 1;
-    gui_font = f;
-    unsigned char *font = FontTable[f >> 4];
-    gui_font_width = (short)((font ? font[0] : host_font_metrics[0]) * scale);
-    gui_font_height = (short)((font ? font[1] : host_font_metrics[1]) * scale);
-    FontTable[0] = (unsigned char *)font1;
-}
 void UnloadFont(int f) { (void)f; }
-void ResetDisplay(void) {}
-int GetFontWidth(int fnt) {
-    int scale = fnt & 0x0F;
-    if (scale == 0) scale = 1;
-    unsigned char *font = FontTable[fnt >> 4];
-    return (font ? font[0] : host_font_metrics[0]) * scale;
-}
-int GetFontHeight(int fnt) {
-    int scale = fnt & 0x0F;
-    if (scale == 0) scale = 1;
-    unsigned char *font = FontTable[fnt >> 4];
-    return (font ? font[1] : host_font_metrics[1]) * scale;
-}
-void DrawLine(int x1, int y1, int x2, int y2, int w, int c) { host_draw_line_pixels(x1, y1, x2, y2, w, c); }
-void DrawBox(int x1, int y1, int x2, int y2, int w, int c, int fill) {
-    if (fill >= 0) host_fill_rect_pixels(x1, y1, x2, y2, fill);
-    if (w > 0) {
-        for (int i = 0; i < w; ++i) {
-            host_draw_line_pixels(x1 + i, y1 + i, x2 - i, y1 + i, 1, c);
-            host_draw_line_pixels(x1 + i, y2 - i, x2 - i, y2 - i, 1, c);
-            host_draw_line_pixels(x1 + i, y1 + i, x1 + i, y2 - i, 1, c);
-            host_draw_line_pixels(x2 - i, y1 + i, x2 - i, y2 - i, 1, c);
-        }
-    }
-}
-void DrawRBox(int x1, int y1, int x2, int y2, int radius, int c, int fill) { (void)x1; (void)y1; (void)x2; (void)y2; (void)radius; (void)c; (void)fill; }
-void DrawCircle(int x, int y, int radius, int w, int c, int fill, MMFLOAT aspect) {
-    if (radius <= 0) return;
-    if (w < 0) w = -w;
-    if (aspect <= 0) aspect = 1.0;
-
-    int ry = (int)ceil(radius * aspect);
-    MMFLOAT outer = (MMFLOAT)radius + (w > 0 ? (MMFLOAT)w / 2.0 : 0.5);
-    MMFLOAT inner = (MMFLOAT)radius - (w > 0 ? (MMFLOAT)w / 2.0 : 0.5);
-    MMFLOAT outer2 = outer * outer;
-    MMFLOAT inner2 = inner * inner;
-    MMFLOAT fill2 = (MMFLOAT)radius * (MMFLOAT)radius;
-
-    for (int py = y - ry - w - 1; py <= y + ry + w + 1; ++py) {
-        MMFLOAT dy = ((MMFLOAT)py - (MMFLOAT)y) / aspect;
-        for (int px = x - radius - w - 1; px <= x + radius + w + 1; ++px) {
-            MMFLOAT dx = (MMFLOAT)px - (MMFLOAT)x;
-            MMFLOAT dist2 = dx * dx + dy * dy;
-            if (fill >= 0 && dist2 <= fill2) host_fb_put_pixel(px, py, fill);
-            if (w > 0 && dist2 <= outer2 && dist2 >= inner2) host_fb_put_pixel(px, py, c);
-        }
-    }
-}
-void DrawTriangle(int x0, int y0, int x1, int y1, int x2, int y2, int c, int fill) {
-    host_draw_triangle_pixels(x0, y0, x1, y1, x2, y2, c, fill);
-}
-void GUIPrintString(int x, int y, int fnt, int jh, int jv, int jo, int fc, int bc, char *str) {
-    host_draw_text(x, y, fnt, jh, jv, jo, fc, bc, str);
-}
 /* ShowCursor is now the real one from gfx_console_shared.c. It reads
  * CursorTimer (ticked below in host_sync_msec_timer_value) and draws the
  * blinking underline via DrawLine. */
-int getColour(char *c, int minus) { (void)c; (void)minus; return 0; }
 void setmode(int mode, bool clear) { (void)mode; (void)clear; }
-int rgb(int r, int g, int b) { return ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF); }
-void DrawPixel16(int x, int y, int c) { host_fb_put_pixel(x, y, c); }
-void DrawRectangle16(int x1, int y1, int x2, int y2, int c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void DrawBitmap16(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char *bitmap) { (void)x1; (void)y1; (void)width; (void)height; (void)scale; (void)fc; (void)bc; (void)bitmap; }
-void ScrollLCD16(int lines) { (void)lines; }
-void DrawBuffer16(int x1, int y1, int x2, int y2, unsigned char *p) { (void)x1; (void)y1; (void)x2; (void)y2; (void)p; }
-void DrawBuffer16Fast(int x1, int y1, int x2, int y2, int blank, unsigned char *p) { (void)x1; (void)y1; (void)x2; (void)y2; (void)blank; (void)p; }
-void ReadBuffer16(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void ReadBuffer16Fast(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void DrawPixelNormal(int x, int y, int c) { host_fb_put_pixel(x, y, c); }
-void ReadBuffer2(int x1, int y1, int x2, int y2, unsigned char *c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
 void copyframetoscreen(uint8_t *s, int xstart, int xend, int ystart, int yend, int odd) { (void)s; (void)xstart; (void)xend; (void)ystart; (void)yend; (void)odd; }
 void copybuffertoscreen(unsigned char *s, int lx, int ly, int hx, int hy) { (void)s; (void)lx; (void)ly; (void)hx; (void)hy; }
-void closeall3d(void) {}
-void closeallsprites(void) {}
-void InitDisplayVirtual(void) {}
-void ConfigDisplayVirtual(unsigned char *p) { (void)p; }
 void merge(uint8_t colour) { (void)colour; }
 void blitmerge(int x0, int y0, int w, int h, uint8_t colour) { (void)x0; (void)y0; (void)w; (void)h; (void)colour; }
-uint8_t RGB121(uint32_t c) { (void)c; return 0; }
-uint8_t RGB332(uint32_t c) { (void)c; return 0; }
-uint16_t RGB555(uint32_t c) { (void)c; return 0; }
-uint16_t RGB121pack(uint32_t c) { (void)c; return 0; }
-void DrawRectangleUser(int x1, int y1, int x2, int y2, int c) { (void)x1; (void)y1; (void)x2; (void)y2; (void)c; }
-void DrawBitmapUser(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char *bitmap) { (void)x1; (void)y1; (void)width; (void)height; (void)scale; (void)fc; (void)bc; (void)bitmap; }
 
 /* SPI stubs */
 void spi_write_command(unsigned char data) { (void)data; }
@@ -3004,3 +2508,24 @@ void Display_Refresh(void) {}
 
 /* cmd_guiBasic from Draw.h */
 void cmd_guiBasic(void) {}
+
+/* Draw.c references these BMP-decoder symbols (BmpDecoder.c is not in
+ * the host build) and the display_details[] table (SPI-LCD.c not in
+ * host build). On host DISPLAY_TYPE is always 0 so display_details is
+ * never indexed in practice; BMP loading falls through to an error. */
+#include "SPI-LCD.h"
+const struct Displays display_details[1] = {{ .ref = 0, .name = {0}, .speed = 0,
+    .horizontal = 0, .vertical = 0, .bits = 0, .buffered = 0,
+    .CPOL = 0, .CPHASE = 0 }};
+
+unsigned char BDEC_bReadHeader(void *pBmpDec, int fnbr) {
+    (void)pBmpDec; (void)fnbr;
+    error("BMP not supported on host");
+    return 1;
+}
+
+unsigned char BMP_bDecode_memory(int x, int y, int xlen, int ylen, int fnbr, char *p) {
+    (void)x; (void)y; (void)xlen; (void)ylen; (void)fnbr; (void)p;
+    error("BMP not supported on host");
+    return 1;
+}
