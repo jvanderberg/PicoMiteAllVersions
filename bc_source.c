@@ -4841,44 +4841,10 @@ static void source_compile_framebuffer(BCSourceFrontend *fe, BCCompiler *cs, con
     *pp = p;
 }
 
-static void source_compile_play(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
-    const char *p = *pp;
-    source_skip_space(&p);
-
-    if (source_keyword(&p, "STOP")) {
-        source_emit_syscall_noaux(cs, BC_SYS_PLAY_STOP, 0);
-        *pp = p;
-        return;
-    }
-
-    if (source_keyword(&p, "TONE")) {
-        uint8_t argc = 2;
-        uint8_t type;
-
-        type = source_parse_expression(fe, cs, &p);
-        source_emit_float_conversion(cs, type);
-        if (!source_expect_char(cs, &p, ',', "Expected comma in PLAY TONE"))
-            return;
-
-        type = source_parse_expression(fe, cs, &p);
-        source_emit_float_conversion(cs, type);
-
-        source_skip_space(&p);
-        if (*p == ',') {
-            p++;
-            type = source_parse_expression(fe, cs, &p);
-            source_emit_int_conversion(cs, type);
-            argc = 3;
-        }
-
-        source_emit_syscall_noaux(cs, BC_SYS_PLAY_TONE, argc);
-        *pp = p;
-        return;
-    }
-
-    bc_set_error(cs, "Unsupported PLAY command");
-    *pp = p;
-}
+/* PLAY intentionally has no native compile path. It falls through to
+ * the OP_BRIDGE_CMD fallback at the bottom of source_compile_statement,
+ * so both the interpreter and the VM land in Audio.c's cmd_play — one
+ * subcommand-parsing implementation shared across paths. */
 
 static void source_compile_pwm(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
@@ -5954,12 +5920,6 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         uint8_t type = source_parse_expression(fe, cs, &p);
         source_emit_int_conversion(cs, type);
         bc_emit_byte(cs, OP_PAUSE);
-        source_statement_end(cs, p);
-        return;
-    }
-
-    if (source_keyword(&p, "PLAY")) {
-        source_compile_play(fe, cs, &p);
         source_statement_end(cs, p);
         return;
     }
