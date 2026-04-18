@@ -77,10 +77,26 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
         int vi = slot_to_vartbl[i];
         struct s_vartbl *v = &g_vartbl[vi];
 
+        /* Const-inlined globals (source_compile_const sets slot->is_const
+         * and rolls back the runtime store) never touch vm->globals. Read
+         * the value from the slot metadata instead, or the bridged
+         * interpreter sees zero and bridged PRINT / DIM / expr eval all
+         * break for any program that uses CONST + FRUN. */
+        if (slot->is_const) {
+            if (slot->type == T_INT) {
+                v->val.i = slot->const_ival;
+            } else if (slot->type == T_NBR) {
+                v->val.f = slot->const_fval;
+            }
+            /* String consts go through vm->globals below — they aren't
+             * rolled back because source_compile_const's literal-inline
+             * fast path only covers OP_PUSH_INT / OP_PUSH_FLT. */
+        }
+
         if (slot->type == T_INT) {
-            v->val.i = vm->globals[i].i;
+            if (!slot->is_const) v->val.i = vm->globals[i].i;
         } else if (slot->type == T_NBR) {
-            v->val.f = vm->globals[i].f;
+            if (!slot->is_const) v->val.f = vm->globals[i].f;
         } else if (slot->type == T_STR) {
             if (vm->globals[i].s) {
                 v->val.s = GetTempMemory(STRINGSIZE);

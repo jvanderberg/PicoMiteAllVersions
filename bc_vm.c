@@ -732,6 +732,12 @@ static void bc_vm_execute_syscall(BCVMState *vm, uint16_t sysid, uint8_t argc,
         case BC_SYS_MM_VRES:
             bc_vm_push_int(vm, VRes);
             return;
+        case BC_SYS_MM_FONTWIDTH:
+            bc_vm_push_int(vm, gui_font_width);
+            return;
+        case BC_SYS_MM_FONTHEIGHT:
+            bc_vm_push_int(vm, gui_font_height);
+            return;
         case BC_SYS_DATE_STR: {
             uint8_t *buf = vm_get_str_temp(vm);
             vm_sys_time_date(buf);

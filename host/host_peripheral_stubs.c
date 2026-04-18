@@ -273,16 +273,37 @@ void fun_distance(void) {}
 void fun_ds18b20(void) {}
 void fun_GPS(void) {}
 
+/* Host stub for MM.INFO(...). Handles the subset device programs reach for
+ * on a screen-only build: geometry, current font metrics, and foreground/
+ * background colour. Anything unsupported returns 0 so callers don't crash
+ * — matrix.bas's `Const CHR_W = mm.info(fontwidth)` etc. needed real font
+ * numbers instead of 0 (Const CHR_W = 0 meant every `print @(col_x, y)`
+ * landed at column 0). */
 void fun_info(void) {
+    extern short gui_font_width, gui_font_height;
+    extern int gui_fcolour, gui_bcolour;
     if (checkstring(ep, (unsigned char *)"HRES")) {
-        iret = HRes;
-        targ = T_INT;
-        return;
+        iret = HRes; targ = T_INT; return;
     }
     if (checkstring(ep, (unsigned char *)"VRES")) {
-        iret = VRes;
-        targ = T_INT;
-        return;
+        iret = VRes; targ = T_INT; return;
+    }
+    if (checkstring(ep, (unsigned char *)"FONTWIDTH")) {
+        iret = gui_font_width; targ = T_INT; return;
+    }
+    if (checkstring(ep, (unsigned char *)"FONTHEIGHT")) {
+        iret = gui_font_height; targ = T_INT; return;
+    }
+    if (checkstring(ep, (unsigned char *)"FONT")) {
+        iret = (gui_font >> 4) + 1; targ = T_INT; return;
+    }
+    if (checkstring(ep, (unsigned char *)"FCOLOUR") ||
+        checkstring(ep, (unsigned char *)"FCOLOR")) {
+        iret = gui_fcolour; targ = T_INT; return;
+    }
+    if (checkstring(ep, (unsigned char *)"BCOLOUR") ||
+        checkstring(ep, (unsigned char *)"BCOLOR")) {
+        iret = gui_bcolour; targ = T_INT; return;
     }
     iret = 0;
     targ = T_INT;

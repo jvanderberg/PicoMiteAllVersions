@@ -845,6 +845,10 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             source_emit_syscall_noaux(cs, BC_SYS_MM_HRES, 0);
         } else if (source_keyword(&q, "VRES")) {
             source_emit_syscall_noaux(cs, BC_SYS_MM_VRES, 0);
+        } else if (source_keyword(&q, "FONTWIDTH")) {
+            source_emit_syscall_noaux(cs, BC_SYS_MM_FONTWIDTH, 0);
+        } else if (source_keyword(&q, "FONTHEIGHT")) {
+            source_emit_syscall_noaux(cs, BC_SYS_MM_FONTHEIGHT, 0);
         } else {
             bc_set_error(cs, "Unsupported VM function: MM.INFO");
             *pp = q;
@@ -5840,9 +5844,30 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
     }
 
     if (source_keyword(&p, "PRINT")) {
-        source_compile_print(fe, cs, &p);
-        source_statement_end(cs, p);
-        return;
+        /* Scan for `@` — the fun_at cursor-position form (PRINT @(x,y)
+         * "text"). The VM's expression parser doesn't know it, so bridge
+         * the whole statement to the interpreter. PRINT without `@` stays
+         * on the VM fast path so bridged PRINT doesn't need to resolve
+         * user-defined SUB/FUN names that the VM's compiler knows about
+         * but the interpreter's subfun[] doesn't (FRUN never runs
+         * PrepareProgram on ProgMemory). The string-literal skip keeps
+         * an `@` inside "..." from tripping the check. */
+        int has_at = 0;
+        for (const char *scan = p; *scan && *scan != '\''; scan++) {
+            if (*scan == '"') {
+                scan++;
+                while (*scan && *scan != '"') scan++;
+                if (!*scan) break;
+                continue;
+            }
+            if (*scan == '@') { has_at = 1; break; }
+        }
+        if (!has_at) {
+            source_compile_print(fe, cs, &p);
+            source_statement_end(cs, p);
+            return;
+        }
+        /* fall through to OP_BRIDGE_CMD — PRINT @(x,y) via interpreter */
     }
 
     if (source_keyword(&p, "OPTION")) {
