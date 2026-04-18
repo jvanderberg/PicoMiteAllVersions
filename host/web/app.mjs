@@ -19,6 +19,7 @@ const statusEl = document.getElementById('status');
 const canvas = document.getElementById('screen');
 const uploadInput = document.getElementById('upload');
 const downloadBtn = document.getElementById('download-sd');
+const resetBtn = document.getElementById('reset-sd');
 const resolutionSelect = document.getElementById('resolution');
 const memorySelect = document.getElementById('memory');
 const dropOverlay = document.getElementById('drop-overlay');
@@ -215,6 +216,88 @@ function wireKeyboard(instance) {
 // --- File I/O ------------------------------------------------------------
 
 const SD_ROOT = '/sd';
+const BUNDLE_ROOT = '/bundle';
+const POPULATED_KEY = 'picomite.sd.populated';
+
+// ---- Persistent storage: /sd/ mounted on IndexedDB via IDBFS -----------
+//
+// Files the user SAVE's from BASIC survive page reloads. First load
+// copies the bundled demos from /bundle/ (read-only MEMFS populated by
+// --preload-file) into /sd/ and sets a localStorage flag so we don't
+// repeatedly clobber user edits. Later versions that ship new demos
+// appear only via the "Reset storage" button, which drops the whole
+// IndexedDB store and runs the populate pass again.
+//
+// The flag lives in localStorage (not as a dotfile in /sd/) so the
+// MMBasic FILES command never sees bookkeeping state.
+
+function syncfsPromise(instance, populate) {
+    return new Promise((resolve, reject) => {
+        instance.FS.syncfs(populate, (err) => err ? reject(err) : resolve());
+    });
+}
+
+function populateFromBundle(instance) {
+    let files;
+    try {
+        files = instance.FS.readdir(BUNDLE_ROOT).filter(n => n !== '.' && n !== '..');
+    } catch (_) {
+        return 0;
+    }
+    for (const name of files) {
+        try {
+            const data = instance.FS.readFile(`${BUNDLE_ROOT}/${name}`);
+            instance.FS.writeFile(`${SD_ROOT}/${name}`, data);
+        } catch (e) {
+            console.warn('bundle copy skipped:', name, e);
+        }
+    }
+    return files.length;
+}
+
+async function mountPersistentSd(instance) {
+    try { instance.FS.mkdir(SD_ROOT); } catch (_) { /* already exists */ }
+    instance.FS.mount(instance.FS.filesystems.IDBFS, {}, SD_ROOT);
+    // Pull existing IDB contents into the in-memory view.
+    await syncfsPromise(instance, true);
+    if (localStorage.getItem(POPULATED_KEY) !== '1') {
+        const n = populateFromBundle(instance);
+        await syncfsPromise(instance, false);
+        localStorage.setItem(POPULATED_KEY, '1');
+        console.info('[picomite] populated /sd/ from bundle:', n, 'files');
+    }
+}
+
+async function resetSd(instance) {
+    // Wipe every entry under /sd/, persist the empty state to IDB, then
+    // re-populate from the bundle.
+    try {
+        const names = instance.FS.readdir(SD_ROOT).filter(n => n !== '.' && n !== '..');
+        for (const n of names) {
+            try { instance.FS.unlink(`${SD_ROOT}/${n}`); } catch (_) {}
+        }
+    } catch (e) {
+        console.warn('reset: readdir failed', e);
+    }
+    const n = populateFromBundle(instance);
+    await syncfsPromise(instance, false);
+    localStorage.setItem(POPULATED_KEY, '1');
+    return n;
+}
+
+// Debounced background flush. Any write on the C side (SAVE, KILL,
+// EDIT's F1-save path) lives in the in-memory IDBFS view until
+// syncfs(false) commits it to IndexedDB. Flushing every few seconds
+// plus on tab-hide / beforeunload covers the common cases.
+let flushTimer = 0;
+function scheduleFlush(instance) {
+    if (flushTimer) return;
+    flushTimer = setTimeout(async () => {
+        flushTimer = 0;
+        try { await syncfsPromise(instance, false); }
+        catch (e) { console.warn('syncfs failed:', e); }
+    }, 1500);
+}
 
 function flashHint(msg, durationMs = 2500) {
     hintEl.textContent = msg;
@@ -371,11 +454,30 @@ function triggerDownload(blob, filename) {
 }
 
 function wireFileIO(instance) {
+    // Flush /sd/ to IndexedDB when the tab goes away or every few
+    // seconds after a change. Drag-drop, upload, and reset all trigger
+    // a scheduleFlush directly; regular SAVE from BASIC just leaves the
+    // MEMFS view dirty, so we also flush on visibilitychange /
+    // beforeunload as a belt-and-braces measure.
+    const flushNow = () => syncfsPromise(instance, false).catch((e) => {
+        console.warn('syncfs failed:', e);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushNow();
+    });
+    window.addEventListener('beforeunload', () => { flushNow(); });
+    // Cheap periodic flush covers BASIC-side writes (SAVE, KILL,
+    // EDIT's save-on-F1). 2 s is frequent enough that a quick tab
+    // close rarely loses work, sparse enough that idle pages cost
+    // almost nothing.
+    setInterval(flushNow, 2000);
+
     // Upload button (for mobile / touch where drag-drop is awkward).
     uploadInput.addEventListener('change', async (e) => {
         const files = e.target.files;
         if (!files || !files.length) return;
         await importFiles(instance, files);
+        scheduleFlush(instance);
         uploadInput.value = '';  // allow re-picking the same file
     });
 
@@ -403,7 +505,19 @@ function wireFileIO(instance) {
         if (!e.dataTransfer || !e.dataTransfer.files.length) return;
         e.preventDefault();
         await importFiles(instance, e.dataTransfer.files);
+        scheduleFlush(instance);
         canvas.focus();
+    });
+
+    // Reset /sd/ — wipes IDBFS contents and re-populates from /bundle/.
+    resetBtn.addEventListener('click', async () => {
+        if (!confirm('Wipe all files in /sd/ and restore the bundled demos? Any SAVEd programs you haven\'t downloaded will be lost.')) return;
+        try {
+            const n = await resetSd(instance);
+            flashHint(`Reset /sd/ — ${n} demos restored. Type FILES.`, 3500);
+        } catch (e) {
+            flashHint('Reset failed: ' + (e?.message || e));
+        }
     });
 
     // Download all: pack everything in /sd/ into a ZIP.
@@ -457,6 +571,15 @@ try {
     // host_fb_width/height.
     instance._wasm_set_framebuffer_size(resolution.w, resolution.h);
     instance._wasm_set_heap_size(memoryBytes);
+
+    // Mount /sd/ on IDBFS so files the user SAVEs survive reloads.
+    // Must happen before wasm_boot — host_fs_shims.c reads from /sd/
+    // as soon as InitBasic / the REPL gets going.
+    try {
+        await mountPersistentSd(instance);
+    } catch (e) {
+        console.warn('IDBFS mount failed, falling back to MEMFS:', e);
+    }
 
     fbWidth  = instance._wasm_framebuffer_width();
     fbHeight = instance._wasm_framebuffer_height();
