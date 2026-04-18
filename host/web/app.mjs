@@ -113,6 +113,24 @@ function mapKeyEvent(event) {
 
 let fbPtr = 0, fbWidth = 0, fbHeight = 0, imageData = null;
 
+// Reserve room for header (#status ≈ 40 px) + toolbar (≈ 80 px) + a
+// little padding. Feel free to tune — the canvas is centred either way.
+const VIEWPORT_CHROME_PX = 140;
+
+function fitCanvas() {
+    if (!fbWidth || !fbHeight) return;
+    const maxW = Math.max(160, Math.floor(window.innerWidth  * 0.92));
+    const maxH = Math.max(160, window.innerHeight - VIEWPORT_CHROME_PX);
+    // Always at least 2× (pixel-doubled) for crispness; grow to the
+    // largest integer scale that fits the viewport budget. If even 2×
+    // exceeds the viewport, the canvas overflows and the page scrolls
+    // — pixel doubling wins over fitting.
+    const fit = Math.min(maxW / fbWidth, maxH / fbHeight);
+    const scale = Math.max(2, Math.floor(fit));
+    canvas.style.width  = `${fbWidth  * scale}px`;
+    canvas.style.height = `${fbHeight * scale}px`;
+}
+
 function blitFrame(instance) {
     if (!fbPtr) return;
     const src = instance.HEAPU32.subarray(fbPtr >>> 2, (fbPtr >>> 2) + fbWidth * fbHeight);
@@ -396,6 +414,8 @@ try {
     canvas.width  = fbWidth;
     canvas.height = fbHeight;
     imageData = ctx.createImageData(fbWidth, fbHeight);
+    fitCanvas();
+    window.addEventListener('resize', fitCanvas);
 
     wireKeyboard(instance);
     wireFileIO(instance);

@@ -34,10 +34,10 @@ html, body {
 #status.error { color: #ff6464; }
 
 /* Framebuffer at native resolution; CSS-scaled up with pixel-perfect
- * nearest-neighbour. The min() keeps the canvas square on any viewport. */
+ * nearest-neighbour. app.mjs sets width/height inline to the largest
+ * size that (a) fits the viewport budget and (b) preserves the
+ * framebuffer's aspect ratio so pixels stay square. */
 #screen {
-    width: min(88vw, 88vh - 120px, 640px);
-    height: min(88vw, 88vh - 120px, 640px);
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
