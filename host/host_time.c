@@ -15,6 +15,10 @@
 #include <errno.h>
 #include <time.h>
 
+#ifdef MMBASIC_WASM
+#include <emscripten.h>
+#endif
+
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "host_time.h"
@@ -53,10 +57,21 @@ void host_sleep_us(uint64_t us) {
         return;
     }
 
+#ifdef MMBASIC_WASM
+    /* ASYNCIFY unwinds the C stack to JS, runs the event loop, then
+     * resumes. The granularity floor is the browser event-loop latency
+     * (often 4 ms on throttled tabs), so sub-millisecond PAUSE values
+     * behave like 1 ms — noted in the web-host plan's "timing drift"
+     * risk section. */
+    unsigned ms = (unsigned)((us + 999ULL) / 1000ULL);
+    if (ms == 0) ms = 1;
+    emscripten_sleep(ms);
+#else
     struct timespec req;
     req.tv_sec = (time_t)(us / 1000000ULL);
     req.tv_nsec = (long)((us % 1000000ULL) * 1000ULL);
     while (nanosleep(&req, &req) != 0 && errno == EINTR) {
     }
+#endif
     host_sync_msec_timer();
 }

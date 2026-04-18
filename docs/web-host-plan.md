@@ -128,7 +128,7 @@ Each phase ends with a green native host build, a green device build, a green WA
 
 **Landed:** `host/hello_wasm.c` (trivial `printf` main), `host/Makefile.wasm` (MODULARIZE+ES6, ALLOW_MEMORY_GROWTH, INITIAL_MEMORY=32 MiB, SRCS is just `hello_wasm.c` for now), `host/build_wasm.sh` (sources `~/emsdk/emsdk_env.sh` if emcc isn't already on PATH), `host/web/{index.html,picomite.css,app.mjs,serve.sh,.gitignore}`. Loading the page in headless Chromium renders `Hello from PicoMite WASM` in `#out` with zero console/page errors. Native `./run_tests.sh` stays at 201/201.
 
-### Phase 1 — Canvas + raster REPL
+### Phase 1 — Canvas + raster REPL ✅ (2026-04-18)
 
 **Goal:** The browser canvas shows a `> ` prompt drawn as pixels. Typing `PRINT 2+3` enter prints `5` on the canvas. `LIST`, `NEW`, simple `FOR`/`NEXT` all work. `PAUSE 100` does not freeze the tab. This phase absorbs the old "graphics to canvas" phase — the prompt *is* graphics.
 
@@ -157,6 +157,23 @@ The key insight: MMBasic's `PRINT` path on device already lands on `DrawPixel`/`
 - Rewrite `host/web/index.html`: replace `<pre id="out">` with `<canvas id="screen">` plus a minimal status strip.
 
 **Exit gate:** Browser canvas renders the PicoMite boot banner and `> ` prompt using the device font, as rendered pixels. Typing `PRINT 2+3` ENTER scrolls the console and shows `5` on the next line. `LIST`, `NEW`, a short `FOR I=1 TO 5: PRINT I: NEXT` all produce the expected raster output. `PAUSE 100` → the tab stays responsive throughout. Native `./run_tests.sh` still 201/201. Device build still green (CMakeLists untouched).
+
+**Landed:**
+- `host_wasm_console.c` — input-only key ring (2048 slots) drained by the existing `host_read_byte_*` API; `host_raw_mode_is_active` always returns 1 so MMInkey takes the raw-mode branch unchanged; `host_read_byte_blocking_ms` yields via `emscripten_sleep(1)` which is the ASYNCIFY hook.
+- `host_wasm_main.c` — owns `flash_prog_buf` + `host_output_hook`, plus the four source-loader helpers (`read_basic_source_file` / `load_basic_source` / `host_read_logical_line` / `host_update_continuation_setting`) cloned from `host_main.c` because LOAD/SAVE callers (bc_runtime.c, host_fs_shims.c) reference them at link time. `wasm_boot()` mirrors `host_main.c::run_repl` with the `--sim` branch's display-console setup folded in: `Option.DISPLAY_CONSOLE=1`, `OptionConsole=2` (screen only), `gui_font=0x01`/8x12, green phosphor palette, `Option.Width/Height` derived from `HRes/VRes` after `host_runtime_begin` wires them.
+- `host_wasm_canvas.c` — three JS-facing exports (`wasm_framebuffer_ptr/width/height`). No dirty-rect accumulator yet; full-framebuffer putImageData per rAF is plenty fast for 320×320.
+- `host_time.c` — narrow `#ifdef MMBASIC_WASM` swapping `nanosleep` for `emscripten_sleep` in `host_sleep_us` (the only such gate in a shared HAL file for Phase 1).
+- `MMBasic_REPL.c` — `MMBasic_PrintBanner` gains a `#if defined(MMBASIC_WASM)` banner variant ("MMBasic Web V…"); native host and device branches unchanged.
+- `Makefile.wasm` — full shared/VM/HAL source list, `-sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536`, `-sINITIAL_MEMORY=32MiB`, `-sEXPORTED_FUNCTIONS` for the wasm_* entry points. Passes `-Wl,--allow-multiple-definition` so wasm-ld accepts MMBasic's gcc-style tentative-def merging idiom (Draw.c / FileIO.c declare storage that host_runtime.c also initialises — gcc merges, clang refuses without this flag; `-fcommon` doesn't help because wasm-ld doesn't support common linkage).
+- `host/web/` — rewritten `index.html` (one `<canvas id="screen">`), `picomite.css` (pixelated CSS scale), `app.mjs` (keydown → `wasm_push_key` via `cwrap`; `requestAnimationFrame` loop reads `HEAPU32` and writes `putImageData`; MMBasic key-code mapping table for arrows/F-keys/editing keys). Phase 0 `<pre id="out">` placeholder dropped.
+
+**Verified:** Headless Chromium renders the PicoMite boot banner and `> ` prompt as green-phosphor pixels on the canvas. `PRINT 2+3` → ` 5` rendered correctly. `PAUSE 500 : PRINT "AWOKE"` took ~720 ms round-trip (ASYNCIFY sleeping, not busy-looping). Native `./run_tests.sh` still 201/201 (MMBasic_REPL.c banner change is WASM-only via `#if defined(MMBASIC_WASM)`). Final `picomite.wasm` = 1.1 MB uncompressed, well under the 1.5 MB budget.
+
+**Deferred to Phase 5 (input polish):** Ctrl-C → `wasm_break`; full keymap; focus edge cases. Phase 1 ships a minimal table that covers printable ASCII + arrows + editing keys + F-keys.
+
+**Deferred to Phase 6 (graphics polish):** FASTGFX SWAP dirty-rect handling, `BLIT`, full end-to-end pixel parity with PPM screenshots.
+
+**Known warning:** `wasm-ld: warning: function signature mismatch: CallCFunction` — MMBasic.c declares `uint64_t CallCFunction(...)` and host_runtime.c stubs it as `void CallCFunction(...)`. Pre-existing in the native build (gcc doesn't flag it); CFunctions aren't exercised under host/WASM. Fix belongs in a CFunction-support phase or as follow-up cleanup.
 
 ### Phase 2 — Filesystem (preload bundle + drag-drop import + download export)
 

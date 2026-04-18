@@ -1,38 +1,111 @@
 # WASM/emscripten build for PicoMite host port.
 #
-# Phase 0 scope: a hello-world module linked by emcc, served from host/web/.
-# Phases 1+ extend SRCS to pull in the MMBasic core, VM, and WASM-specific HAL
-# modules (host_wasm_console.c, host_wasm_main.c, ...).
+# Mirrors host/Makefile's shared/VM/HAL source list, swapping three host
+# modules for WASM-specific ones:
+#
+#   host_terminal.c  ->  host_wasm_console.c   (input-only key ring)
+#   host_main.c      ->  host_wasm_main.c      (wasm_boot entry)
+#   (new)                host_wasm_canvas.c    (JS-facing exports)
+#
+# host_sim_server.c / vendor/mongoose.c are NOT linked — JS calls the
+# exported C functions directly via Module.ccall, no HTTP/WS layer.
 
 EMCC ?= emcc
 WEB_DIR := web
 
-# Matches the shared-core host build macros, plus MMBASIC_WASM for the narrow
-# gates where the WASM target must diverge from the native host.
+# Match the native host's device memory simulation target (rp2040 by
+# default). Keeps VM array sizes and bc_alloc heap budgets identical.
+DEVICE_SIM ?= rp2040
+ifeq ($(DEVICE_SIM),rp2040)
+  SIM_FLAGS = -DBC_SIM_RP2040
+else ifeq ($(DEVICE_SIM),rp2350)
+  SIM_FLAGS = -DBC_SIM_RP2350
+else
+  SIM_FLAGS =
+endif
+
 CFLAGS = -O2 -std=gnu11 -funsigned-char \
-         -DPICOMITE -DMMBASIC_HOST -DMMBASIC_WASM \
-         -Wno-unused-variable -Wno-unused-function \
+         -Wall -Wno-unused-variable -Wno-unused-function \
          -Wno-unused-but-set-variable -Wno-misleading-indentation \
          -Wno-missing-braces \
-         -I. -I..
+         -DPICOMITE -DMMBASIC_HOST -DMMBASIC_WASM $(SIM_FLAGS) \
+         -include host_platform.h \
+         -I. -I.. \
+         -MMD -MP
+# MMBasic relies on gcc-style tentative-definition merging (e.g. `int
+# gui_bcolour;` in Draw.c coexisting with `int gui_bcolour = 0;` in
+# host_runtime.c). Under clang/wasm-ld we can't use -fcommon because
+# wasm doesn't support common linkage; we also can't use plain
+# -fno-common because that would promote every tentative def to a
+# strong one, colliding with the initialised versions. -Wl,--allow-
+# multiple-definition asks wasm-ld to take the first symbol it sees and
+# ignore the rest — same effective behaviour as gcc's native merge.
 
-LDFLAGS = -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web \
-          -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8"]' \
-          -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432
+# ASYNCIFY stack: 64 KB is comfortable for the interpreter's deepest
+# recursion (setjmp/longjmp through MMBasic_RunPromptLoop). Bump if we
+# hit "asyncify stack overflow" in the browser console.
+LDFLAGS = -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
+          -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 \
+          -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web \
+          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_malloc","_free"]' \
+          -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","HEAPU8","HEAPU32"]' \
+          -Wl,--allow-multiple-definition
 
-# Phase 0: just prove the toolchain links. Real CORE/VM/HAL sources land in
-# Phase 1 when the REPL goes up.
-SRCS = hello_wasm.c
+VPATH = ..
+
+# Core MMBasic sources — mirror host/Makefile's CORE_SRCS exactly.
+CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c \
+            Memory.c Editor.c \
+            MMBasic_Prompt.c MMBasic_Print.c MMBasic_REPL.c \
+            gfx_box_shared.c gfx_circle_shared.c gfx_line_shared.c \
+            gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c \
+            gfx_console_shared.c \
+            mm_misc_shared.c \
+            Draw.c FileIO.c Audio.c
+
+# Bytecode VM sources — mirror host/Makefile's BC_SRCS exactly.
+BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c \
+          ff.c ffunicode.c ffsystem.c \
+          vm_sys_input.c vm_sys_graphics.c vm_sys_time.c \
+          vm_sys_pin.c vm_sys_file.c \
+          bc_source.c bc_compiler_core.c \
+          bc_vm.c bc_runtime.c bc_debug.c
+
+# Host HAL — the portable subset that works under emcc unchanged, plus
+# the WASM-specific trio that replaces host_terminal.c / host_main.c
+# and adds the JS-facing canvas bridge.
+HOST_PORTABLE_SRCS = host_runtime.c host_fastgfx.c host_fs_shims.c \
+                     host_peripheral_stubs.c host_fs.c host_sim_audio.c \
+                     host_time.c host_fb.c host_keys.c
+HOST_WASM_SRCS = host_wasm_main.c host_wasm_console.c host_wasm_canvas.c
+
+SRCS = $(HOST_PORTABLE_SRCS) $(HOST_WASM_SRCS) $(CORE_SRCS) $(BC_SRCS)
+
+# Objects land in a wasm_obj/ tree so they don't collide with native
+# host/ object files.
+OBJS = $(addprefix wasm_obj/,$(SRCS:.c=.o))
+DEPS = $(OBJS:.o=.d)
 
 TARGET = $(WEB_DIR)/picomite.mjs
 
 all: $(TARGET)
 
-$(TARGET): $(SRCS)
+$(TARGET): $(OBJS)
 	@mkdir -p $(WEB_DIR)
 	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
+wasm_obj/%.o: ../%.c
+	@mkdir -p $(dir $@)
+	$(EMCC) $(CFLAGS) -c -o $@ $<
+
+wasm_obj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(EMCC) $(CFLAGS) -c -o $@ $<
+
 clean:
+	rm -rf wasm_obj
 	rm -f $(WEB_DIR)/picomite.mjs $(WEB_DIR)/picomite.wasm $(WEB_DIR)/picomite.data
+
+-include $(DEPS)
 
 .PHONY: all clean

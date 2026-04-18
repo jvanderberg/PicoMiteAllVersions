@@ -26,7 +26,10 @@ extern int MMPromptPos;
  * host emits a "Host V<VERSION>" line. Copyright trailer is shared
  * (Version.h MMBASIC_COPYRIGHT). */
 void MMBasic_PrintBanner(void) {
-#ifdef MMBASIC_HOST
+#if defined(MMBASIC_WASM)
+    MMPrintString("\rMMBasic Web V" VERSION "\r\n");
+    MMPrintString(MMBASIC_COPYRIGHT);
+#elif defined(MMBASIC_HOST)
     MMPrintString("\rPicoMite MMBasic Host V" VERSION "\r\n");
     MMPrintString(MMBASIC_COPYRIGHT);
     MMPrintString("Host REPL — Ctrl-D to exit.\r\n\r\n");

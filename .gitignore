@@ -8,6 +8,7 @@ host/mmbasic_test
 host/mmbasic_legacy_test
 host/mmbasic_sim
 host/sim_obj/
+host/wasm_obj/
 *.uf2
 .DS_Store
 hardcopy.*
