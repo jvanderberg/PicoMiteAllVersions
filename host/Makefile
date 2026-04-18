@@ -145,6 +145,27 @@ sim_obj/host_keys.o: host_keys.c host_keys.h
 	@mkdir -p $(dir $@)
 	$(CC) $(SIM_CFLAGS) -c -o $@ $<
 
+# ---------------------------------------------------------------------------
+# CRITICAL: every host/ source (HOST_SRCS) must compile with SIM_CFLAGS when
+# it lands in sim_obj/. Without this, the default VPATH-backed pattern rule
+# (`sim_obj/%.o: ../%.c`) won't match files that live in host/ (not ..), and
+# make falls back to `%.o: %.c` which uses plain CFLAGS — silently dropping
+# every `#ifdef MMBASIC_SIM` branch.
+#
+# The bug is invisible until runtime: the sim binary links fine, the server
+# boots, the WebSocket accepts keys, but MMInkey's sim-queue pop and
+# host_fb's emit_rect / emit_blit calls disappear. Symptoms: banner never
+# reaches the canvas, keystrokes from the browser never reach MMBasic.
+#
+# This pattern rule catches *any* file in HOST_SRCS automatically, so new
+# host/ files that don't have an explicit rule above still compile with the
+# right flags. Keep HOST_SRCS as the single source of truth.
+# ---------------------------------------------------------------------------
+HOST_SIM_OBJS = $(HOST_SRCS:%.c=sim_obj/%.o)
+$(HOST_SIM_OBJS): sim_obj/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+
 # Core sources from parent directory
 %.o: ../%.c
 	$(CC) $(CFLAGS) -c -o $@ $<

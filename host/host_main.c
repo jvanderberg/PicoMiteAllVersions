@@ -516,6 +516,16 @@ static int run_repl(void) {
         Option.Height = (char)tty_rows;
     }
 
+    /* host_runtime_begin MUST precede the banner: it wires up
+     * DrawPixel / DrawRectangle / DrawBitmap from their DisplayNotSet
+     * defaults to host_fb_* implementations. MMBasic_PrintBanner emits
+     * glyphs through DrawBitmap; if DrawBitmap is still DisplayNotSet,
+     * the banner silently disappears from the framebuffer (stdout still
+     * gets it via putConsole's UART leg, which is why the terminal looks
+     * fine). This matches the --sim canvas behaviour of the host WASM
+     * build (host_wasm_main.c also begins runtime before banner). */
+    host_runtime_begin();
+
     /* Shared REPL banner (MMBasic_REPL.c). */
     extern void MMBasic_PrintBanner(void);
     MMBasic_PrintBanner();
@@ -526,8 +536,6 @@ static int run_repl(void) {
      * back to cooked line-buffered reads. Do this AFTER the banner —
      * raw mode disables OPOST, so '\n' stops translating to '\r\n'. */
     host_raw_mode_enter();
-
-    host_runtime_begin();
 
     MMBasic_RunPromptLoop();   /* does not return */
 

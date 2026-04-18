@@ -192,3 +192,17 @@ The host Makefile is intentionally small and does not track all header dependenc
 ```bash
 make -B -C host
 ```
+
+## Sim Build Invariant
+
+`mmbasic_sim` needs every `host/*.c` source compiled with `-DMMBASIC_SIM` so the `#ifdef MMBASIC_SIM` branches (MMInkey's sim-key pop, host_fb's WebSocket emit calls, host_sim_server linkage) stay in the binary. The Makefile enforces this via a pattern rule that matches every member of `HOST_SRCS` into `sim_obj/`:
+
+```make
+HOST_SIM_OBJS = $(HOST_SRCS:%.c=sim_obj/%.o)
+$(HOST_SIM_OBJS): sim_obj/%.o: %.c
+	$(CC) $(SIM_CFLAGS) -c -o $@ $<
+```
+
+When you add a new source file, append it to `HOST_SRCS` and the sim build picks up the `-DMMBASIC_SIM` compile automatically. If you add a host file *outside* `HOST_SRCS` (e.g. listed separately in `SIM_EXTRA_SRCS`), you must give it an explicit `sim_obj/xxx.o: xxx.c` rule that uses `$(SIM_CFLAGS)` — otherwise VPATH routes it through the generic `%.o: ../%.c` rule (plain `$(CFLAGS)`) and the `MMBASIC_SIM` branch drops out silently.
+
+**Symptom of a miss:** `mmbasic_sim` links and boots, the WebSocket connects (`connected` status visible), but the browser canvas never shows the banner and typed keys don't reach MMBasic. Confirm by checking whether `sim_obj/host_runtime.o` shows the string `[sim]` (or whatever `#ifdef MMBASIC_SIM` code you added) via `strings`.
