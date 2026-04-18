@@ -29,6 +29,10 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#ifdef MMBASIC_WASM
+#include <emscripten.h>
+#endif
 #include "host_terminal.h"
 #include "host_fs.h"
 #include "host_sim_audio.h"
@@ -442,6 +446,30 @@ void host_sim_apply_slowdown(void) {
     if (host_sim_slowdown_us > 0) host_sleep_us((uint64_t)host_sim_slowdown_us);
 }
 
+#ifdef MMBASIC_WASM
+/* Last wall-clock time we unwound to JS. Reset at runtime begin so the
+ * first statement of a run doesn't eat a full yield period of slack. */
+static uint64_t wasm_last_yield_us = 0;
+
+/* Yield to the browser event loop at most every ~16 ms of wall clock
+ * (~60 Hz). Called on every statement (via CheckAbort → routinechecks
+ * → host_runtime_check_timeout) AND on every INKEY$ poll (via MMInkey's
+ * first line), so busy-wait BASIC — `DO : LOOP UNTIL INKEY$ <> ""` —
+ * and long-running loops both stay responsive. Without this, the
+ * browser never sees a rAF tick or a keydown, and the tab appears to
+ * hang until the program exits.
+ *
+ * emscripten_sleep(0) under ASYNCIFY unwinds the C stack, runs one
+ * event-loop iteration, and resumes. Net overhead is the ASYNCIFY
+ * save/restore plus a single JS microtask — typically <1 ms per yield
+ * at this rate. */
+static void wasm_yield_if_due(uint64_t now_us) {
+    if (now_us - wasm_last_yield_us < 16000ULL) return;
+    wasm_last_yield_us = now_us;
+    emscripten_sleep(0);
+}
+#endif
+
 static void host_runtime_check_timeout(void) {
     host_framebuffer_service();
     host_sim_apply_slowdown();
@@ -450,6 +478,9 @@ static void host_runtime_check_timeout(void) {
      * loop) still sees time advance. On device the 1ms timer IRQ does
      * this; here we piggy-back on every MMInkey/routinechecks call. */
     uint64_t now = host_time_us_64();
+#ifdef MMBASIC_WASM
+    wasm_yield_if_due(now);
+#endif
     if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
     if (now < host_runtime_deadline_us) return;
 

@@ -53,6 +53,7 @@ void host_runtime_finish(void);
 void vm_host_fat_reset(void);
 void vm_sys_file_reset(void);
 void vm_sys_pin_reset(void);
+void host_options_snapshot(void);
 
 extern void MMBasic_PrintBanner(void);
 extern void MMBasic_RunPromptLoop(void);
@@ -153,6 +154,14 @@ void wasm_boot(void) {
     wasm_configure_display_console();
     Option.Width  = HRes / gui_font_width;   /* 320/8 = 40 cols */
     Option.Height = VRes / gui_font_height;  /* 320/12 = 26 rows */
+
+    /* Re-snapshot Option into flash_option_buf AFTER the display
+     * console is configured. host_runtime_begin took its snapshot
+     * before our overrides; if we don't re-snapshot, the LoadOptions()
+     * call inside error() (MMBasic.c:2835) reverts DISPLAY_CONSOLE to
+     * 0 — which trips LCD_error and paints a bright-red overlay in the
+     * middle of the screen on every BASIC error. */
+    host_options_snapshot();
 
     MMBasic_PrintBanner();
 
