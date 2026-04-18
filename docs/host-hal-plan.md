@@ -445,6 +445,21 @@ void audio_checks(void)  {}
 
 **Makefile** — added `Audio.c` to `CORE_SRCS`.
 
+**PLAY unification via OP_BRIDGE_CMD** (same pattern as FILES in
+Phase 3). The VM source compiler's `source_compile_play` only emitted
+native syscalls for PLAY STOP and PLAY TONE; everything else —
+SOUND, VOLUME, PAUSE, RESUME, CLOSE, WAV/FLAC/MP3/MODFILE/MIDI —
+hit `bc_set_error(cs, "Unsupported PLAY command")`. That silently
+diverged FRUN from RUN: interp ran the full subcommand set; VM
+rejected 20 of 22 subcommands at compile time.
+
+Fix: delete `source_compile_play` and the PLAY dispatch block in
+`source_compile_statement`. PLAY now falls through to `OP_BRIDGE_CMD`,
+which pre-tokenises the statement and at runtime dispatches to
+`commandtbl[cmdPLAY].fptr()` → Audio.c's `cmd_play`. Interpreter and
+VM share one parser. `BC_SYS_PLAY_STOP` / `BC_SYS_PLAY_TONE` enums
+and bc_vm.c cases are now dead — Phase 7 cleanup.
+
 **What's NOT in Phase 4** (deferred indefinitely — no clear value):
 - PLAY WAV/FLAC/MP3/MODFILE/MIDI on host. Emitting encoded audio frames
   over a WebSocket to a WebAudio player is its own subsystem.
@@ -482,9 +497,11 @@ Minor — maybe 30 lines — but closes the last REPL-shaped gap.
 - Remove the `(void)` unused-parameter suppressions that no longer apply.
 - Update `host/README.md` with the HAL architecture.
 - Update `CLAUDE.md` memory: Host build is no longer "its own MMBasic port" — it's a HAL target using the shared interpreter source.
-- **Remove `vm_sys_file_files`** from `vm_sys_file.c` — unused since FILES
-  was moved to the bridge in Phase 3. Along with `BC_SYS_FILE_FILES` in
-  `bytecode.h` if no other caller references it.
+- **Remove dead native syscalls** moved to OP_BRIDGE_CMD:
+  - `vm_sys_file_files` + `BC_SYS_FILE_FILES` (Phase 3, FILES).
+  - `vm_sys_audio_play_stop` / `vm_sys_audio_play_tone` +
+    `BC_SYS_PLAY_STOP` / `BC_SYS_PLAY_TONE` (Phase 4, PLAY).
+  - bc_vm.c dispatch cases for the above.
 
 **Exit gate:** no file over 1000 lines in `host/`, README current, one commit.
 
