@@ -1,11 +1,11 @@
 # Web Host Plan
 
-Compile the macOS host build of PicoMite to WebAssembly so the interpreter + VM run entirely in-browser as a static site. The browser app has a terminal surface for REPL, a canvas for graphics, Web Audio for PLAY, and drag-and-drop / download for file exchange with the user's disk. No server round-trip per keystroke, no backend at all.
+Compile the macOS host build of PicoMite to WebAssembly so the interpreter + VM run entirely in-browser as a static site. The browser app mirrors the hardware PicoMite: one `<canvas>` renders everything — `PRINT` output, the `> ` prompt, line editor, graphics, all drawn as pixels into the same framebuffer the device uses. Web Audio handles `PLAY`; drag-and-drop / download handle file exchange. No TTY, no terminal emulator, no server round-trip per keystroke, no backend at all.
 
 - **Branch:** `web-host` (off `host-hal-refactor`).
 - **Predecessor plan:** [`host-hal-plan.md`](host-hal-plan.md). That refactor turned the host into a proper HAL consumer (shared `Draw.c`, `FileIO.c`, `Audio.c`, `MM_Misc.c`) with focused HAL modules (`host_runtime.c`, `host_fastgfx.c`, `host_fs_shims.c`, `host_peripheral_stubs.c`, `host_fb.c`, `host_time.c`, `host_terminal.c`). The web host is the third HAL target — macOS native, `--sim` (Mongoose + WebSocket), and now WASM (emscripten + direct JS bridge).
 - **Native host is frozen for this work.** `mmbasic_test` and `mmbasic_sim` keep their current termios TTY REPL path, test harness behavior, and build flags. The web-host branch touches only new files (`host_wasm_*.c`, `host/web/*`, `host/build_wasm.sh`, `host/Makefile.wasm`) and a small set of additive `#ifdef MMBASIC_WASM` gates where a narrow WASM-specific behavior is unavoidable. If a change to a shared or native-host file is tempting, that's a signal the abstraction is wrong — fix the WASM HAL instead.
-- **Dropping TTY in web-host only.** The WASM target has no termios; `host_terminal.c` simply isn't linked in the WASM build. Keyboard input comes from xterm.js via `wasm_push_key`. `host_terminal.c` itself stays intact and keeps serving the native host's interactive REPL.
+- **No TTY. No terminal emulator.** The web host behaves like the hardware PicoMite, not like the native macOS host. Character output goes through the existing raster console (`gfx_console_shared.c` → `host_fb.c` framebuffer → canvas blit). `host_terminal.c` is simply not linked in the WASM build; there is no xterm.js, no `<pre>` pane, no VT100 parser. Keyboard input arrives via `wasm_push_key(code)` → ring buffer → `MMInkey`, where "code" is an MMBasic key code (ordinary ASCII plus the same F-key/arrow codes the device expects).
 
 ## Invariants
 
@@ -13,7 +13,7 @@ Compile the macOS host build of PicoMite to WebAssembly so the interpreter + VM 
 2. **The native host test harness (`mmbasic_test`) stays green.** The WASM target is additive. `cd host/ && ./build.sh && ./run_tests.sh` must pass 201/201 at every phase boundary.
 3. **The device build stays green.** No changes to `CMakeLists.txt` / `CMakeLists 2350.txt` or anything under `#ifndef MMBASIC_HOST`.
 4. **No server.** The deployable artifact is `index.html` + `picomite.wasm` + `picomite.js` + a preloaded data image. It runs from `file://`, GitHub Pages, or any static host. No COOP/COEP headers required for the MVP (rules out SharedArrayBuffer + pthreads until Phase 7+).
-5. **Behavioral parity with the native host.** A `.bas` file that prints X on `mmbasic_test` must print X in the browser. Graphics that render to the native PPM screenshot must render pixel-identical to the canvas. The only legitimate divergences are timing-sensitive ones (cooperative scheduling may change `TIMER` resolution) and peripherals that are no-ops on both ports anyway.
+5. **Behavioral parity with the native host's screenshot path.** The native `mmbasic_test` renders `PRINT`, graphics, and the console into an RGB framebuffer via `gfx_console_shared.c` + `host_fb.c` and writes it out as a PPM. The web host displays that same framebuffer on a `<canvas>` in real time. A `.bas` program's canvas should be pixel-identical to the native host's PPM screenshot. The only legitimate divergences are timing-sensitive ones (cooperative scheduling may change `TIMER` resolution) and peripherals that are no-ops on both ports anyway.
 
 ## Target architecture
 
@@ -32,21 +32,23 @@ Compile the macOS host build of PicoMite to WebAssembly so the interpreter + VM 
 │   host_time.c / mm_misc_shared.c                             │
 │   — all compile unchanged under emscripten                   │
 ├──────────────────────────────────────────────────────────────┤
-│             WASM-specific HAL (new, replaces 3 files)        │
-│   host_wasm_console.c  ← replaces host_terminal.c            │
+│             WASM-specific HAL (new, replaces 2 files)        │
+│   host_wasm_console.c  ← key-ring input + yield hooks        │
+│                          (no output path — console renders   │
+│                          into framebuffer via shared code)   │
 │   host_wasm_main.c     ← replaces host_main.c test harness   │
-│   host_wasm_bridge.c   ← replaces host_sim_server.c          │
-│                          (direct JS ↔ C, no Mongoose)        │
+│                          (wasm_boot → InitialiseAll → REPL)  │
 ├──────────────────────────────────────────────────────────────┤
 │                     Browser surface (JS/HTML)                │
 │   index.html + picomite.mjs (loader, glue)                   │
-│   ui/terminal.js       — xterm.js wrapper                    │
 │   ui/canvas.js         — framebuffer blit, dirty-rect        │
 │   ui/audio.js          — Web Audio oscillator/sample pool    │
-│   ui/keys.js           — keymap to MMBasic codes             │
+│   ui/keys.js           — keydown → MMBasic key codes         │
 │   ui/fs.js             — drag-drop import, download export   │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+`host_sim_server.c` / Mongoose / WebSockets from the native `--sim` target are **not** ported. The WASM module exposes its C entry points (`wasm_boot`, `wasm_push_key`, `wasm_tick`, `wasm_framebuffer_ptr`, ...) directly to JS via emscripten's `-sEXPORTED_FUNCTIONS`. Browser-side JS calls them with `Module.ccall` / direct wrappers. No in-process HTTP server, no WebSocket protocol.
 
 ### What carries over from the native host, unchanged
 
@@ -66,10 +68,10 @@ Compile the macOS host build of PicoMite to WebAssembly so the interpreter + VM 
 
 | Native host module | WASM replacement | Reason |
 |---|---|---|
-| `host_terminal.c` (termios raw-mode stdin, unbuffered stdout) | `host_wasm_console.c` — JS-queue-backed `MMInkey` + `EM_JS` calls to xterm.js writer | No termios in browsers. |
-| `host_main.c` (CLI test harness, argv parsing, oracle compare) | `host_wasm_main.c` — exported `wasm_boot()` / `wasm_tick()` entry points wired to `emscripten_set_main_loop` | No argv, no compare-mode; main loop must yield cooperatively. |
-| `host_sim_server.c` (Mongoose HTTP + WebSocket server, pthread tick) | `host_wasm_bridge.c` — direct `EM_JS` / exported functions (`wasm_push_key`, `wasm_drain_graphics_cmds`, `wasm_audio_event`) | Browser talks to the wasm module via postMessage/JS imports, not WebSockets. |
-| `vendor/mongoose.c` | **Dropped entirely.** | Not needed without an in-process network server. |
+| `host_terminal.c` (termios raw-mode stdin, unbuffered stdout) | `host_wasm_console.c` — **input-only** ring buffer fed by `wasm_push_key(code)`; no output path (character output already reaches the framebuffer via `gfx_console_shared.c`) | No termios in browsers; no terminal emulator either. |
+| `host_main.c` (CLI test harness, argv parsing, oracle compare) | `host_wasm_main.c` — exported `wasm_boot()` / `wasm_tick()` entry points wired to `emscripten_set_main_loop` or pure ASYNCIFY | No argv, no compare-mode; main loop must yield cooperatively. |
+| `host_sim_server.c` (Mongoose HTTP + WebSocket server, pthread tick) | **Dropped entirely.** Browser JS calls exported C functions directly; no protocol layer in between. | Not needed without an in-process network server. |
+| `vendor/mongoose.c` | **Dropped entirely.** | Same. |
 | `host_sim_audio.c` JSON emitter | `host_wasm_audio.c` — same shape, but calls `EM_JS` directly into a Web Audio queue (no JSON marshaling) | Type-safe, zero-copy. |
 
 ## How the emscripten build fits in
@@ -107,7 +109,7 @@ The interpreter owns the main loop (`ExecuteProgram` → statement loop → peri
 
 ASYNCIFY adds ~30% runtime cost and ~15% binary size. Acceptable for MVP. Pay attention to which call sites need `await`-able behavior; over-marking bloats the transform.
 
-**Post-MVP: worker + Atomics.** The interpreter moves to a Web Worker. The main thread owns the DOM (xterm.js, canvas, audio). Communication is `postMessage` for bulk data and `Atomics.wait`/`Atomics.notify` on a `SharedArrayBuffer` ring for sub-millisecond input latency. Requires COOP/COEP response headers, which rules out naive GitHub Pages deployment (need `_headers` on Netlify / Cloudflare Pages / custom hosting). Defer until ASYNCIFY proves inadequate.
+**Post-MVP: worker + Atomics.** The interpreter moves to a Web Worker. The main thread owns the DOM (canvas, audio). Communication is `postMessage` for bulk data and `Atomics.wait`/`Atomics.notify` on a `SharedArrayBuffer` ring for sub-millisecond input latency. Requires COOP/COEP response headers, which rules out naive GitHub Pages deployment (need `_headers` on Netlify / Cloudflare Pages / custom hosting). Defer until ASYNCIFY proves inadequate.
 
 ## Phased plan
 
@@ -126,26 +128,35 @@ Each phase ends with a green native host build, a green device build, a green WA
 
 **Landed:** `host/hello_wasm.c` (trivial `printf` main), `host/Makefile.wasm` (MODULARIZE+ES6, ALLOW_MEMORY_GROWTH, INITIAL_MEMORY=32 MiB, SRCS is just `hello_wasm.c` for now), `host/build_wasm.sh` (sources `~/emsdk/emsdk_env.sh` if emcc isn't already on PATH), `host/web/{index.html,picomite.css,app.mjs,serve.sh,.gitignore}`. Loading the page in headless Chromium renders `Hello from PicoMite WASM` in `#out` with zero console/page errors. Native `./run_tests.sh` stays at 201/201.
 
-### Phase 1 — REPL over xterm.js
+### Phase 1 — Canvas + raster REPL
 
-**Goal:** Type `PRINT 2+3`, see `5` in a browser terminal.
+**Goal:** The browser canvas shows a `> ` prompt drawn as pixels. Typing `PRINT 2+3` enter prints `5` on the canvas. `LIST`, `NEW`, simple `FOR`/`NEXT` all work. `PAUSE 100` does not freeze the tab. This phase absorbs the old "graphics to canvas" phase — the prompt *is* graphics.
 
+The key insight: MMBasic's `PRINT` path on device already lands on `DrawPixel`/`DrawChar` via `gfx_console_shared.c`, and `host_fb.c` already backs that path with an RGB plane on the native host (that's where PPM screenshots come from). The WASM port makes the same plane visible to JS in real time.
+
+- Extend `host/Makefile.wasm` SRCS to the full shared/VM/HAL set that the native host uses, minus `host_main.c` / `host_terminal.c` / `host_sim_*.c`. That brings in `MMBasic.c`, `Commands.c`, `Functions.c`, `Operators.c`, `MATHS.c`, `Memory.c`, `Editor.c`, `MMBasic_Prompt.c`, `MMBasic_Print.c`, `MMBasic_REPL.c`, all `gfx_*_shared.c`, `mm_misc_shared.c`, `Draw.c`, `FileIO.c`, `Audio.c`, the full `bc_*` / `vm_sys_*` / FatFs set, and the portable HAL modules (`host_runtime.c`, `host_fastgfx.c`, `host_fs_shims.c`, `host_peripheral_stubs.c`, `host_fb.c`, `host_time.c`, `host_fs.c`, `host_sim_audio.c` (JSON sink stays until Phase 3 audio)).
 - Write `host/host_wasm_console.c`:
-  - Drop-in for `host_terminal.c` — same exported API (`host_raw_mode_enter/exit`, `host_read_byte_nonblock`, `host_read_byte_blocking_ms`).
-  - Backed by an in-module ring buffer. JS calls `wasm_push_key(code)` via `ccall` on keypress.
-  - `MMputchar` / `MMPrintString` route through `EM_ASM({ window.picomiteTerm.write(UTF8ToString($0)); }, buf)` — or an exported `wasm_output_drain()` polled from JS each frame if that turns out faster.
-  - `setvbuf(stdout, NULL, _IONBF, 0)` unchanged (emscripten stdout routes to `console.log` by default; we override `Module.print`).
+  - **Input only.** Same exported API as `host_terminal.c` for the read path (`host_raw_mode_enter/exit` as no-ops; `host_read_byte_nonblock`; `host_read_byte_blocking_ms`).
+  - Backed by an in-module ring buffer. JS calls `wasm_push_key(code)` on keydown.
+  - `host_read_byte_blocking_ms` yields via `emscripten_sleep(1)` when the ring is empty — that's the ASYNCIFY hook that keeps the tab responsive.
+  - **No output path.** Character output reaches the framebuffer through `MMputchar` → `gfx_console_shared.c` → `DrawChar`/`DrawRectangle` → `host_fb.c`. We don't add a parallel stdout route.
+- Write `host/host_wasm_canvas.c`:
+  - Exports `wasm_framebuffer_ptr()` → `host_framebuffer` (24-bpp RGB plane in `host_fb.c`).
+  - Exports `wasm_framebuffer_width()` / `wasm_framebuffer_height()`.
+  - Exports `wasm_dirty_rect(out_ptr)` → fills 4 ints `{x,y,w,h}`, resets the accumulator, returns 1 if dirty / 0 if clean.
+- Extend `host_fb.c` with a minimal dirty-rect accumulator (`host_fb_dirty_add(x,y,w,h)` called from `DrawPixel`, `DrawRectangle`, `ScrollLCD`, `DrawChar`, `DrawBitmap`). Native host ignores it; WASM reads it. This is the single additive `#ifdef MMBASIC_WASM` gate in a shared HAL file we expect to need — the accumulator itself is present on both targets, but only WASM calls `wasm_dirty_rect`.
 - Write `host/host_wasm_main.c`:
-  - Exports `wasm_boot()` — wraps the `main()` body: `InitialiseAll()` → `MMBasic_REPL()`.
-  - Under ASYNCIFY, `MMBasic_REPL`'s polled read loop yields via `emscripten_sleep(0)` in `host_read_byte_blocking_ms`.
-  - No `emscripten_set_main_loop` yet — ASYNCIFY gives us a pseudo-synchronous main from JS's view.
-- Write `host/web/app.mjs`:
-  - Loads xterm.js (CDN or bundled), attaches to `#terminal`.
-  - On `onData`, iterates UTF-8 code points and calls `wasm_push_key(code)`.
-  - Implements `Module.print = (s) => term.write(s + "\n"); Module.printErr = ...`.
-  - Calls `Module._wasm_boot()` after `Module` resolves.
+  - Exports `wasm_boot()` — wraps the native host `main()` body: `InitialiseAll()` → loop of `MMBasic_REPL()` iterations (or `MMBasic_REPL()` directly if its loop already never returns cleanly).
+  - Under ASYNCIFY, the blocking reads in `MMBasic_REPL` yield via the `host_wasm_console.c` path.
+  - Exports `wasm_break()` that sets `MMAbort = 1` so Ctrl-C from JS can interrupt a running program (full key-polish deferred to Phase 5).
+- Rewrite `host/web/app.mjs`:
+  - Discards the Phase 0 `<pre>` placeholder.
+  - Attaches canvas element. On `Module` resolve, calls `_wasm_framebuffer_*` once to size the canvas, then starts a `requestAnimationFrame` loop that calls `_wasm_dirty_rect` and blits dirty pixels via `ctx.putImageData`.
+  - `keydown` listener on `window` (or the canvas with `tabindex`) maps the event to an MMBasic key code (simple pass-through for printable ASCII; minimal arrow/enter/backspace/ctrl-C mapping for MVP — full table is Phase 5) and calls `_wasm_push_key`.
+  - Calls `Module._wasm_boot()` once setup is done.
+- Rewrite `host/web/index.html`: replace `<pre id="out">` with `<canvas id="screen">` plus a minimal status strip.
 
-**Exit gate:** Browser shows `> ` prompt. Typing `PRINT 2+3` ENTER prints `5`. `LIST`, `NEW`, simple `FOR`/`NEXT` loops all work. No graphics, no audio, no file I/O yet. Tab does not freeze on `PAUSE 100`.
+**Exit gate:** Browser canvas renders the PicoMite boot banner and `> ` prompt using the device font, as rendered pixels. Typing `PRINT 2+3` ENTER scrolls the console and shows `5` on the next line. `LIST`, `NEW`, a short `FOR I=1 TO 5: PRINT I: NEXT` all produce the expected raster output. `PAUSE 100` → the tab stays responsive throughout. Native `./run_tests.sh` still 201/201. Device build still green (CMakeLists untouched).
 
 ### Phase 2 — Filesystem (preload bundle + drag-drop import + download export)
 
@@ -168,24 +179,7 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 - If persistence becomes desirable later, it slots in as a post-MVP phase: mount OPFS at `/home/` and add a "Copy to persistent storage" action. The `host_fs_shims.c` routing doesn't care which MEMFS-equivalent backend is at a given path.
 - Upload from a `<input type="file" multiple>` picker is a nice addition alongside drag-drop for mobile / touch where drag-drop is awkward. Same underlying path (`FS.writeFile`). Trivial to add; mention in the Phase 2 follow-on list.
 
-### Phase 3 — Graphics to canvas
-
-**Goal:** `CIRCLE`, `LINE`, `PSET`, `BLIT`, FASTGFX demos all render visibly.
-
-- Add `<canvas id="screen" width="320" height="320">` to `index.html`, styled with `image-rendering: pixelated`.
-- Write `host/host_wasm_canvas.c`:
-  - Exports `wasm_framebuffer_ptr()` → returns `host_framebuffer` (the 24-bpp RGB plane from `host_fb.c`).
-  - Exports `wasm_framebuffer_width()` / `wasm_framebuffer_height()`.
-  - Exports `wasm_dirty_rect()` → returns a packed `{x,y,w,h}` and resets the accumulated dirty region.
-- Extend `host_fb.c` with a minimal dirty-rect accumulator (`host_fb_dirty_add(x,y,w,h)` called from `DrawPixel`, `DrawRectangle`, `ScrollLCD`, `FASTGFX SWAP`). The native host ignores it; WASM uses it.
-- Write `host/web/ui/canvas.js`:
-  - On each `requestAnimationFrame`, call `Module._wasm_dirty_rect()` → if non-empty, read `HEAPU8.subarray(fbPtr + y*w*3, ...)` → convert RGB24 to RGBA32 → `ctx.putImageData(...)`.
-  - Handle FASTGFX SWAP events (the existing `host_sim_server`-style event, but delivered directly via an exported queue).
-- Ensure `host_runtime_begin` still wires `DrawPixel`/`DrawRectangle`/`ScrollLCD`/`DrawBitmap` to the existing `host_fb_*` functions — no change needed from current host HAL.
-
-**Exit gate:** A test that draws concentric circles shows concentric circles on the canvas, pixel-identical to the PPM screenshot produced by the native test harness. FASTGFX demo (e.g. a bouncing ball) runs at 60 FPS. `BLIT` from back buffer works.
-
-### Phase 4 — Audio via Web Audio
+### Phase 3 — Audio via Web Audio
 
 **Goal:** `PLAY TONE 440,1000` emits a 440 Hz beep for 1 s.
 
@@ -201,7 +195,7 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 
 **Exit gate:** A test program playing a melody (PLAY TONE + PAUSE sequence) produces audible output. Four-voice `PLAY SOUND` chord sounds right. Audio does not stutter during graphics-heavy programs.
 
-### Phase 5 — Cooperative scheduling & timing
+### Phase 4 — Cooperative scheduling & timing
 
 **Goal:** `TIMER`, `PAUSE`, `FASTGFX SYNC`, cursor blink all behave like the native port.
 
@@ -214,15 +208,27 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 
 **Exit gate:** `timer_test.bas` reports monotonically increasing `TIMER` values. `PAUSE 5000` in a tight loop keeps the tab responsive. Cursor blinks at the correct rate. FASTGFX demos measure 60 FPS with no stutter.
 
-### Phase 6 — Input polish
+### Phase 5 — Input polish
 
 **Goal:** Every key MMBasic cares about arrives with the right code; Ctrl-C breaks programs; optional mouse support.
 
-- `host/web/ui/keys.js` — translation table from JS `KeyboardEvent.key` / `.code` to MMBasic key codes. Cover arrows, F1–F12, Home/End/PgUp/PgDn, Ins/Del, Esc, Tab, Backspace, Enter, Ctrl-letter combinations.
-- Capture Ctrl-C at the JS level and set an exported `wasm_break_flag = 1` that the interpreter polls during `CheckAbort`. Don't let the browser's "copy" shortcut swallow it in terminal focus.
+- `host/web/ui/keys.js` — translation table from JS `KeyboardEvent.key` / `.code` to MMBasic key codes. Cover arrows, F1–F12, Home/End/PgUp/PgDn, Ins/Del, Esc, Tab, Backspace, Enter, Ctrl-letter combinations. (Phase 1 ships a minimal table; this phase finishes it.)
+- Capture Ctrl-C at the JS level and set an exported `wasm_break_flag = 1` that the interpreter polls during `CheckAbort`. No terminal to compete for it — the canvas has focus, Ctrl-C is unambiguously break.
 - Optional: hook `mousemove` / `mousedown` on the canvas to a `host_wasm_mouse_x/y/buttons` global read by a future `MOUSE` function (out of scope for MVP).
 
 **Exit gate:** `EDIT` works with arrow keys. `INPUT$(1)` returns correct codes for Ctrl-A, Esc, Tab, function keys. Ctrl-C breaks a running `FOR I=1 TO 1e9: NEXT`.
+
+### Phase 6 — Graphics polish (FASTGFX + BLIT + SPRITE)
+
+**Goal:** Performance-oriented graphics ops that go beyond "draw directly to the framebuffer" work correctly. Phase 1 already covers `PRINT`, `LINE`, `CIRCLE`, `BOX`, `PSET` — those write straight into `host_fb.c` and are visible via the dirty-rect path. This phase handles the ops that need a back buffer or a sprite pool.
+
+- Verify `FASTGFX` back-buffer setup already works (it's allocated in `host_fastgfx.c`, which is shared with the native host).
+- Ensure `FASTGFX SWAP` triggers a full-canvas dirty-rect so the blit loop redraws everything after the flip.
+- Ensure `FASTGFX SYNC` yields via `emscripten_sleep` aligned to `requestAnimationFrame`. If 60 Hz alignment is flaky, drive the swap from inside the rAF callback (set a flag in rAF, have `host_sync_msec_timer` spin/yield until the flag is observed).
+- Verify `BLIT` between memory pages and from program-supplied buffers works — these are all `host_fb.c` memcpy wrappers that should just function.
+- Verify `SPRITE` framework (if the test corpus uses it) is wired.
+
+**Exit gate:** A FASTGFX bouncing-ball demo runs at 60 FPS with no tearing. `BLIT` copies work pixel-identical to the native host. A test that draws concentric circles matches the PPM reference byte-for-byte.
 
 ### Phase 7 — Build, package, deploy
 
@@ -247,12 +253,13 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 4. **Audio autoplay gate.** No audio plays until the user clicks. Make the failure mode obvious (visible banner), not silent (tone scheduled, nothing happens).
 5. **Timing drift under ASYNCIFY.** `emscripten_sleep(1)` is lower-bounded by the event-loop latency (often 4 ms on throttled tabs). `PAUSE 1` won't be 1 ms. `TIMER` will still advance monotonically via `performance.now()`, so end-to-end behavior stays correct — but busy-wait timing tricks in `.bas` programs may misbehave. Document.
 6. **No persistence by design.** User drags files in, saves by downloading. A page reload loses anything they didn't download. Communicate this clearly in the UI (banner on first load, tooltip on the REPL). If users complain, add OPFS as a post-MVP persistence layer — but start simple.
-7. **Copy/paste and keyboard focus.** xterm.js handles this well, but Ctrl-C as "break" vs. Ctrl-C as "copy selected text" collides. Resolve by routing Ctrl-C to break when no selection is active, to clipboard when text is selected.
+7. **Keyboard focus.** The canvas needs focus to receive keydown events (`tabindex="0"`, visible focus ring). If focus drifts to `<body>` or an overlay panel, input is silently dropped. Mitigate with a click-to-focus hint and a visible focus border.
+8. **No terminal conveniences.** Without a terminal emulator there is no native scrollback, no copy/paste of output, no search. Match hardware PicoMite behavior: output scrolls off screen, and the user copies text by reading it. If scrollback demand emerges post-MVP, add it to `gfx_console_shared.c` itself (useful on device too) rather than bolting a browser-only feature on top.
 
 ## Open questions (resolve during Phase 0 / 1)
 
 - **ASYNCIFY vs. `emscripten_set_main_loop` as the primary yield mechanism?** ASYNCIFY is easier on existing code; main-loop refactor is cleaner but requires teasing apart `ExecuteProgram` into a re-entrant state machine. Start ASYNCIFY; measure; revisit if needed.
-- **xterm.js vs. plain `<textarea>` vs. custom terminal widget?** xterm.js is the obvious pick — standard VT100, copy/paste, themes — but it's ~300 KB. If we care about total footprint more than UX polish, a minimal custom widget is viable.
+- **Canvas size and scaling.** Hardware PicoMite runs at 320×240 (or 320×320 depending on config). Pick a default for the web build, render at native resolution with `image-rendering: pixelated`, and CSS-scale up to fit the viewport. Allow the user to zoom (CSS transform) but not to resize the framebuffer mid-session.
 - **Preload which tests?** The native harness ships 201 `.bas` files; bundling them all is ~400 KB uncompressed. Preload the interesting demos; leave the regression suite as a separate preload file gated by a dev flag.
 - **Do we expose the VM-vs-interpreter compare mode in the browser?** Probably not — it's a dev tool. But exposing `?mode=vm` / `?mode=interp` query params for forcing one or the other could help debugging.
 - **ES module (MJS) vs. classic script?** Default to MJS (`EXPORT_ES6=1`) for cleaner integration with modern tooling. Plain script is fallback if deployment target rejects modules.
@@ -267,12 +274,13 @@ File access is deliberately transient MEMFS-only. No IDBFS, no OPFS, no File Sys
 
 ## Rollout sequence
 
-1. Land this plan document on `web-host` branch.
-2. Execute Phase 0 (scaffolding) + Phase 1 (REPL) — single PR to `web-host`. This is the riskiest PR because it proves or disproves ASYNCIFY as the scheduling strategy.
-3. Phase 2 (FS), Phase 3 (graphics), Phase 4 (audio), Phase 5 (scheduling), Phase 6 (input) — one PR each.
-4. Phase 7 (deploy) once everything works locally.
-5. Merge `web-host` → `main`. Promote the docs / link from the main README.
-6. Iterate on post-MVP items as user feedback comes in.
+1. Land this plan document on `web-host` branch. ✅
+2. Phase 0 scaffolding. ✅
+3. Phase 1 (canvas + raster REPL) — the riskiest phase because it proves ASYNCIFY + the shared-code link work at scale.
+4. Phase 2 (FS), Phase 3 (audio), Phase 4 (scheduling), Phase 5 (input), Phase 6 (graphics polish) — one commit each.
+5. Phase 7 (deploy) once everything works locally.
+6. Merge `web-host` → `main`. Promote the docs / link from the main README.
+7. Iterate on post-MVP items as user feedback comes in.
 
 ## Success criteria
 
