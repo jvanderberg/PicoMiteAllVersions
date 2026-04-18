@@ -26,6 +26,19 @@ extern uint32_t *host_framebuffer;
 extern int host_fb_width;
 extern int host_fb_height;
 extern void host_fb_ensure(void);
+extern void host_sim_set_framebuffer_size(int w, int h);
+
+/*
+ * Resize the framebuffer. MUST be called BEFORE wasm_boot — the size
+ * determines the backing allocation in host_fb_ensure(), which runs
+ * during host_runtime_begin inside wasm_boot. Calling mid-session is
+ * not supported; the JS side handles resolution changes by reloading
+ * the page with a ?res=WxH query param.
+ */
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_framebuffer_size(int w, int h) {
+    host_sim_set_framebuffer_size(w, h);
+}
 
 EMSCRIPTEN_KEEPALIVE
 uintptr_t wasm_framebuffer_ptr(void) {

@@ -19,9 +19,59 @@ const statusEl = document.getElementById('status');
 const canvas = document.getElementById('screen');
 const uploadInput = document.getElementById('upload');
 const downloadBtn = document.getElementById('download-sd');
+const resolutionSelect = document.getElementById('resolution');
 const dropOverlay = document.getElementById('drop-overlay');
 const hintEl = document.getElementById('hint');
 const ctx = canvas.getContext('2d', { alpha: false });
+
+// --- Resolution selection -----------------------------------------------
+//
+// Framebuffer size must be set BEFORE wasm_boot (the allocation happens
+// during host_runtime_begin). We can't re-init the interpreter
+// mid-session safely — setjmp/longjmp state makes it fragile — so
+// resolution changes trigger a full page reload with ?res=WxH.
+//
+// Priority: URL query > localStorage > default.
+
+const DEFAULT_RES = '320x320';
+const RES_KEY = 'picomite.res';
+
+function parseRes(s) {
+    const m = /^(\d+)x(\d+)$/.exec(String(s || '').trim());
+    if (!m) return null;
+    const w = parseInt(m[1], 10), h = parseInt(m[2], 10);
+    if (w < 80 || h < 60 || w > 2048 || h > 2048) return null;
+    return { w, h, label: `${w}x${h}` };
+}
+
+function pickResolution() {
+    const params = new URLSearchParams(window.location.search);
+    return parseRes(params.get('res'))
+        ?? parseRes(localStorage.getItem(RES_KEY))
+        ?? parseRes(DEFAULT_RES);
+}
+
+function applyResolutionSelect(label) {
+    const opt = Array.from(resolutionSelect.options).find(o => o.value === label);
+    if (opt) {
+        resolutionSelect.value = label;
+    } else {
+        // Custom value from URL param — inject a matching option so the
+        // dropdown reflects the current state.
+        const custom = document.createElement('option');
+        custom.value = label;
+        custom.textContent = label.replace('x', ' × ') + ' (custom)';
+        resolutionSelect.appendChild(custom);
+        resolutionSelect.value = label;
+    }
+}
+
+function reloadWithResolution(label) {
+    try { localStorage.setItem(RES_KEY, label); } catch (_) {}
+    const url = new URL(window.location.href);
+    url.searchParams.set('res', label);
+    window.location.href = url.toString();
+}
 
 function setStatus(text, isError = false) {
     statusEl.textContent = text;
@@ -324,10 +374,20 @@ function wireFileIO(instance) {
 // --- Boot ---------------------------------------------------------------
 
 try {
+    const resolution = pickResolution();
+    applyResolutionSelect(resolution.label);
+    resolutionSelect.addEventListener('change', () => {
+        reloadWithResolution(resolutionSelect.value);
+    });
+
     const instance = await Module({
         print:    (line) => console.log('[picomite]', line),
         printErr: (line) => console.warn('[picomite]', line),
     });
+
+    // Set framebuffer size BEFORE wasm_boot — host_runtime_begin
+    // allocates the plane at the current host_fb_width/height.
+    instance._wasm_set_framebuffer_size(resolution.w, resolution.h);
 
     fbWidth  = instance._wasm_framebuffer_width();
     fbHeight = instance._wasm_framebuffer_height();

@@ -80,6 +80,28 @@ html, body {
     display: none;
 }
 
+.select-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.select-wrap select {
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--panel-border);
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    font: inherit;
+    cursor: pointer;
+}
+
+.select-wrap select:hover {
+    border-color: var(--accent);
+}
+
 #hint {
     color: var(--muted);
     padding-left: 0.5rem;

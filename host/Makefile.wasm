@@ -47,7 +47,7 @@ CFLAGS = -O2 -std=gnu11 -funsigned-char \
 LDFLAGS = -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
           -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 \
           -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web \
-          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_malloc","_free"]' \
+          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_wasm_set_framebuffer_size","_malloc","_free"]' \
           -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","HEAPU8","HEAPU32","FS"]' \
           -sFORCE_FILESYSTEM=1 \
           --preload-file demos@/sd \
