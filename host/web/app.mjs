@@ -113,15 +113,20 @@ function mapKeyEvent(event) {
 
 let fbPtr = 0, fbWidth = 0, fbHeight = 0, imageData = null;
 
-// Canvas always renders at exactly 2× the framebuffer in CSS pixels.
-// The page scrolls if that exceeds the viewport; preserving pixel
-// shape trumps fitting.
-const DISPLAY_SCALE = 2;
+// Render at 2× when it fits the viewport, otherwise shrink uniformly
+// to fit while preserving aspect ratio. image-rendering: pixelated
+// keeps things crisp even at non-integer scales.
+const DESIRED_SCALE = 2;
+const VIEWPORT_CHROME_PX = 140;
 
 function fitCanvas() {
     if (!fbWidth || !fbHeight) return;
-    canvas.style.width  = `${fbWidth  * DISPLAY_SCALE}px`;
-    canvas.style.height = `${fbHeight * DISPLAY_SCALE}px`;
+    const maxW = Math.max(160, Math.floor(window.innerWidth * 0.92));
+    const maxH = Math.max(160, window.innerHeight - VIEWPORT_CHROME_PX);
+    const fit = Math.min(maxW / fbWidth, maxH / fbHeight);
+    const scale = Math.min(DESIRED_SCALE, fit);
+    canvas.style.width  = `${Math.floor(fbWidth  * scale)}px`;
+    canvas.style.height = `${Math.floor(fbHeight * scale)}px`;
 }
 
 function blitFrame(instance) {
