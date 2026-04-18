@@ -476,11 +476,75 @@ and bc_vm.c cases are now dead — Phase 7 cleanup.
 - Device build: not re-verified this phase. All additions gated by
   `#ifdef MMBASIC_HOST`; device sees the unchanged original body.
 
-### Phase 5 — `MM_Misc.c` (partial)
+### Phase 5 — extract portable `MM_Misc.c` subset — ✅ DONE (2026-04-17)
 
-Many commands here are fundamentally hardware-bound (watchdog, RTC, TIMER ticks). Only bring over commands that have reasonable host equivalents — `cmd_pause`, `cmd_timer`, timer interrupt scheduling. Leave watchdog / RTC / CPU-clock commands as no-op stubs in `host_noop_stubs.c`.
+Scope expansion from the original plan: gating the whole file with
+`#ifdef MMBASIC_HOST` wasn't tractable (6,474 lines, 173 hardware
+touchpoints, 303 preprocessor directives, plus `xregex.h` / `aes.h` /
+`pico/bootrom.h` / `hardware/structs/systick.h` includes that pull in
+device-world types before any function body). Instead, extracted the
+portable subset into a new shared file — same pattern as the existing
+`gfx_*_shared.c` layer.
 
-**Exit gate:** `cmd_pause` / `cmd_timer` / `cmd_settick` tests pass on host with shared source.
+**New file:** `mm_misc_shared.c` (~1,300 lines, compiled by both host
+Makefile and device CMakeLists). Contents:
+- sort helpers + `cmd_sort`
+- `cmd_pause`, `cmd_timer` / `fun_timer`
+- `cmd_longString` + `fun_LGetStr` / `LGetByte` / `LInstr` / `LCompare`
+  / `LLen`
+- `fun_format`
+- `cmd_date` / `cmd_time` / `fun_date` / `fun_time` / `fun_day` /
+  `fun_datetime` / `fun_epoch` plus `gettimefromepoch` / `get_epoch`
+- globals `TimeOffsetToUptime` / `timeroffset` / `daystrings`
+
+`fun_date` / `fun_time` gain a `#ifdef MMBASIC_HOST` branch that
+honours `MMBASIC_HOST_DATE` / `MMBASIC_HOST_TIME` env vars (same
+pattern `vm_sys_time.c` already uses) so the interp-vs-VM comparison
+harness can pin wall-clock values deterministically.
+
+**`MM_Misc.c`:** 6,474 → 5,302 lines. Extracted definitions replaced
+with externs where other MM_Misc.c code still references them.
+
+**`host_stubs_legacy.c`:** -18 no-op stubs (`cmd_sort`, `cmd_longString`,
+`cmd_date`, `cmd_time`, `cmd_pause`, `cmd_timer`, `fun_timer`,
+`fun_date`, `fun_datetime`, `fun_day`, `fun_epoch`, `fun_format`,
+`fun_LCompare`, `fun_LGetByte`, `fun_LGetStr`, `fun_LInstr`, `fun_LLen`,
+`fun_time`, plus duplicate globals `timeroffset` / `TimeOffsetToUptime`).
+
+**Bugs surfaced by the new tests** (fixed in this phase):
+
+1. **VM function-bridge double-append.** `source_parse_varname` keeps
+   the `$`/`%`/`!` suffix in the `name` buffer (e.g.
+   `name = "FORMAT$"`, `name_len = 7`), but
+   `bc_source.c:source_parse_primary` appended the suffix a second
+   time before tokentbl lookup, producing `"FORMAT$$("` — no match.
+   Every T_STR function needing `OP_BRIDGE_FUN_S` (`FORMAT$`,
+   `LGETSTR$`, …) bailed with "Expected numeric expression" under
+   FRUN. Fixed by dropping the duplicate append.
+
+2. **Host `timegm`/`gmtime` stubs applied the local TZ offset.**
+   `host_platform.h` renames `timegm`/`gmtime` →
+   `mmbasic_timegm`/`mmbasic_gmtime` to sidestep GPS.h's
+   const-vs-non-const signature mismatch with macOS `<time.h>`. The
+   stubs in `host_stubs_legacy.c` delegated to `mktime`/`localtime`,
+   which apply the local timezone offset, so `EPOCH` / `DATETIME$` /
+   `DAY$` results were TZ-shifted (CST host gave results 6 h off
+   UTC). Rewrote the stubs to `#undef` the macros locally and call
+   real libc `timegm`/`gmtime`, preserving UTC semantics.
+
+**New tests** (default interp-vs-VM comparison mode):
+- `t191_cmd_sort`       — SORT on integer array
+- `t192_longstring`     — APPEND / LLEN / LGETSTR$ / LGETBYTE / LINSTR / LCOMPARE
+- `t193_format`         — FORMAT$ with %f / %e / default specifiers
+- `t194_datetime_funs`  — DAY$ / DATETIME$ / EPOCH UTC round-trip
+
+**Exit gate results:**
+- `./run_tests.sh` — **201/201** green.
+- `make sim` — clean.
+- Device CMakeLists additions are textually correct; not re-verified
+  on hardware. `mm_misc_shared.c` contains only portable code (no
+  `#ifdef` for device-specific features), so device build should
+  succeed.
 
 ### Phase 6 — REPL & banner unification — ✅ DONE (2026-04-17)
 
