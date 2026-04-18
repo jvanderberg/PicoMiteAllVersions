@@ -89,13 +89,20 @@ SRCS = $(HOST_PORTABLE_SRCS) $(HOST_WASM_SRCS) $(CORE_SRCS) $(BC_SRCS)
 OBJS = $(addprefix wasm_obj/,$(SRCS:.c=.o))
 DEPS = $(OBJS:.o=.d)
 
+# --preload-file demos@/bundle pulls every .bas from host/demos/ into
+# picomite.data at link time. Listing them as explicit prerequisites
+# means `make` relinks when you edit or add a demo — otherwise the
+# binary is unchanged and `make` skips the link step, leaving a stale
+# data file.
+DEMO_FILES := $(wildcard demos/*.bas)
+
 TARGET = $(WEB_DIR)/picomite.mjs
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(DEMO_FILES)
 	@mkdir -p $(WEB_DIR)
-	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $(OBJS)
 
 wasm_obj/%.o: ../%.c
 	@mkdir -p $(dir $@)
