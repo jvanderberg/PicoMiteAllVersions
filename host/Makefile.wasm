@@ -1,0 +1,38 @@
+# WASM/emscripten build for PicoMite host port.
+#
+# Phase 0 scope: a hello-world module linked by emcc, served from host/web/.
+# Phases 1+ extend SRCS to pull in the MMBasic core, VM, and WASM-specific HAL
+# modules (host_wasm_console.c, host_wasm_main.c, ...).
+
+EMCC ?= emcc
+WEB_DIR := web
+
+# Matches the shared-core host build macros, plus MMBASIC_WASM for the narrow
+# gates where the WASM target must diverge from the native host.
+CFLAGS = -O2 -std=gnu11 -funsigned-char \
+         -DPICOMITE -DMMBASIC_HOST -DMMBASIC_WASM \
+         -Wno-unused-variable -Wno-unused-function \
+         -Wno-unused-but-set-variable -Wno-misleading-indentation \
+         -Wno-missing-braces \
+         -I. -I..
+
+LDFLAGS = -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web \
+          -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8"]' \
+          -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432
+
+# Phase 0: just prove the toolchain links. Real CORE/VM/HAL sources land in
+# Phase 1 when the REPL goes up.
+SRCS = hello_wasm.c
+
+TARGET = $(WEB_DIR)/picomite.mjs
+
+all: $(TARGET)
+
+$(TARGET): $(SRCS)
+	@mkdir -p $(WEB_DIR)
+	$(EMCC) $(CFLAGS) $(LDFLAGS) -o $@ $^
+
+clean:
+	rm -f $(WEB_DIR)/picomite.mjs $(WEB_DIR)/picomite.wasm $(WEB_DIR)/picomite.data
+
+.PHONY: all clean
