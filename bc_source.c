@@ -1362,11 +1362,11 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             int tok_idx = -1;
             uint8_t tok_flags = 0;
 
-            /* Try T_FUN match: "NAME$(" */
+            /* Try T_FUN match: "NAME$(" — note `name` already includes
+             * any `$`/`%`/`!` suffix (source_parse_varname keeps it). */
             if (*after_name == '(') {
                 memcpy(tok_lookup, name, name_len);
                 tl_len = name_len;
-                if (suffix_type == T_STR) tok_lookup[tl_len++] = '$';
                 tok_lookup[tl_len++] = '(';
                 tok_lookup[tl_len] = 0;
                 for (int ti = 0; ti < TokenTableSize - 1; ti++) {
@@ -1382,7 +1382,6 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             if (tok_idx < 0) {
                 memcpy(tok_lookup, name, name_len);
                 tl_len = name_len;
-                if (suffix_type == T_STR) tok_lookup[tl_len++] = '$';
                 tok_lookup[tl_len] = 0;
                 for (int ti = 0; ti < TokenTableSize - 1; ti++) {
                     if ((tokentbl[ti].type & T_FNA) &&

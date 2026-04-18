@@ -178,8 +178,9 @@ const struct s_PinDef PinDef[NBRPINS + 1] = {{0}};
 
 /* Timer/system variables */
 volatile long long int mSecTimer = 0;
-uint64_t timeroffset = 0;
-int64_t TimeOffsetToUptime = 1704067200;
+/* timeroffset + TimeOffsetToUptime are defined in mm_misc_shared.c now. */
+extern uint64_t timeroffset;
+extern int64_t TimeOffsetToUptime;
 volatile unsigned int PauseTimer = 0;
 volatile unsigned int IntPauseTimer = 0;
 volatile unsigned int Timer1 = 0, Timer2 = 0, Timer3 = 0, Timer4 = 0, Timer5 = 0;
@@ -852,7 +853,7 @@ void cmd_Classic(void) {}
 void cmd_configure(void) {}
 void cmd_cpu(void) {}
 void cmd_csubinterrupt(void) {}
-void cmd_date(void) {}
+/* cmd_date provided by mm_misc_shared.c */
 void cmd_device(void) {}
 void cmd_DHT22(void) {}
 void cmd_ds18b20(void) {}
@@ -1286,7 +1287,7 @@ static void host_append_default_ext(char *path, size_t cap, const char *ext) {
  * (which routes through host_fs_posix_try_open → fopen when host_sd_root is
  * set), reads chars via FileGetChar, and tokenises via SaveProgramToFlash
  * (stubbed on host to call load_basic_source + PrepareProgram). */
-void cmd_longString(void) {}
+/* cmd_longString provided by mm_misc_shared.c */
 /* cmd_mkdir / cmd_name / cmd_open are provided by FileIO.c. */
 void cmd_mouse(void) {}
 void cmd_mov(void) {}
@@ -1295,12 +1296,7 @@ void cmd_Nunchuck(void) {}
 void cmd_onewire(void) {}
 void cmd_option(void) {}
 void cmd_out(void) {}
-void cmd_pause(void) {
-    MMFLOAT f = getnumber(cmdline) * 1000.0;
-    if (f < 0) error("Number out of bounds");
-    if (f < 2) return;
-    host_sleep_us((uint64_t)f);
-}
+/* cmd_pause provided by mm_misc_shared.c */
 void cmd_pin(void) {}
 void cmd_pio(void) {}
 void cmd_PIOline(void) {}
@@ -1644,18 +1640,12 @@ void cmd_setpin(void) {
 }
 void cmd_settick(void) {}
 void cmd_sideset(void) {}
-void cmd_sort(void) {}
+/* cmd_sort provided by mm_misc_shared.c */
 void cmd_spi(void) {}
 void cmd_spi2(void) {}
 void cmd_sync(void) {}
 
-void cmd_time(void) {}
-void cmd_timer(void) {
-    uint64_t mytime = host_time_us_64();
-    while (*cmdline && tokenfunction(*cmdline) != op_equal) cmdline++;
-    if (!*cmdline) error("Syntax");
-    timeroffset = mytime - (uint64_t)getint(++cmdline, 0, (int)(mytime / 1000ULL)) * 1000ULL;
-}
+/* cmd_time + cmd_timer provided by mm_misc_shared.c */
 void cmd_update(void) {}
 /* cmd_var is provided by FileIO.c. */
 void cmd_wait(void) {}
@@ -1670,34 +1660,14 @@ void cmd_xmodem(void) {}
  * ========================================================================= */
 
 /* fun_cwd is provided by FileIO.c. */
-void fun_date(void) {
-    sret = GetTempMemory(STRINGSIZE);
-    /* Tests set MMBASIC_HOST_DATE to pin a deterministic value across
-     * interpreter + VM comparison; otherwise fall back to wall clock. */
-    const char *mock = getenv("MMBASIC_HOST_DATE");
-    if (mock && *mock) {
-        strncpy((char *)sret, mock, 15);
-        ((char *)sret)[15] = '\0';
-    } else {
-        time_t now = time(NULL);
-        struct tm lt;
-        localtime_r(&now, &lt);
-        snprintf((char *)sret, 16, "%02d-%02d-%04d",
-                 lt.tm_mday, lt.tm_mon + 1, lt.tm_year + 1900);
-    }
-    CtoM(sret);
-    targ = T_STR;
-}
-void fun_datetime(void) {}
-void fun_day(void) {}
+/* fun_date / fun_datetime / fun_day provided by mm_misc_shared.c */
 void fun_dev(void) {}
 void fun_device(void) {}
 /* fun_dir is provided by FileIO.c. */
 void fun_distance(void) {}
 void fun_ds18b20(void) {}
 /* fun_eof is provided by FileIO.c. */
-void fun_epoch(void) {}
-void fun_format(void) {}
+/* fun_epoch + fun_format provided by mm_misc_shared.c */
 void fun_GPS(void) {}
 void fun_info(void) {
     if (checkstring(ep, (unsigned char *)"HRES")) {
@@ -1719,11 +1689,8 @@ void fun_keydown(void) {
     iret = host_keydown(n);
     targ = T_INT;
 }
-void fun_LCompare(void) {}
-void fun_LGetByte(void) {}
-void fun_LGetStr(void) {}
-void fun_LInstr(void) {}
-void fun_LLen(void) {}
+/* fun_LCompare / fun_LGetByte / fun_LGetStr / fun_LInstr / fun_LLen
+ * provided by mm_misc_shared.c */
 /* fun_loc / fun_lof are provided by FileIO.c. */
 void fun_peek(void) {}
 void fun_pin(void) {
@@ -1737,25 +1704,7 @@ void fun_port(void) {}
 void fun_pulsin(void) {}
 void fun_spi(void) {}
 void fun_spi2(void) {}
-void fun_time(void) {
-    sret = GetTempMemory(STRINGSIZE);
-    const char *mock = getenv("MMBASIC_HOST_TIME");
-    if (mock && *mock) {
-        strncpy((char *)sret, mock, 15);
-        ((char *)sret)[15] = '\0';
-    } else {
-        time_t now = time(NULL);
-        struct tm lt;
-        localtime_r(&now, &lt);
-        snprintf((char *)sret, 16, "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
-    }
-    CtoM(sret);
-    targ = T_STR;
-}
-void fun_timer(void) {
-    fret = (MMFLOAT)(host_time_us_64() - timeroffset) / 1000.0;
-    targ = T_NBR;
-}
+/* fun_time + fun_timer provided by mm_misc_shared.c */
 void fun_touch(void) {}
 
 /* =========================================================================
@@ -2406,9 +2355,23 @@ void InitReservedIO(void) {}
 
 /* Random number functions provided by MATHS.c */
 
-/* GPS timegm/gmtime stubs -- renamed by host_platform.h macros */
-time_t mmbasic_timegm(const struct tm *tm) { struct tm tmp = *tm; return mktime(&tmp); }
-struct tm *mmbasic_gmtime(const time_t *timer) { return localtime(timer); }
+/* host_platform.h renames timegm/gmtime to mmbasic_timegm/mmbasic_gmtime
+ * to sidestep GPS.h's const-vs-non-const signature mismatch with macOS
+ * <time.h>. These stubs must preserve UTC semantics — the previous
+ * implementation used mktime/localtime, which applied the local TZ
+ * offset and silently corrupted EPOCH / DATETIME$ / DAY$ results.
+ * Undefine the macros locally so we can call the real libc funcs. */
+#undef timegm
+#undef gmtime
+extern time_t timegm(struct tm *);
+extern struct tm *gmtime(const time_t *);
+time_t mmbasic_timegm(const struct tm *tm) {
+    struct tm tmp = *tm;
+    return timegm(&tmp);
+}
+struct tm *mmbasic_gmtime(const time_t *timer) {
+    return gmtime(timer);
+}
 
 /* str_replace/STR_REPLACE provided by MATHS.c */
 

@@ -77,6 +77,7 @@ set(PICOMITE_LEGACY_CORE_SOURCES
 	Editor.c
 	XModem.c
 	MM_Misc.c
+	mm_misc_shared.c
 	External.c
 	MATHS.c
 	Onewire.c
