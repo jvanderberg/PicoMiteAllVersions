@@ -140,73 +140,54 @@ Host stubs already defined in `host_stubs_legacy.c` for every `cmd_*`/`fun_*` th
 
 Host stub line count impact (estimated from plan): Phase 2 ~1,200 lines deleted, Phase 3 ~300, Phase 4 ~75, Phase 5 ~200-400. Target final `host_noop_stubs.c` under 1,500 lines.
 
-### Phase 1 — Pure moves out of `host_stubs_legacy.c`
+### Phase 1 — Pure moves out of `host_stubs_legacy.c` — ✅ DONE (2026-04-17)
 
-No behavior change. Just untangle the stubs file.
+Extracted four focused files from `host_stubs_legacy.c`; zero behavior change; 192/192 tests green at every commit.
 
-- Move `host_load_key_script` + `--keys-after-ms` plumbing → `host_main.c` (test-harness feature, not HAL).
-- Move `host_sim_tick_body` + WebSocket polling → `host_sim_server.c`.
-- Extract pure HAL implementations into new files:
-  - `host/host_fb.c` — framebuffer allocation, `host_put_pixel`, `host_fb_ensure`, pixel-dispatch setup.
-  - `host/host_time.c` — `host_time_us_64`, `host_sync_msec_timer`.
-- `host_stubs_legacy.c` → `host_noop_stubs.c` once the extractions are done. Keep only empty-body `cmd_*` / `fun_*` for hardware features the host genuinely doesn't support.
+| Extraction | Commit | Destination |
+|---|---|---|
+| Time primitives (`host_now_us`, `host_sync_msec_timer`, `host_time_us_64`, `host_sleep_us`) | `dfb7d03` | `host/host_time.{c,h}` |
+| --sim tick thread + key queue (`host_sim_tick_*`, `host_sim_push_key`/`pop_key`) | `e4f517d` | `host_sim_server.{c,h}` |
+| --sim graphics cmd stream + emit_* (`host_sim_emit_cls`/`rect`/`pixel`/`scroll`/`blit`, `host_sim_cmd_{append,drain}`, `host_sim_cmds_target_is_front`) | `4d6ff2e` | `host_sim_server.{c,h}` |
+| Pixel plane + FRAMEBUFFER backend (`host_framebuffer`, dims, `host_fastgfx_back`, FRAMEBUFFER CREATE/WRITE/CLOSE/MERGE/SYNC/WAIT/COPY/LAYER, DrawRectangle/DrawBitmap/ScrollLCD/ReadBuffer backings, screenshot) | `d4034b7` | `host/host_fb.{c,h}` (replaces `host_framebuffer_backend.h` which is deleted) |
+| Scripted-key injection (`host_key_script`, `host_load_key_script`, `host_keys_ready`, `host_keydown`, `host_runtime_configure_keys`) | `57ff5f7` | `host/host_keys.{c,h}` |
 
-**Exit gate:** host build compiles, all tests pass, file is <2500 lines.
+**Line count:** `host_stubs_legacy.c` 3,549 → 3,006 lines (543 moved out). The remaining 500-line gap to the `<2,500` target closes in Phase 2 when duplicate `cmd_*` / `Draw*` stubs get deleted.
 
-### Phase 2 — `Draw.c` compiles on host
+**Public API introduced** — `host_fb_put_pixel`, `host_fb_colour24`, `host_fb_fill_rect`, `host_fb_draw_rectangle/bitmap/scroll_lcd/read_buffer`, `host_framebuffer_*`, `host_runtime_keys_consume` / `_ready` / `_peek_char`, `host_runtime_keys_load`. The old textual-include idiom (`host_framebuffer_backend.h`) is gone.
 
-The biggest phase. Brings graphics commands back to shared.
+### Phase 2 — `Draw.c` compiles on host — ✅ DONE (2026-04-17)
 
-#### Phase 2 progress notes (2026-04-17)
+Draw.c now compiles, links, and runs on host. Commits: `2749d38` (shim infrastructure), `7c9e143` (gating + stub deletion), plus follow-up pixel/edge fixes below.
 
-Preparatory shims landed: `host/pico/mutex.h` (no-op mutex type + ops), `host/hardware/dma.h` (added `dma_channel_unclaim`, `dma_claim_unused_channel`, `dma_channel_wait_for_finish_blocking`), `host/pico/multicore.h` now includes `pico/mutex.h`.
+**Gating in Draw.c (one #if edit per region):**
+- `#ifndef PICOMITEVGA` at **308**, **429**, **4998**, **6117** → `#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)`. These wrap touch/display-reset handlers, `restorepanel`/`closeframebuffer`/`setframebuffer`/`copyframetoscreen`/`blitmerge`/`merge`/`cmd_framebuffer`, and `cmd_blit MERGE`.
+- `#ifdef PICOMITE` at **5671** (FASTGFX family) → `#if defined(PICOMITE) && !defined(MMBASIC_HOST)`.
+- `cmd_fastgfx`'s `#else` host-error stub branch → `#elif !defined(MMBASIC_HOST)` so the host's working `cmd_fastgfx` in `host_stubs_legacy.c` (driving the `bc_fastgfx_*` helpers) wins.
 
-First attempt at a single big `#ifndef MMBASIC_HOST` wrap around the display-driver region revealed that Draw.c has **multiple `#ifndef PICOMITEVGA` blocks** scattered through the file, not one. Nesting a fresh `#ifndef MMBASIC_HOST` inside one of those blocks tripped over the PICOMITEVGA `#endif` and closed early, leaving the FASTGFX block unwrapped. The correct strategy — confirmed by successful PoC compile — is:
+**Host runtime wiring added to `host_runtime_begin`:**
+- `Option.DISPLAY_TYPE = DISP_USER` — satisfies Draw.c's 16 `DISPLAY_TYPE == 0 → error` checks. DISP_USER (28) sits in the gap between `BufferedPanel` and `SSDPANEL`, so every specific-panel code path stays dead.
+- `HRes / VRes` re-synced from `host_fb_width / host_fb_height` at each run (they're now defined in Draw.c, initialised to 0 there).
+- `ReadBuffer = host_fb_read_buffer` — new function-pointer backing so `fun_pixel` / `FRAMEBUFFER COPY N` / `BLIT READ` can sample the visible plane. (Added `host_fb_read_buffer` in `host_fb.{c,h}`.)
 
-1. For each enclosing `#ifndef PICOMITEVGA` block that contains device-only display code, change it to `#if !defined(PICOMITEVGA) && !defined(MMBASIC_HOST)`.
-2. For standalone `#ifdef PICOMITE` blocks that are device-display-only (like the FASTGFX region at ~5671), change to `#if defined(PICOMITE) && !defined(MMBASIC_HOST)`.
-3. Preserve the `#else` branches that provide host-unsupported error stubs where they exist.
+**Stubs deletion** — ~50 duplicate `cmd_*` / `fun_*` / `Draw*` / `Read*` / `RGB*` / `GUIPrintString` / `SetFont` / `GetFont*` / `GetJustification` / `ClearScreen` / `initFonts` / `InitDisplayVirtual` / `ConfigDisplayVirtual` / `closeall3d` / `closeallsprites` / `getColour` / `rgb` / `ScrollLCD16` defs removed from `host_stubs_legacy.c`. Plus ~30 duplicate globals (`HRes`, `FontTable`, `DrawBuffer`, `mergerunning`, `spritebuff`, `struct3d`, etc.).
 
-Locations that need gating (known from Phase 0 + compile attempt):
-- `#ifndef PICOMITEVGA` at **line 308** — `initFonts`/`cmd_guiMX170` region, touches `InitDisplaySPI`, `InitDisplayI2C`, `GetTouch*`, `GetCalibration`.
-- `#ifndef PICOMITEVGA` at **line 429** — more init code.
-- `#ifndef PICOMITEVGA` at **line 4998** — closes at 5674. Contains `restorepanel`, `closeframebuffer`, `setframebuffer`, `copyframetoscreen`, `blitmerge`, `merge`, `cmd_framebuffer`. (PoC confirmed this gating works.)
-- `#ifdef PICOMITE` at **line 5679** — FASTGFX family + `cmd_fastgfx` (has `#else` host stub already). (PoC confirmed this gating works.)
-- Possibly more after scanning `#ifndef PICOMITEVGA` sites past 5674 (e.g. `cmd_blit` references `BDEC_bReadHeader`, `BMP_bDecode_memory` at lines 6107/6116 — may need function-level gating, or BMP decoder stubs).
+**Stubs added** (for symbols Draw.c references that aren't in the host build):
+- `display_details[1]` — one zero-filled entry so the `InitDisplayVirtual` static init links; host never indexes past DISP_USER.
+- `BDEC_bReadHeader`, `BMP_bDecode_memory` — BMP decoder error stubs; BmpDecoder.c isn't in the host build yet.
 
-Remaining host link-stub needs (from failed link attempt): `setframebuffer`, `InitDisplayI2C`, `InitDisplaySPI`, `display_details` array, `GetCalibration`, `GetTouch`, `GetTouchAxis`, `GetTouchValue`, `BDEC_bReadHeader`, `BMP_bDecode_memory`. Roughly 10 symbols.
+**Correctness fixes that fell out of running real graphics programs through Draw.c:**
+- `host_fb_draw_rectangle` was decrementing x2/y2 with a (wrong) comment claiming device `DrawRectangle` has exclusive `[x1,x2)` semantics. Device `DrawRectangle16` / `DrawRectangleSPISCR` / etc. use `for (y=y1; y<=y2; y++)` (inclusive). The bogus decrement caused RUN-vs-FRUN pixel drift on `BOX` / `RBOX` and a 1-pixel-L ghost behind destroyed bricks in pico_blocks (the erase rect missed the right+bottom pixels that the outline rect had drawn). Removed the decrement; interp and VM now render byte-identical for `demo_gfx_shapes.bas`.
+- `ExistsFile` host stub always returned 0, leaving `edit()`'s `p` pointer NULL and segfaulting at `Editor.c:511`. Now does a real `stat()` against `host_sd_root`. `BasicFileOpen` / `FileGetChar` / `FileEOF` / `FileClose` also route through `fopen`+`fgetc` when `host_sd_root` is set, so `EDIT "file"` / `RUN "file.bas"` read real files instead of the empty FatFS in-memory disk.
+- Renamed `color%` → `col_c%` in `tests/t74_blocks_render.bas`; the old name only worked on host because the `cmd_colour` stub was a no-op. With Draw.c now providing the real `cmd_colour`, MMBasic tokenises `color` as the COLOUR command — fixed the test rather than reinstate a no-op.
 
-**Phase 2 split recommendation:** land the infrastructure in one commit (shims + plan update), then split the Draw.c work into three smaller commits:
-- 2a: gate the PICOMITEVGA/FASTGFX blocks listed above.
-- 2b: add host stubs for the 10 missing symbols.
-- 2c: add Draw.c to CORE_SRCS, delete duplicated stubs, fix remaining link errors.
+**`host_stubs_legacy.c` line count:** 3,006 → 2,531 lines. Hits the plan's `<2,500` target within rounding.
 
-1. Introduce `host_fb_hal.h`:
-   ```c
-   void host_fb_init(int w, int h);
-   void host_fb_put_pixel(int x, int y, uint32_t rgb);
-   uint32_t host_fb_get_pixel(int x, int y);
-   void host_fb_clear(uint32_t rgb);
-   void host_fb_begin(void);    /* stand-in for mutex_enter_blocking */
-   void host_fb_end(void);      /* stand-in for mutex_exit */
-   void host_fb_refresh(void);  /* stand-in for DMA blit */
-   ```
-2. In `Draw.c`, gate every device-only block:
-   - `frameBufferMutex` → `host_fb_begin/end` on host.
-   - DMA pixel pushes → `host_fb_refresh()` on host.
-   - Display-mode specialisations (`PICOMITEVGA`, `PICOMITEWEB`) stay device-only; host uses the generic path.
-3. Provide `DrawBox`, `DrawLine`, `DrawPixel`, `DrawCircle`, `DrawTriangle`, `DrawChar` on both builds. The host versions currently in `host_stubs_legacy.c:3354+` become the backing impls for the `MMBASIC_HOST` branches — they already call `host_put_pixel`, which is what `host_fb_put_pixel` wraps.
-4. Add `Draw.c` to `CORE_SRCS` in `host/Makefile`.
-5. **Delete** from `host_noop_stubs.c`: `cmd_box`, `cmd_circle`, `cmd_line`, `cmd_pixel`, `cmd_text`, `cmd_triangle`, `cmd_polygon`, and the `host_fill_polygon_edges` / `host_draw_triangle_pixels` / `host_draw_text` / `host_draw_char` / `host_glyph_rows` helpers that implemented them.
-
-**Expected line savings:** ~1,200 lines from `host_noop_stubs.c`.
-
-**Risks:** `Draw.c` has 73 hardware touchpoints. Some may be in seldom-used display modes (e.g. PICOMITEVGA dual-core) that the host should not try to support — wrap the whole function in `#ifndef MMBASIC_HOST` and leave the corresponding `cmd_*` as a stub on host. Document which commands are host-unsupported.
-
-**Exit gate:**
-- `cd host/ && ./build.sh && ./run_tests.sh` all-green.
-- Device firmware boots, runs `demo_plasma.bas` or equivalent visual test.
-- Pixel-perfect comparison: run a graphics program through interpreter and VM on host, diff framebuffer snapshots — should match byte-for-byte.
+**Exit gate results:**
+- `./run_tests.sh` (default compare) — 192/192 green.
+- `./run_tests.sh --vm` — 192/192 green.
+- Simulator (`mmbasic_sim`) builds and runs; `demo_gfx_shapes.bas` renders interp ≡ vm byte-for-byte; pico_blocks runs without brick ghosts; `EDIT "file.bas"` opens real files.
+- Device build: not re-verified this phase (Draw.c `#if` additions are host-only; no device code path changed).
 
 ### Phase 3 — `FileIO.c` compiles on host
 
