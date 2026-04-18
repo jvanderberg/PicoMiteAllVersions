@@ -442,9 +442,33 @@ int host_runtime_timed_out(void) {
  */
 int host_sim_slowdown_us = 0;
 
+#ifdef MMBASIC_WASM
+/*
+ * On WASM, host_sleep_us floors to 1 ms (ASYNCIFY has to unwind to the
+ * browser event loop, which ticks no faster than ~1 ms). If we called
+ * it naively every statement, a setting of even 1 µs would pay a full
+ * ms per statement — orders of magnitude slower than the user wants.
+ *
+ * Accumulate instead: add the requested µs to a carry and only actually
+ * sleep when the carry crosses whole-millisecond boundaries. A 100 µs
+ * setting then translates to "sleep 1 ms every ~10 statements", giving
+ * true sub-millisecond average pacing at a cost of burstier timing.
+ */
+void host_sim_apply_slowdown(void) {
+    if (host_sim_slowdown_us <= 0) return;
+    static uint64_t accumulator_us = 0;
+    accumulator_us += (uint64_t)host_sim_slowdown_us;
+    if (accumulator_us >= 1000ULL) {
+        uint64_t whole_ms = accumulator_us / 1000ULL;
+        accumulator_us -= whole_ms * 1000ULL;
+        host_sleep_us(whole_ms * 1000ULL);
+    }
+}
+#else
 void host_sim_apply_slowdown(void) {
     if (host_sim_slowdown_us > 0) host_sleep_us((uint64_t)host_sim_slowdown_us);
 }
+#endif
 
 #ifdef MMBASIC_WASM
 /* Shared with host_time.c: host_sleep_us stamps this after every

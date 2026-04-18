@@ -225,10 +225,14 @@ void host_fb_draw_bitmap(int x1, int y1, int width, int height, int scale,
 }
 
 void host_fb_read_buffer(int x1, int y1, int x2, int y2, unsigned char *c) {
-    /* Backs the ReadBuffer function pointer — fun_pixel calls this with
-     * a 1x1 rect and a local `int p` as the output, expecting 4 bytes
-     * of packed RGB (low 24 bits). host_framebuffer already stores
-     * 0x00RRGGBB uint32_ts, so a straight memcpy does the right thing. */
+    /* Backs the ReadBuffer function pointer. Device ReadBuffer (e.g.
+     * ReadBuffer555 in Draw.c) writes THREE bytes per pixel packed as
+     * B, G, R — the BMP on-wire order. Every shared caller assumes that
+     * stride (SAVE IMAGE / BLIT READ / TRIANGLE SAVE / GUI LCD scans).
+     *
+     * fun_pixel passes a 1x1 rect and a 4-byte int; it only reads the
+     * low 24 bits, so it doesn't care that we leave the fourth byte
+     * untouched — matches device behaviour exactly. */
     if (!c) return;
     if (!host_framebuffer) host_fb_ensure();
     if (!host_framebuffer) return;
@@ -240,8 +244,10 @@ void host_fb_read_buffer(int x1, int y1, int x2, int y2, unsigned char *c) {
             if (x >= 0 && y >= 0 && x < host_fb_width && y < host_fb_height) {
                 px = host_framebuffer[(size_t)y * (size_t)host_fb_width + (size_t)x];
             }
-            memcpy(c, &px, sizeof(px));
-            c += sizeof(px);
+            c[0] = (unsigned char)(px & 0xFF);          /* B */
+            c[1] = (unsigned char)((px >> 8) & 0xFF);   /* G */
+            c[2] = (unsigned char)((px >> 16) & 0xFF);  /* R */
+            c += 3;
         }
     }
 }

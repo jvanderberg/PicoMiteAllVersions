@@ -35,6 +35,25 @@ void bc_bridge_reset_sync(void) {
  * Sync VM globals -> MMBasic variable table (pre-bridge-call).
  * Creates MMBasic variables if they don't exist yet.
  */
+/* Build the findvar action flags that register a VM-side slot in
+ * g_vartbl with the correct type. Pass T_IMPLIED so findvar marks the
+ * entry as "declared-without-suffix" — a later bare-name lookup from
+ * inside a bridged command handler (e.g. getint(p="W") in cmd_save)
+ * passes its type check against DefaultType | T_IMPLIED instead of
+ * erroring with "Different type already declared".
+ *
+ * Mirrors how the interpreter itself stores DIM-As-type variables:
+ * `Dim W As Integer` stores W with type = T_INT | T_IMPLIED. */
+static int sync_find_action(uint8_t slot_type) {
+    int base = V_FIND | T_IMPLIED;
+    switch (slot_type) {
+        case T_INT: return base | T_INT;
+        case T_NBR: return base | T_NBR;
+        case T_STR: return base | T_STR;
+        default:    return V_FIND;
+    }
+}
+
 static void sync_vm_to_mmbasic(BCVMState *vm) {
     BCCompiler *cs = vm->compiler;
     if (!cs) return;
@@ -51,7 +70,7 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
         namebuf[nlen] = 0;
 
         if (!slot_map_initialized || slot_to_vartbl[i] < 0) {
-            findvar(namebuf, V_FIND);
+            findvar(namebuf, sync_find_action(slot->type));
             slot_to_vartbl[i] = g_VarIndex;
         }
 
@@ -83,16 +102,17 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
         namebuf[nlen] = 0;
 
         BCArray *arr = &vm->arrays[i];
+        int action = sync_find_action(slot->type);
 
         if (!slot_map_initialized || slot_to_vartbl[i] < 0) {
             namebuf[nlen] = '(';
             namebuf[nlen + 1] = ')';
             namebuf[nlen + 2] = 0;
-            if (findvar(namebuf, V_FIND | V_EMPTY_OK | V_NOFIND_NULL) != NULL) {
+            if (findvar(namebuf, action | V_EMPTY_OK | V_NOFIND_NULL) != NULL) {
                 slot_to_vartbl[i] = g_VarIndex;
             } else {
                 namebuf[nlen] = 0;
-                findvar(namebuf, V_FIND);
+                findvar(namebuf, action);
                 slot_to_vartbl[i] = g_VarIndex;
             }
 

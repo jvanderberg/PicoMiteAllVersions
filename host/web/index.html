@@ -16,35 +16,60 @@
         </label>
         <button type="button" id="download-sd">⬇ Download all</button>
         <button type="button" id="reset-sd" title="Wipe /sd/ and repopulate from the bundled demos">⟲ Reset /sd/</button>
-        <label class="select-wrap">
-            Resolution
-            <select id="resolution">
-                <option value="320x240">320 × 240</option>
-                <option value="320x320">320 × 320</option>
-                <option value="480x320">480 × 320</option>
-                <option value="640x360">640 × 360</option>
-                <option value="640x480">640 × 480</option>
-                <option value="800x480">800 × 480</option>
-                <option value="800x600">800 × 600</option>
-                <option value="1024x600">1024 × 600</option>
-                <option value="1024x768">1024 × 768</option>
-            </select>
-        </label>
-        <label class="select-wrap">
-            Memory
-            <select id="memory">
-                <option value="131072">128 KB (RP2040)</option>
-                <option value="307200">300 KB (RP2350)</option>
-                <option value="524288">512 KB</option>
-                <option value="1048576">1 MB</option>
-                <option value="2097152">2 MB</option>
-                <option value="4194304">4 MB</option>
-                <option value="8388608">8 MB</option>
-            </select>
-        </label>
+        <button type="button" id="open-config">⚙ Config</button>
         <span id="hint">Drop .bas files anywhere on the page to import.</span>
     </div>
     <div id="drop-overlay" hidden>Drop to import into /sd/</div>
+
+    <dialog id="config-dialog">
+        <form method="dialog" id="config-form">
+            <h2>Config</h2>
+
+            <label class="config-row">
+                <span class="config-label">Resolution</span>
+                <select id="resolution">
+                    <option value="320x240">320 × 240</option>
+                    <option value="320x320">320 × 320</option>
+                    <option value="480x320">480 × 320</option>
+                    <option value="640x360">640 × 360</option>
+                    <option value="640x480">640 × 480</option>
+                    <option value="800x480">800 × 480</option>
+                    <option value="800x600">800 × 600</option>
+                    <option value="1024x600">1024 × 600</option>
+                    <option value="1024x768">1024 × 768</option>
+                </select>
+            </label>
+            <p class="config-hint">Changing resolution reloads the page.</p>
+
+            <label class="config-row">
+                <span class="config-label">Memory</span>
+                <select id="memory">
+                    <option value="131072">128 KB (RP2040)</option>
+                    <option value="307200">300 KB (RP2350)</option>
+                    <option value="524288">512 KB</option>
+                    <option value="1048576">1 MB</option>
+                    <option value="2097152">2 MB</option>
+                    <option value="4194304">4 MB</option>
+                    <option value="8388608">8 MB</option>
+                </select>
+            </label>
+            <p class="config-hint">Changing memory reloads the page.</p>
+
+            <label class="config-row">
+                <span class="config-label">Slowdown (µs)</span>
+                <span class="slowdown-group">
+                    <input type="range" id="slowdown-range" min="0" max="20" step="1" value="0">
+                    <input type="number" id="slowdown-number" min="0" max="100000" step="1" value="0">
+                </span>
+            </label>
+            <p class="config-hint">Per-statement sleep in microseconds. 0 = uncapped, 10 ≈ device-like. Type into the box for values &gt; 20. Applies immediately.</p>
+
+            <div class="config-actions">
+                <button type="button" id="config-close">Close</button>
+            </div>
+        </form>
+    </dialog>
+
     <script type="module" src="./app.mjs"></script>
 </body>
 </html>

@@ -32,6 +32,8 @@ int host_fs_posix_try_open(char *fname, int fnbr, int mode);
 char host_fs_posix_get_char(int fnbr);
 char host_fs_posix_put_char(char c, int fnbr);
 void host_fs_posix_put_str(int count, char *s, int fnbr);
+int host_fs_posix_read_bytes(int fnbr, void *buf, int count);
+int host_fs_posix_write_bytes(int fnbr, const void *buf, int count);
 int host_fs_posix_eof(int fnbr);
 void host_fs_posix_close(int fnbr);
 int64_t host_fs_posix_loc(int fnbr);

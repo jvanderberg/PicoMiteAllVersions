@@ -448,23 +448,12 @@ void Display_Refresh(void) {}
 void cmd_guiBasic(void) {}
 
 /* =========================================================================
- * BMP / display stubs — Draw.c references these; BmpDecoder.c and
- * SPI-LCD.c aren't in the host build. DISPLAY_TYPE is DISP_USER on
- * host so display_details[] is never indexed in practice; BMP loading
- * falls through to an error.
+ * Display-table placeholder — DISPLAY_TYPE is DISP_USER on host so
+ * display_details[] is never indexed in practice, but Draw.c references
+ * the symbol. BmpDecoder.c (BMP_bDecode / BMP_bDecode_memory /
+ * BDEC_bReadHeader) is now linked into the host build directly; the
+ * earlier error-stubs were removed.
  * ======================================================================= */
 const struct Displays display_details[1] = {{ .ref = 0, .name = {0}, .speed = 0,
     .horizontal = 0, .vertical = 0, .bits = 0, .buffered = 0,
     .CPOL = 0, .CPHASE = 0 }};
-
-unsigned char BDEC_bReadHeader(void *pBmpDec, int fnbr) {
-    (void)pBmpDec; (void)fnbr;
-    error("BMP not supported on host");
-    return 1;
-}
-
-unsigned char BMP_bDecode_memory(int x, int y, int xlen, int ylen, int fnbr, char *p) {
-    (void)x; (void)y; (void)xlen; (void)ylen; (void)fnbr; (void)p;
-    error("BMP not supported on host");
-    return 1;
-}

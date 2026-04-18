@@ -47,7 +47,7 @@ CFLAGS = -O2 -std=gnu11 -funsigned-char \
 LDFLAGS = -sASYNCIFY=1 -sASYNCIFY_STACK_SIZE=65536 \
           -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 \
           -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web \
-          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_wasm_set_framebuffer_size","_wasm_set_heap_size","_malloc","_free"]' \
+          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_wasm_set_framebuffer_size","_wasm_set_heap_size","_wasm_set_slowdown_us","_malloc","_free"]' \
           -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","HEAPU8","HEAPU32","FS","IDBFS"]' \
           -sFORCE_FILESYSTEM=1 \
           -lidbfs.js \
@@ -64,7 +64,7 @@ CORE_SRCS = MMBasic.c Commands.c Functions.c Operators.c MATHS.c \
             gfx_pixel_shared.c gfx_cls_shared.c gfx_text_shared.c \
             gfx_console_shared.c \
             mm_misc_shared.c \
-            Draw.c FileIO.c Audio.c
+            Draw.c FileIO.c Audio.c BmpDecoder.c
 
 # Bytecode VM sources — mirror host/Makefile's BC_SRCS exactly.
 BC_SRCS = bc_alloc.c bc_bridge.c vm_host_fat.c \

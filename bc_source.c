@@ -5897,15 +5897,11 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
-    if (source_keyword(&p, "SAVE")) {
-        source_skip_space(&p);
-        if (!source_keyword(&p, "IMAGE")) {
-            bc_set_error(cs, "Unsupported SAVE form");
-            return;
-        }
-        while (*p && *p != '\'') p++;
-        return;
-    }
+    /* SAVE forms (SAVE IMAGE, SAVE COMPRESSED IMAGE, SAVE DATA, bare SAVE)
+     * drop through to the OP_BRIDGE_CMD fallback at the bottom of this
+     * function. The interpreter's cmd_save handles every variant and
+     * FileIO.c now routes its raw f_write calls through POSIX on host,
+     * so SAVE IMAGE under FRUN writes real BMP files just like RUN. */
 
     if (source_keyword(&p, "RANDOMIZE")) {
         uint8_t type = source_parse_expression(fe, cs, &p);

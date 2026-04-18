@@ -98,6 +98,21 @@ void wasm_set_heap_size(int bytes) {
 }
 
 /*
+ * Live-adjustable throttle. Mirrors the native --slowdown CLI flag:
+ * host_runtime_check_timeout sleeps host_sim_slowdown_us microseconds
+ * per statement/poll-tick, and bc_vm_poll_interrupts does the same on
+ * every backward branch. Safe to call at any time — a plain int store
+ * takes effect on the next poll.
+ */
+extern int host_sim_slowdown_us;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_slowdown_us(int us) {
+    if (us < 0) us = 0;
+    host_sim_slowdown_us = us;
+}
+
+/*
  * Mirrors the MODE_REPL branch of host_main.c: set up the flash buffer,
  * InitBasic, configure runtime/keys, point host_sd_root at MEMFS, then
  * run_repl (inlined — host_main.c's run_repl isn't linked under WASM).

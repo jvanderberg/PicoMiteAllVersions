@@ -977,11 +977,10 @@ char *GetCWD(void)
     }
 }
 /*  @endcond */
-#ifndef MMBASIC_HOST
-/* cmd_LoadImage / cmd_LoadJPGImage depend on BmpDecoder.c / picojpeg.c which
- * are not part of the host build (the host runs without a hardware display
- * so there's nowhere to blit an image anyway). Host gets a no-op stub
- * in host_stubs_legacy.c. */
+/* cmd_LoadImage depends on BmpDecoder.c, which is now linked into the host
+ * build too (DrawPixel routes to host_fb.c). cmd_LoadJPGImage still pulls
+ * picojpeg.c + its raw f_read callback (pjpeg_need_bytes_callback) — left
+ * host-stubbed until that's ported. */
 void cmd_LoadImage(unsigned char *p)
 {
     int fnbr;
@@ -1013,7 +1012,9 @@ void cmd_LoadImage(unsigned char *p)
     if (Option.Refresh)
         Display_Refresh();
 }
-/* 
+
+#ifndef MMBASIC_HOST
+/*
  * @cond
  * The following section will be excluded from the documentation.
  */
@@ -1234,9 +1235,10 @@ void cmd_LoadJPGImage(unsigned char *p)
         Display_Refresh();
 }
 #else /* MMBASIC_HOST */
-/* Host build: no framebuffer destination for the decoded image. LOAD
- * IMAGE / LOAD JPG still needs a linkable symbol (called from cmd_load). */
-void cmd_LoadImage(unsigned char *p) { (void)p; error("Not supported on host"); }
+/* cmd_LoadJPGImage still needs a linkable symbol on host. picojpeg.c and
+ * its pjpeg_need_bytes_callback (raw f_read on a POSIX pseudo-FIL) aren't
+ * ported yet; stub returns an explicit error. cmd_LoadImage IS supported
+ * on host — see the definition above. */
 void cmd_LoadJPGImage(unsigned char *p) { (void)p; error("Not supported on host"); }
 #endif /* !MMBASIC_HOST */
 
@@ -1832,16 +1834,25 @@ void MIPS16 cmd_save(void)
         bmpinfoheader[23] = (unsigned char)((h*w/2) >> 24);
 
         if(filesource[fnbr]==FATFSFILE) {
-            f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
-            f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
-            f_write(FileTable[fnbr].fptr, bmpcolourpallette, 64, &nbr);
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) {
+                host_fs_posix_write_bytes(fnbr, bmpfileheader, 14);
+                host_fs_posix_write_bytes(fnbr, bmpinfoheader, 40);
+                host_fs_posix_write_bytes(fnbr, bmpcolourpallette, 64);
+            } else
+#endif
+            {
+                f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
+                f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
+                f_write(FileTable[fnbr].fptr, bmpcolourpallette, 64, &nbr);
+            }
         } else {
-            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14); 
+            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14);
             if(FSerror>0)FSerror=0;
             ErrorCheck(fnbr);
-            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40); 
+            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40);
             if(FSerror>0)FSerror=0;
-            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpcolourpallette, 64); 
+            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpcolourpallette, 64);
             if(FSerror>0)FSerror=0;
             ErrorCheck(fnbr);
         }
@@ -1884,21 +1895,33 @@ void MIPS16 cmd_save(void)
                 ppp+=2;
             }
             *ppp++=0;*ppp++=0;count+=2;
-            if(filesource[fnbr]==FATFSFILE) f_write(FileTable[fnbr].fptr, foutbuf, count, &nbr);
+            if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+                if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, foutbuf, count);
+                else
+#endif
+                f_write(FileTable[fnbr].fptr, foutbuf, count, &nbr);
+            }
             else {
-                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, foutbuf, count); 
+                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, foutbuf, count);
             }
             if(FSerror>0)FSerror=0;
             ErrorCheck(fnbr);
-            
+
         }
 #ifdef PICOMITEVGA
         mergedread=0;
 #endif
         foutbuf[0]=0;foutbuf[1]=1;
-        if(filesource[fnbr]==FATFSFILE) f_write(FileTable[fnbr].fptr, foutbuf, 2, &nbr);
+        if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, foutbuf, 2);
+            else
+#endif
+            f_write(FileTable[fnbr].fptr, foutbuf, 2, &nbr);
+        }
         else {
-                FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, foutbuf, 2); 
+                FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, foutbuf, 2);
         }
         if(FSerror>0)FSerror=0;
         ErrorCheck(fnbr);
@@ -1987,16 +2010,25 @@ void MIPS16 cmd_save(void)
 	        bmpinfoheader[23] = (unsigned char)((h*w/2) >> 24);
 	
 	        if(filesource[fnbr]==FATFSFILE) {
-	            f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
-	            f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
-	            f_write(FileTable[fnbr].fptr, bmpcolourpallette, 64, &nbr);
+#ifdef MMBASIC_HOST
+	            if (host_fs_posix_active(fnbr)) {
+	                host_fs_posix_write_bytes(fnbr, bmpfileheader, 14);
+	                host_fs_posix_write_bytes(fnbr, bmpinfoheader, 40);
+	                host_fs_posix_write_bytes(fnbr, bmpcolourpallette, 64);
+	            } else
+#endif
+	            {
+	                f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
+	                f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
+	                f_write(FileTable[fnbr].fptr, bmpcolourpallette, 64, &nbr);
+	            }
 	        } else {
-	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14); 
+	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14);
 	            if(FSerror>0)FSerror=0;
 	            ErrorCheck(fnbr);
-	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40); 
+	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40);
 	            if(FSerror>0)FSerror=0;
-	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpcolourpallette, 64); 
+	            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpcolourpallette, 64);
 	            if(FSerror>0)FSerror=0;
 	            ErrorCheck(fnbr);
 	        }
@@ -2022,16 +2054,28 @@ void MIPS16 cmd_save(void)
 	                    *pp = fcolour<<4;
 	                }
 	            }
-	            if(filesource[fnbr]==FATFSFILE) f_write(FileTable[fnbr].fptr, outbuf, w / 2, &nbr);
+	            if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+	                if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, outbuf, w / 2);
+	                else
+#endif
+	                f_write(FileTable[fnbr].fptr, outbuf, w / 2, &nbr);
+	            }
 	            else {
-	                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, outbuf, w /2); 
+	                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, outbuf, w /2);
 	            }
 	            if(FSerror>0)FSerror=0;
 	            ErrorCheck(fnbr);
 	            if ((w / 2) % 4 != 0){
-	                if(filesource[fnbr]==FATFSFILE)f_write(FileTable[fnbr].fptr, bmppad, 4 - ((w / 2 ) % 4), &nbr);
+	                if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+	                    if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, bmppad, 4 - ((w / 2 ) % 4));
+	                    else
+#endif
+	                    f_write(FileTable[fnbr].fptr, bmppad, 4 - ((w / 2 ) % 4), &nbr);
+	                }
 	                else {
-	                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmppad, 4 - ((w / 2 ) % 4)); 
+	                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmppad, 4 - ((w / 2 ) % 4));
 	                }
 	                if(FSerror>0)FSerror=0;
 	                ErrorCheck(fnbr);
@@ -2090,13 +2134,21 @@ void MIPS16 cmd_save(void)
         bmpinfoheader[10] = (unsigned char)(h >> 16);
         bmpinfoheader[11] = (unsigned char)(h >> 24);
         if(filesource[fnbr]==FATFSFILE) {
-            f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
-            f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) {
+                host_fs_posix_write_bytes(fnbr, bmpfileheader, 14);
+                host_fs_posix_write_bytes(fnbr, bmpinfoheader, 40);
+            } else
+#endif
+            {
+                f_write(FileTable[fnbr].fptr, bmpfileheader, 14, &nbr);
+                f_write(FileTable[fnbr].fptr, bmpinfoheader, 40, &nbr);
+            }
         } else {
-            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14); 
+            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpfileheader, 14);
             if(FSerror>0)FSerror=0;
             ErrorCheck(fnbr);
-            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40); 
+            FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmpinfoheader, 40);
             if(FSerror>0)FSerror=0;
             ErrorCheck(fnbr);
         }
@@ -2104,16 +2156,28 @@ void MIPS16 cmd_save(void)
         for (i = y + h - 1; i >= y; i--)
         {
             ReadBuffer(x, i, x + w - 1, i, flinebuf);
-            if(filesource[fnbr]==FATFSFILE) f_write(FileTable[fnbr].fptr, flinebuf, w * 3, &nbr);
+            if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+                if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, flinebuf, w * 3);
+                else
+#endif
+                f_write(FileTable[fnbr].fptr, flinebuf, w * 3, &nbr);
+            }
             else {
-                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, flinebuf, w * 3); 
+                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, flinebuf, w * 3);
                     if(FSerror>0)FSerror=0;
                     ErrorCheck(fnbr);
             }
             if ((w * 3) % 4 != 0){
-                if(filesource[fnbr]==FATFSFILE)f_write(FileTable[fnbr].fptr, bmppad, 4 - ((w * 3) % 4), &nbr);
+                if(filesource[fnbr]==FATFSFILE) {
+#ifdef MMBASIC_HOST
+                    if (host_fs_posix_active(fnbr)) host_fs_posix_write_bytes(fnbr, bmppad, 4 - ((w * 3) % 4));
+                    else
+#endif
+                    f_write(FileTable[fnbr].fptr, bmppad, 4 - ((w * 3) % 4), &nbr);
+                }
                 else {
-                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmppad, 4 - ((w * 3) % 4)); 
+                    FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, bmppad, 4 - ((w * 3) % 4));
                     if(FSerror>0)FSerror=0;
                     ErrorCheck(fnbr);
                 }
@@ -3722,6 +3786,18 @@ void B2B(unsigned char *fromfile, unsigned char *tofile){
     {
         FileClose(fnbr1);
     }
+#ifdef MMBASIC_HOST
+    /* POSIX-backed fnbrs have a stub FIL* whose FatFs state is zeroed,
+     * so f_eof/f_read/f_write all fail validate() and silently produce
+     * an empty copy. Route through host_fs_posix on host. */
+    if (host_fs_posix_active(fnbr1) && host_fs_posix_active(fnbr2)) {
+        for (;;) {
+            int n = host_fs_posix_read_bytes(fnbr1, buff, sizeof(buff));
+            if (n <= 0) break;
+            host_fs_posix_write_bytes(fnbr2, buff, n);
+        }
+    } else
+#endif
     while (!f_eof(FileTable[fnbr1].fptr))
     {
         FSerror = f_read(FileTable[fnbr1].fptr, buff, 512, &nbr);

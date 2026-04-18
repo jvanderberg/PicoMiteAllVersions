@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
+#include <sys/stat.h>
 
 /* Forward-declared to avoid pulling in unistd.h here, which conflicts with
  * MMBasic's own setmode(). */
@@ -573,7 +574,12 @@ int main(int argc, char **argv) {
     const char *listen_addr = "127.0.0.1";
     int listen_port = 8080;
     const char *resolution_arg = NULL;
-    const char *web_root = "web";
+    /* `../web` is the sim UI's canonical home (repo-root `web/`). The
+     * `host/web/` directory now holds the WASM bundle (picomite.wasm,
+     * app.mjs for the browser-native port) — if we default to `web`
+     * here, the sim serves the WASM UI instead of its own WebSocket-
+     * backed page. Keep --web-root as an escape hatch. */
+    const char *web_root = "../web";
 
     /* First pass: scan for --immediate / --try-compile / --repl / --sim
      * (no filename needed for these modes). Accept `--foo=bar` as well as
@@ -690,6 +696,20 @@ int main(int argc, char **argv) {
     host_runtime_configure(timeout_ms, screenshot_path);
     host_runtime_configure_keys(key_script, key_delay_ms);
 
+    /* --sd-root: route file I/O through POSIX (same path web host /
+     * --repl / --sim use) instead of the vm_host_fat RAM disk. Applies
+     * to every non-REPL / non-SIM mode — script, immediate, try-compile.
+     * Tests that exercise the POSIX code path opt in via a --sd-root=
+     * entry in RUN_ARGS. Auto-mkdir so tests don't need a shell step. */
+    static char script_sd_root[4096];
+    if (sd_root_arg && *sd_root_arg &&
+        mode != MODE_REPL && mode != MODE_SIM) {
+        strncpy(script_sd_root, sd_root_arg, sizeof(script_sd_root) - 1);
+        mkdir(script_sd_root, 0755);  /* ignore EEXIST */
+        extern const char *host_sd_root;
+        host_sd_root = script_sd_root;
+    }
+
     /* Immediate mode: compile+execute a single BASIC line */
     if (mode == MODE_IMMEDIATE) {
         int rc;
@@ -746,7 +766,11 @@ int main(int argc, char **argv) {
          * probe common locations first. */
         static char resolved_web_root[PATH_MAX];
         const char *final_web_root = web_root;
-        const char *candidates[] = { web_root, "web", "../web", NULL };
+        /* Candidate order: explicit --web-root first, then the sim UI
+         * (../web, repo-root), then the WASM bundle as a last resort
+         * (mostly so the sim still boots inside a pruned checkout that
+         * only has host/web/). */
+        const char *candidates[] = { web_root, "../web", "web", NULL };
         for (int ci = 0; candidates[ci]; ++ci) {
             char probe[PATH_MAX];
             snprintf(probe, sizeof(probe), "%s/index.html", candidates[ci]);
@@ -761,6 +785,8 @@ int main(int argc, char **argv) {
             fprintf(stderr,
                     "Warning: could not locate web root (tried '%s', 'web', '../web'). "
                     "Pass --web-root DIR.\n", web_root);
+        } else {
+            fprintf(stderr, "Serving web UI from: %s\n", final_web_root);
         }
 
         extern int host_sim_active;

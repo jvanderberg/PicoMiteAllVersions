@@ -45,17 +45,29 @@ Pradeep Budagutta    03-Mar-2008    First release
 #include "Hardware_Includes.h"
 //** SD CARD INCLUDES ***********************************************************
 #include "ff.h"
+#ifdef MMBASIC_HOST
+#include "host_fs_hal.h"
+#endif
 
 
 #define  IMG_FILE   fnbr
 int IMG_FREAD(int fnbr, void *buff, int count, unsigned int *read){
+#ifdef MMBASIC_HOST
+        /* POSIX-backed fnbrs have a stub FIL*; raw f_read fails validate().
+         * Route through host_fs_posix so BMP_bDecode reads actual bytes. */
+        if (host_fs_posix_active(IMG_FILE)) {
+                int n = host_fs_posix_read_bytes(IMG_FILE, buff, count);
+                if (read) *read = (unsigned int)(n < 0 ? 0 : n);
+                return n < 0 ? 1 : 0;
+        }
+#endif
         if(filesource[IMG_FILE]==FATFSFILE){
                 return f_read(FileTable[IMG_FILE].fptr, buff, count, (UINT *)read);
         } else {
                 int n=lfs_file_read(&lfs, FileTable[IMG_FILE].lfsptr, buff, count);
                 if(n>=0)return 0;
                 else return n;
-        }       
+        }
 }
 #define  IMG_vSetboundaries()
 #define  IMG_vLoopCallback()
@@ -69,7 +81,18 @@ union colourmap
 #define  IMG_vSetColor2(red, green, blue)    {colour2.rgbbytes[2] = red; colour2.rgbbytes[1] = green; colour2.rgbbytes[0] = blue;}
 #define  IMG_vPutPixel(xx, yy)              DrawPixel(xx + x, yy + y, colour.rgb)
 #define  IMG_vPutPixel2(xx, yy)              DrawPixel(xx + x, yy + y, colour2.rgb)
+#ifdef MMBASIC_HOST
+/* On arm (device) and 32-bit targets `long` is 32 bits so the 4-byte
+ * IMG_FREAD(..., &lLong, 4, &nbr) header reads match. On 64-bit macOS /
+ * wasm host builds `long` is 64 bits, so those 4-byte reads leave the
+ * upper half uninitialised and smear garbage into lWidth / lHeight /
+ * lImageOffset. Pin to int32_t for host builds only; device keeps the
+ * original `long` so the on-wire layout and any compiler-specific
+ * format-string expectations are byte-identical. */
+#define LONG int32_t
+#else
 #define LONG long
+#endif
 int IMG_wImageWidth, IMG_wImageHeight;
 int bufpos;
 

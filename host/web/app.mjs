@@ -20,8 +20,13 @@ const canvas = document.getElementById('screen');
 const uploadInput = document.getElementById('upload');
 const downloadBtn = document.getElementById('download-sd');
 const resetBtn = document.getElementById('reset-sd');
+const openConfigBtn = document.getElementById('open-config');
+const configDialog = document.getElementById('config-dialog');
+const configCloseBtn = document.getElementById('config-close');
 const resolutionSelect = document.getElementById('resolution');
 const memorySelect = document.getElementById('memory');
+const slowdownRange = document.getElementById('slowdown-range');
+const slowdownNumber = document.getElementById('slowdown-number');
 const dropOverlay = document.getElementById('drop-overlay');
 const hintEl = document.getElementById('hint');
 const ctx = canvas.getContext('2d', { alpha: false });
@@ -117,6 +122,43 @@ function reloadWithMemory(bytes) {
     url.searchParams.set('mem', String(bytes));
     window.location.href = url.toString();
 }
+
+// --- Slowdown selection -------------------------------------------------
+//
+// Applies live via wasm_set_slowdown_us — no reload needed. Unit is
+// MICROSECONDS, matching the native --slowdown flag. In the browser the
+// raw per-statement sleep floors to 1 ms (ASYNCIFY unwinds to the event
+// loop), so host_sim_apply_slowdown on WASM uses an accumulator: small
+// µs values translate to "sleep 1 ms every N statements". That gives
+// true sub-ms average pacing without the 1-ms-per-statement cliff we
+// had when we treated the UI value as ms.
+//
+// Priority: URL query > localStorage > 0 (uncapped).
+
+const DEFAULT_SLOWDOWN_US = 0;
+const SLOW_KEY = 'picomite.slowdown.us';
+const SLOW_MAX_US = 100000;  // 100 ms per statement — silly ceiling
+
+function parseSlowdown(s) {
+    const n = parseInt(String(s ?? '').trim(), 10);
+    if (!Number.isFinite(n)) return null;
+    if (n < 0 || n > SLOW_MAX_US) return null;
+    return n;
+}
+
+function pickSlowdown() {
+    const params = new URLSearchParams(window.location.search);
+    return parseSlowdown(params.get('slow'))
+        ?? parseSlowdown(localStorage.getItem(SLOW_KEY))
+        ?? DEFAULT_SLOWDOWN_US;
+}
+
+function applySlowdownInputs(us) {
+    slowdownNumber.value = String(us);
+    slowdownRange.value = String(Math.min(us, parseInt(slowdownRange.max, 10)));
+}
+
+let applySlowdownLive = () => {};  // wired up once the wasm instance exists
 
 function setStatus(text, isError = false) {
     statusEl.textContent = text;
@@ -576,9 +618,50 @@ try {
         reloadWithMemory(parseInt(memorySelect.value, 10));
     });
 
+    let slowdownUs = pickSlowdown();
+    applySlowdownInputs(slowdownUs);
+
+    // Dialog open/close.
+    openConfigBtn.addEventListener('click', () => {
+        if (typeof configDialog.showModal === 'function') {
+            configDialog.showModal();
+        } else {
+            configDialog.setAttribute('open', '');
+        }
+    });
+    configCloseBtn.addEventListener('click', () => configDialog.close());
+
     const instance = await Module({
         print:    (line) => console.log('[picomite]', line),
         printErr: (line) => console.warn('[picomite]', line),
+    });
+
+    // Wire live slowdown updates now that the instance exists. Both
+    // sides in µs, matching the native --slowdown flag. The WASM-side
+    // host_sim_apply_slowdown accumulates µs and only sleeps on whole-ms
+    // boundaries, so sub-ms values are meaningful here.
+    applySlowdownLive = (us) => {
+        slowdownUs = us;
+        try { localStorage.setItem(SLOW_KEY, String(us)); } catch (_) {}
+        instance._wasm_set_slowdown_us(us);
+    };
+    applySlowdownLive(slowdownUs);
+
+    const clampSlowInput = (raw) => {
+        let n = parseInt(raw, 10);
+        if (!Number.isFinite(n) || n < 0) n = 0;
+        if (n > SLOW_MAX_US) n = SLOW_MAX_US;
+        return n;
+    };
+    slowdownRange.addEventListener('input', () => {
+        const n = clampSlowInput(slowdownRange.value);
+        slowdownNumber.value = String(n);
+        applySlowdownLive(n);
+    });
+    slowdownNumber.addEventListener('input', () => {
+        const n = clampSlowInput(slowdownNumber.value);
+        slowdownRange.value = String(Math.min(n, parseInt(slowdownRange.max, 10)));
+        applySlowdownLive(n);
     });
 
     // Both setters MUST run before wasm_boot — InitBasic inside
@@ -616,6 +699,7 @@ try {
         ? `${(memoryBytes / (1024 * 1024)).toFixed(memoryBytes % (1024 * 1024) ? 1 : 0)} MB`
         : `${Math.round(memoryBytes / 1024)} KB`;
     const parts = [`${fbWidth}×${fbHeight}`, `${memLabel} heap`];
+    if (slowdownUs > 0) parts.push(`slowdown ${slowdownUs} µs`);
     if (demos.length) parts.push(`${demos.length} demos in /sd/`);
     setStatus(`Ready — ${parts.join(', ')}. Type FILES.`);
 

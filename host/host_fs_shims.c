@@ -259,6 +259,21 @@ void host_fs_posix_put_str(int count, char *s, int fnbr) {
         error("File error");
 }
 
+/* Block read/write helpers for SAVE IMAGE and COPY. The FilePutStr /
+ * FileGetChar primitives live on the BASIC text-mode path; these two
+ * bypass the text helpers and talk straight to fread/fwrite so callers
+ * that track their own byte counts (f_read/f_write equivalents) don't
+ * pay a per-byte cost. Returns bytes actually read/written. */
+int host_fs_posix_read_bytes(int fnbr, void *buf, int count) {
+    if (count <= 0) return 0;
+    return (int)fread(buf, 1, (size_t)count, host_posix_files[fnbr]);
+}
+
+int host_fs_posix_write_bytes(int fnbr, const void *buf, int count) {
+    if (count <= 0) return 0;
+    return (int)fwrite(buf, 1, (size_t)count, host_posix_files[fnbr]);
+}
+
 int host_fs_posix_eof(int fnbr) {
     FILE *fp = host_posix_files[fnbr];
     /* ANSI feof only returns true after a read that hit EOF — BASIC's EOF
