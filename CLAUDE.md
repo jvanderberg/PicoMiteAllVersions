@@ -1,1 +1,3 @@
 - Never dismiss failing tests as "pre-existing." All tests must pass. If a test fails, investigate and fix it before moving on.
+- Every bug you find gets fixed, full stop. Don't label bugs as "pre-existing," "not a regression," or "outside scope" — that framing is irrelevant and signals blame-deflection. Fix the bug, describe the fix, move on.
+- The default `./run_tests.sh` invocation is the correctness gate. It passes 192/192 at all times. `--interp` and `--vm` are diagnostic overrides that force every test into one engine regardless of its `RUN_ARGS:` header — they will fail tests that are intentionally VM-only (e.g. ones using `MULSHR` or `'!ASM`). Don't invoke those modes as a smoke check and don't dismiss failures from them.

@@ -37,6 +37,36 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "diskio.h"
 #include "pico/stdlib.h"
 #include "hardware/flash.h"
+#ifdef MMBASIC_HOST
+/* Host build routes file primitives through POSIX (REPL / --sim) or the
+ * in-memory FatFS RAM disk (test harness). See host/host_fs_hal.h. */
+#include "host_fs_hal.h"
+#include "vm_host_fat.h"
+#include "vm_sys_file.h"
+/* Redirect FatFS directory-walker calls to the host wrappers. In REPL /
+ * --sim (host_sd_root set) they walk the user's real directory via
+ * host_fs_walk_*; without host_sd_root they delegate straight to FatFS
+ * against vm_host_fat. Keeps cmd_files / cmd_copy / cmd_kill / fun_dir
+ * on one shared code path — the interpreter and the VM (via
+ * OP_BRIDGE_CMD) both hit FileIO.c's native implementations. */
+extern FRESULT host_f_findfirst(DIR *dp, FILINFO *fi, const TCHAR *path,
+                                const TCHAR *pattern);
+extern FRESULT host_f_findnext(DIR *dp, FILINFO *fi);
+extern FRESULT host_f_closedir(DIR *dp);
+extern FRESULT host_f_unlink(const TCHAR *path);
+extern FRESULT host_f_rename(const TCHAR *from, const TCHAR *to);
+extern FRESULT host_f_mkdir(const TCHAR *path);
+extern FRESULT host_f_chdir(const TCHAR *path);
+extern FRESULT host_f_getcwd(TCHAR *buff, UINT len);
+#define f_findfirst(d,fi,path,pat) host_f_findfirst(d,fi,path,pat)
+#define f_findnext(d,fi) host_f_findnext(d,fi)
+#define f_closedir(d) host_f_closedir(d)
+#define f_unlink(p) host_f_unlink(p)
+#define f_rename(a,b) host_f_rename(a,b)
+#define f_mkdir(p) host_f_mkdir(p)
+#define f_chdir(p) host_f_chdir(p)
+#define f_getcwd(b,l) host_f_getcwd(b,l)
+#endif
 #include "hardware/irq.h"
 #if defined(PICOCALC) && defined(rp2350)
 #include "bc_alloc.h"
@@ -310,13 +340,16 @@ static void restore_psram_settings(void) {
 
 void disable_interrupts_pico(void)
 {
+#ifndef MMBASIC_HOST
 #ifdef rp2350
     save_psram_settings();
 #endif
     irqs=save_and_disable_interrupts();
+#endif /* !MMBASIC_HOST */
 }
 void enable_interrupts_pico(void)
 {
+#ifndef MMBASIC_HOST
 #ifdef rp2350
     restore_psram_settings();
 #endif
@@ -324,6 +357,7 @@ void enable_interrupts_pico(void)
     SecondsTimer+=(time_us_64()/1000 - mSecTimer);
     mSecTimer=time_us_64()/1000;
     irqs=0;
+#endif /* !MMBASIC_HOST */
 }
 void ErrorThrow(int e, int type)
 {
@@ -404,16 +438,31 @@ void MIPS16 cmd_disk(void){
     char *p=(char *)getCstring(cmdline);
     char *b=GetTempMemory(STRINGSIZE);
     for(int i=0;i<strlen(p);i++)b[i]=toupper(p[i]);
-    if(strcmp(b, "A:/FORMAT")==0)  { 
+#ifdef MMBASIC_HOST
+    /* Host has only one logical disk (B:, backed by POSIX under
+     * host_sd_root or the vm_host_fat RAM disk). The A: drive is the
+     * device's LittleFS-on-flash filesystem; LFS is stubbed on host,
+     * so switching to A: lands on a broken branch and subsequent
+     * FILES / COPY / etc. trip on the stubbed lfs_* calls (one
+     * side-effect being console-routing corruption). Treat any A:
+     * form as an error instead. */
+    if (strcmp(b, "A:/FORMAT") == 0 || strcmp(b, "A:") == 0)
+        error("A: drive not available on host");
+#endif
+    if(strcmp(b, "A:/FORMAT")==0)  {
         FatFSFileSystem = FatFSFileSystemSave = 0;
         ResetFlashStorage(1);
-        return; 
+        return;
     }
     if(strcmp(b, "A:")==0)  { FatFSFileSystem = FatFSFileSystemSave = 0;  return; }
     if(strcmp(b, "B:")==0)    {
+#ifndef MMBASIC_HOST
+        /* Host: B: is always available (backed by vm_host_fat RAM disk
+         * or POSIX via host_sd_root). No SD_CS pin to check. */
         if(!(Option.SD_CS || Option.CombinedCS))error("B: drive not enabled");
+#endif
         FatFSFileSystem = FatFSFileSystemSave = 1;
-        return; 
+        return;
     }
     error((char *)"Syntax");
 }
@@ -928,6 +977,11 @@ char *GetCWD(void)
     }
 }
 /*  @endcond */
+#ifndef MMBASIC_HOST
+/* cmd_LoadImage / cmd_LoadJPGImage depend on BmpDecoder.c / picojpeg.c which
+ * are not part of the host build (the host runs without a hardware display
+ * so there's nowhere to blit an image anyway). Host gets a no-op stub
+ * in host_stubs_legacy.c. */
 void cmd_LoadImage(unsigned char *p)
 {
     int fnbr;
@@ -1179,6 +1233,12 @@ void cmd_LoadJPGImage(unsigned char *p)
     if (Option.Refresh)
         Display_Refresh();
 }
+#else /* MMBASIC_HOST */
+/* Host build: no framebuffer destination for the decoded image. LOAD
+ * IMAGE / LOAD JPG still needs a linkable symbol (called from cmd_load). */
+void cmd_LoadImage(unsigned char *p) { (void)p; error("Not supported on host"); }
+void cmd_LoadJPGImage(unsigned char *p) { (void)p; error("Not supported on host"); }
+#endif /* !MMBASIC_HOST */
 
 // search for a volume label, directory or file
 // s$ = DIR$(fspec, DIR|FILE|ALL)       will return the first entry
@@ -1363,7 +1423,14 @@ void MIPS16 cmd_rmdir(void)
  * The following section will be excluded from the documentation.
  */
 
-void chdir(char *p){
+/* Renamed from the original `chdir` to dodge a link-time collision with
+ * libc's POSIX chdir(3) on the host build. host_fs_chdir() in host_fs.c
+ * calls libc's chdir directly; if this function were still named `chdir`
+ * the linker would bind host_fs.c's call to this function instead, and
+ * host_f_chdir → host_fs_chdir → mmbasic_chdir → host_f_chdir would
+ * recurse forever. Commands.c had an `extern void chdir(char *p)` that
+ * was unused — it's been removed. */
+void mmbasic_chdir(char *p){
 	int i;
     char rp[STRINGSIZE],oldfilepath[STRINGSIZE];
     if(drivecheck(p,&i)!=FatFSFileSystem+1) error("Only valid on current drive");
@@ -1409,7 +1476,7 @@ void chdir(char *p){
 void cmd_chdir(void){
     char *p;
     p = (char *)getFstring(cmdline);  // get the directory name and convert to a standard C string
-    chdir(p);
+    mmbasic_chdir(p);
 }
 void fun_cwd(void)
 {
@@ -1632,6 +1699,9 @@ void cmd_seek(void)
     idx = getint(argv[2], 1, 0x7FFFFFFF) - 1;
     if (idx < 0)
         idx = 0;
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) { host_fs_posix_seek(fnbr, idx); return; }
+#endif
     positionfile(fnbr, idx);
 }
 
@@ -2303,7 +2373,7 @@ int FileLoadCMM2Program(char *fname, bool message) {
     strcpy(pp,CurrentFileSystem? "B:":"A:");
     strcat(pp,fullpathname[FatFSFileSystem]);
     strcat(pp,"/");
-    chdir(pp);
+    mmbasic_chdir(pp);
     if (!BasicFileOpen(p, fnbr, FA_READ)) return false;
     p = buf = GetMemory(loadbuffsize);
     *p++='\'';
@@ -3171,6 +3241,21 @@ void MIPS16 cmd_load(void)
     }
     SetFont(oldfont);
     PromptFont=oldfont;
+#ifdef MMBASIC_HOST
+    /* Host's SaveProgramToFlash stub calls load_basic_source, which
+     * tokenises each line of the loaded file into tknbuf — clobbering
+     * the tknbuf that ExecuteProgram is currently iterating over. On
+     * return, nextstmt points into corrupted bytes (the tail of the
+     * last-tokenised line from the loaded program) and ExecuteProgram
+     * trips "Unknown command". Bounce back to the prompt so the
+     * iterator never resumes. Also zero inpbuf — tokenise wrote each
+     * line of the loaded file through it, so the prompt loop's next
+     * EditInputLine would otherwise echo the tail of the last line as
+     * if the user had typed it. Device SaveProgramToFlash uses its own
+     * tokeniser buffer and is unaffected. */
+    memset(inpbuf, 0, STRINGSIZE);
+    longjmp(mark, 1);
+#endif
 }
 /* 
  * @cond
@@ -3179,6 +3264,9 @@ void MIPS16 cmd_load(void)
 char __not_in_flash_func(FileGetChar)(int fnbr)
 {
     char ch;
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) return host_fs_posix_get_char(fnbr);
+#endif
     if(filesource[fnbr]==FLASHFILE){
         FSerror=lfs_file_read(&lfs, FileTable[fnbr].lfsptr, &ch, 1);
         if(FSerror>0)FSerror=0;
@@ -3212,6 +3300,9 @@ char __not_in_flash_func(FileGetChar)(int fnbr)
 
 char __not_in_flash_func(FilePutChar)(char c, int fnbr)
 {
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) return host_fs_posix_put_char(c, fnbr);
+#endif
     if(filesource[fnbr]==FLASHFILE){
         FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, &c, 1);
         if(FSerror!=1)FSerror=-5;
@@ -3234,6 +3325,9 @@ char __not_in_flash_func(FilePutChar)(char c, int fnbr)
 int FileEOF(int fnbr)
 {
     int i;
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) return host_fs_posix_eof(fnbr);
+#endif
     if(filesource[fnbr]==FATFSFILE){
         if (!InitSDCard())
             return 0;
@@ -3307,6 +3401,16 @@ int ForceFileClose(int fnbr)
 {
     FatFSFileSystem = FatFSFileSystemSave;
     int type=NONEFILE;
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) {
+        host_fs_posix_close(fnbr);
+        buffpointer[fnbr] = 0;
+        lastfptr[fnbr] = -1;
+        bw[fnbr] = -1;
+        fmode[fnbr] = 0;
+        return FATFSFILE;
+    }
+#endif
     if (fnbr && FileTable[fnbr].fptr != NULL && filesource[fnbr]==FATFSFILE)
     {
         
@@ -3366,6 +3470,9 @@ void MIPS16 CloseAllFiles(void)
 
 void FilePutStr(int count, char *c, int fnbr)
 {
+#ifdef MMBASIC_HOST
+    if (host_fs_posix_active(fnbr)) { host_fs_posix_put_str(count, c, fnbr); return; }
+#endif
    if(filesource[fnbr]==FLASHFILE){
 //        int err;
         FSerror=lfs_file_write(&lfs, FileTable[fnbr].lfsptr, c, count);
@@ -3404,6 +3511,17 @@ void MMfputs(unsigned char *p, int filenbr)
 int InitSDCard(void)
 {
     if(!FatFSFileSystem) return 1;
+#ifdef MMBASIC_HOST
+    /* Host FatFS is vm_host_fat.c's in-memory disk (or the POSIX dir
+     * walker when host_sd_root is set). No SPI/SD pins to validate —
+     * just make sure the RAM disk is mounted. Also clear SDCardStat's
+     * "no disk / not initialised" bits: they block fun_dir and other
+     * callers that test them after a successful init (`SDCardStat &
+     * STA_NOINIT` → "SD card not found" on host). */
+    if (vm_host_fat_mount() != FR_OK) error("Host FAT init failed");
+    SDCardStat = 0;
+    return 2;
+#endif
     int i;
     ErrorThrow(0,NONEFILE); // reset mm.errno to zero
     if (((IsInvalidPin(Option.SD_CS) && !Option.CombinedCS) || (IsInvalidPin(Option.SYSTEM_MOSI) && IsInvalidPin(Option.SD_MOSI_PIN)) || (IsInvalidPin(Option.SYSTEM_MISO) && IsInvalidPin(Option.SD_MISO_PIN)) || (IsInvalidPin(Option.SYSTEM_CLK) && IsInvalidPin(Option.SD_CLK_PIN))))
@@ -3463,6 +3581,15 @@ int BasicFileOpen(char *fname, int fnbr, int mode)
 {
     if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
     if (FileTable[fnbr].com != 0) error("File number already open");
+#ifdef MMBASIC_HOST
+    /* REPL / --sim: when host_sd_root is set, open the real file via
+     * fopen(); subsequent FileGetChar / FilePutChar / FileClose / EOF /
+     * LOC / LOF / SEEK / FLUSH primitives all detect this fnbr in the
+     * POSIX side table and dispatch to host_fs_posix_*. If host_sd_root
+     * is NULL (test harness) the helper returns 0 and we fall through to
+     * the regular path below (FatFS in-memory disk via vm_host_fat.c). */
+    if (host_fs_posix_try_open(fname, fnbr, mode)) return 1;
+#endif
     char q[FF_MAX_LFN]={0};
     getfullfilename(fname,q);
     if(FatFSFileSystem){
@@ -4071,12 +4198,18 @@ void MIPS16 cmd_files(void)
                 error("Syntax");
         }
     }
+#ifndef MMBASIC_HOST
+    /* Device: FILES allocates up to MAXFILES*s_flist on the heap, so if
+     * we're called from inside a program we save the caller's state and
+     * wipe the heap to have room. Host has plenty of RAM and LFS is
+     * stubbed (no /.vars backing), so skip the save/restore dance. */
     if(CurrentLinePtr){
         CloseAudio(1);
         SaveContext();
         ClearVars(0,false);
         InitHeap(false);
     }
+#endif
     if (pp[0] == 0)
         strcpy(pp, "*");
     FatFSFileSystem=t-1;
@@ -4415,7 +4548,9 @@ void MIPS16 cmd_files(void)
                         ShowCursor(false);
                         FatFSFileSystem=FatFSFileSystemSave;
                         PromptFont=oldfont;
+#ifndef MMBASIC_HOST
                         if(CurrentLinePtr)RestoreContext(false);
+#endif
                         MMAbort=false;
                         return;
 //                        longjmp(mark, 1);
@@ -4426,6 +4561,18 @@ void MIPS16 cmd_files(void)
                         c = ConsoleRxBuf[ConsoleRxBufTail];
                         ConsoleRxBufTail = (ConsoleRxBufTail + 1) % CONSOLE_RX_BUF_SIZE; // advance the head of the queue
                     }
+#ifdef MMBASIC_HOST
+                    /* Host has no interrupt-driven ConsoleRxBuf filler —
+                     * the REPL reads keys via MMInkey (stdin / scripted
+                     * key queue / --sim websocket). Poll it here so the
+                     * "PRESS ANY KEY" prompt unblocks on any keypress
+                     * instead of hanging forever. */
+                    if (c == -1) {
+                        int k = MMInkey();
+                        if (k != -1) c = k;
+                        else host_sleep_us(10000);  /* 10ms — don't peg a core */
+                    }
+#endif
                 } while (c == -1);
                 ShowCursor(0);
                 MMPrintString("\r                 \r");
@@ -4456,7 +4603,9 @@ void MIPS16 cmd_files(void)
         FatFSFileSystem=FatFSFileSystemSave;
         Option.NoScroll=noscroll;
         PromptFont=oldfont;
+#ifndef MMBASIC_HOST
         if(CurrentLinePtr)RestoreContext(false);
+#endif
         return;
 //        longjmp(mark, 1);
 
@@ -4911,6 +5060,9 @@ void cmd_flush(void)
             error("File number is not open");
         if (FileTable[fnbr].com > MAXCOMPORTS )
         {
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) { host_fs_posix_flush(fnbr); return; }
+#endif
             if(filesource[fnbr]==FATFSFILE)f_sync(FileTable[fnbr].fptr);
             else lfs_file_sync(&lfs, FileTable[fnbr].lfsptr);
         }
@@ -4943,6 +5095,9 @@ void fun_loc(void)
             error("File number is not open");
         if (FileTable[fnbr].com > MAXCOMPORTS)
         {
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) { iret = host_fs_posix_loc(fnbr) + 1; targ = T_INT; return; }
+#endif
             if(filesource[fnbr]==FLASHFILE)iret = lfs_file_tell(&lfs,FileTable[fnbr].lfsptr) + 1;
             else {
 //                iret = (*(FileTable[fnbr].fptr)).fptr + 1;
@@ -4979,6 +5134,9 @@ void fun_lof(void)
             error("File number is not open");
         if (FileTable[fnbr].com > MAXCOMPORTS)
         {
+#ifdef MMBASIC_HOST
+            if (host_fs_posix_active(fnbr)) { iret = host_fs_posix_lof(fnbr); targ = T_INT; return; }
+#endif
             if(filesource[fnbr]==FATFSFILE){
                 f_sync(FileTable[fnbr].fptr);
                 iret = f_size(FileTable[fnbr].fptr);

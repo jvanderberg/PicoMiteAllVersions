@@ -1615,7 +1615,6 @@ void RestoreContext(bool keep){
 	}
 #endif
 }
-extern void chdir(char *p);
 void MIPS16 do_chain(unsigned char *cmdline){
     unsigned char *filename = (unsigned char *)"", *cmd_args = (unsigned char *)"";
 	unsigned char *cmdbuf=GetMemory(256);

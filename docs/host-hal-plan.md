@@ -8,7 +8,7 @@ Collapse the host port into a clean hardware-abstraction layer so the host build
 ## Invariants
 
 1. **Device runtime path is identical after this work.** Source layout may change (code moved between files, new shared headers, `#ifdef MMBASIC_HOST` guards); the device firmware's instruction stream for any given BASIC line must match today. The gate is behavioral, not textual.
-2. **The VM path is untouched.** `vm_sys_graphics_*_execute`, `vm_sys_file_*`, and the bytecode dispatch all stay as-is. Graphics/file commands have a native VM opcode; the VM never goes through `cmd_*`. This plan only reshapes the *interpreter* path on host.
+2. **The VM path is mostly untouched.** `vm_sys_graphics_*_execute`, `bc_vm.c` dispatch, and peephole optimizations stay as-is. Native-opcode file I/O (`OP_OPEN`, `OP_PRINT_NUM_FILE`, `OP_LINE_INPUT_FILE`, etc. via `vm_sys_file_*`) stays too. Commands whose output format differs between the VM's simple native syscall and FileIO.c's full implementation (FILES is the first case, flagged in Phase 3) get moved from a native opcode to the `OP_BRIDGE_CMD` fallback, so interp and VM both land in the same FileIO.c handler. That's a narrow, per-command decision — the VM doesn't become a generic `cmd_*` dispatcher.
 3. **Host test suite stays green at every phase boundary.** No phase lands until `cd host/ && ./build.sh && ./run_tests.sh` passes in default (compare), `--interp`, and `--vm` modes.
 4. **Device build stays green at every phase boundary.** `CMakeLists.txt` / `CMakeLists 2350.txt` must still build. Manual smoke-boot of RP2040 firmware after any phase that touches `Draw.c` / `FileIO.c`.
 
@@ -189,24 +189,215 @@ Draw.c now compiles, links, and runs on host. Commits: `2749d38` (shim infrastru
 - Simulator (`mmbasic_sim`) builds and runs; `demo_gfx_shapes.bas` renders interp ≡ vm byte-for-byte; pico_blocks runs without brick ghosts; `EDIT "file.bas"` opens real files.
 - Device build: not re-verified this phase (Draw.c `#if` additions are host-only; no device code path changed).
 
-### Phase 3 — `FileIO.c` compiles on host
+### Phase 3 — `FileIO.c` compiles on host — ✅ DONE (2026-04-17)
 
-Smaller scope than Phase 2. Most of `FileIO.c` is already portable (FatFS lives in `ff.c`, already linked on host via `vm_host_fat.c`).
+FileIO.c now compiles, links, and runs on host. Every file primitive routes
+through `host_fs_posix_*` shunts (REPL / `--sim`) or falls through to the
+existing FatFS path (test harness, backed by `vm_host_fat.c`'s RAM disk).
 
-1. Introduce `host_fs_hal.h`:
-   ```c
-   int host_fs_drive_select(const char *drive);    /* A: vs B: switching */
-   int host_fs_path_resolve(const char *in, char *out, int max);
-   void host_fs_flash_backing(void);               /* host "flash" = RAM buffer */
-   ```
-2. Gate the device-specific drive-switching and flash-program paths in `FileIO.c` behind `#ifdef MMBASIC_HOST`.
-3. Handle `frameBufferMutex` reference at `FileIO.c:58` — this is a stray extern used during LOAD to pause display refresh. Gate it.
-4. Add `FileIO.c` to `CORE_SRCS`.
-5. **Delete** from `host_noop_stubs.c`: `cmd_load`, `cmd_save`, `cmd_open`, `cmd_copy`, `cmd_name`, `cmd_seek`, `FileLoadProgram`.
+**New host HAL surface** — `host/host_fs_hal.h`:
+```c
+int  host_fs_posix_active(int fnbr);
+int  host_fs_posix_try_open(char *fname, int fnbr, int mode);
+char host_fs_posix_get_char(int fnbr);
+char host_fs_posix_put_char(char c, int fnbr);
+void host_fs_posix_put_str(int count, char *s, int fnbr);
+int  host_fs_posix_eof(int fnbr);
+void host_fs_posix_close(int fnbr);
+int64_t host_fs_posix_loc(int fnbr);
+int64_t host_fs_posix_lof(int fnbr);
+void host_fs_posix_seek(int fnbr, int64_t offset);
+void host_fs_posix_flush(int fnbr);
+```
 
-**Expected line savings:** ~300 lines.
+Implementations live in `host_stubs_legacy.c` (a thin POSIX side-table
+indexed by `fnbr`). `host_fs_posix_try_open` returns 0 when `host_sd_root`
+is NULL so the test harness transparently falls through to FatFS.
 
-**Exit gate:** same validation as Phase 2, plus test harness `LOAD` / `SAVE` / `RUN "file"` round-trip passes on host.
+**Gating in FileIO.c (24 `#ifdef MMBASIC_HOST` regions, all additive):**
+- `disable_interrupts_pico` / `enable_interrupts_pico` — body empty on host
+  (save_and_disable_interrupts / restore_interrupts / time_us_64 arithmetic
+  are device-only; the pair is still called from flash write paths).
+- `cmd_LoadImage` / `cmd_LoadJPGImage` — replaced with
+  `error("Not supported on host")` stubs (`#else` branch). BmpDecoder /
+  picojpeg / upng aren't in the host build; gating the bodies also drops
+  the JPEG working-buffer allocations and `pjpeg_need_bytes_callback`.
+- `cmd_disk` — `B:` drive-select skips the `Option.SD_CS` pin check (host
+  has no SD pins; drive B is always available via vm_host_fat or POSIX).
+- `InitSDCard` — short-circuits to `vm_host_fat_mount()` + return 2 (no
+  SPI pin validation, no SDCardStat check).
+- `BasicFileOpen` — preamble calls `host_fs_posix_try_open`; if the POSIX
+  table services the open, return; otherwise fall through to the FatFS
+  body unchanged.
+- `FileGetChar`, `FilePutChar`, `FilePutStr`, `FileEOF`, `ForceFileClose`,
+  `cmd_flush`, `cmd_seek`, `fun_loc`, `fun_lof` — each adds
+  `if (host_fs_posix_active(fnbr)) return host_fs_posix_*(…);` ahead of
+  the existing FATFSFILE/FLASHFILE dispatch.
+- `cmd_files` — skips the `SaveContext/InitHeap/RestoreContext` dance (LFS
+  `/.vars` isn't backed on host, and host has the RAM budget to keep the
+  caller's state live). No shunt around the listing body itself — FILES
+  now goes through `OP_BRIDGE_CMD` on the VM side too, so both interp and
+  VM hit FileIO.c's cmd_files. See "FILES bridging" below.
+- `cmd_disk` — `B:` drive-select skips the `Option.SD_CS` pin check. `A:`
+  drive-select errors with "A: drive not available on host": the A: drive
+  is the device's LittleFS-on-flash filesystem, and switching to it on
+  host would leave the interpreter on a stubbed LFS path that corrupts
+  downstream console state.
+- FatFS directory walker (`f_findfirst`/`f_findnext`/`f_closedir`) and
+  whole-path operations (`f_unlink`/`f_rename`/`f_mkdir`/`f_chdir`/
+  `f_getcwd`) — redirected via `#define` at the top of FileIO.c to
+  `host_f_*` wrappers in host_stubs_legacy.c. When `host_sd_root` is set
+  they walk / act against POSIX (via host_fs.c's opaque DIR walker);
+  otherwise they delegate to real FatFS. One side-table in host_fs.c
+  keeps POSIX DIR* out of FileIO.c (POSIX `DIR` / `dirent.h` clash with
+  FatFS's `DIR` typedef). That means `cmd_files`, `cmd_copy`, `cmd_kill`,
+  `cmd_mkdir`, `cmd_rmdir`, `cmd_name`, `fun_dir`, `fun_cwd` all run
+  FileIO.c's real logic and see real host files.
+
+**New host headers added** (all empty or minimal — symbols gated out of
+host source):
+- `host/hardware/sync.h`, `host/hardware/gpio.h`, `host/hardware/pll.h`,
+  `host/hardware/structs/pll.h`, `host/hardware/structs/clocks.h`,
+  `host/pico/binary_info.h`. Plus `XIP_BASE = 0` and a `flash_do_cmd`
+  stub added to `host/hardware/flash.h` so `fs_flash_read` / `SaveOptions`
+  / `ResetOptions` expressions compile.
+
+**Stubs deletion** — 72 duplicate symbols removed from
+`host_stubs_legacy.c`: `BasicFileOpen`, `FileClose`, `FileEOF`,
+`FileGetChar`, `FilePutChar`, `FilePutStr`, `FileLoadProgram`,
+`FileLoadSourceProgram`, `FileLoadSourceProgramVM`, `FindFreeFileNbr`,
+`ForceFileClose`, `MMfgetc`, `MMfeof`, `MMfputc`, `MMfputs`,
+`cmd_autosave`, `cmd_chdir`, `cmd_close`, `cmd_copy`, `cmd_disk`,
+`cmd_files`, `cmd_flash`, `cmd_flush`, `cmd_kill`, `cmd_load`,
+`cmd_mkdir`, `cmd_name`, `cmd_open`, `cmd_rmdir`, `cmd_save`,
+`cmd_seek`, `cmd_var`, `fun_cwd`, `fun_dir`, `fun_eof`, `fun_inputstr`,
+`fun_loc`, `fun_lof`, `enable_interrupts_pico`, `disable_interrupts_pico`,
+`FlashWrite*`, `LoadOptions`, `SaveOptions`, `ResetAllFlash`,
+`ResetOptions`, `ResetFlashStorage`, `CheckSDCard`, `CrunchData`,
+`ClearSavedVars`, `ErrorCheck`, `positionfile`, `drivecheck`,
+`getfullfilename`, `GetCWD`, `InitSDCard`, `CloseAllFiles`. Plus 13
+duplicate globals (`CFunctionFlash`, `CFunctionLibrary`, `FatFSFileSystem`,
+`FatFSFileSystemSave`, `filesource`, `FlashLoad`, `lfs_FileFnbr`,
+`OptionFileErrorAbort`, `pico_lfs_cfg`).
+
+**Stubs added** (symbols FileIO.c references transitively):
+- `SerialOpen`, `SerialClose`, `SerialGetchar`, `SerialRxStatus`,
+  `SerialTxStatus`, `disable_audio`, `ExistsDir`.
+- GPS globals: `GPSlatitude`, `GPSlongitude`, `GPSspeed`, `GPStrack`,
+  `GPSdop`, `GPSaltitude`, `GPSvalid`, `GPSfix`, `GPSadjust`,
+  `GPSsatellites`, `GPStime[9]`, `GPSdate[11]`, `gpsbuf1[128]`,
+  `gpsbuf2[128]`, `gpsbuf`, `gpscount`, `gpscurrent`, `gpsmonitor`.
+- Flash layout: `flash_option_contents` backs onto a zero-filled host
+  buffer; `flash_target_contents` backs onto a 0xFF-filled buffer (both
+  seeded via `__attribute__((constructor))` in host_stubs_legacy.c).
+  - **Zero-fill (not 0xFF) for `flash_option_contents`** because
+    `Option.PIN` is an `int` and all-0xFF would read as `0xFFFFFFFF`,
+    tripping the PIN lockdown in `MMBasic_REPL.c:196` on every error.
+  - **`host_options_snapshot()`** is called from `host_runtime_begin`
+    after host init finishes seeding `Option.Width/Height/DISPLAY_CONSOLE/
+    DISPLAY_TYPE/FatFSFileSystem/…`. It `memcpy`s the current `Option`
+    back into `flash_option_buf` so the `LoadOptions` call inside
+    `error()` (MMBasic.c:2835) restores the correct host configuration
+    rather than the zero-filled defaults. Without this, every unhandled
+    error wiped Width/Height/DISPLAY_CONSOLE — the symptoms were browser
+    console going silent, cmd_files wrapping at column 0 (vertical
+    char-per-line output), and pagination firing on the first line.
+- LFS surface: added `lfs_dir_open`/`close`/`read`, `lfs_file_rewind`/
+  `sync`/`tell`, `lfs_format`/`mount`/`unmount`, `lfs_getattr`/
+  `setattr`/`removeattr`, `lfs_mkdir`, `lfs_rename` (every reachable
+  LFS call site in FileIO.c has a linkable symbol; none actually store
+  state since BasicFileOpen shunts through POSIX / FatFS first).
+
+**Seeds in host_runtime_begin:**
+- `Option.DISPLAY_TYPE = DISP_USER`, `HRes / VRes / DrawPixel / DrawRectangle /
+  DrawBitmap / ScrollLCD / ReadBuffer` — framebuffer function pointers.
+- `CFunctionFlash = host_cfunction_flash_buf` (was a static initialiser
+  before; FileIO.c now owns the symbol so we seed it at runtime).
+- `FatFSFileSystem = FatFSFileSystemSave = 1` so BasicFileOpen's FatFS
+  branch runs — the LFS branch is dead on host.
+- `Option.Height = 1000` if zero (pagination fallback for batch runs).
+- `host_options_snapshot()` — copies current `Option` into the flash
+  buffer so `error()`'s LoadOptions restore path uses the right state.
+
+**FILES unification via OP_BRIDGE_CMD** — FILES was a native VM opcode
+(`BC_SYS_FILE_FILES`) whose simple output didn't match FileIO.c's
+tabular cmd_files. Phase 3 initially shunted around this by making
+host's cmd_files call the VM's simple path; that defeated the point of
+the refactor. The cleaner fix:
+
+1. `bc_source.c`: deleted `source_compile_files` and its keyword
+   dispatch. FILES now falls through to the `OP_BRIDGE_CMD` fallback,
+   which pre-tokenises the FILES statement and embeds the tokens in the
+   bytecode stream.
+2. At runtime, `bc_bridge_call_cmd` dispatches to `commandtbl[cmdFILES].fptr()`
+   → FileIO.c's cmd_files. Interpreter and VM both hit the same code.
+3. `vm_sys_file_files` in vm_sys_file.c is now unused — left for Phase 7
+   cleanup.
+
+Same shared-path principle applies to COPY / KILL / MKDIR / RMDIR /
+RENAME / CHDIR / DIR$ / CWD$ — all running FileIO.c logic, with the
+FatFS API surface intercepted at `#define` level for POSIX routing.
+
+**`chdir` symbol-shadowing fix** — FileIO.c's internal `chdir(char *p)`
+helper collided with libc's POSIX `chdir(3)` at link time on host.
+`host_fs_chdir` in host_fs.c calls libc's chdir; the linker bound that
+call to FileIO.c's chdir instead, producing infinite recursion
+(`mmbasic chdir → f_chdir → host_f_chdir → host_fs_chdir → mmbasic
+chdir → …`) with each level prepending host_sd_root to the path until
+the stack blew. Renamed FileIO.c's function to `mmbasic_chdir`; dropped
+the dead `extern void chdir(char *p)` declaration from Commands.c.
+
+**cmd_load longjmp on host** — host's `SaveProgramToFlash` stub calls
+`load_basic_source`, which tokenises each line of the loaded file into
+the same `tknbuf` that ExecuteProgram is iterating. Without a bail-out,
+the caller resumed reading garbage and errored "Unknown command". Added
+`longjmp(mark, 1)` + `memset(inpbuf, 0, STRINGSIZE)` at the end of
+cmd_load under `#ifdef MMBASIC_HOST`. Device's SaveProgramToFlash uses
+its own tokeniser buffer and is unaffected.
+
+**InitSDCard clears SDCardStat** — the original stub returned success
+but left `SDCardStat` with the device's startup `STA_NOINIT | STA_NODISK`
+bits set. fun_dir tests those bits and errors "SD card not found". Host
+InitSDCard now zeros SDCardStat after a successful vm_host_fat mount.
+
+**Pagination fix in cmd_files** — the "PRESS ANY KEY" loop polls
+`ConsoleRxBuf` which is never populated on host. Added a `MMInkey()`
+poll + 10ms sleep under `#ifdef MMBASIC_HOST` so the pagination prompt
+actually unblocks on any keypress via stdin / scripted-key queue /
+sim websocket.
+
+**Line count:** `host_stubs_legacy.c` 2,531 → 2,200 (~330 deleted net);
+`FileIO.c` +168 lines of `#ifdef MMBASIC_HOST` gates and header macros;
+`host_fs.c` +60 lines for the opaque directory walker + whole-path
+POSIX helpers; `bc_source.c` -20 lines from the dropped
+`source_compile_files`. No `#else` / device-path code is modified.
+
+**New tests** (t186-t190, marked `' RUN_ARGS: --interp` — VM-side bridge
+doesn't yet sync file-handle state with the interpreter for function
+bridging):
+- t186 `file_loc_lof_eof` — LOC/LOF/EOF as direct queries + INPUT$.
+- t187 `file_inputstr` — INPUT$(n, #fnbr) short-return at EOF.
+- t188 `file_flush` — FLUSH + cross-handle read visibility.
+- t189 `fun_dir_loop` — DIR$() iterative walk with glob filter.
+- t190 `file_large` — 800-line round-trip across the 512-byte
+  FileGetChar buffer boundary.
+
+**Exit gate results:**
+- `./run_tests.sh` (default compare) — **197/197** green (192 existing +
+  5 new).
+- `make sim` — links clean; sim_obj tree builds without errors.
+- REPL smoke tests:
+  - `LOAD "file.bas"`, `RUN`, `PRINT` after load — program executes,
+    subsequent commands don't inherit stale state.
+  - `SAVE "copy.bas"` + `LOAD "copy.bas"` round-trip.
+  - `FILES` in REPL — full formatted listing against real POSIX
+    directory (time, date, size, filename + dir/file count).
+  - `CHDIR "subdir"` / `CHDIR ".."` / `FILES` — navigation works.
+  - `DRIVE "A:"` — errors cleanly, doesn't corrupt display state.
+  - Error recovery — `Option.Width` / `DISPLAY_CONSOLE` / etc. survive
+    the LoadOptions reset inside error().
+- Device build: not re-verified here (all new host regions use `#ifdef
+  MMBASIC_HOST`; the device `#else` / default paths are unchanged).
 
 ### Phase 4 — `Audio.c` compiles on host
 
@@ -240,6 +431,9 @@ Minor — maybe 30 lines — but closes the last REPL-shaped gap.
 - Remove the `(void)` unused-parameter suppressions that no longer apply.
 - Update `host/README.md` with the HAL architecture.
 - Update `CLAUDE.md` memory: Host build is no longer "its own MMBasic port" — it's a HAL target using the shared interpreter source.
+- **Remove `vm_sys_file_files`** from `vm_sys_file.c` — unused since FILES
+  was moved to the bridge in Phase 3. Along with `BC_SYS_FILE_FILES` in
+  `bytecode.h` if no other caller references it.
 
 **Exit gate:** no file over 1000 lines in `host/`, README current, one commit.
 

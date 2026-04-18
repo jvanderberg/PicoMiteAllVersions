@@ -185,9 +185,10 @@ void host_fb_fill_rect(int x1, int y1, int x2, int y2, int c) {
  * ------------------------------------------------------------------------ */
 
 void host_fb_draw_rectangle(int x1, int y1, int x2, int y2, int c) {
-    /* Device DrawRectangle fills [x1,x2) x [y1,y2) — note exclusive. */
-    if (x2 > x1) x2--;
-    if (y2 > y1) y2--;
+    /* Device DrawRectangle{16,SPISCR,…} fills [x1,x2] × [y1,y2] — inclusive
+     * on both endpoints (see Draw.c:DrawRectangle16 `for(y=y1;y<=y2;y++)`).
+     * Draw.c's DrawBox / DrawRBox / ClearScreen all rely on that
+     * convention, so we must not decrement here. */
     host_fb_fill_rect(x1, y1, x2, y2, c);
 }
 

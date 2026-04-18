@@ -19,6 +19,7 @@
  * now that FontTable initialisation lives there. */
 #include <ctype.h>
 #include <errno.h>
+#include <sys/stat.h>
 #include <time.h>
 #include "host_terminal.h"
 #include "host_fs.h"
@@ -172,10 +173,10 @@ struct option_s Option = {0};
 /* PinDef array */
 const struct s_PinDef PinDef[NBRPINS + 1] = {{0}};
 
-/* CFunctionFlash / CFunctionLibrary — point at an "erased flash" buffer so
- * scan loops terminate immediately (see host_cfunction_flash_buf above). */
-unsigned char *CFunctionFlash = host_cfunction_flash_buf;
-unsigned char *CFunctionLibrary = NULL;
+/* CFunctionFlash / CFunctionLibrary are defined by FileIO.c now. We seed
+ * CFunctionFlash from host_runtime_begin below so scan loops terminate
+ * immediately (host_cfunction_flash_buf is pre-filled with 0xFF to match
+ * erased flash). */
 
 /* Timer/system variables */
 volatile long long int mSecTimer = 0;
@@ -210,18 +211,15 @@ int OptionErrorCheck = 0;
 unsigned int CurrentCpuSpeed = 0;
 unsigned int PeripheralBusSpeed = 0;
 unsigned char EchoOption = 0;
-int OptionFileErrorAbort = 0;
-unsigned char filesource[MAXOPENFILES + 1] = {0};
-int FatFSFileSystemSave = 0;
-int FatFSFileSystem = 0;
-int FlashLoad = 0;
+/* OptionFileErrorAbort / filesource / FatFSFileSystem{,Save} / FlashLoad
+ * are now defined by FileIO.c (the host build links the shared file). */
 volatile unsigned int GPSTimer = 0;
 uint16_t AUDIO_L_PIN = 0, AUDIO_R_PIN = 0, AUDIO_SLICE = 0;
 uint16_t AUDIO_WRAP = 0;
 int ticks_per_second = 1000;
 lfs_dir_t lfs_dir;
 struct lfs_info lfs_info;
-int lfs_FileFnbr = 0;
+/* lfs_FileFnbr is now defined by FileIO.c. */
 short DisplayHRes = 0, DisplayVRes = 0;
 int ScreenSize = 0;
 unsigned char *DisplayBuf = NULL;
@@ -311,8 +309,7 @@ const char *PinFunction[64] = {NULL};
 /* volatile HID */
 volatile struct s_HID HID[4] = {{0}};
 
-/* LFS config */
-struct lfs_config pico_lfs_cfg = {0};
+/* LFS config is defined by FileIO.c. */
 
 /* Tile color arrays */
 uint8_t map16[16] = {0};
@@ -715,6 +712,8 @@ void host_runtime_configure(int timeout_ms, const char *screenshot_path) {
     }
 }
 
+void host_options_snapshot(void);
+
 void host_runtime_begin(void) {
     host_runtime_timed_out_flag = 0;
     host_screenshot_written = 0;
@@ -751,6 +750,27 @@ void host_runtime_begin(void) {
     DrawBitmap = host_fb_draw_bitmap;
     ScrollLCD = host_fb_scroll_lcd;
     ReadBuffer = host_fb_read_buffer;
+    /* CFunctionFlash is now defined in FileIO.c (initialised to NULL). Seed
+     * it here with a pre-erased 0xFF buffer so the CFunction scan loops
+     * terminate immediately — matches the device state after cold boot. */
+    CFunctionFlash = host_cfunction_flash_buf;
+    /* FatFSFileSystem default: 1 = use B: (vm_host_fat RAM disk or POSIX
+     * via host_fs_posix). Keeps BasicFileOpen out of the LFS branch. */
+    FatFSFileSystem = FatFSFileSystemSave = 1;
+    /* Option.Height is the terminal row count that cmd_files / LIST use
+     * for "PRESS ANY KEY" pagination. Zero (LoadOptions' default on
+     * host) makes `ListCnt >= Option.Height - overlap` fire immediately,
+     * hanging the test harness on stdin it never gets. 1000 effectively
+     * disables pagination under batch runs; real REPL users can
+     * OPTION HEIGHT to set their own. */
+    if (Option.Height == 0) Option.Height = 1000;
+    /* Snapshot Option back into flash_option_buf so the reset path in
+     * error() (MMBasic.c:2835 calls LoadOptions) restores the *current*
+     * host configuration, not a zero-filled default. Without this,
+     * every error wipes Option.Width / Height / DISPLAY_CONSOLE / etc.
+     * — the symptom is: browser console stops echoing, cmd_files wraps
+     * at column 0, ListCnt pagination fires immediately. */
+    host_options_snapshot();
 }
 
 void host_runtime_finish(void) {
@@ -803,7 +823,7 @@ static void host_runtime_check_timeout(void) {
 /* cmd_3D, cmd_arc, cmd_blit, cmd_blitmemory, cmd_box now come from
  * Draw.c (gated with MMBASIC_HOST for the display-driver pieces). */
 void cmd_adc(void) {}
-void cmd_autosave(void) {}
+/* cmd_autosave is provided by FileIO.c. */
 void cmd_backlight(void) {}
 static void host_cmd_single_path(void (*fn)(const char *), const char *msg) {
     char *path = (char *)getFstring(cmdline);
@@ -829,49 +849,14 @@ static int host_parse_pin_arg(unsigned char *arg) {
 
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
-void cmd_chdir(void) { host_cmd_single_path(vm_sys_file_chdir, "File name"); }
+/* cmd_chdir, cmd_close, cmd_copy, cmd_disk are provided by FileIO.c. */
 void cmd_Classic(void) {}
-void cmd_close(void) {
-    int i, fnbr;
-
-    getargs(&cmdline, (MAX_ARG_COUNT * 2) - 1, (unsigned char *)",");
-    if ((argc & 1) == 0) error("Syntax");
-    for (i = 0; i < argc; i += 2) {
-        if (*argv[i] == '#') argv[i]++;
-        fnbr = getint(argv[i], 1, MAXOPENFILES);
-        if (FileTable[fnbr].com == 0) error("File number is not open");
-        FileClose(fnbr);
-    }
-}
 void cmd_configure(void) {}
-void cmd_copy(void) {
-    char split[2];
-    int mode = 0;
-    char *from_name;
-    char *to_name;
-    unsigned char *p = cmdline;
-
-    split[0] = tokenTO;
-    split[1] = 0;
-    if ((checkstring(p, (unsigned char *)"A2A")) || (checkstring(p, (unsigned char *)"A2B")) ||
-        (checkstring(p, (unsigned char *)"B2A")) || (checkstring(p, (unsigned char *)"B2B"))) {
-        unsigned char mode_buf[8] = {0};
-        int i = 0;
-        while (*p && !isspace(*p) && i < (int)sizeof(mode_buf) - 1) mode_buf[i++] = *p++;
-        mode = host_file_copy_mode_from_string(mode_buf);
-    }
-    getargs(&p, 3, (unsigned char *)split);
-    if (argc != 3) error("Syntax");
-    from_name = (char *)getFstring(argv[0]);
-    to_name = (char *)getFstring(argv[2]);
-    vm_sys_file_copy(from_name, to_name, mode);
-}
 void cmd_cpu(void) {}
 void cmd_csubinterrupt(void) {}
 void cmd_date(void) {}
 void cmd_device(void) {}
 void cmd_DHT22(void) {}
-void cmd_disk(void) { host_cmd_single_path(vm_sys_file_drive, "Invalid disk"); }
 void cmd_ds18b20(void) {}
 /* cmd_edit / cmd_editfile are provided by the real Editor.c now. */
 void cmd_endprogram(void) {}
@@ -975,29 +960,148 @@ void cmd_fastgfx(void) {
 
     error("Syntax");
 }
-/* FILES — lists entries in host_sd_root (REPL mode) or the in-memory
- * FAT disk (test harness). POSIX directory walking lives in host_fs.c
- * to stay isolated from FatFS's clashing DIR type. */
-static void host_files_emit(const char *name) {
-    MMPrintString((char *)name);
-    MMPrintString("\r\n");
+/* FatFS directory-walker wrappers — the surface `cmd_files`, `cmd_copy`,
+ * `cmd_kill`, `fun_dir` need. In REPL / --sim mode (host_sd_root set) we
+ * walk the user's real directory via host_fs_walk_* (POSIX) and populate
+ * the FatFS FILINFO the caller expects. That way cmd_files' sort,
+ * pagination, and formatting — all of which live in FileIO.c — run
+ * unchanged on host-hosted file trees.
+ *
+ * Without host_sd_root the test harness wants the vm_host_fat RAM disk,
+ * so we delegate straight to FatFS.
+ *
+ * FatFS date/time packing (ff.h: fdate = yr-1980<<9 | mon<<5 | day,
+ * ftime = hr<<11 | min<<5 | sec/2). Zero-filled when mtime decode fails;
+ * cmd_files prints "00:00 00-00-1980" but doesn't crash. */
+static host_fs_walker_t *host_find_walker = NULL;
+
+FRESULT host_f_findfirst(DIR *dp, FILINFO *fi, const TCHAR *path, const TCHAR *pattern);
+FRESULT host_f_findnext(DIR *dp, FILINFO *fi);
+FRESULT host_f_closedir(DIR *dp);
+static void host_strip_fatfs_drive(const char *in, char *out, int out_cap);
+void host_join_sd_root(const char *relpath, char *out, int out_cap);
+
+static void host_fill_finfo_from_posix(FILINFO *fi, const char *name,
+                                       int is_dir, unsigned long long size,
+                                       long long mtime_epoch) {
+    memset(fi, 0, sizeof(*fi));
+    snprintf(fi->fname, sizeof(fi->fname), "%s", name);
+    fi->fattrib = is_dir ? AM_DIR : 0;
+    fi->fsize = (FSIZE_t)size;
+    time_t t = (time_t)mtime_epoch;
+    struct tm lt;
+    if (localtime_r(&t, &lt) != NULL) {
+        int yr = lt.tm_year + 1900;
+        if (yr < 1980) yr = 1980;
+        fi->fdate = (WORD)(((yr - 1980) << 9) | ((lt.tm_mon + 1) << 5) | lt.tm_mday);
+        fi->ftime = (WORD)((lt.tm_hour << 11) | (lt.tm_min << 5) | (lt.tm_sec / 2));
+    }
 }
 
-void cmd_files(void) {
-    char *pattern_arg = NULL;
-    if (cmdline && *cmdline) pattern_arg = (char *)getFstring(cmdline);
-
-    if (!host_sd_root) {
-        vm_sys_file_files(pattern_arg);
-        return;
-    }
-
-    if (host_fs_list_dir(host_sd_root, pattern_arg, host_files_emit) != 0) {
-        error("File error");
-    }
+FRESULT host_f_findfirst(DIR *dp, FILINFO *fi, const TCHAR *path,
+                         const TCHAR *pattern) {
+    if (!host_sd_root) return f_findfirst(dp, fi, path, pattern);
+    /* FileIO.c hands us a FatFS-style path like "/build" or just "/"
+     * (drive prefix already stripped by fullpath(). Join it onto
+     * host_sd_root so FILES / COPY / KILL / DIR$ see the subdirectory
+     * the user has CHDIR'd into. */
+    char target[FF_MAX_LFN];
+    host_join_sd_root(path, target, sizeof(target));
+    if (host_find_walker) host_fs_walk_close(host_find_walker);
+    host_find_walker = host_fs_walk_open(target, pattern);
+    if (!host_find_walker) { memset(fi, 0, sizeof(*fi)); return FR_NO_PATH; }
+    return host_f_findnext(dp, fi);
 }
-void cmd_flash(void) {}
-void cmd_flush(void) {}
+
+FRESULT host_f_findnext(DIR *dp, FILINFO *fi) {
+    if (!host_sd_root) return f_findnext(dp, fi);
+    (void)dp;
+    if (!host_find_walker) { memset(fi, 0, sizeof(*fi)); return FR_NO_FILE; }
+    char name[FF_MAX_LFN + 1];
+    int is_dir = 0;
+    unsigned long long size = 0;
+    long long mtime = 0;
+    if (!host_fs_walk_next(host_find_walker, name, (int)sizeof(name),
+                           &is_dir, &size, &mtime)) {
+        memset(fi, 0, sizeof(*fi));
+        fi->fname[0] = 0;
+        return FR_OK;   /* FatFS signals end-of-dir by empty fname, FR_OK */
+    }
+    host_fill_finfo_from_posix(fi, name, is_dir, size, mtime);
+    return FR_OK;
+}
+
+FRESULT host_f_closedir(DIR *dp) {
+    if (!host_sd_root) return f_closedir(dp);
+    (void)dp;
+    if (host_find_walker) {
+        host_fs_walk_close(host_find_walker);
+        host_find_walker = NULL;
+    }
+    return FR_OK;
+}
+
+/* Whole-path wrappers. cmd_kill, cmd_name, cmd_mkdir, cmd_chdir, cmd_copy,
+ * fun_cwd all call these. Without host_sd_root we go straight to FatFS
+ * (vm_host_fat RAM disk for the test harness). With host_sd_root we
+ * resolve the path against the user's root directory and hit POSIX.
+ *
+ * The path argument FileIO.c hands us has a FatFS drive prefix (e.g.
+ * "0:/foo.bas" from getfullfilename). We strip that so POSIX paths
+ * work cleanly under host_sd_root. */
+static void host_strip_fatfs_drive(const char *in, char *out, int out_cap) {
+    if (out_cap <= 0) return;
+    /* Skip "N:" drive prefix if present. */
+    if (in[0] && in[1] == ':') in += 2;
+    /* Skip leading "/" so host_resolve_sd_path will join under host_sd_root. */
+    while (*in == '/') in++;
+    snprintf(out, out_cap, "%s", in);
+}
+
+void host_join_sd_root(const char *relpath, char *out, int out_cap) {
+    char stripped[FF_MAX_LFN];
+    host_strip_fatfs_drive(relpath, stripped, sizeof(stripped));
+    host_resolve_sd_path(stripped, out, (size_t)out_cap);
+}
+
+FRESULT host_f_unlink(const TCHAR *path) {
+    if (!host_sd_root) return f_unlink(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_unlink(p) == 0 ? FR_OK : FR_NO_FILE;
+}
+
+FRESULT host_f_rename(const TCHAR *from, const TCHAR *to) {
+    if (!host_sd_root) return f_rename(from, to);
+    char a[FF_MAX_LFN], b[FF_MAX_LFN];
+    host_join_sd_root(from, a, sizeof(a));
+    host_join_sd_root(to, b, sizeof(b));
+    return host_fs_rename(a, b) == 0 ? FR_OK : FR_NO_FILE;
+}
+
+FRESULT host_f_mkdir(const TCHAR *path) {
+    if (!host_sd_root) return f_mkdir(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_mkdir(p) == 0 ? FR_OK : FR_EXIST;
+}
+
+FRESULT host_f_chdir(const TCHAR *path) {
+    if (!host_sd_root) return f_chdir(path);
+    char p[FF_MAX_LFN];
+    host_join_sd_root(path, p, sizeof(p));
+    return host_fs_chdir(p) == 0 ? FR_OK : FR_NO_PATH;
+}
+
+FRESULT host_f_getcwd(TCHAR *buff, UINT len) {
+    if (!host_sd_root) return f_getcwd(buff, len);
+    char tmp[FF_MAX_LFN];
+    if (host_fs_getcwd(tmp, (int)sizeof(tmp)) != 0) return FR_INT_ERR;
+    /* Prepend drive prefix so Editor.c / PRINT CWD$ format works. */
+    snprintf(buff, len, "0:%s", tmp);
+    return FR_OK;
+}
+/* cmd_flash / cmd_flush are provided by FileIO.c. */
 void cmd_framebuffer(void) {
     unsigned char *p = NULL;
 
@@ -1139,12 +1243,12 @@ void cmd_irqset(void) {}
 void cmd_irqwait(void) {}
 void cmd_jmp(void) {}
 void cmd_keypad(void) {}
-void cmd_kill(void) { host_cmd_single_path(vm_sys_file_kill, "File name"); }
+/* cmd_kill is provided by FileIO.c. */
 void cmd_label(void) {}
 void cmd_lcd(void) {}
 void cmd_library(void) {}
-/* Defined in host_main.c — reused here so cmd_load doesn't reimplement
- * the host tokeniser path. */
+/* Defined in host_main.c — used by FileLoadProgram when SaveProgramToFlash
+ * feeds buffered source through the host tokeniser path. */
 extern char *read_basic_source_file(const char *filename);
 extern int load_basic_source(const char *source);
 
@@ -1180,82 +1284,17 @@ static void host_append_default_ext(char *path, size_t cap, const char *ext) {
     if (n + el + 1 > cap) return;
     memcpy(path + n, ext, el + 1);
 }
-
-void cmd_load(void) {
-    char *fname = (char *)getFstring(cmdline);
-    if (!fname || !*fname) error("File name");
-
-    char path[4096];
-    host_resolve_sd_path(fname, path, sizeof(path));
-    host_append_default_ext(path, sizeof(path), ".bas");
-
-    char *source = read_basic_source_file(path);
-    if (!source) error("Cannot open file");
-
-    ClearRuntime(true);
-    int rc = load_basic_source(source);
-    free(source);
-    if (rc != 0) error("Cannot parse file");
-    PrepareProgram(false);
-    /* load_basic_source leaves the last file line in inpbuf; the prompt
-     * loop's EditInputLine would then echo it as if the user had typed
-     * it. Clear before longjmp, same pattern as cmd_new. */
-    memset(inpbuf, 0, STRINGSIZE);
-    /* cmd_load tokenises into tknbuf as it loads, which corrupts the
-     * tknbuf that ExecuteProgram is currently iterating. Jump back to
-     * the prompt so ExecuteProgram doesn't read garbage off the end
-     * of our LOAD command. Matches the pattern used by cmd_new. */
-    longjmp(mark, 1);
-}
+/* cmd_load is provided by FileIO.c. It opens the file through BasicFileOpen
+ * (which routes through host_fs_posix_try_open → fopen when host_sd_root is
+ * set), reads chars via FileGetChar, and tokenises via SaveProgramToFlash
+ * (stubbed on host to call load_basic_source + PrepareProgram). */
 void cmd_longString(void) {}
-void cmd_mkdir(void) { host_cmd_single_path(vm_sys_file_mkdir, "File name"); }
+/* cmd_mkdir / cmd_name / cmd_open are provided by FileIO.c. */
 void cmd_mouse(void) {}
 void cmd_mov(void) {}
-void cmd_name(void) {
-    char split[2];
-    char *old_name;
-    char *new_name;
-    split[0] = tokenAS;
-    split[1] = 0;
-    getargs(&cmdline, 3, (unsigned char *)split);
-    if (argc != 3) error("Syntax");
-    old_name = (char *)getFstring(argv[0]);
-    new_name = (char *)getFstring(argv[2]);
-    vm_sys_file_rename(old_name, new_name);
-}
 void cmd_nop(void) {}
 void cmd_Nunchuck(void) {}
 void cmd_onewire(void) {}
-static int host_file_mode_from_string(unsigned char *mode_text) {
-    if (str_equal(mode_text, (const unsigned char *)"OUTPUT"))
-        return FA_WRITE | FA_CREATE_ALWAYS;
-    if (str_equal(mode_text, (const unsigned char *)"APPEND"))
-        return FA_WRITE | FA_OPEN_APPEND;
-    if (str_equal(mode_text, (const unsigned char *)"INPUT"))
-        return FA_READ;
-    error("File access mode");
-    return 0;
-}
-
-void cmd_open(void) {
-    char split[4];
-    char *fname;
-    int fnbr;
-    int mode;
-
-    split[0] = tokenAS;
-    split[1] = tokenFOR;
-    split[2] = ',';
-    split[3] = 0;
-    getargs(&cmdline, 7, (unsigned char *)split);
-    if (argc != 5) error("Syntax");
-
-    fname = (char *)getFstring(argv[0]);
-    mode = host_file_mode_from_string(argv[2]);
-    if (*argv[4] == '#') argv[4]++;
-    fnbr = getint(argv[4], 1, MAXOPENFILES);
-    BasicFileOpen(fname, fnbr, mode);
-}
 void cmd_option(void) {}
 void cmd_out(void) {}
 void cmd_pause(void) {
@@ -1612,54 +1651,10 @@ void cmd_pwm(void) {
         vm_sys_pwm_configure(slice, frequency, has_duty1, duty1, has_duty2, duty2, phase, defer);
     }
 }
-void cmd_rmdir(void) { host_cmd_single_path(vm_sys_file_rmdir, "File name"); }
+/* cmd_rmdir, cmd_save, cmd_seek are provided by FileIO.c. cmd_save now
+ * writes through BasicFileOpen → host_fs_posix; the source-text path
+ * routes through FilePutStr which shunts to fputs on host. */
 void cmd_rtc(void) {}
-/* SAVE "file.bas" — writes the current program (as source text) to the
- * host filesystem under host_sd_root. Uses llist() from Commands.c to
- * detokenise each program line back into BASIC source. Other SAVE forms
- * (SAVE IMAGE, SAVE CONTEXT, etc.) are not implemented on host yet. */
-void cmd_save(void) {
-    char *fname = (char *)getFstring(cmdline);
-    if (!fname || !*fname) error("File name");
-
-    char path[4096];
-    host_resolve_sd_path(fname, path, sizeof(path));
-    host_append_default_ext(path, sizeof(path), ".bas");
-
-    FILE *fp = fopen(path, "w");
-    if (!fp) error("Cannot open file");
-
-    unsigned char buf[STRINGSIZE];
-    unsigned char *p = ProgMemory;
-    while (!(p[0] == 0 && p[1] == 0) && *p != 0xff) {
-        if (*p == T_NEWLINE) {
-            p = llist(buf, p);
-            /* llist skips the T_NEWLINE itself and writes the decoded line
-             * into buf, returning the cursor past the line. Drop auto-
-             * generated line numbers so the saved file is reloadable. */
-            unsigned char *src = buf;
-            while (*src >= '0' && *src <= '9') src++;
-            while (*src == ' ') src++;
-            fputs((char *)src, fp);
-            fputc('\n', fp);
-        } else {
-            p++;
-        }
-    }
-    fclose(fp);
-}
-void cmd_seek(void) {
-    int fnbr;
-    int pos;
-    getargs(&cmdline, 5, (unsigned char *)",");
-    if (argc != 3) error("Syntax");
-    if (*argv[0] == '#') argv[0]++;
-    fnbr = getint(argv[0], 1, MAXOPENFILES);
-    pos = getinteger(argv[2]);
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    if (pos < 1) pos = 1;
-    if (f_lseek(FileTable[fnbr].fptr, (FSIZE_t)(pos - 1)) != FR_OK) error("File error");
-}
 void cmd_Servo(void) {
     getargs(&cmdline, 5, (unsigned char *)",");
     if (argc < 3) error("Syntax");
@@ -1780,7 +1775,7 @@ void cmd_timer(void) {
     timeroffset = mytime - (uint64_t)getint(++cmdline, 0, (int)(mytime / 1000ULL)) * 1000ULL;
 }
 void cmd_update(void) {}
-void cmd_var(void) {}
+/* cmd_var is provided by FileIO.c. */
 void cmd_wait(void) {}
 void cmd_watchdog(void) {}
 void cmd_wrap(void) {}
@@ -1792,7 +1787,7 @@ void cmd_xmodem(void) {}
  *  Stub Functions -- fun_* (hardware functions): void fun_xxx(void) {}
  * ========================================================================= */
 
-void fun_cwd(void) {}
+/* fun_cwd is provided by FileIO.c. */
 void fun_date(void) {
     sret = GetTempMemory(STRINGSIZE);
     /* Tests set MMBASIC_HOST_DATE to pin a deterministic value across
@@ -1815,10 +1810,10 @@ void fun_datetime(void) {}
 void fun_day(void) {}
 void fun_dev(void) {}
 void fun_device(void) {}
-void fun_dir(void) {}
+/* fun_dir is provided by FileIO.c. */
 void fun_distance(void) {}
 void fun_ds18b20(void) {}
-void fun_eof(void) {}
+/* fun_eof is provided by FileIO.c. */
 void fun_epoch(void) {}
 void fun_format(void) {}
 void fun_GPS(void) {}
@@ -1836,7 +1831,7 @@ void fun_info(void) {
     iret = 0;
     targ = T_INT;
 }
-void fun_inputstr(void) {}
+/* fun_inputstr is provided by FileIO.c. */
 void fun_keydown(void) {
     int n = getint(ep, 0, 8);
     iret = host_keydown(n);
@@ -1847,8 +1842,7 @@ void fun_LGetByte(void) {}
 void fun_LGetStr(void) {}
 void fun_LInstr(void) {}
 void fun_LLen(void) {}
-void fun_loc(void) {}
-void fun_lof(void) {}
+/* fun_loc / fun_lof are provided by FileIO.c. */
 void fun_peek(void) {}
 void fun_pin(void) {
     int pin;
@@ -1890,15 +1884,15 @@ void fun_touch(void) {}
 void CheckAbort(void) { host_runtime_check_timeout(); }
 int check_interrupt(void) { return 0; }
 void ClearExternalIO(void) {}
-void CloseAllFiles(void) {}
+/* CloseAllFiles is provided by FileIO.c. */
 void CloseAudio(int all) { (void)all; }
 void closeframebuffer(char layer) { host_framebuffer_close(layer); }
 void clear320(void) {}
 /* DisplayPutC is now the real one from gfx_console_shared.c. It gates on
  * Option.DISPLAY_CONSOLE and calls through the DrawBitmap / DrawRectangle
  * function pointers set up in host_runtime_begin. */
-void enable_interrupts_pico(void) {}
-void disable_interrupts_pico(void) {}
+/* enable_interrupts_pico / disable_interrupts_pico are provided by
+ * FileIO.c (body empty-gated under MMBASIC_HOST). */
 void initMouse0(int sensitivity) { (void)sensitivity; }
 void restorepanel(void) { WriteBuf = NULL; }
 void routinechecks(void) { host_runtime_check_timeout(); }
@@ -2107,40 +2101,12 @@ void SSPrintString(char *s) {
     fflush(stdout);
 }
 /* PRet/PInt/PFlt/SRet/SInt/SIntComma/PIntComma/PIntH/PIntB/PIntHC/PIntBC/
- * PFltComma are now in MMBasic_Print.c (shared with the device build),
- * not stubbed here. */
-/*
- * MMfputs / MMfputc: match FileIO.c:3254 / 3386 verbatim. When filenbr==0,
- * route through MMputchar so output reaches both the terminal (stdout)
- * and the framebuffer console (via putConsole → DisplayPutC), instead of
- * going to stdout alone. PRINT, INPUT echo, CAT, and friends all land
- * here.
- */
-void MMfputs(unsigned char *p, int filenbr) {
-    if (!p) return;
-    int i = *p++;
-    if (filenbr == 0) {
-        while (i--) MMputchar(*p++, 1);
-    } else {
-        FilePutStr(i, (char *)p, filenbr);
-    }
-}
-int MMfeof(int fnbr) {
-    if (fnbr == 0) return 1;
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    return FileEOF(fnbr);
-}
-unsigned char MMfputc(unsigned char c, int fnbr) {
-    if (fnbr == 0) return (unsigned char)MMputchar((char)c, 1);
-    return (unsigned char)FilePutChar((char)c, fnbr);
-}
-int MMfgetc(int filenbr) {
-    if (filenbr == 0) return -1;
-    if (filenbr < 1 || filenbr > MAXOPENFILES) error("File number");
-    if (FileTable[filenbr].com == 0) error("File number is not open");
-    return (unsigned char)FileGetChar(filenbr);
-}
+ * PFltComma are in MMBasic_Print.c (shared). MMfputs/MMfeof/MMfputc/MMfgetc
+ * are now provided by FileIO.c: PRINT and INPUT on host land in those
+ * functions, which then dispatch to the SerialPutchar path for COM#s (no-op
+ * on host) or to FilePutStr/FileGetChar — which themselves shunt through
+ * host_fs_posix_* for POSIX-backed files. Console (fnbr==0) still reaches
+ * putConsole → MMputchar via the same dispatch, untouched. */
 void MMfopen(unsigned char *fname, unsigned char *mode, int fnbr) { (void)fname; (void)mode; (void)fnbr; }
 void MMfclose(int fnbr) { FileClose(fnbr); }
 void MMgetline(int filenbr, char *p) {
@@ -2186,111 +2152,123 @@ char SerialConsolePutC(char c, int flush) {
 }
 int kbhitConsole(void) { return 0; }
 
-/* Host legacy file shim: interpreter core stays untouched; storage is the
- * shared in-memory FAT disk used by VM host file syscalls. */
-int BasicFileOpen(char *fname, int fnbr, int mode) {
-    FRESULT res;
-    char path[FF_MAX_LFN] = {0};
+/* host_fs_posix_* — POSIX side table consumed by FileIO.c shunts.
+ * When host_sd_root is set (REPL / --sim) every BasicFileOpen call is
+ * redirected through fopen() so the Editor / RUN / OPEN … for OUTPUT
+ * etc. can read and write real files under the user's directory. When
+ * host_sd_root is NULL (test harness) the side table stays empty and
+ * FileIO.c's normal FatFS path runs against vm_host_fat.c's RAM disk.
+ *
+ * FileIO.c's primitives (BasicFileOpen, FileGetChar, FilePutChar,
+ * FileClose, FileEOF, cmd_seek, cmd_flush, fun_loc, fun_lof) each begin
+ * with a small #ifdef MMBASIC_HOST preamble that hands off to the
+ * host_fs_posix_* routine below if this fnbr has a POSIX entry. */
+static FILE *host_posix_files[MAXOPENFILES + 1] = {0};
 
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com != 0) error("File number already open");
-    res = vm_host_fat_mount();
-    if (res != FR_OK) error("Host FAT init failed");
-    vm_sys_file_host_resolve_path(fname, path, sizeof(path));
-    FileTable[fnbr].fptr = malloc(sizeof(FIL));
-    if (!FileTable[fnbr].fptr) error("Not enough memory");
-    res = f_open(FileTable[fnbr].fptr, path, (BYTE)mode);
-    if (res != FR_OK) {
-        free(FileTable[fnbr].fptr);
-        FileTable[fnbr].fptr = NULL;
-        error("File error");
-    }
+int host_fs_posix_active(int fnbr) {
+    return fnbr >= 1 && fnbr <= MAXOPENFILES && host_posix_files[fnbr] != NULL;
+}
+
+int host_fs_posix_try_open(char *fname, int fnbr, int mode) {
+    if (!host_sd_root) return 0;
+    char path[STRINGSIZE];
+    host_resolve_sd_path(fname, path, sizeof(path));
+    const char *m = (mode & FA_WRITE) ? ((mode & FA_CREATE_ALWAYS) ? "wb"
+                                       : (mode & FA_OPEN_APPEND)  ? "ab" : "rb+")
+                                      : "rb";
+    FILE *fp = fopen(path, m);
+    if (!fp) error("File error");
+    struct stat st;
+    size_t size = 0;
+    if (fstat(fileno(fp), &st) == 0) size = (size_t)st.st_size;
+    FileTable[fnbr].fptr = calloc(1, sizeof(FIL));
+    if (!FileTable[fnbr].fptr) { fclose(fp); error("Not enough memory"); }
+    /* Fill obj.objsize so Editor.c's f_size(fptr) returns the real size. */
+    FileTable[fnbr].fptr->obj.objsize = (FSIZE_t)size;
+    host_posix_files[fnbr] = fp;
     filesource[fnbr] = FATFSFILE;
     return 1;
 }
-void FileClose(int fnbr) {
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    FRESULT res = f_close(FileTable[fnbr].fptr);
+
+char host_fs_posix_get_char(int fnbr) {
+    int c = fgetc(host_posix_files[fnbr]);
+    return c == EOF ? 0 : (char)c;
+}
+
+char host_fs_posix_put_char(char c, int fnbr) {
+    if (fputc((unsigned char)c, host_posix_files[fnbr]) == EOF) error("File error");
+    return c;
+}
+
+void host_fs_posix_put_str(int count, char *s, int fnbr) {
+    if (count <= 0) return;
+    if (fwrite(s, 1, (size_t)count, host_posix_files[fnbr]) != (size_t)count)
+        error("File error");
+}
+
+int host_fs_posix_eof(int fnbr) {
+    FILE *fp = host_posix_files[fnbr];
+    /* ANSI feof only returns true after a read that hit EOF — BASIC's EOF
+     * wants a lookahead. Peek one byte, push it back. */
+    int c = fgetc(fp);
+    if (c == EOF) return 1;
+    ungetc(c, fp);
+    return 0;
+}
+
+void host_fs_posix_close(int fnbr) {
+    fclose(host_posix_files[fnbr]);
+    host_posix_files[fnbr] = NULL;
     free(FileTable[fnbr].fptr);
     FileTable[fnbr].fptr = NULL;
     filesource[fnbr] = NONEFILE;
-    if (res != FR_OK) error("File error");
 }
-int FileEOF(int fnbr) {
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    return f_eof(FileTable[fnbr].fptr);
+
+int64_t host_fs_posix_loc(int fnbr) {
+    return (int64_t)ftell(host_posix_files[fnbr]);
 }
-char FileGetChar(int fnbr) {
-    char ch = 0;
-    UINT read = 0;
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    if (f_read(FileTable[fnbr].fptr, &ch, 1, &read) != FR_OK) error("File error");
-    return read == 1 ? ch : 0;
+
+int64_t host_fs_posix_lof(int fnbr) {
+    return (int64_t)FileTable[fnbr].fptr->obj.objsize;
 }
-/* FileLoadProgram is called by do_run() when the user types RUN "file.bas".
- * It must parse the filename out of the fname buffer (quoted, optionally
- * followed by a comma and cmd args), load the source, tokenise into
- * ProgMemory, and return true on success. Shares the same resolve+read+
- * tokenise path as cmd_load. */
-int FileLoadProgram(unsigned char *fname, bool chain) {
-    (void)chain;
-    if (!fname || !*fname) return 0;
 
-    /* do_run hands us a buffer formatted as "\"filename\",args" (see
-     * Commands.c:725). Extract the filename. */
-    char name[FF_MAX_LFN];
-    const unsigned char *p = fname;
-    if (*p == '"') {
-        p++;
-        size_t n = 0;
-        while (*p && *p != '"' && n + 1 < sizeof(name)) name[n++] = (char)*p++;
-        name[n] = '\0';
-    } else {
-        size_t n = 0;
-        while (*p && *p != ',' && n + 1 < sizeof(name)) name[n++] = (char)*p++;
-        name[n] = '\0';
-    }
-    if (!*name) return 0;
-
-    char path[FF_MAX_LFN];
-    host_resolve_sd_path(name, path, sizeof(path));
-    host_append_default_ext(path, sizeof(path), ".bas");
-
-    char *source = read_basic_source_file(path);
-    if (!source) error("Cannot find file");
-
-    ClearRuntime(true);
-    int rc = load_basic_source(source);
-    free(source);
-    if (rc != 0) error("Cannot parse file");
-    PrepareProgram(false);
-    /* Same hygiene as cmd_load — don't leave the last file line in inpbuf
-     * for the next EditInputLine to pick up. */
-    memset(inpbuf, 0, STRINGSIZE);
-    return 1;
-}
-int FileLoadSourceProgram(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
-int FileLoadSourceProgramVM(unsigned char *fname, char **source_out) { (void)fname; (void)source_out; return 0; }
-int FileLoadCMM2Program(char *fname, bool message) { (void)fname; (void)message; return 0; }
-void FilePutStr(int count, char *s, int fnbr) {
-    UINT wrote = 0;
-    if (fnbr < 1 || fnbr > MAXOPENFILES) error("File number");
-    if (FileTable[fnbr].com == 0) error("File number is not open");
-    if (count <= 0) return;
-    if (f_write(FileTable[fnbr].fptr, s, (UINT)count, &wrote) != FR_OK ||
-        wrote != (UINT)count) {
+void host_fs_posix_seek(int fnbr, int64_t offset) {
+    /* BASIC SEEK is 1-based. FileIO.c's cmd_seek adjusts before calling. */
+    if (fseek(host_posix_files[fnbr], (long)offset, SEEK_SET) != 0)
         error("File error");
+}
+
+void host_fs_posix_flush(int fnbr) {
+    fflush(host_posix_files[fnbr]);
+}
+
+/* POSIX-backed existence check. The Editor's file-load path (EDIT "foo.bas")
+ * needs this to return truthful answers — otherwise `edit` leaves its p
+ * pointer NULL and dereferences it at Editor.c:511. Also relied on by
+ * cmd_run "file", AUTOSAVE recovery, etc. When no --sd-root is configured
+ * (host_sd_root == NULL) we fall back to the CWD so the tree-of-.bas files
+ * in the repo root just work for direct-run invocations. */
+int ExistsFile(char *fname) {
+    if (!fname || !*fname) return 0;
+    char path[STRINGSIZE];
+    if (host_sd_root) {
+        size_t rl = strlen(host_sd_root);
+        size_t fl = strlen(fname);
+        int need_sep = (fname[0] != '/' && rl > 0 && host_sd_root[rl - 1] != '/');
+        if (fname[0] == '/') {
+            snprintf(path, sizeof(path), "%s", fname);
+        } else if (rl + (need_sep ? 1 : 0) + fl + 1 > sizeof(path)) {
+            return 0;
+        } else {
+            snprintf(path, sizeof(path), "%s%s%s",
+                     host_sd_root, need_sep ? "/" : "", fname);
+        }
+    } else {
+        snprintf(path, sizeof(path), "%s", fname);
     }
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
 }
-char FilePutChar(char c, int fnbr) {
-    FilePutStr(1, &c, fnbr);
-    return c;
-}
-int FindFreeFileNbr(void) { return 1; }
-int ExistsFile(char *fname) { (void)fname; return 0; }
 /* Simulated flash operations. On the device these hit XIP flash; on host
  * they write through to flash_prog_buf (allocated in host_main.c, 128 KB).
  * Layout: first 64 KB is program area, second 64 KB is the CFunction area
@@ -2314,55 +2292,33 @@ void flash_range_program(uint32_t off, const uint8_t *data, uint32_t count) {
     memcpy(flash_prog_buf + off, data, count);
 }
 
-void FlashWriteByte(unsigned char b) { (void)b; }
-void FlashWriteClose(void) {}
-void FlashWriteInit(int region) { (void)region; }
-void FlashWriteBlock(void) {}
-void FlashWriteWord(unsigned int i) { (void)i; }
-void FlashWriteAlign(void) {}
-void FlashWriteAlignWord(void) {}
-void FlashSetAddress(int address) { (void)address; }
+/* FlashWrite*, FlashSetAddress, LoadOptions, SaveOptions, ResetAllFlash,
+ * ResetOptions, ResetFlashStorage, CheckSDCard, CrunchData, ClearSavedVars,
+ * ForceFileClose, ErrorCheck, positionfile, drivecheck, getfullfilename,
+ * GetCWD, InitSDCard are now provided by FileIO.c. Flash writes go through
+ * flash_range_* (RAM-backed flash_prog_buf); InitSDCard just needs
+ * vm_host_fat to be mounted. */
 void CallCFunction(unsigned char *p, unsigned char *args, int *t, unsigned char **s) { (void)p; (void)args; (void)t; (void)s; }
 void CallExecuteProgram(char *p) { (void)p; }
-void LoadOptions(void) {}
-void SaveOptions(void) {}
-void ResetAllFlash(void) {}
-void ResetOptions(bool startup) { (void)startup; }
-void ResetFlashStorage(int umount) { (void)umount; }
-/* Called from Editor.c's SaveToProgMemory() when the user hits F1/F2 to
- * save their edits. `pm` points to NUL-terminated source text (EdBuff),
- * not tokens, so reuse the same host_main tokeniser path that LOAD uses.
+/* SaveProgramToFlash lives in PicoMite.c on device; on host that file
+ * isn't linked so we provide a tokenise-in-place shim. Called from the
+ * Editor (F1 Save) and from FileIO.c's cmd_load / FileLoadProgram with
+ * EdBuff or an assembled source buffer. `pm` is NUL-terminated source
+ * text, NOT tokens, so route it through the host tokeniser path.
  *
  * Do NOT call ClearRuntime here: EdBuff is allocated via GetTempMemory
  * inside edit(), and ClearRuntime frees temp memory — freeing the very
- * buffer we're about to tokenise. SaveToProgMemory's caller runs
- * ClearProgram(true) right after us for any runtime reset needed. */
+ * buffer we're about to tokenise. */
 void SaveProgramToFlash(unsigned char *pm, int msg) {
     (void)msg;
     if (!pm) return;
     load_basic_source((const char *)pm);
     PrepareProgram(false);
 }
-void CheckSDCard(void) {}
-void CrunchData(unsigned char **p, int c) { (void)p; (void)c; }
-void ClearSavedVars(void) {}
-int ForceFileClose(int fnbr) {
-    if (fnbr >= 1 && fnbr <= MAXOPENFILES && FileTable[fnbr].com != 0) {
-        f_close(FileTable[fnbr].fptr);
-        free(FileTable[fnbr].fptr);
-        FileTable[fnbr].fptr = NULL;
-        filesource[fnbr] = NONEFILE;
-    }
-    return FATFSFILE;
-}
-void ErrorCheck(int fnbr) { (void)fnbr; }
-void positionfile(int fnbr, int idx) { (void)fnbr; (void)idx; }
-int drivecheck(char *p, int *waste) { (void)p; (void)waste; return 0; }
-void getfullfilename(char *fname, char *q) { (void)fname; (void)q; }
-char *GetCWD(void) { return (char *)""; }
-int InitSDCard(void) { return vm_host_fat_mount() == FR_OK; }
 
-/* LFS stubs */
+/* LFS stubs — FileIO.c references the full littlefs surface. On host
+ * nothing actually stores to flash via LFS (BasicFileOpen routes through
+ * POSIX / FatFS instead), but every reachable call site has to link. */
 int lfs_file_close(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
 int lfs_file_open(lfs_t *l, lfs_file_t *file, const char *path, int flags) { (void)l; (void)file; (void)path; (void)flags; return -1; }
 lfs_ssize_t lfs_file_read(lfs_t *l, lfs_file_t *file, void *buf, lfs_size_t size) { (void)l; (void)file; (void)buf; (void)size; return 0; }
@@ -2371,6 +2327,20 @@ lfs_ssize_t lfs_file_write(lfs_t *l, lfs_file_t *file, const void *buf, lfs_size
 lfs_ssize_t lfs_fs_size(lfs_t *l) { (void)l; return 0; }
 int lfs_remove(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
 int lfs_stat(lfs_t *l, const char *path, struct lfs_info *info) { (void)l; (void)path; (void)info; return -1; }
+int lfs_dir_open(lfs_t *l, lfs_dir_t *dir, const char *path) { (void)l; (void)dir; (void)path; return -1; }
+int lfs_dir_close(lfs_t *l, lfs_dir_t *dir) { (void)l; (void)dir; return 0; }
+int lfs_dir_read(lfs_t *l, lfs_dir_t *dir, struct lfs_info *info) { (void)l; (void)dir; (void)info; return 0; }
+int lfs_file_rewind(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+int lfs_file_sync(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+lfs_soff_t lfs_file_tell(lfs_t *l, lfs_file_t *file) { (void)l; (void)file; return 0; }
+int lfs_format(lfs_t *l, const struct lfs_config *cfg) { (void)l; (void)cfg; return 0; }
+int lfs_mount(lfs_t *l, const struct lfs_config *cfg) { (void)l; (void)cfg; return 0; }
+int lfs_unmount(lfs_t *l) { (void)l; return 0; }
+lfs_ssize_t lfs_getattr(lfs_t *l, const char *path, uint8_t type, void *buf, lfs_size_t size) { (void)l; (void)path; (void)type; (void)buf; (void)size; return -1; }
+int lfs_setattr(lfs_t *l, const char *path, uint8_t type, const void *buf, lfs_size_t size) { (void)l; (void)path; (void)type; (void)buf; (void)size; return 0; }
+int lfs_removeattr(lfs_t *l, const char *path, uint8_t type) { (void)l; (void)path; (void)type; return 0; }
+int lfs_mkdir(lfs_t *l, const char *path) { (void)l; (void)path; return 0; }
+int lfs_rename(lfs_t *l, const char *oldpath, const char *newpath) { (void)l; (void)oldpath; (void)newpath; return 0; }
 
 /* Drawing stubs */
 void UnloadFont(int f) { (void)f; }
@@ -2391,6 +2361,65 @@ void WriteComand(int cmd) { (void)cmd; }
 void WriteData(int data) { (void)data; }
 void SPIClose(void) {}
 void SPI2Close(void) {}
+
+/* Serial / GPS / Audio stubs — FileIO.c references these transitively.
+ * Host has no UART peripheral and no GPS, so every call errors or no-ops. */
+void SerialOpen(unsigned char *spec) { (void)spec; error("COM: not supported on host"); }
+void SerialClose(int comnbr) { (void)comnbr; }
+int SerialGetchar(int comnbr) { (void)comnbr; return -1; }
+int SerialRxStatus(int comnbr) { (void)comnbr; return 0; }
+int SerialTxStatus(int comnbr) { (void)comnbr; return 0; }
+void disable_audio(void) {}
+int ExistsDir(char *p, char *q, int *filesystem) { (void)p; (void)q; (void)filesystem; return 0; }
+
+/* GPS globals — FileIO.c externs them for DATE$/TIME$ with GPS=N. */
+volatile char gpsbuf1[128] = {0};
+volatile char gpsbuf2[128] = {0};
+volatile char * volatile gpsbuf = NULL;
+volatile char gpscount = 0;
+volatile int gpscurrent = 0;
+volatile int gpsmonitor = 0;
+MMFLOAT GPSlatitude = 0, GPSlongitude = 0, GPSspeed = 0, GPStrack = 0;
+MMFLOAT GPSdop = 0, GPSaltitude = 0;
+int GPSvalid = 0, GPSfix = 0, GPSadjust = 0, GPSsatellites = 0;
+char GPStime[9] = {0};
+char GPSdate[11] = {0};
+
+/* Flash layout externs referenced from FileIO.c. On device these live at
+ * fixed XIP addresses (linker script); on host there's no flash so we
+ * back them with RAM buffers.
+ *
+ * flash_option_contents is memcpy()'d into Option by LoadOptions — NOT
+ * just at startup but every time error() fires (see MMBasic.c:2835).
+ * Host-specific terminal geometry (Option.Width / Height /
+ * DISPLAY_CONSOLE / …) gets set by host_main.c at boot; if this
+ * buffer is blank, every error wipes those fields and the framebuffer
+ * console goes silent + cmd_files' wrap-at-Width collapses to zero.
+ *
+ * The fix: host_options_snapshot() (called by host_runtime_begin
+ * after everyone has finished mutating Option) copies the current
+ * Option back into this buffer so subsequent LoadOptions calls
+ * restore the initialized state, not the zero-filled one.
+ *
+ * We still start zero-filled (not 0xFF) because Option.PIN is an int
+ * and all-0xFF would be 0xFFFFFFFF which trips the PIN-lockdown
+ * prompt in MMBasic_REPL.c:196.
+ *
+ * flash_target_buf uses 0xFF fill — PrepareProgramExt walks it looking
+ * for the CFunction terminator, and 0xFF is correct "erased" semantics. */
+static uint8_t host_flash_option_buf[sizeof(struct option_s)];
+static uint8_t host_flash_target_buf[4096];
+const uint8_t *flash_option_contents = host_flash_option_buf;
+const uint8_t *flash_target_contents = host_flash_target_buf;
+__attribute__((constructor))
+static void host_flash_contents_init(void) {
+    memset(host_flash_option_buf, 0x00, sizeof(host_flash_option_buf));
+    memset(host_flash_target_buf, 0xFF, sizeof(host_flash_target_buf));
+}
+
+void host_options_snapshot(void) {
+    memcpy(host_flash_option_buf, &Option, sizeof(Option));
+}
 
 /* Memory stubs */
 unsigned int GetPeekAddr(unsigned char *p) { (void)p; return 0; }

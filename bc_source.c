@@ -5210,24 +5210,10 @@ static void source_compile_copy(BCSourceFrontend *fe, BCCompiler *cs, const char
     *pp = p;
 }
 
-static void source_compile_files(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
-    const char *p = *pp;
-    int has_pattern = 0;
-
-    source_skip_space(&p);
-    if (*p != '\0' && *p != '\'') {
-        has_pattern = 1;
-        if (!source_parse_string_expression(fe, cs, &p, "FILES requires string pattern")) {
-            *pp = p;
-            return;
-        }
-    }
-    {
-        uint8_t aux = (uint8_t)has_pattern;
-        source_emit_syscall(cs, BC_SYS_FILE_FILES, (uint8_t)has_pattern, &aux, 1);
-    }
-    *pp = p;
-}
+/* FILES intentionally has no native compile path. It falls through to
+ * the OP_BRIDGE_CMD fallback at the bottom of source_compile_statement,
+ * so both the interpreter and the VM land in FileIO.c's cmd_files —
+ * one formatted-listing implementation shared across paths. */
 
 static void source_compile_line_input(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
@@ -6027,11 +6013,8 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
-    if (source_keyword(&p, "FILES")) {
-        source_compile_files(fe, cs, &p);
-        source_statement_end(cs, p);
-        return;
-    }
+    /* FILES: dropped through to OP_BRIDGE_CMD fallback (see comment above
+     * source_compile_files). Interpreter and VM share FileIO.c's cmd_files. */
 
     if (source_keyword(&p, "SEEK")) {
         source_compile_seek(fe, cs, &p);
