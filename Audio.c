@@ -44,8 +44,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifndef MMBASIC_HOST
 /* Device body: decoder libraries (dr_wav/mp3/flac, hxcmod), VS1053
  * driver, PWM/PIO-driven tone pipeline, all cmd_play subcommands.
- * Host sees only the tail section below (search for
- * `#else  /* MMBASIC_HOST */`). */
+ * Host sees only the tail section below (search for the MMBASIC_HOST
+ * #else branch). */
 
 #define DRWAV_COPY_MEMORY(dst, src, sz) memcpy((dst), (src), (sz))
 #define DR_WAV_IMPLEMENTATION

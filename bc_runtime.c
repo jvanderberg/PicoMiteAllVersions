@@ -241,6 +241,24 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
 
     bc_compiler_init(cs);
+
+    /* Populate subfun[] from the raw source so bridged interpreter paths
+     * (bc_bridge_call_cmd / bc_bridge_call_fun → expression eval →
+     * FindSubFun) can resolve user-defined SUB/FUNCTION names. The VM
+     * compiles straight from the source string without routing through
+     * PrepareProgram, so without this subfun[] stays empty and a bridged
+     * statement like `Sort a%(), , Flag%()` errors "Dimensions" when the
+     * interpreter misreads the user-fn call as an array reference.
+     *
+     * Uses a RAM side-buffer (no ProgMemory / flash writes on device).
+     * Paired release happens after VM execution completes below.
+     *
+     * Skip in immediate mode: single-line REPL entries can't define
+     * SUBs and we should leave any pre-existing subfun[] state alone. */
+    if (!is_immediate) {
+        bc_bridge_prepare_subfun(source);
+    }
+
     bc_crash_checkpoint(BC_CK_VM_COMPILE, "bc_compile_source");
     err = bc_compile_source(cs, source, source_name);
     if (err) {
@@ -260,6 +278,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
         BC_FREE(cs);
         BC_FREE(vm);
+        if (!is_immediate) bc_bridge_release_subfun_buffer();
         error("$", msg);
         return;
     }
@@ -312,6 +331,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
         bc_compile_release_all();
         BC_FREE(cs);
         BC_FREE(vm);
+        if (!is_immediate) bc_bridge_release_subfun_buffer();
         error("NEM[vm:compact] want=% pg=% used=%/% free=% run=%",
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
@@ -356,6 +376,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
         bc_compile_release_all();
         BC_FREE(cs);
         BC_FREE(vm);
+        if (!is_immediate) bc_bridge_release_subfun_buffer();
         error("NEM[vm:runtime] want=% pg=% used=%/% free=% run=%",
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
@@ -395,6 +416,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
     bc_compile_release_all();
     BC_FREE(cs);
     BC_FREE(vm);
+    if (!is_immediate) bc_bridge_release_subfun_buffer();
     vm_sys_file_reset();
     vm_sys_graphics_reset();
     bc_fastgfx_reset();

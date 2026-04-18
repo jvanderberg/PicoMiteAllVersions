@@ -453,3 +453,155 @@ cleanup:
 
     ClearTempMemory();
 }
+
+/* ------------------------------------------------------------------ */
+/*  Bridge subfun[] population                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * When the VM bridges back to the interpreter (bc_bridge_call_cmd /
+ * bc_bridge_call_fun) and the bridged statement's expression references
+ * a user-defined SUB or FUNCTION, the interpreter's expression evaluator
+ * calls FindSubFun() — which walks subfun[] (and funtbl[] on rp2350).
+ *
+ * bc_run_source_string_ex compiles the program directly to VM bytecode
+ * without routing through PrepareProgram, so subfun[] stays empty and
+ * the bridged name lookup fails — user-function calls inside bridged
+ * args surface as "Dimensions" or "Unknown command" errors.
+ *
+ * bc_bridge_prepare_subfun solves this by tokenising the raw source
+ * into a RAM side-buffer and then scanning that buffer for SUB / FUN /
+ * CSUB tokens, wiring subfun[] entries to point into our buffer. No
+ * flash writes on device; on host we bypass ProgMemory entirely so we
+ * don't disturb whatever the interpreter-oracle comparison loaded.
+ *
+ * bc_bridge_release_subfun_buffer frees the buffer and nulls subfun[].
+ */
+
+static unsigned char *g_bridge_prog_buf = NULL;
+
+void bc_bridge_release_subfun_buffer(void) {
+    if (g_bridge_prog_buf) {
+        BC_FREE(g_bridge_prog_buf);
+        g_bridge_prog_buf = NULL;
+    }
+    for (int i = 0; i < MAXSUBFUN; i++) subfun[i] = NULL;
+#ifdef rp2350
+    memset(funtbl, 0, sizeof(struct s_funtbl) * MAXSUBFUN);
+#endif
+}
+
+int bc_bridge_prepare_subfun(const char *source) {
+    bc_bridge_release_subfun_buffer();
+    if (!source || !*source) return 0;
+
+    /* Tokenised form is typically <= source length. Add headroom for
+     * per-line terminators + 0xff end-of-program sentinel. */
+    size_t src_len = strlen(source);
+    size_t cap = src_len + 64;
+    unsigned char *buf = (unsigned char *)BC_ALLOC(cap);
+    if (!buf) return -1;
+    /* 0xff fill so the tail acts as the end-of-program sentinel that
+     * the standard MMBasic walker (and our scan below) look for. */
+    memset(buf, 0xff, cap);
+
+    /* Save caller's line-buffer state — tokenise() writes tknbuf/inpbuf. */
+    unsigned char saved_inpbuf[STRINGSIZE];
+    unsigned char saved_tknbuf[STRINGSIZE];
+    memcpy(saved_inpbuf, inpbuf, STRINGSIZE);
+    memcpy(saved_tknbuf, tknbuf, STRINGSIZE);
+
+    unsigned char *pm = buf;
+    const char *line = source;
+    while (*line) {
+        const char *eol = strchr(line, '\n');
+        size_t len = eol ? (size_t)(eol - line) : strlen(line);
+        if (len > 0 && line[len - 1] == '\r') len--;
+        if (len >= STRINGSIZE) len = STRINGSIZE - 1;
+
+        if (len > 0) {
+            memcpy(inpbuf, line, len);
+            inpbuf[len] = '\0';
+            tokenise(0);
+
+            /* tokenise() terminates tknbuf with two zero bytes. T_LINENBR
+             * embeds single zero bytes, so walk until two consecutive
+             * zeros (same pattern used by SaveProgramToFlash). */
+            unsigned char *tp = tknbuf;
+            while (!(tp[0] == 0 && tp[1] == 0)) {
+                if ((size_t)(pm - buf) >= cap - 3) goto buf_full;
+                *pm++ = *tp++;
+            }
+            *pm++ = 0;  /* element terminator */
+        }
+        line = eol ? eol + 1 : line + strlen(line);
+    }
+buf_full:
+    *pm++ = 0;  /* program terminator byte 1 */
+    *pm++ = 0;  /* program terminator byte 2 */
+
+    memcpy(inpbuf, saved_inpbuf, STRINGSIZE);
+    memcpy(tknbuf, saved_tknbuf, STRINGSIZE);
+
+    /* Scan tokenised buffer for SUB/FUN/CSUB tokens and populate
+     * subfun[]. Mirrors PrepareProgramExt's core walk without its
+     * ErrAbort / CFunction-scanning paths. */
+    for (int i = 0; i < MAXSUBFUN; i++) subfun[i] = NULL;
+    int si = 0;
+    unsigned char *p = buf;
+    while (*p != 0xff && si < MAXSUBFUN) {
+        /* Skip leading whitespace / label prefix. The interpreter walks
+         * this via GetNextCommand; for a pristine tokeniser output stream
+         * skipspace is enough. */
+        while (*p == ' ' || *p == T_NEWLINE || *p == T_LINENBR) {
+            if (*p == T_LINENBR) { p += 3; continue; }
+            p++;
+        }
+        if (*p == 0) {
+            p++;
+            if (*p == 0) break;  /* double-zero = end-of-program */
+            continue;
+        }
+        /* Inline commandtbl_decode — it's static inline in MMBasic.c and
+         * not exported through MMBasic.h. */
+        CommandToken tkn = (CommandToken)((p[0] & 0x7f) | ((p[1] & 0x7f) << 7));
+        if (tkn == cmdSUB || tkn == cmdFUN || tkn == cmdCSUB) {
+            subfun[si++] = p;
+        }
+        while (*p) p++;  /* skip to end-of-element */
+    }
+
+#ifdef rp2350
+    /* Rebuild funtbl[] hash for FindSubFun's rp2350 fast path. Mirrors
+     * PrepareProgram's hashing logic. */
+    memset(funtbl, 0, sizeof(struct s_funtbl) * MAXSUBFUN);
+    for (int i = 0; i < MAXSUBFUN && subfun[i] != NULL; i++) {
+        unsigned char *np = subfun[i];
+        np += sizeof(CommandToken);
+        while (*np == ' ') np++;
+        char name[MAXVARLEN + 1];
+        int namelen = 0;
+        uint32_t hash = FNV_offset_basis;
+        do {
+            unsigned u = mytoupper(*np);
+            hash ^= u;
+            hash *= FNV_prime;
+            if (namelen < MAXVARLEN) name[namelen] = (char)u;
+            np++;
+            namelen++;
+        } while (isnamechar(*np));
+        if (namelen < MAXVARLEN) name[namelen] = 0;
+        else namelen = MAXVARLEN;
+        hash %= MAXSUBHASH;
+        while (funtbl[hash].name[0] != 0) {
+            hash++;
+            if (hash == MAXSUBFUN) hash = 0;
+        }
+        funtbl[hash].index = i;
+        memcpy(funtbl[hash].name, name, (size_t)namelen);
+    }
+#endif
+
+    g_bridge_prog_buf = buf;
+    return 0;
+}

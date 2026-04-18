@@ -929,6 +929,14 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len);
 void bc_bridge_call_fun(BCVMState *vm, uint16_t fun_idx, const uint8_t *args, uint16_t arg_len, uint8_t ret_type);
 void bc_bridge_reset_sync(void);
 
+/* Tokenise `source` into a RAM side-buffer and populate subfun[] (and
+ * funtbl[] on rp2350) so bridged FindSubFun lookups can resolve
+ * user-defined SUB/FUNCTION names. Call before VM execution; pair with
+ * bc_bridge_release_subfun_buffer() after execution completes.
+ * Returns 0 on success, non-zero on OOM. */
+int  bc_bridge_prepare_subfun(const char *source);
+void bc_bridge_release_subfun_buffer(void);
+
 /* Helpers */
 uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);
 uint16_t bc_add_slot(BCCompiler *cs, const char *name, int name_len, uint8_t type, int is_array);
