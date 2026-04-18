@@ -979,12 +979,121 @@ int printWrappedText(const char *text, int screenWidth, int listcnt, int all) {
 	return listcnt;
 }
 
+/* Curated list of REPL / "DOS-like" commands shown by HELP with no args.
+ * Reference only — not an availability check, so the same text prints on
+ * every build. NULL terminates; an empty string renders as a blank line. */
+static const char * const help_repl_cmds[] = {
+    "MMBasic REPL commands:",
+    "",
+    "File and disk:",
+    "  FILES [wildcard]        List files in current directory",
+    "  CHDIR dir               Change current directory",
+    "  MKDIR dir               Create directory",
+    "  RMDIR dir               Remove directory",
+    "  KILL file [,ALL]        Delete file(s)",
+    "  COPY src TO dst         Copy file to file or directory",
+    "  RENAME old AS new       Rename file",
+    "  DRIVE \"A:\"|\"B:\"         Select active drive (A: flash, B: SD)",
+    "  DRIVE \"A:/FORMAT\"       Reformat the flash filesystem",
+    "  XMODEM SEND [file]      Send program (or file) over USB console",
+    "  XMODEM RECEIVE [file]   Receive program (or file) over USB console",
+    "",
+    "Program:",
+    "  NEW                     Erase current program",
+    "  LOAD file [,R]          Load BASIC program (,R runs after loading)",
+    "  SAVE file               Save current program",
+    "  LIST [ALL] [file]       List program or file; ALL skips paging",
+    "  LIST OPTIONS            Print current OPTION settings",
+    "  LIST VARIABLES          Print all currently defined variables",
+    "  RUN [file[,cmdline$]]   Run program, optionally passing MM.CMDLINE$",
+    "  FRUN file               Run program via the bytecode VM",
+    "  CHAIN file [cmdline$]   Run another program, keep variables",
+    "  EDIT [file]             Open the full-screen program editor",
+    "  EDIT FILE file          Edit an arbitrary file",
+    "  AUTOSAVE [CRUNCH|APPEND|N]  Capture pasted lines into program",
+    "  CLEAR                   Delete all variables, recover memory",
+    "  CONTINUE                Resume program after STOP / error / CTRL-C",
+    "",
+    "System:",
+    "  MEMORY                  Show memory usage",
+    "  OPTION LIST             List current OPTION settings",
+    "  OPTION RESET            Reset all options to defaults",
+    "  OPTION RESET LIST       List available board configurations",
+    "  OPTION RESET <cfg>      Reset options for configuration <cfg>",
+    "  CONFIGURE LIST          Alias for OPTION RESET LIST",
+    "  CONFIGURE <cfg>         Alias for OPTION RESET <cfg>",
+    "  LIBRARY SAVE            Move current program into flash library",
+    "  LIBRARY DELETE          Delete flash library",
+    "  LIBRARY LIST [ALL]      List contents of flash library",
+    "  FLASH LIST [n [,ALL]]   List flash slots (or program in slot n)",
+    "  FLASH SAVE n            Save current program to flash slot n",
+    "  FLASH LOAD n            Load program from flash slot n",
+    "  FLASH RUN n             Run program in flash slot n",
+    "  FLASH ERASE n|ALL       Erase flash slot n (or all slots)",
+    "  CPU RESTART             Restart the processor",
+    "",
+    "HELP                      This list",
+    "HELP <pattern>            Filter list (substring), or look up in A:/help.txt",
+    NULL
+};
+
 void cmd_help(void){
 	getargs(&cmdline,1,(unsigned char *)",");
-	if(!ExistsFile("A:/help.txt"))error("A:/help.txt not found");
 	if(!argc){
-		MMPrintString("Enter help and the name of the command or function\r\nUse * for multicharacter wildcard or ? for single character wildcard\r\n");
-	} else {
+		/* No args: page through the REPL command reference. This path
+		 * doesn't need A:/help.txt, so a stock device works out of the
+		 * box — users only need the help file for per-command lookups. */
+		int ListCnt = CurrentY/(FontTable[gui_font >> 4][1] * (gui_font & 0b1111)) + 2;
+		for (const char * const *pp = help_repl_cmds; *pp; pp++) {
+			MMPrintString((char *)*pp);
+			ListNewLine(&ListCnt, 0);
+		}
+		return;
+	}
+	/* With an argument: case-insensitive substring filter against the
+	 * built-in REPL list. If at least one line matches, show the header
+	 * and the matches; otherwise fall through to the A:/help.txt lookup
+	 * (handy for non-REPL commands that aren't in the built-in list). */
+	{
+		char *needle = (char *)getCstring(argv[0]);
+		char upper[MAXVARLEN + 1];
+		int nl = (int)strlen(needle);
+		if (nl > MAXVARLEN) nl = MAXVARLEN;
+		for (int i = 0; i < nl; i++) upper[i] = (char)toupper((unsigned char)needle[i]);
+		upper[nl] = 0;
+
+		int matches = 0;
+		for (const char * const *pp = help_repl_cmds; *pp; pp++) {
+			const char *line = *pp;
+			if (!*line) continue;
+			char uline[160];
+			int ll = (int)strlen(line);
+			if (ll >= (int)sizeof(uline)) ll = (int)sizeof(uline) - 1;
+			for (int i = 0; i < ll; i++) uline[i] = (char)toupper((unsigned char)line[i]);
+			uline[ll] = 0;
+			if (nl == 0 || strstr(uline, upper)) matches++;
+		}
+
+		if (matches > 0) {
+			int ListCnt = CurrentY/(FontTable[gui_font >> 4][1] * (gui_font & 0b1111)) + 2;
+			for (const char * const *pp = help_repl_cmds; *pp; pp++) {
+				const char *line = *pp;
+				if (!*line) continue;
+				char uline[160];
+				int ll = (int)strlen(line);
+				if (ll >= (int)sizeof(uline)) ll = (int)sizeof(uline) - 1;
+				for (int i = 0; i < ll; i++) uline[i] = (char)toupper((unsigned char)line[i]);
+				uline[ll] = 0;
+				if (strstr(uline, upper)) {
+					MMPrintString((char *)line);
+					ListNewLine(&ListCnt, 0);
+				}
+			}
+			return;
+		}
+	}
+	if(!ExistsFile("A:/help.txt"))error("A:/help.txt not found");
+	{
 		int fnbr = FindFreeFileNbr();
 		char *buff=GetTempMemory(STRINGSIZE);
 		BasicFileOpen("A:/help.txt",fnbr, FA_READ);
