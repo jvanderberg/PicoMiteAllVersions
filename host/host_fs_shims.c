@@ -222,14 +222,21 @@ int host_fs_posix_try_open(char *fname, int fnbr, int mode) {
     const char *m = (mode & FA_WRITE) ? ((mode & FA_CREATE_ALWAYS) ? "wb"
                                        : (mode & FA_OPEN_APPEND)  ? "ab" : "rb+")
                                       : "rb";
-    FILE *fp = fopen(path, m);
-    if (!fp) error("File error");
+    /* stat() the path BEFORE fopen(). On emscripten IDBFS, fstat(fileno(fp))
+     * of a freshly-opened read FILE* can report size=0 until the first
+     * read touches the underlying data — it's the path-backed MEMFS
+     * inode that knows the real size, not the in-memory FILE* buffer.
+     * Editor.c's f_size(FileTable[fnbr].fptr) reads this back from the
+     * objsize we stash below; getting it wrong on WASM made the edit
+     * buffer load zero bytes and the backup copy come out empty. */
     struct stat st;
     size_t size = 0;
-    if (fstat(fileno(fp), &st) == 0) size = (size_t)st.st_size;
+    if (stat(path, &st) == 0) size = (size_t)st.st_size;
+
+    FILE *fp = fopen(path, m);
+    if (!fp) error("File error");
     FileTable[fnbr].fptr = calloc(1, sizeof(FIL));
     if (!FileTable[fnbr].fptr) { fclose(fp); error("Not enough memory"); }
-    /* Fill obj.objsize so Editor.c's f_size(fptr) returns the real size. */
     FileTable[fnbr].fptr->obj.objsize = (FSIZE_t)size;
     host_posix_files[fnbr] = fp;
     filesource[fnbr] = FATFSFILE;
