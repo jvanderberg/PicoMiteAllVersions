@@ -260,11 +260,27 @@ async function mountPersistentSd(instance) {
     instance.FS.mount(instance.FS.filesystems.IDBFS, {}, SD_ROOT);
     // Pull existing IDB contents into the in-memory view.
     await syncfsPromise(instance, true);
-    if (localStorage.getItem(POPULATED_KEY) !== '1') {
+
+    // Populate from bundle if (a) we've never populated before, OR
+    // (b) /sd/ is empty (e.g. a stale localStorage flag from a previous
+    // dev session or crash left us in an inconsistent state). Honour
+    // the flag only when there's actual content — respects the user's
+    // intent to start over after a KILL-everything, but self-heals
+    // when the flag is bogus. "Reset /sd/" still forces a repopulate.
+    const populated = localStorage.getItem(POPULATED_KEY) === '1';
+    const sdEmpty = (() => {
+        try {
+            return instance.FS.readdir(SD_ROOT)
+                .filter(n => n !== '.' && n !== '..').length === 0;
+        } catch (_) { return true; }
+    })();
+    if (!populated || sdEmpty) {
         const n = populateFromBundle(instance);
-        await syncfsPromise(instance, false);
-        localStorage.setItem(POPULATED_KEY, '1');
-        console.info('[picomite] populated /sd/ from bundle:', n, 'files');
+        if (n > 0) {
+            await syncfsPromise(instance, false);
+            localStorage.setItem(POPULATED_KEY, '1');
+            console.info('[picomite] populated /sd/ from bundle:', n, 'files');
+        }
     }
 }
 
