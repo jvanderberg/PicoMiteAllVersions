@@ -1,0 +1,83 @@
+name: Build PicoMite firmware (.uf2)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '*.c'
+      - '*.h'
+      - 'CMakeLists.txt'
+      - 'pico_sdk_import.cmake'
+      - '.github/workflows/firmware.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: PICO
+            label:  rp2040-picocalc
+          - target: PICORP2350
+            label:  rp2350-picocalc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              cmake ninja-build \
+              gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+              python3 build-essential
+
+      - name: Check out Pico SDK
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: recursive
+
+      - name: Pick COMPILE target
+        # The repo's CMakeLists has `set(COMPILE PICO)` hardcoded near the
+        # top with the other variants commented out. Rewrite those lines
+        # so only our chosen target is active — matrix-friendly without
+        # modifying how the file is structured.
+        run: |
+          sed -i -E 's|^[[:space:]]*set\(COMPILE [A-Z0-9]+\)|#&|' CMakeLists.txt
+          sed -i -E "0,/^#set\(COMPILE ${{ matrix.target }}\)/s||set(COMPILE ${{ matrix.target }})|" CMakeLists.txt
+          echo '--- COMPILE selection ---'
+          grep -nE 'set\(COMPILE' CMakeLists.txt | head
+
+      - name: Build
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: |
+          mkdir -p build
+          cd build
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release ..
+          ninja
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p artifacts
+          uf2=$(find build -maxdepth 2 -name '*.uf2' | head -1)
+          if [ -z "$uf2" ]; then
+            echo "no .uf2 produced" >&2
+            find build -name '*.elf' -maxdepth 2 -print
+            exit 1
+          fi
+          cp "$uf2" "artifacts/PicoMite-${{ matrix.label }}.uf2"
+          ls -la artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PicoMite-${{ matrix.label }}
+          path: artifacts/PicoMite-${{ matrix.label }}.uf2
+          if-no-files-found: error
