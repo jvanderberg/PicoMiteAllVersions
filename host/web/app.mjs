@@ -565,23 +565,12 @@ let editorPath = null;    // absolute path of the file being edited
 
 async function ensureCodeMirror() {
     if (cmModules) return cmModules;
-    // esm.sh with pinned versions and explicit .js on the subpath
-    // (the /@6 alias + no-extension form 404s; jsdelivr's /+esm
-    // bundler trips on CodeMirror's internal Rollup setup).
-    const E = 'https://esm.sh/';
-    const [cm, lang, legacy, theme] = await Promise.all([
-        import(`${E}codemirror@6.0.1`),
-        import(`${E}@codemirror/language@6.10.2`),
-        import(`${E}@codemirror/legacy-modes@6.4.1/mode/basic.js`),
-        import(`${E}@codemirror/theme-one-dark@6.1.2`),
-    ]);
-    cmModules = {
-        EditorView:     cm.EditorView,
-        basicSetup:     cm.basicSetup,
-        StreamLanguage: lang.StreamLanguage,
-        basicMode:      legacy.basic,
-        oneDark:        theme.oneDark,
-    };
+    // Single local bundle under vendor/. Built with esbuild from
+    // vendor/build.sh; checked in to avoid CDN flakiness and to keep
+    // the app running without a network dependency. The legacy-modes
+    // package has no "basic" mode, so we alias vb (Visual Basic) —
+    // highlights keywords, strings, comments close enough for MMBasic.
+    cmModules = await import('./vendor/codemirror.js');
     return cmModules;
 }
 
@@ -616,7 +605,7 @@ async function openEditor(name) {
         cm.basicSetup,
         cm.oneDark,
     ];
-    if (useBasic) extensions.push(cm.StreamLanguage.define(cm.basicMode));
+    if (useBasic) extensions.push(cm.StreamLanguage.define(cm.basic));
 
     editorView = new cm.EditorView({
         doc: text,
