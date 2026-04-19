@@ -311,22 +311,6 @@ html, body {
 }
 #config-dialog::backdrop { background: rgba(8, 10, 14, 0.7); }
 
-/* Title sits at the form's left inset so it lines up with the config
- * row labels beneath. No separator line, no extra header padding. */
-#config-dialog header {
-    display: block;
-    padding: 0;
-    border: none;
-}
-#config-dialog h2 {
-    margin: 0 0 0.75rem 0;
-    font-size: 0.95rem;
-    font-weight: 600;
-    letter-spacing: 0;
-    text-transform: none;
-    color: var(--fg);
-}
-
 /* Close button pinned 10 px from the dialog's top-right corner. */
 #config-dialog #config-close {
     position: absolute;
@@ -342,7 +326,9 @@ html, body {
 }
 
 #config-form {
-    padding: 1rem;
+    /* Top padding clears the absolutely-positioned close button
+     * (10 px offset + 26 px button + a little breathing room). */
+    padding: 3rem 1rem 1rem 1rem;
 }
 
 .config-row {
