@@ -299,6 +299,7 @@ html, body {
 /* ---- Config dialog ----------------------------------------------- */
 
 #config-dialog {
+    position: relative;  /* positioning context for the close button */
     background: var(--bg-elev);
     color: var(--fg);
     border: 1px solid var(--panel-border);
@@ -310,24 +311,27 @@ html, body {
 }
 #config-dialog::backdrop { background: rgba(8, 10, 14, 0.7); }
 
+/* Title sits at the form's left inset so it lines up with the config
+ * row labels beneath. No separator line, no extra header padding. */
 #config-dialog header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.5rem 0.5rem 0.5rem 0.9rem;
-    border-bottom: 1px solid var(--panel-border);
+    display: block;
+    padding: 0;
+    border: none;
 }
 #config-dialog h2 {
-    margin: 0;
+    margin: 0 0 0.75rem 0;
     font-size: 0.95rem;
     font-weight: 600;
     letter-spacing: 0;
     text-transform: none;
     color: var(--fg);
 }
-/* Tighter close button in the dialog header — the generic .icon-button
- * padding made the title and X look adrift. */
+
+/* Close button pinned 10 px from the dialog's top-right corner. */
 #config-dialog #config-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
     width: 26px;
     height: 26px;
     color: var(--fg-dim);
@@ -338,7 +342,7 @@ html, body {
 }
 
 #config-form {
-    padding: 0.9rem 1rem 1rem 1rem;
+    padding: 1rem;
 }
 
 .config-row {
