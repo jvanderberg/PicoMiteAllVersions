@@ -220,7 +220,7 @@
         <p>
             A WebAssembly port of <strong>PicoMite</strong>, the Raspberry&nbsp;Pi
             Pico build of <strong>MMBasic</strong>. The full interpreter plus its
-            bytecode VM, running in your browser — no backend, no emulation layer.
+            bytecode VM, running in your browser. No backend, no emulation layer.
         </p>
         <h3>Credits</h3>
         <ul>
@@ -228,7 +228,7 @@
                 together with Peter Mather; it's a BASIC dialect for
                 microcontrollers with decades of heritage.</li>
             <li><strong>PicoMite</strong> (the Pico flavour) and related ports are
-                by Peter Mather — his upstream is at
+                by Peter Mather. His upstream is at
                 <a href="https://github.com/UKTailwind/PicoMiteAllVersions" target="_blank" rel="noopener">UKTailwind/PicoMiteAllVersions</a>.</li>
             <li>The PicoCalc build used here tracks Craig Madcock's
                 <a href="https://github.com/madcock/PicoMiteAllVersions" target="_blank" rel="noopener">madcock/PicoMiteAllVersions</a>.</li>
@@ -237,36 +237,36 @@
         </ul>
         <h3>Interface</h3>
         <ul>
-            <li><strong>Left sidebar</strong> — files on the virtual SD card
+            <li><strong>Left sidebar</strong>: files on the virtual SD card
                 (<code>/sd/</code>). Drag files onto the page to import; hover a
                 row for pencil (edit), download, and trash icons. The folder
                 icon at top navigates into directories.</li>
-            <li><strong>Main canvas</strong> — the MMBasic display and REPL.
+            <li><strong>Main canvas</strong>: the MMBasic display and REPL.
                 Click it to give it keyboard focus (the highlight ring appears
                 around the edge).</li>
-            <li><strong>Top-right cog</strong> — settings: framebuffer
+            <li><strong>Top-right cog</strong>: settings for framebuffer
                 resolution, heap size, per-statement slowdown.</li>
-            <li><strong>Editor</strong> — opens on the right when you click the
+            <li><strong>Editor</strong>: opens on the right when you click the
                 pencil. ▶ runs via the interpreter, ⚡ runs via the bytecode VM
                 (much faster for tight loops), 💾 saves, ✕ closes. Ctrl/⌘+S,
                 F5, Shift+F5, and Esc all work as shortcuts.</li>
         </ul>
         <h3>MMBasic basics</h3>
         <ul>
-            <li><code>FILES</code> — list files in the current directory</li>
-            <li><code>LOAD "name.bas"</code> — load a program</li>
-            <li><code>RUN "name.bas"</code> — run via interpreter</li>
-            <li><code>FRUN "name.bas"</code> — run via the bytecode VM (faster)</li>
-            <li><code>EDIT "name.bas"</code> — open in MMBasic's built-in
+            <li><code>FILES</code>: list files in the current directory</li>
+            <li><code>LOAD "name.bas"</code>: load a program</li>
+            <li><code>RUN "name.bas"</code>: run via interpreter</li>
+            <li><code>FRUN "name.bas"</code>: run via the bytecode VM (faster)</li>
+            <li><code>EDIT "name.bas"</code>: open in MMBasic's built-in
                 editor (or just click the pencil in the sidebar)</li>
-            <li><code>LIST</code> — print the loaded program</li>
-            <li><code>NEW</code> — clear the program buffer</li>
-            <li><code>HELP</code> — browse the command list</li>
+            <li><code>LIST</code>: print the loaded program</li>
+            <li><code>NEW</code>: clear the program buffer</li>
+            <li><code>HELP</code>: browse the command list</li>
         </ul>
         <h3>Why?</h3>
         <p>
             Strictly speaking this web version doesn't <em>need</em> to be
-            based on PicoMite — the port replaces the whole Pico SDK HAL
+            based on PicoMite. The port replaces the whole Pico SDK HAL
             (flash, SPI, DMA, LCD, USB, ADC, PIO, audio, filesystem) with
             a browser-side HAL, so nothing Pico-specific is running.
             What's shared with PicoMite is the parts that matter:
@@ -275,7 +275,7 @@
         </p>
         <p>
             The point is a fast iteration loop for writing MMBasic
-            programs — especially games. Edit a file in the browser,
+            programs, especially games. Edit a file in the browser,
             hit ▶ or ⚡, see the result instantly; no SD-card swap,
             no flash cycle, no serial console, no separate toolchain.
             When a program runs here, it'll run on a real PicoMite
