@@ -30,7 +30,11 @@ jobs:
       - name: Set up emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.64
+          # 5.0.2 matches the version this repo's wasm build is tested
+          # against locally; 3.1.64's wasm-ld doesn't recognise
+          # --allow-multiple-definition (needed for MMBasic's tentative-
+          # def merge idiom under clang).
+          version: 5.0.2
           actions-cache-folder: emsdk-cache
 
       - name: Build wasm
