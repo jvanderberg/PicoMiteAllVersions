@@ -164,7 +164,7 @@ html, body {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
-    border-radius: 6px;
+    border-radius: 2px;
     outline: 2px solid transparent;
     outline-offset: 14px;
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
