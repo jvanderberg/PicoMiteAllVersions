@@ -22,7 +22,10 @@ const PAGE_URL = `http://127.0.0.1:${PORT}/`;
 
 function startServer() {
     const cwd = new URL('.', import.meta.url).pathname;
-    const child = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'], {
+    // serve.py layers COOP/COEP headers on top of http.server —
+    // required now that the wasm build uses shared memory, which the
+    // browser only exposes in a cross-origin isolated context.
+    const child = spawn('python3', ['./serve.py', String(PORT)], {
         cwd,
         stdio: ['ignore', 'ignore', 'inherit'],
     });
