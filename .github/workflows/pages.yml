@@ -1,0 +1,71 @@
+name: Deploy MMBasic Web to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'host/**'
+      - '.github/workflows/pages.yml'
+      # Shared source in the repo root feeds the wasm build too.
+      - '*.c'
+      - '*.h'
+      - '*.bas'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages:    write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.64
+          actions-cache-folder: emsdk-cache
+
+      - name: Build wasm
+        working-directory: host
+        run: ./build_wasm.sh
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          # Only the browser-side artefacts. node_modules, smoke tests,
+          # and serve.py stay out of the Pages build.
+          cp host/web/index.html             _site/
+          cp host/web/picomite.css           _site/
+          cp host/web/app.mjs                _site/
+          cp host/web/worker.mjs             _site/
+          cp host/web/coi-serviceworker.js   _site/
+          cp host/web/picomite.mjs           _site/
+          cp host/web/picomite.js            _site/ 2>/dev/null || true
+          cp host/web/picomite.wasm          _site/
+          cp host/web/picomite.data          _site/
+          mkdir -p _site/ui _site/vendor
+          cp host/web/ui/audio.js            _site/ui/
+          cp host/web/vendor/codemirror.js   _site/vendor/
+          ls -la _site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

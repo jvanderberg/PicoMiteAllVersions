@@ -1,5 +1,19 @@
 # PicoCalc
 
+## Try MMBasic in your browser
+
+**[jvanderberg.github.io/PicoMiteAllVersions](https://jvanderberg.github.io/PicoMiteAllVersions/)**
+
+The full PicoMite runtime — interpreter + bytecode VM — compiled to
+WebAssembly and running on a dedicated Web Worker with a shared-memory
+framebuffer. Includes a persistent `/sd/` drive (IDBFS-backed, with
+drag-and-drop import, per-file download, and an in-browser CodeMirror
+editor for `.bas` files), `PLAY` via Web Audio, and all of the bundled
+demos. Source under [`host/web/`](host/web/); see
+[`docs/web-host-plan.md`](docs/web-host-plan.md) for architecture notes.
+
+---
+
 Information Command | Decription
 :--- | :---
 MM.INFO(BATTERY) | <ins>PICOCALC ONLY</ins> <br/> Returns the current battery level percentage (0-100).
