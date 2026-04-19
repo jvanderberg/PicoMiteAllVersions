@@ -87,6 +87,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PicoMite-${{ matrix.label }}
+          # GitHub always wraps artifacts in a zip when downloading from
+          # the web UI; the artifact name becomes the zip's filename.
+          # Putting .uf2 in the artifact name at least surfaces the file
+          # type on the download — the contents are still a single .uf2.
+          name: PicoMite-${{ matrix.label }}.uf2
           path: artifacts/PicoMite-${{ matrix.label }}.uf2
           if-no-files-found: error
