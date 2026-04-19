@@ -17,6 +17,7 @@
  */
 
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -96,16 +97,14 @@ int host_read_byte_nonblock(void) {
 }
 
 int host_read_byte_blocking_ms(int ms) {
-    /* Yield 1 ms at a time so the browser event loop runs, keydown
-     * handlers fire, and requestAnimationFrame gets to blit the
-     * framebuffer. emscripten_sleep is the ASYNCIFY entry point that
-     * unwinds the C stack back to JS and resumes on the next tick. */
+    /* Poll the ring every 1 ms. nanosleep parks this pthread via
+     * Atomics.wait under the wasm runtime, so we don't burn CPU
+     * busy-waiting for input. */
+    struct timespec req = { .tv_sec = 0, .tv_nsec = 1000000L };  /* 1 ms */
     for (int i = 0; i < ms; ++i) {
         int c = host_read_byte_nonblock();
         if (c >= 0) return c;
-#ifdef __EMSCRIPTEN__
-        emscripten_sleep(1);
-#endif
+        nanosleep(&req, NULL);
     }
     return -1;
 }

@@ -470,31 +470,6 @@ void host_sim_apply_slowdown(void) {
 }
 #endif
 
-#ifdef MMBASIC_WASM
-/* Shared with host_time.c: host_sleep_us stamps this after every
- * emscripten_sleep, so `wasm_yield_if_due` below skips redundant
- * unwinds when the program is already cooperatively sleeping
- * (PAUSE, FASTGFX SYNC, etc). */
-extern uint64_t wasm_last_yield_us;
-
-/* Yield to the browser event loop at most every ~16 ms of wall clock
- * (~60 Hz), but only if no other sleep has yielded in that window.
- * Called on every statement (via CheckAbort → routinechecks →
- * host_runtime_check_timeout) AND on every INKEY$ poll (via MMInkey's
- * first line), so busy-wait BASIC — `DO : LOOP UNTIL INKEY$ <> ""` —
- * and long-running loops stay responsive.
- *
- * emscripten_sleep(0) under ASYNCIFY unwinds the C stack, runs one
- * event-loop iteration, and resumes. Skipping it when a recent
- * host_sleep_us already yielded avoids a ~1 ms per-frame overhead
- * on games that call FASTGFX SYNC every frame (e.g. pico_blocks). */
-static void wasm_yield_if_due(uint64_t now_us) {
-    if (now_us - wasm_last_yield_us < 16000ULL) return;
-    wasm_last_yield_us = now_us;
-    emscripten_sleep(0);
-}
-#endif
-
 static void host_runtime_check_timeout(void) {
     host_framebuffer_service();
     host_sim_apply_slowdown();
@@ -503,9 +478,6 @@ static void host_runtime_check_timeout(void) {
      * loop) still sees time advance. On device the 1ms timer IRQ does
      * this; here we piggy-back on every MMInkey/routinechecks call. */
     uint64_t now = host_time_us_64();
-#ifdef MMBASIC_WASM
-    wasm_yield_if_due(now);
-#endif
     if (!host_runtime_deadline_us || host_runtime_timed_out_flag) return;
     if (now < host_runtime_deadline_us) return;
 

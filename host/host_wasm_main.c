@@ -18,6 +18,7 @@
 #include <string.h>
 #include <strings.h>
 #include <setjmp.h>
+#include <pthread.h>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -156,8 +157,9 @@ static void wasm_configure_display_console(void) {
     Option.DefaultBC  = 0x000000;
 }
 
-EMSCRIPTEN_KEEPALIVE
-void wasm_boot(void) {
+static void *wasm_runtime_thread(void *arg) {
+    (void)arg;
+
     /* Zero first half, 0xFF second half — same erased-flash simulation
      * host_main.c does. CFunction scan loops rely on the 0xFF to find
      * their terminator immediately. */
@@ -171,8 +173,8 @@ void wasm_boot(void) {
     host_runtime_configure(0, NULL);
     host_runtime_configure_keys(NULL, 0);
 
-    /* /sd is the emscripten MEMFS mount point. Phase 2 preloads
-     * host/demos into /sd via --preload-file; for now it's empty. */
+    /* /sd is the emscripten MEMFS mount point — the worker's JS side
+     * mounts IDBFS there on startup. */
     host_sd_root = "/sd";
 
     host_repl_mode = 1;
@@ -183,9 +185,6 @@ void wasm_boot(void) {
     MMErrMsg[0] = '\0';
     MMerrno = 0;
 
-    /* host_runtime_begin wires HRes/VRes and the DrawPixel/DrawBitmap
-     * function pointers. Run it FIRST so HRes/VRes are live when we
-     * compute Option.Width/Height below from the framebuffer geometry. */
     host_runtime_begin();
 
     wasm_configure_display_console();
@@ -201,12 +200,30 @@ void wasm_boot(void) {
     host_options_snapshot();
 
     MMBasic_PrintBanner();
-
-    /* Does not return under normal operation. */
-    MMBasic_RunPromptLoop();
+    MMBasic_RunPromptLoop();  /* never returns under normal operation */
 
     host_runtime_finish();
     (void)wasm_consume_break;
+    return NULL;
+}
+
+/*
+ * Spawn the interpreter on a dedicated pthread and return immediately
+ * so the worker's JS event loop stays responsive. The pthread owns
+ * the long-running MMBasic runtime; its real (Atomics.wait-backed)
+ * sleeps park just that thread, leaving postMessage handlers free to
+ * process FS round-trips on the worker's main thread.
+ */
+EMSCRIPTEN_KEEPALIVE
+void wasm_boot(void) {
+    pthread_t tid;
+    if (pthread_create(&tid, NULL, wasm_runtime_thread, NULL) != 0) {
+        /* pthread_create shouldn't fail with PTHREAD_POOL_SIZE=1,
+         * but if it does we're dead in the water — log and bail. */
+        fprintf(stderr, "pthread_create for wasm runtime failed\n");
+        return;
+    }
+    pthread_detach(tid);
 }
 
 /* ------------------------------------------------------------------------

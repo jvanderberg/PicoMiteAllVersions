@@ -26,17 +26,10 @@ static int host_fastgfx_fps = 0;
 static uint64_t host_fastgfx_next_sync_us = 0;
 
 #ifdef MMBASIC_WASM
-/* Written from JS every requestAnimationFrame; read by bc_fastgfx_sync
- * to align the return-from-SYNC boundary with the display refresh.
- * Without this alignment SWAP→paint has a variable 0–16.67 ms queue,
- * which shows up as visible jitter even when the BASIC-side frame loop
- * is metronomic. See host_wasm_canvas.c for the export. */
+/* Written from JS every requestAnimationFrame — kept exported for
+ * smoke tests that want to observe the main-thread rAF cadence from
+ * wasm's vantage point. bc_fastgfx_sync no longer spins on it. */
 volatile uint32_t wasm_vsync_counter = 0;
-
-/* Shared with host_time.c: stamped by every host_sleep_us call under
- * WASM so wasm_yield_if_due doesn't double-yield on top of a game that
- * already cooperates. */
-extern uint64_t wasm_last_yield_us;
 #endif
 
 void host_fastgfx_reset_state(void) {
@@ -79,7 +72,6 @@ void bc_fastgfx_sync(void) {
         host_fastgfx_next_sync_us = now + frame_us;
     }
     (void)wasm_vsync_counter;
-    (void)wasm_last_yield_us;
 #endif
 }
 

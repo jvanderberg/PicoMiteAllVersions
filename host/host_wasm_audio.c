@@ -24,20 +24,24 @@
 
 #include <emscripten.h>
 
-/* Two dispatch paths — which one fires depends on where wasm runs:
- *   - Main thread: window.picomiteAudio is the Web Audio bridge
- *     installed by audio.js; call it directly.
- *   - Worker thread: no window, no Web Audio. postMessage the call
- *     back to main thread as {type:'audio', op, args}; the listener
- *     there relays to its own window.picomiteAudio.
+/* Under pthreads wasm_boot spawns a dedicated runtime thread; BASIC
+ * PLAY primitives therefore run from a pthread, not the main worker.
+ * MAIN_THREAD_ASYNC_EM_ASM proxies the EM_ASM back to the main
+ * runtime thread (the Worker that owns the WebAssembly.Memory and
+ * the message channel to the page). From there we postMessage to
+ * the page, which relays to window.picomiteAudio.
  *
- * `typeof window !== 'undefined'` is true only on main thread. Both
- * guards are checked so the call silently no-ops if neither bridge
- * is available (e.g. headless environments without audio.js loaded). */
+ * The `typeof window !== 'undefined'` guard covers the non-pthread
+ * case (e.g. running on the page main thread directly); the
+ * postMessage fallback covers the worker case. */
+#ifndef MAIN_THREAD_ASYNC_EM_ASM
+/* Headless / non-pthread fallback so the TU still builds. */
+#define MAIN_THREAD_ASYNC_EM_ASM EM_ASM
+#endif
 
 void host_sim_audio_tone(double left_hz, double right_hz,
                          int has_duration, long long duration_ms) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.tone($0, $1, $2 ? $3 : -1);
         } else if (typeof postMessage === 'function') {
@@ -47,7 +51,7 @@ void host_sim_audio_tone(double left_hz, double right_hz,
 }
 
 void host_sim_audio_stop(void) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.stop();
         } else if (typeof postMessage === 'function') {
@@ -58,7 +62,7 @@ void host_sim_audio_stop(void) {
 
 void host_sim_audio_sound(int slot, const char *ch, const char *type,
                           double freq_hz, int volume) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         var chStr = UTF8ToString($1);
         var tyStr = UTF8ToString($2);
         if (typeof window !== 'undefined' && window.picomiteAudio) {
@@ -70,7 +74,7 @@ void host_sim_audio_sound(int slot, const char *ch, const char *type,
 }
 
 void host_sim_audio_volume(int left, int right) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.volume($0, $1);
         } else if (typeof postMessage === 'function') {
@@ -80,7 +84,7 @@ void host_sim_audio_volume(int left, int right) {
 }
 
 void host_sim_audio_pause(void) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.pause();
         } else if (typeof postMessage === 'function') {
@@ -90,7 +94,7 @@ void host_sim_audio_pause(void) {
 }
 
 void host_sim_audio_resume(void) {
-    EM_ASM({
+    MAIN_THREAD_ASYNC_EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.resume();
         } else if (typeof postMessage === 'function') {

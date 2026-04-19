@@ -141,12 +141,12 @@ async function initInstance(cfg) {
         keyRingSize:     instance._wasm_key_ring_size(),
     });
 
-    // wasm_boot enters MMBasic_RunPromptLoop which never returns under
-    // normal operation — ASYNCIFY unwinds at each emscripten_sleep, so
-    // this worker's event loop keeps running and onmessage continues
-    // to fire between sleeps.
-    instance.ccall('wasm_boot', null, [], [], { async: true })
-        .catch((e) => post({ type: 'log', level: 'warn', line: 'wasm_boot rejected: ' + e }));
+    // wasm_boot spawns a pthread that runs MMBasic_RunPromptLoop and
+    // returns immediately. The pthread blocks for real on nanosleep
+    // (Atomics.wait under the hood) without stalling this worker's
+    // main event loop, which keeps processing FS postMessages.
+    try { instance._wasm_boot(); }
+    catch (e) { post({ type: 'log', level: 'warn', line: 'wasm_boot threw: ' + e }); }
 }
 
 self.onmessage = async (e) => {
