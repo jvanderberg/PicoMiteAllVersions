@@ -160,6 +160,48 @@ html, body {
     padding: 32px;  /* breathing room around the canvas + its focus ring */
 }
 
+/* ---- Text editor (replaces the canvas when open) ---------------- */
+
+#editor-area {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    min-width: 0;
+    min-height: 0;
+}
+#editor-area[hidden] { display: none; }
+
+#editor-area > header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--panel-border);
+    background: var(--panel);
+}
+#editor-title {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.editor-actions { display: inline-flex; gap: 0.2rem; }
+
+#editor-host {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* CodeMirror fills its host; override a couple of defaults so dark
+ * theme colours reach the gutter + scroll container. */
+#editor-host .cm-editor { height: 100%; background: var(--bg); }
+#editor-host .cm-scroller { font-family: ui-monospace, Menlo, Consolas, monospace; }
+
 /* The focus ring lives on a wrapper instead of the canvas itself.
  * Using outline-offset on the canvas compounds border-radius with the
  * offset distance, so a 2 px canvas corner with 14 px offset renders

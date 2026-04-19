@@ -31,6 +31,16 @@
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
                   d="M5 12h14 M12 5l-7 7 7 7"/>
         </symbol>
+        <!-- pencil / edit -->
+        <symbol id="ico-edit" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M4 20h4L19 9l-4-4L4 16v4Z M13 7l4 4"/>
+        </symbol>
+        <!-- save (disk) -->
+        <symbol id="ico-save" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M5 3h11l5 5v13a0 0 0 0 1 0 0H3V5a2 2 0 0 1 2-2Z M7 3v6h8V3 M7 21v-8h10v8"/>
+        </symbol>
         <!-- upload arrow -->
         <symbol id="ico-upload" viewBox="0 0 24 24">
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
@@ -90,6 +100,20 @@
         </button>
         <div id="screen-wrap">
             <canvas id="screen" tabindex="0" width="320" height="320" aria-label="MMBasic screen"></canvas>
+        </div>
+        <div id="editor-area" hidden>
+            <header>
+                <span id="editor-title"></span>
+                <span class="editor-actions">
+                    <button type="button" class="icon-button" id="editor-save" title="Save (Ctrl+S)">
+                        <svg class="ico"><use href="#ico-save"/></svg>
+                    </button>
+                    <button type="button" class="icon-button" id="editor-close" title="Close">
+                        <svg class="ico"><use href="#ico-close"/></svg>
+                    </button>
+                </span>
+            </header>
+            <div id="editor-host"></div>
         </div>
     </section>
 </main>

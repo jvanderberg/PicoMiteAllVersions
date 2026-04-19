@@ -504,13 +504,18 @@ async function refreshFilesList() {
                 onClick: () => { currentDir = joinPath(currentDir, e.name); lastFilesSig = ''; refreshFilesList(); },
             }));
         } else {
+            const isEditable = /\.(bas|inc|txt|md|cfg|ini|csv|json)$/i.test(e.name);
+            const actions = [];
+            if (isEditable) {
+                actions.push({ icon: 'ico-edit', title: `Edit ${e.name}`, onClick: () => openEditor(e.name) });
+            }
+            actions.push({ icon: 'ico-download', title: `Download ${e.name}`, onClick: () => downloadOne(e.name) });
+            actions.push({ icon: 'ico-trash',    title: `Delete ${e.name}`, danger: true, onClick: () => deleteOne(e.name) });
             filesListEl.appendChild(makeRow({
                 icon: 'ico-file',
                 label: e.name,
-                actions: [
-                    { icon: 'ico-download', title: `Download ${e.name}`, onClick: () => downloadOne(e.name) },
-                    { icon: 'ico-trash',    title: `Delete ${e.name}`,   danger: true, onClick: () => deleteOne(e.name) },
-                ],
+                onClick: isEditable ? () => openEditor(e.name) : undefined,
+                actions,
             }));
         }
     }
@@ -540,6 +545,119 @@ async function deleteOne(name) {
     await refreshFilesList();
     flash(`Deleted ${name}.`);
 }
+
+// ---- Text editor (CodeMirror 6) ----------------------------------------
+//
+// Loaded lazily from esm.sh the first time the user clicks Edit so the
+// initial page load stays cheap. Our serve.py sends COOP/COEP, and
+// esm.sh returns Cross-Origin-Resource-Policy: cross-origin, so the
+// ESM imports satisfy the cross-origin-isolated context.
+
+const editorAreaEl = document.getElementById('editor-area');
+const editorTitleEl = document.getElementById('editor-title');
+const editorHostEl = document.getElementById('editor-host');
+const editorSaveBtn = document.getElementById('editor-save');
+const editorCloseBtn = document.getElementById('editor-close');
+
+let cmModules = null;     // cached after first dynamic import
+let editorView = null;    // current EditorView instance
+let editorPath = null;    // absolute path of the file being edited
+
+async function ensureCodeMirror() {
+    if (cmModules) return cmModules;
+    const [cm, lang, legacy, theme] = await Promise.all([
+        import('https://esm.sh/codemirror@6.0.1'),
+        import('https://esm.sh/@codemirror/language@6'),
+        import('https://esm.sh/@codemirror/legacy-modes@6/mode/basic'),
+        import('https://esm.sh/@codemirror/theme-one-dark@6'),
+    ]);
+    cmModules = {
+        EditorView:     cm.EditorView,
+        basicSetup:     cm.basicSetup,
+        StreamLanguage: lang.StreamLanguage,
+        basicMode:      legacy.basic,
+        oneDark:        theme.oneDark,
+    };
+    return cmModules;
+}
+
+async function openEditor(name) {
+    const path = joinPath(currentDir, name);
+    let text;
+    try {
+        const bytes = await fsRead(path);
+        text = new TextDecoder().decode(bytes);
+    } catch (e) {
+        flash(`Open failed: ${e?.message || e}`);
+        return;
+    }
+
+    let cm;
+    try { cm = await ensureCodeMirror(); }
+    catch (e) {
+        flash(`Editor load failed: ${e?.message || e}`);
+        return;
+    }
+
+    // Switch panes.
+    screenWrapEl.hidden = true;
+    editorAreaEl.hidden = false;
+    editorTitleEl.textContent = path;
+
+    if (editorView) editorView.destroy();
+    editorHostEl.textContent = '';
+
+    const useBasic = /\.(bas|inc)$/i.test(name);
+    const extensions = [
+        cm.basicSetup,
+        cm.oneDark,
+    ];
+    if (useBasic) extensions.push(cm.StreamLanguage.define(cm.basicMode));
+
+    editorView = new cm.EditorView({
+        doc: text,
+        extensions,
+        parent: editorHostEl,
+    });
+    editorPath = path;
+    editorView.focus();
+}
+
+async function saveEditor() {
+    if (!editorView || !editorPath) return;
+    const text = editorView.state.doc.toString();
+    const bytes = new TextEncoder().encode(text);
+    fsWrite(editorPath, bytes);
+    // Give the worker a moment to commit.
+    await new Promise((r) => setTimeout(r, 40));
+    const name = editorPath.split('/').pop();
+    flash(`Saved ${name}.`);
+}
+
+function closeEditor() {
+    if (editorView) {
+        editorView.destroy();
+        editorView = null;
+    }
+    editorPath = null;
+    editorAreaEl.hidden = true;
+    screenWrapEl.hidden = false;
+    canvas.focus();
+}
+
+editorSaveBtn.addEventListener('click', () => { saveEditor(); });
+editorCloseBtn.addEventListener('click', closeEditor);
+// Ctrl/Cmd+S saves; Esc closes. Matches Editor conventions.
+document.addEventListener('keydown', (e) => {
+    if (editorAreaEl.hidden) return;
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        saveEditor();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeEditor();
+    }
+});
 
 async function importFile(file) {
     const buf = new Uint8Array(await file.arrayBuffer());
