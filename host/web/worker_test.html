@@ -34,6 +34,9 @@
 <body>
 <canvas id="screen" width="320" height="320" tabindex="0"></canvas>
 <div id="status">Booting worker…</div>
+<!-- audio.js installs window.picomiteAudio; worker_test.mjs forwards
+     PLAY events from the worker to it. -->
+<script src="./ui/audio.js"></script>
 <script type="module" src="./worker_test.mjs"></script>
 </body>
 </html>

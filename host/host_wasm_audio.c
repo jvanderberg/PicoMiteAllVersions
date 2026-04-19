@@ -24,17 +24,26 @@
 
 #include <emscripten.h>
 
-/* Note on the JS side: window.picomiteAudio is created by audio.js
- * before wasm_boot() is called. If for any reason it's not there yet
- * (very early BASIC PLAY statements, headless environments without
- * audio.js loaded), the guard `if (window.picomiteAudio)` makes the
- * call a silent no-op rather than a ReferenceError. */
+/* Two dispatch paths:
+ *   - Main-thread wasm (legacy): window.picomiteAudio is the Web Audio
+ *     bridge installed by audio.js. Call directly.
+ *   - Worker-thread wasm (Phase 8): there is no window and Web Audio
+ *     APIs are not available in a worker. Fall back to postMessage —
+ *     the main thread listener receives {type:'audio', op, args} and
+ *     relays to its own window.picomiteAudio.
+ *
+ * Detection: `typeof window !== 'undefined'` is true only on main
+ * thread; worker's globalThis exposes `postMessage` but not window.
+ * Both guards are checked so a silent no-op is used if neither path
+ * is available (e.g. headless environments without either bridge). */
 
 void host_sim_audio_tone(double left_hz, double right_hz,
                          int has_duration, long long duration_ms) {
     EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.tone($0, $1, $2 ? $3 : -1);
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'tone', args: [$0, $1, $2 ? $3 : -1] });
         }
     }, left_hz, right_hz, has_duration, (double)duration_ms);
 }
@@ -43,6 +52,8 @@ void host_sim_audio_stop(void) {
     EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.stop();
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'stop', args: [] });
         }
     });
 }
@@ -50,13 +61,12 @@ void host_sim_audio_stop(void) {
 void host_sim_audio_sound(int slot, const char *ch, const char *type,
                           double freq_hz, int volume) {
     EM_ASM({
+        var chStr = UTF8ToString($1);
+        var tyStr = UTF8ToString($2);
         if (typeof window !== 'undefined' && window.picomiteAudio) {
-            window.picomiteAudio.sound(
-                $0,
-                UTF8ToString($1),
-                UTF8ToString($2),
-                $3,
-                $4);
+            window.picomiteAudio.sound($0, chStr, tyStr, $3, $4);
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'sound', args: [$0, chStr, tyStr, $3, $4] });
         }
     }, slot, ch ? ch : "B", type ? type : "O", freq_hz, volume);
 }
@@ -65,6 +75,8 @@ void host_sim_audio_volume(int left, int right) {
     EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.volume($0, $1);
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'volume', args: [$0, $1] });
         }
     }, left, right);
 }
@@ -73,6 +85,8 @@ void host_sim_audio_pause(void) {
     EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.pause();
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'pause', args: [] });
         }
     });
 }
@@ -81,6 +95,8 @@ void host_sim_audio_resume(void) {
     EM_ASM({
         if (typeof window !== 'undefined' && window.picomiteAudio) {
             window.picomiteAudio.resume();
+        } else if (typeof postMessage === 'function') {
+            postMessage({ type: 'audio', op: 'resume', args: [] });
         }
     });
 }

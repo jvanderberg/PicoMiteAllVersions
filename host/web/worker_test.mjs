@@ -88,6 +88,17 @@ worker.onmessage = (e) => {
         console[m.level === 'warn' ? 'warn' : 'log']('[worker]', m.line);
         return;
     }
+    if (m.type === 'audio') {
+        // Relay wasm's PLAY primitive to the main-thread Web Audio
+        // bridge installed by ui/audio.js. The worker can't reach
+        // window.picomiteAudio directly — AudioContext only lives on
+        // main thread — so it postMessages here and we dispatch.
+        const api = window.picomiteAudio;
+        if (api && typeof api[m.op] === 'function') {
+            api[m.op](...(m.args || []));
+        }
+        return;
+    }
     if (m.type === 'ready') {
         memoryBytes = new Uint8Array(m.memoryBuffer);
         fbPtr    = m.fbPtr;

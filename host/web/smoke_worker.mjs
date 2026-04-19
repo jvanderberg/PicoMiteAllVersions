@@ -99,6 +99,32 @@ try {
         if (nonZeroBytes === 0) fail('shared framebuffer is all zero — worker did not draw anything');
         console.log(`OK — shared framebuffer populated (${nonZeroBytes} non-zero bytes).`);
 
+        // Check 5: audio proxy. Wrap window.picomiteAudio in a logging
+        // proxy, type PLAY TONE into the REPL, confirm the wrapped
+        // tone() fires on main thread (i.e. the worker postMessaged
+        // the audio event and our dispatcher relayed it).
+        await page.evaluate(() => {
+            window.__audioCalls = [];
+            const orig = window.picomiteAudio;
+            window.picomiteAudio = new Proxy(orig, {
+                get(t, p) {
+                    const v = t[p];
+                    if (typeof v !== 'function') return v;
+                    return (...args) => { window.__audioCalls.push({ op: p, args }); return v.apply(t, args); };
+                },
+            });
+        });
+        await page.click('#screen');
+        await page.keyboard.type('PLAY TONE 440,440,500', { delay: 20 });
+        await page.keyboard.press('Enter');
+        await sleep(600);
+        const toneCalls = await page.evaluate(() =>
+            window.__audioCalls.filter((c) => c.op === 'tone'));
+        if (!toneCalls.length) {
+            fail('PLAY TONE did not reach window.picomiteAudio — worker audio proxy broken');
+        }
+        console.log(`OK — worker → main audio proxy: ${toneCalls.length} tone() call(s).`);
+
         console.log('All worker smoke checks passed.');
     } finally {
         await browser.close();

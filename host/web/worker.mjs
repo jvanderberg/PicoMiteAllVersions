@@ -39,6 +39,30 @@ async function initInstance(cfg) {
     if (cfg.heap)     instance._wasm_set_heap_size(cfg.heap);
     if (cfg.slowdown) instance._wasm_set_slowdown_us(cfg.slowdown);
 
+    // Copy the preloaded demos from /bundle/ into /sd/ so FILES / RUN
+    // work without any further setup. The main-thread app.mjs normally
+    // mounts IDBFS at /sd/ and does this on first-load; the worker
+    // test path is transient by design — no persistence — so we just
+    // copy each boot.
+    try {
+        instance.FS.mkdir('/sd');
+    } catch (_) { /* already exists */ }
+    try {
+        for (const name of instance.FS.readdir('/bundle')) {
+            if (name === '.' || name === '..') continue;
+            try {
+                const data = instance.FS.readFile('/bundle/' + name);
+                instance.FS.writeFile('/sd/' + name, data);
+            } catch (e) {
+                self.postMessage({ type: 'log', level: 'warn',
+                    line: 'bundle copy skipped ' + name + ': ' + e });
+            }
+        }
+    } catch (e) {
+        self.postMessage({ type: 'log', level: 'warn',
+            line: 'bundle readdir failed: ' + e });
+    }
+
     self.postMessage({
         type: 'ready',
         memoryBuffer: instance.HEAPU8.buffer,  // SharedArrayBuffer (with -pthread)
