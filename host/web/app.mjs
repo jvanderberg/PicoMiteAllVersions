@@ -557,6 +557,7 @@ const editorAreaEl = document.getElementById('editor-area');
 const editorTitleEl = document.getElementById('editor-title');
 const editorHostEl = document.getElementById('editor-host');
 const editorRunBtn = document.getElementById('editor-run');
+const editorFrunBtn = document.getElementById('editor-frun');
 const editorSaveBtn = document.getElementById('editor-save');
 const editorCloseBtn = document.getElementById('editor-close');
 
@@ -646,22 +647,26 @@ function closeEditor() {
 // land wherever MMBasic is reading from. Quotes around the filename
 // are optional for LOAD but required for RUN when the name contains
 // dots, so we always quote it.
-async function runEditor() {
+async function runEditorWith(keyword) {
     if (!editorView || !editorPath) return;
     const name = editorPath.split('/').pop();
     await saveEditor();
-    // Brief delay so the worker commits the fs-write before RUN reads.
+    // Brief delay so the worker commits the fs-write before the REPL
+    // reads the command.
     await new Promise((r) => setTimeout(r, 80));
     closeEditor();
-    const cmd = `RUN "${name}"\r`;
+    const cmd = `${keyword} "${name}"\r`;
     for (const ch of cmd) pushKeyToRing(ch.charCodeAt(0));
-    flash(`Running ${name}…`);
+    flash(`${keyword} ${name}…`);
 }
+const runEditor  = () => runEditorWith('RUN');
+const frunEditor = () => runEditorWith('FRUN');
 
 editorRunBtn.addEventListener('click',  () => { runEditor(); });
+editorFrunBtn.addEventListener('click', () => { frunEditor(); });
 editorSaveBtn.addEventListener('click', () => { saveEditor(); });
 editorCloseBtn.addEventListener('click', closeEditor);
-// Ctrl/Cmd+S saves; F5 runs; Esc closes. Matches Editor conventions.
+// Ctrl/Cmd+S saves; F5 runs; Shift+F5 fast-runs via the VM; Esc closes.
 document.addEventListener('keydown', (e) => {
     if (editorAreaEl.hidden) return;
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
@@ -669,7 +674,7 @@ document.addEventListener('keydown', (e) => {
         saveEditor();
     } else if (e.key === 'F5') {
         e.preventDefault();
-        runEditor();
+        if (e.shiftKey) frunEditor(); else runEditor();
     } else if (e.key === 'Escape') {
         e.preventDefault();
         closeEditor();

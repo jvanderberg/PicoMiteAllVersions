@@ -50,6 +50,11 @@
             <path fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
                   d="M7 4v16l14-8z"/>
         </symbol>
+        <!-- fast run (lightning bolt) -->
+        <symbol id="ico-bolt" viewBox="0 0 24 24">
+            <path fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"
+                  d="M13 2L4 14h7l-1 8 9-12h-7z"/>
+        </symbol>
         <!-- upload arrow -->
         <symbol id="ico-upload" viewBox="0 0 24 24">
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
@@ -116,6 +121,9 @@
                 <span class="editor-actions">
                     <button type="button" class="icon-button" id="editor-run" title="Run (F5) — save then RUN &quot;file.bas&quot;">
                         <svg class="ico"><use href="#ico-play"/></svg>
+                    </button>
+                    <button type="button" class="icon-button" id="editor-frun" title="Fast run (Shift+F5) — save then FRUN &quot;file.bas&quot; (bytecode VM)">
+                        <svg class="ico"><use href="#ico-bolt"/></svg>
                     </button>
                     <button type="button" class="icon-button" id="editor-save" title="Save (Ctrl+S)">
                         <svg class="ico"><use href="#ico-save"/></svg>
