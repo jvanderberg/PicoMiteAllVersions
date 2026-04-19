@@ -228,7 +228,6 @@ function mapKeyEvent(event) {
 // ---- Framebuffer blit ---------------------------------------------------
 
 const DESIRED_SCALE = 2;
-const VIEWPORT_CHROME_PX = 140;
 
 let fbWidth = 0, fbHeight = 0, fbPtr = 0;
 let fbGenerationIdx = 0;        // HEAPU32 index of the generation counter
@@ -242,10 +241,20 @@ let fbTexAllocated = false;
 // without a postMessage round-trip.
 let keyRingI32Base = 0, keyHeadIdx = 0, keyTailIdx = 0, keyRingMask = 0;
 
+const screenAreaEl = document.getElementById('screen-area');
+
 function fitCanvas() {
     if (!fbWidth || !fbHeight) return;
-    const maxW = Math.max(160, Math.floor(window.innerWidth * 0.92));
-    const maxH = Math.max(160, window.innerHeight - VIEWPORT_CHROME_PX);
+    // Measure the actual screen-area container so sidebar, status bar,
+    // and CSS padding (for the focus ring's outline-offset) are all
+    // accounted for. getBoundingClientRect includes content + padding
+    // but we want content-only, so subtract the CSS padding.
+    const rect = screenAreaEl.getBoundingClientRect();
+    const style = getComputedStyle(screenAreaEl);
+    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    const padY = parseFloat(style.paddingTop)  + parseFloat(style.paddingBottom);
+    const maxW = Math.max(160, rect.width  - padX);
+    const maxH = Math.max(160, rect.height - padY);
     const fit = Math.min(maxW / fbWidth, maxH / fbHeight);
     const scale = Math.min(DESIRED_SCALE, fit);
     canvas.style.width  = `${Math.floor(fbWidth  * scale)}px`;

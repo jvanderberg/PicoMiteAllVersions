@@ -157,17 +157,18 @@ html, body {
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    padding: 32px;  /* breathing room around the canvas + its focus ring */
 }
 
 #screen {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
-    border-radius: 4px;
+    border-radius: 6px;
     outline: 2px solid transparent;
-    outline-offset: 8px;
+    outline-offset: 14px;
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
-    transition: outline-color 0.08s ease;
+    transition: outline-color 0.1s ease;
 }
 #screen:focus {
     outline-color: var(--accent);
