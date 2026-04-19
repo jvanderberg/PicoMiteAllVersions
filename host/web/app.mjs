@@ -565,15 +565,15 @@ let editorPath = null;    // absolute path of the file being edited
 
 async function ensureCodeMirror() {
     if (cmModules) return cmModules;
-    // jsdelivr's /+esm endpoint returns each npm entry as an ES module.
-    // Pinned minor versions keep the bundles stable across sessions
-    // (esm.sh's bare /@6 tag 404s on the legacy-modes subpath).
-    const J = 'https://cdn.jsdelivr.net/npm/';
+    // esm.sh with pinned versions and explicit .js on the subpath
+    // (the /@6 alias + no-extension form 404s; jsdelivr's /+esm
+    // bundler trips on CodeMirror's internal Rollup setup).
+    const E = 'https://esm.sh/';
     const [cm, lang, legacy, theme] = await Promise.all([
-        import(`${J}codemirror@6.0.1/+esm`),
-        import(`${J}@codemirror/language@6.10.2/+esm`),
-        import(`${J}@codemirror/legacy-modes@6.4.1/mode/basic.js/+esm`),
-        import(`${J}@codemirror/theme-one-dark@6.1.2/+esm`),
+        import(`${E}codemirror@6.0.1`),
+        import(`${E}@codemirror/language@6.10.2`),
+        import(`${E}@codemirror/legacy-modes@6.4.1/mode/basic.js`),
+        import(`${E}@codemirror/theme-one-dark@6.1.2`),
     ]);
     cmModules = {
         EditorView:     cm.EditorView,
