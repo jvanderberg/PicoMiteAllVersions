@@ -85,6 +85,13 @@
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
                   d="M11 5L6 9H2v6h4l5 4z M15.5 8.5a5 5 0 0 1 0 7 M19 5a9 9 0 0 1 0 14"/>
         </symbol>
+        <!-- question mark / help -->
+        <symbol id="ico-help" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M9.5 9.5a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4"/>
+            <circle cx="12" cy="17.2" r="0.9" fill="currentColor"/>
+        </symbol>
     </defs>
 </svg>
 
@@ -109,6 +116,9 @@
     </aside>
 
     <section id="screen-area">
+        <button type="button" class="icon-button floating" id="open-help" title="About">
+            <svg class="ico"><use href="#ico-help"/></svg>
+        </button>
         <button type="button" class="icon-button floating" id="open-config" title="Settings">
             <svg class="ico"><use href="#ico-cog"/></svg>
         </button>
@@ -199,6 +209,66 @@
         </label>
         <p class="config-hint">Per-statement sleep. 0 = uncapped, 10 ≈ device-like.</p>
     </form>
+</dialog>
+
+<dialog id="help-dialog">
+    <button type="button" class="icon-button" id="help-close" aria-label="Close">
+        <svg class="ico"><use href="#ico-close"/></svg>
+    </button>
+    <div class="help-body">
+        <h2>MMBasic Web</h2>
+        <p>
+            A WebAssembly port of <strong>PicoMite</strong>, the Raspberry&nbsp;Pi
+            Pico build of <strong>MMBasic</strong>. The full interpreter plus its
+            bytecode VM, running in your browser — no backend, no emulation layer.
+        </p>
+        <h3>Credits</h3>
+        <ul>
+            <li><strong>MMBasic</strong> is written by Geoff Graham and maintained
+                together with Peter Mather; it's a BASIC dialect for
+                microcontrollers with decades of heritage.</li>
+            <li><strong>PicoMite</strong> (the Pico flavour) and related ports are
+                by Peter Mather — his upstream is at
+                <a href="https://github.com/UKTailwind/PicoMiteAllVersions" target="_blank" rel="noopener">UKTailwind/PicoMiteAllVersions</a>.</li>
+            <li>The PicoCalc build used here tracks Craig Madcock's
+                <a href="https://github.com/madcock/PicoMiteAllVersions" target="_blank" rel="noopener">madcock/PicoMiteAllVersions</a>.</li>
+            <li>This web port is maintained at
+                <a href="https://github.com/jvanderberg/PicoMiteAllVersions" target="_blank" rel="noopener">jvanderberg/PicoMiteAllVersions</a>.</li>
+        </ul>
+        <h3>Interface</h3>
+        <ul>
+            <li><strong>Left sidebar</strong> — files on the virtual SD card
+                (<code>/sd/</code>). Drag files onto the page to import; hover a
+                row for pencil (edit), download, and trash icons. The folder
+                icon at top navigates into directories.</li>
+            <li><strong>Main canvas</strong> — the MMBasic display and REPL.
+                Click it to give it keyboard focus (the highlight ring appears
+                around the edge).</li>
+            <li><strong>Top-right cog</strong> — settings: framebuffer
+                resolution, heap size, per-statement slowdown.</li>
+            <li><strong>Editor</strong> — opens on the right when you click the
+                pencil. ▶ runs via the interpreter, ⚡ runs via the bytecode VM
+                (much faster for tight loops), 💾 saves, ✕ closes. Ctrl/⌘+S,
+                F5, Shift+F5, and Esc all work as shortcuts.</li>
+        </ul>
+        <h3>MMBasic basics</h3>
+        <ul>
+            <li><code>FILES</code> — list files in the current directory</li>
+            <li><code>LOAD "name.bas"</code> — load a program</li>
+            <li><code>RUN "name.bas"</code> — run via interpreter</li>
+            <li><code>FRUN "name.bas"</code> — run via the bytecode VM (faster)</li>
+            <li><code>EDIT "name.bas"</code> — open in MMBasic's built-in
+                editor (or just click the pencil in the sidebar)</li>
+            <li><code>LIST</code> — print the loaded program</li>
+            <li><code>NEW</code> — clear the program buffer</li>
+            <li><code>HELP</code> — browse the command list</li>
+        </ul>
+        <p class="help-footnote">
+            Local data (<code>/sd/</code>) is stored in your browser's IndexedDB.
+            Use the ⟲ button at the bottom of the sidebar to wipe it and restore
+            the bundled demos.
+        </p>
+    </div>
 </dialog>
 
 <script src="./ui/audio.js"></script>

@@ -18,6 +18,9 @@ const uploadInput = document.getElementById('upload');
 const downloadBtn = document.getElementById('download-sd');
 const resetBtn = document.getElementById('reset-sd');
 const openConfigBtn = document.getElementById('open-config');
+const openHelpBtn = document.getElementById('open-help');
+const helpDialog = document.getElementById('help-dialog');
+const helpCloseBtn = document.getElementById('help-close');
 const configDialog = document.getElementById('config-dialog');
 const configCloseBtn = document.getElementById('config-close');
 const resolutionSelect = document.getElementById('resolution');
@@ -952,6 +955,12 @@ openConfigBtn.addEventListener('click', () => {
     else configDialog.setAttribute('open', '');
 });
 configCloseBtn.addEventListener('click', () => configDialog.close());
+
+openHelpBtn.addEventListener('click', () => {
+    if (typeof helpDialog.showModal === 'function') helpDialog.showModal();
+    else helpDialog.setAttribute('open', '');
+});
+helpCloseBtn.addEventListener('click', () => helpDialog.close());
 
 const clampSlowInput = (raw) => {
     let n = parseInt(raw, 10);

@@ -258,6 +258,10 @@ html, body {
     backdrop-filter: blur(6px);
     z-index: 6;
 }
+/* Stack multiple floating buttons in the top-right. The cog is the
+ * rightmost anchor; ? sits just to its left. Extend this pattern for
+ * any future chrome that should live above the canvas. */
+#open-help.floating { right: calc(0.8rem + 30px + 0.4rem); }
 .icon-button.floating:hover {
     background: var(--panel-hi);
     border-color: var(--accent-dim);
@@ -429,6 +433,88 @@ html, body {
     font-size: 0.72rem;
     padding-left: 0.1rem;
     line-height: 1.4;
+}
+
+/* ---- Help / about dialog ---------------------------------------- */
+
+#help-dialog {
+    position: relative;
+    background: var(--bg-elev);
+    color: var(--fg);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 0;
+    width: min(560px, 92vw);
+    font: inherit;
+    box-shadow: 0 16px 60px rgba(0, 0, 0, 0.6);
+}
+#help-dialog::backdrop { background: rgba(8, 10, 14, 0.7); }
+
+#help-dialog #help-close {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    width: 26px;
+    height: 26px;
+    color: var(--fg-dim);
+}
+#help-dialog #help-close:hover {
+    color: var(--fg);
+    background: var(--panel-hi);
+}
+
+.help-body {
+    padding: 1.25rem 1.5rem 1.5rem 1.5rem;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+.help-body h2 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1.1rem;
+    color: var(--fg);
+}
+.help-body h3 {
+    margin: 1.1rem 0 0.35rem 0;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-dim);
+    font-weight: 600;
+}
+.help-body p {
+    margin: 0.4rem 0;
+    color: var(--fg);
+}
+.help-body ul {
+    margin: 0.2rem 0;
+    padding-left: 1.2rem;
+}
+.help-body li {
+    margin: 0.2rem 0;
+    color: var(--fg);
+}
+.help-body code {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 3px;
+    padding: 0.05rem 0.35rem;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    color: var(--accent);
+}
+.help-body a {
+    color: var(--accent);
+    text-decoration: none;
+}
+.help-body a:hover { text-decoration: underline; }
+.help-footnote {
+    margin-top: 1rem !important;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--panel-border);
+    color: var(--fg-dim) !important;
+    font-size: 0.78rem;
 }
 
 /* ---- Narrow viewport: stack panel above canvas ------------------- */
