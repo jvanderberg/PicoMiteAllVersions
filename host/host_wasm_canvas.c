@@ -25,8 +25,12 @@
 extern uint32_t *host_framebuffer;
 extern int host_fb_width;
 extern int host_fb_height;
+extern volatile uint32_t host_fb_generation;
 extern void host_fb_ensure(void);
 extern void host_sim_set_framebuffer_size(int w, int h);
+
+/* From host_fastgfx.c — JS writes this every requestAnimationFrame. */
+extern volatile uint32_t wasm_vsync_counter;
 
 /*
  * Resize the framebuffer. MUST be called BEFORE wasm_boot — the size
@@ -54,4 +58,27 @@ int wasm_framebuffer_width(void) {
 EMSCRIPTEN_KEEPALIVE
 int wasm_framebuffer_height(void) {
     return host_fb_height;
+}
+
+/*
+ * Read by JS every rAF to decide whether to run putImageData. On the
+ * REPL prompt or during a long PAUSE the counter doesn't advance, so
+ * the blit is skipped entirely — main thread stays free for audio and
+ * input processing.
+ */
+EMSCRIPTEN_KEEPALIVE
+uint32_t wasm_framebuffer_generation(void) {
+    return host_fb_generation;
+}
+
+/*
+ * Address of the volatile u32 that bc_fastgfx_sync spin-reads while
+ * aligning to rAF. JS grabs this once at boot, then bumps
+ * HEAPU32[ptr>>2] at the top of every rAF callback. Using a shared-
+ * memory cell (not a ccall) keeps the hot-path alignment free of
+ * per-frame JS↔WASM FFI cost.
+ */
+EMSCRIPTEN_KEEPALIVE
+uintptr_t wasm_vsync_counter_ptr(void) {
+    return (uintptr_t)&wasm_vsync_counter;
 }

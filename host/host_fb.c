@@ -46,6 +46,10 @@ uint32_t *host_framebuffer = NULL;
 int host_fb_width  = 320;
 int host_fb_height = 320;
 
+/* See host_fb.h. Bumped by every path that mutates the visible plane;
+ * read by the WASM rAF loop to skip redundant putImageData calls. */
+volatile uint32_t host_fb_generation = 0;
+
 uint32_t *host_fastgfx_back = NULL;
 
 static uint32_t *host_fb_framebuffer = NULL;      /* FRAMEBUFFER CREATE back plane */
@@ -115,6 +119,7 @@ static void host_fb_merge_now(uint32_t transparent) {
         uint32_t layer = host_fb_layerbuffer[i];
         host_framebuffer[i] = (layer == transparent) ? host_fb_framebuffer[i] : layer;
     }
+    host_fb_bump_generation();
 }
 
 static void host_fb_copy_now(uint32_t *src, uint32_t *dst) {
@@ -122,6 +127,7 @@ static void host_fb_copy_now(uint32_t *src, uint32_t *dst) {
     if (!src || !dst) return;
     pixels = (size_t)host_fb_width * (size_t)host_fb_height;
     memcpy(dst, src, pixels * sizeof(*dst));
+    if (dst == host_framebuffer) host_fb_bump_generation();
 #ifdef MMBASIC_SIM
     /* If we just wrote the front buffer, tell the browser — otherwise
      * FRAMEBUFFER COPY F,N updates pixels locally but nothing reaches
@@ -150,6 +156,7 @@ void host_fb_put_pixel(int x, int y, int c) {
     if (!target) return;
     if (x < 0 || y < 0 || x >= host_fb_width || y >= host_fb_height) return;
     target[(size_t)y * (size_t)host_fb_width + (size_t)x] = host_fb_colour24(c);
+    if (target == host_framebuffer) host_fb_bump_generation();
 #ifdef MMBASIC_SIM
     host_sim_emit_pixel(x, y, c);
 #endif
@@ -173,6 +180,7 @@ void host_fb_fill_rect(int x1, int y1, int x2, int y2, int c) {
             row[x] = colour;
         }
     }
+    if (target == host_framebuffer) host_fb_bump_generation();
 #ifdef MMBASIC_SIM
     host_sim_emit_rect(x1, y1, x2, y2, c);
 #endif
@@ -283,6 +291,7 @@ void host_fb_scroll_lcd(int lines) {
                 (size_t)(host_fb_height - abs_lines) * (size_t)row_pixels * sizeof(uint32_t));
         for (int i = 0; i < abs_lines * row_pixels; ++i) host_framebuffer[i] = fill;
     }
+    host_fb_bump_generation();
 }
 
 /* ------------------------------------------------------------------------
@@ -307,6 +316,7 @@ void host_framebuffer_reset_runtime(int colour) {
     LayerBuf = DisplayBuf;
     WriteBuf = NULL;
     host_fb_fill_buffer(host_framebuffer, host_fb_colour24(colour));
+    host_fb_bump_generation();
 }
 
 void host_framebuffer_shutdown_runtime(void) {
@@ -332,6 +342,7 @@ void host_framebuffer_shutdown_runtime(void) {
 void host_framebuffer_clear_target(int colour) {
     uint32_t *target = host_fb_current_target();
     host_fb_fill_buffer(target, host_fb_colour24(colour));
+    if (target == host_framebuffer) host_fb_bump_generation();
 #ifdef MMBASIC_SIM
     if (host_sim_cmds_target_is_front()) host_sim_emit_cls(colour);
 #endif

@@ -10,6 +10,10 @@
 #include <setjmp.h>
 #include <string.h>
 
+#ifdef MMBASIC_WASM
+#include <emscripten.h>
+#endif
+
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "bytecode.h"
@@ -20,6 +24,20 @@
 static int host_fastgfx_active = 0;
 static int host_fastgfx_fps = 0;
 static uint64_t host_fastgfx_next_sync_us = 0;
+
+#ifdef MMBASIC_WASM
+/* Written from JS every requestAnimationFrame; read by bc_fastgfx_sync
+ * to align the return-from-SYNC boundary with the display refresh.
+ * Without this alignment SWAP→paint has a variable 0–16.67 ms queue,
+ * which shows up as visible jitter even when the BASIC-side frame loop
+ * is metronomic. See host_wasm_canvas.c for the export. */
+volatile uint32_t wasm_vsync_counter = 0;
+
+/* Shared with host_time.c: stamped by every host_sleep_us call under
+ * WASM so wasm_yield_if_due doesn't double-yield on top of a game that
+ * already cooperates. */
+extern uint64_t wasm_last_yield_us;
+#endif
 
 void host_fastgfx_reset_state(void) {
     host_fastgfx_active = 0;
@@ -37,6 +55,8 @@ void bc_fastgfx_swap(void) {
     if (!host_fastgfx_active || !host_fastgfx_back || !host_framebuffer) return;
     size_t pixels = (size_t)host_fb_width * (size_t)host_fb_height;
     memcpy(host_framebuffer, host_fastgfx_back, pixels * sizeof(uint32_t));
+    /* Tell the WASM rAF loop there's a new frame to paint. */
+    host_fb_bump_generation();
 #ifdef MMBASIC_SIM
     host_sim_emit_blit(0, 0, host_fb_width, host_fb_height, host_fastgfx_back);
 #endif
@@ -49,6 +69,18 @@ void bc_fastgfx_sync(void) {
     if (host_fastgfx_next_sync_us == 0) host_fastgfx_next_sync_us = now + frame_us;
     if (now < host_fastgfx_next_sync_us) host_sleep_us(host_fastgfx_next_sync_us - now);
     host_fastgfx_next_sync_us += frame_us;
+#ifdef MMBASIC_WASM
+    /* If we fell more than two frames behind the nominal deadline
+     * (e.g. a one-off GC pause or tab visibility change), resync to
+     * wall clock so we don't spend the rest of the session spinning
+     * to catch up. */
+    now = host_time_us_64();
+    if (host_fastgfx_next_sync_us + 2 * frame_us < now) {
+        host_fastgfx_next_sync_us = now + frame_us;
+    }
+    (void)wasm_vsync_counter;
+    (void)wasm_last_yield_us;
+#endif
 }
 
 void bc_fastgfx_create(void) {

@@ -35,6 +35,16 @@ extern uint32_t *host_fastgfx_back;
 extern int host_fb_width;
 extern int host_fb_height;
 
+/* Monotonic counter bumped whenever the visible front plane changes
+ * (put_pixel / fill_rect / scroll / FASTGFX SWAP / FRAMEBUFFER write/
+ * copy/merge). The WASM render loop reads this to skip putImageData when
+ * nothing has changed since the last rAF — keeps idle REPL / PAUSE-heavy
+ * programs from wasting main-thread time on redundant blits. Non-writing
+ * code paths (FASTGFX back-plane draws) deliberately don't bump it; the
+ * SWAP is the event the browser actually needs to repaint. */
+extern volatile uint32_t host_fb_generation;
+static inline void host_fb_bump_generation(void) { host_fb_generation++; }
+
 /* Lazy allocator — first call allocates host_fb_width * host_fb_height
  * uint32_ts. All drawing paths call this before touching the buffer. */
 void host_fb_ensure(void);

@@ -74,9 +74,25 @@ function ensureCtx() {
 function armAudioOnGesture() {
     if (gestureArmed) return;
     gestureArmed = true;
+    // Safari quirk: even after resume() inside a user gesture, the
+    // output stays silent until something actually plays through
+    // destination. Kick a zero-amplitude buffer on first gesture to
+    // unblock the pipeline. Harmless on Chrome / Firefox.
+    let primed = false;
     const prime = () => {
         ensureCtx();
-        if (ctx && ctx.state === "suspended") ctx.resume();
+        if (!ctx) return;
+        if (ctx.state === "suspended") ctx.resume();
+        if (!primed) {
+            primed = true;
+            try {
+                const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start();
+            } catch (_) {}
+        }
         updateBanner();
     };
     window.addEventListener("keydown",     prime, { capture: true });

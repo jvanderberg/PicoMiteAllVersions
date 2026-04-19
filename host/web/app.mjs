@@ -29,7 +29,97 @@ const slowdownRange = document.getElementById('slowdown-range');
 const slowdownNumber = document.getElementById('slowdown-number');
 const dropOverlay = document.getElementById('drop-overlay');
 const hintEl = document.getElementById('hint');
-const ctx = canvas.getContext('2d', { alpha: false });
+
+// WebGL path. Canvas 2D's putImageData committed frames through the
+// software compositor path, which — on macOS Chrome specifically —
+// caused rAF throttling from 50 Hz down to 25 Hz after ~8 seconds of
+// held keys (documented in web-host-plan.md Phase 4 notes). WebGL's
+// commit goes straight to the GPU compositor and Chrome's throttler
+// doesn't fire. Firefox and Safari work fine either way, but the
+// WebGL path is also faster (~3× less CPU per frame) so we standardise
+// on it.
+//
+// `desynchronized: true` lets the browser present frames with lower
+// queueing latency when supported. `preserveDrawingBuffer: false`
+// and `antialias: false` shave redundant work.
+const gl = canvas.getContext('webgl2', {
+    alpha: false,
+    antialias: false,
+    depth: false,
+    stencil: false,
+    preserveDrawingBuffer: false,
+    desynchronized: true,
+    powerPreference: 'high-performance',
+});
+if (!gl) {
+    document.getElementById('status').textContent = 'WebGL2 not available in this browser.';
+    throw new Error('WebGL2 required');
+}
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);  // our plane is top-down
+
+// Shader pair: draw a fullscreen triangle, sample the framebuffer
+// texture, and swizzle R↔B in the fragment stage. host_framebuffer
+// stores pixels as (R<<16)|(G<<8)|B in a uint32 plane, which when
+// uploaded as RGBA bytes lands as (B, G, R, 0) per texel — so the
+// shader reads .bgr to recover the correct colour.
+const VERT_SRC = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+    v_uv = a_pos * 0.5 + 0.5;
+    gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+const FRAG_SRC = `#version 300 es
+precision mediump float;
+in vec2 v_uv;
+uniform sampler2D u_tex;
+out vec4 outColor;
+void main() {
+    vec4 c = texture(u_tex, v_uv);
+    outColor = vec4(c.b, c.g, c.r, 1.0);
+}`;
+
+function compileShader(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        throw new Error('Shader compile: ' + gl.getShaderInfoLog(s));
+    }
+    return s;
+}
+
+const glProgram = gl.createProgram();
+gl.attachShader(glProgram, compileShader(gl.VERTEX_SHADER,   VERT_SRC));
+gl.attachShader(glProgram, compileShader(gl.FRAGMENT_SHADER, FRAG_SRC));
+gl.linkProgram(glProgram);
+if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+    throw new Error('Shader link: ' + gl.getProgramInfoLog(glProgram));
+}
+gl.useProgram(glProgram);
+
+// Two-triangle fullscreen quad. Could be a single triangle with
+// out-of-bounds UVs, but the explicit quad is easier to read and the
+// vertex cost is negligible.
+const quadVB = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quadVB);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,   1, -1,   -1,  1,
+    -1,  1,   1, -1,    1,  1,
+]), gl.STATIC_DRAW);
+const aPosLoc = gl.getAttribLocation(glProgram, 'a_pos');
+gl.enableVertexAttribArray(aPosLoc);
+gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
+gl.uniform1i(gl.getUniformLocation(glProgram, 'u_tex'), 0);
+
+// Texture — allocated when we know the framebuffer size.
+const glTex = gl.createTexture();
+gl.activeTexture(gl.TEXTURE0);
+gl.bindTexture(gl.TEXTURE_2D, glTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
 // --- Resolution selection -----------------------------------------------
 //
@@ -198,7 +288,8 @@ function mapKeyEvent(event) {
 
 // --- Framebuffer blit ----------------------------------------------------
 
-let fbPtr = 0, fbWidth = 0, fbHeight = 0, imageData = null;
+let fbPtr = 0, fbWidth = 0, fbHeight = 0;
+let fbTexAllocated = false;  // first upload uses texImage2D, rest texSubImage2D
 
 // Render at 2× when it fits the viewport, otherwise shrink uniformly
 // to fit while preserving aspect ratio. image-rendering: pixelated
@@ -216,24 +307,43 @@ function fitCanvas() {
     canvas.style.height = `${Math.floor(fbHeight * scale)}px`;
 }
 
+// Upload host_framebuffer into the GL texture and draw a fullscreen
+// quad. The shader swizzles the R/B channels so the host's (R<<16)|
+// (G<<8)|B packed layout displays correctly. On first call we use
+// texImage2D to allocate storage; subsequent calls reuse via
+// texSubImage2D (cheaper — driver keeps the same GPU allocation).
 function blitFrame(instance) {
     if (!fbPtr) return;
-    const src = instance.HEAPU32.subarray(fbPtr >>> 2, (fbPtr >>> 2) + fbWidth * fbHeight);
-    const dst = imageData.data;
-    for (let i = 0, j = 0; i < src.length; i++, j += 4) {
-        const px = src[i];
-        dst[j]     = (px >>> 16) & 0xFF;
-        dst[j + 1] = (px >>> 8)  & 0xFF;
-        dst[j + 2] =  px         & 0xFF;
-        dst[j + 3] = 0xFF;
+    const bytes = new Uint8Array(instance.HEAPU8.buffer, fbPtr, fbWidth * fbHeight * 4);
+    if (!fbTexAllocated) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fbWidth, fbHeight, 0,
+                      gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+        fbTexAllocated = true;
+    } else {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fbWidth, fbHeight,
+                         gl.RGBA, gl.UNSIGNED_BYTE, bytes);
     }
-    ctx.putImageData(imageData, 0, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
 }
 
 function startRenderLoop(instance) {
+    let lastGen = 0xFFFFFFFF;
+
     const loop = () => {
-        try { blitFrame(instance); }
-        catch (e) { setStatus('Render error: ' + e.message, true); return; }
+        try {
+            // Skip putImageData entirely if the framebuffer hasn't
+            // changed. Covers idle REPL, long PAUSEs, INKEY$ spin-
+            // waits — the main thread stays free for keyboard, audio,
+            // and IDBFS work.
+            const gen = instance._wasm_framebuffer_generation();
+            if (gen !== lastGen) {
+                lastGen = gen;
+                blitFrame(instance);
+            }
+        } catch (e) {
+            setStatus('Render error: ' + e.message, true);
+            return;
+        }
         requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
@@ -241,15 +351,76 @@ function startRenderLoop(instance) {
 
 // --- Keyboard ------------------------------------------------------------
 
+// Browser keydown auto-repeat fires ~25-35 Hz on most OSes — 4-5×
+// faster than PicoMite's own key-repeat logic (device defaults
+// 600 ms / 150 ms = 6.7 Hz). That made pico_blocks' paddle unplayably
+// fast on the web. We ignore the browser's auto-repeats and drive our
+// own schedule per physical key via plain setTimeout + setInterval.
+// (An earlier rAF-based repeat loop looked cleaner on paper but
+// added per-event cost in Chrome that manifested as paddle stutter.)
+const KEY_REPEAT_DELAY_MS    = 400;
+const KEY_REPEAT_INTERVAL_MS = 100;
+
 function wireKeyboard(instance) {
     const pushKey = instance.cwrap('wasm_push_key', null, ['number']);
 
+    // code (event.code) -> { delayTimer, intervalTimer, mmCode }
+    const held = new Map();
+
+    const releaseAll = () => {
+        for (const s of held.values()) {
+            if (s.delayTimer)    clearTimeout(s.delayTimer);
+            if (s.intervalTimer) clearInterval(s.intervalTimer);
+        }
+        held.clear();
+    };
+
+    // Passive listener: tells Chrome it can commit compositor frames
+    // without waiting for this handler to return (or for a possible
+    // preventDefault). Non-passive keydown handlers on macOS Chrome
+    // cause the compositor to throttle rAF from the display rate to
+    // half-rate during continuous key-hold — see trace analysis in
+    // docs/web-host-plan.md's Phase 4 notes. Cost of passive: we
+    // can't preventDefault scrolling from arrow keys, but the canvas
+    // has no scroll and the page has no fallback target.
     canvas.addEventListener('keydown', (event) => {
-        const code = mapKeyEvent(event);
-        if (code < 0) return;
-        event.preventDefault();
-        pushKey(code);
-    });
+        const mm = mapKeyEvent(event);
+        if (mm < 0) return;
+        // We drive our own repeat — ignore the OS-level auto-repeats.
+        if (event.repeat) return;
+
+        pushKey(mm);
+
+        // Clear any stale entry (e.g. keyup was missed because focus
+        // moved during the press — rare but ugly if left unhandled).
+        const stale = held.get(event.code);
+        if (stale) {
+            if (stale.delayTimer)    clearTimeout(stale.delayTimer);
+            if (stale.intervalTimer) clearInterval(stale.intervalTimer);
+        }
+
+        const state = { delayTimer: 0, intervalTimer: 0, mmCode: mm };
+        state.delayTimer = setTimeout(() => {
+            state.delayTimer = 0;
+            state.intervalTimer = setInterval(() => {
+                pushKey(state.mmCode);
+            }, KEY_REPEAT_INTERVAL_MS);
+        }, KEY_REPEAT_DELAY_MS);
+        held.set(event.code, state);
+    }, { passive: true });
+
+    canvas.addEventListener('keyup', (event) => {
+        const s = held.get(event.code);
+        if (!s) return;
+        if (s.delayTimer)    clearTimeout(s.delayTimer);
+        if (s.intervalTimer) clearInterval(s.intervalTimer);
+        held.delete(event.code);
+    }, { passive: true });
+
+    // Focus changes can eat keyup events. Drop all held keys on blur
+    // so the game doesn't see a stuck repeat when the user comes back.
+    window.addEventListener('blur', releaseAll);
+    canvas.addEventListener('blur', releaseAll);
 
     canvas.addEventListener('click', () => canvas.focus());
     canvas.focus();
@@ -343,18 +514,60 @@ async function resetSd(instance) {
     return n;
 }
 
-// Debounced background flush. Any write on the C side (SAVE, KILL,
-// EDIT's F1-save path) lives in the in-memory IDBFS view until
-// syncfs(false) commits it to IndexedDB. Flushing every few seconds
-// plus on tab-hide / beforeunload covers the common cases.
+// Dirty-aware background flush. Any write on the C side (SAVE, KILL,
+// EDIT's F1-save path, drag-drop import) lives in the in-memory IDBFS
+// view until syncfs(false) commits it to IndexedDB. syncfs is
+// synchronous on the main thread: it walks every file, serialises
+// changes, and runs an IndexedDB transaction — 5-30 ms of hitch on
+// top of whatever frame work is happening. Running it on a 2 s
+// interval regardless of whether anything changed was the main
+// source of visible stutter during FASTGFX games like pico_blocks.
+//
+// Fix: only flush when the FS.trackingDelegate hook says /sd/ has
+// been written, and schedule the flush via requestIdleCallback so it
+// runs between rAFs instead of stepping on one. visibilitychange /
+// beforeunload still force-flush unconditionally — they're the "we
+// may never get another chance" boundaries.
+let sdDirty = false;
 let flushTimer = 0;
+
+function installFsDirtyTracker(instance) {
+    // FS.trackingDelegate fires for any FS mutation. We only care
+    // about paths under /sd/ — everything else is either bundle read
+    // (/bundle/) or libc scratch (/tmp/).
+    const isSd = (p) => typeof p === 'string' && p.startsWith(SD_ROOT + '/');
+    const delegate = instance.FS.trackingDelegate || {};
+    delegate.onWriteToFile = (path) => { if (isSd(path)) sdDirty = true; };
+    delegate.onDeletePath  = (path) => { if (isSd(path)) sdDirty = true; };
+    delegate.onMovePath    = (oldPath, newPath) => {
+        if (isSd(oldPath) || isSd(newPath)) sdDirty = true;
+    };
+    // onOpenFile fires for reads too, so we don't set dirty here;
+    // onWriteToFile covers actual writes including SAVE / F1-save.
+    instance.FS.trackingDelegate = delegate;
+}
+
 function scheduleFlush(instance) {
+    sdDirty = true;  // explicit writes (drag-drop, upload, reset)
     if (flushTimer) return;
-    flushTimer = setTimeout(async () => {
+    const run = async () => {
         flushTimer = 0;
+        if (!sdDirty) return;
+        sdDirty = false;
         try { await syncfsPromise(instance, false); }
-        catch (e) { console.warn('syncfs failed:', e); }
-    }, 1500);
+        catch (e) {
+            console.warn('syncfs failed:', e);
+            sdDirty = true;  // retry on next tick
+        }
+    };
+    // requestIdleCallback gives us a timeslice when the main thread is
+    // genuinely idle — never competes with a running FASTGFX frame.
+    // Fallback to setTimeout for Safari (no rIC as of 17.x).
+    if (typeof requestIdleCallback === 'function') {
+        flushTimer = requestIdleCallback(run, { timeout: 4000 });
+    } else {
+        flushTimer = setTimeout(run, 1500);
+    }
 }
 
 function flashHint(msg, durationMs = 2500) {
@@ -512,11 +725,16 @@ function triggerDownload(blob, filename) {
 }
 
 function wireFileIO(instance) {
-    // Flush /sd/ to IndexedDB when the tab goes away or every few
-    // seconds after a change. Drag-drop, upload, and reset all trigger
-    // a scheduleFlush directly; regular SAVE from BASIC just leaves the
-    // MEMFS view dirty, so we also flush on visibilitychange /
-    // beforeunload as a belt-and-braces measure.
+    // Install the FS hook so BASIC-side writes (SAVE, KILL, EDIT's
+    // F1-save path) flip the dirty flag, then rely on scheduleFlush
+    // to pick them up during idle time. Without this tracker, the old
+    // code ran syncfs every 2 s regardless — visible hitch during
+    // FASTGFX games.
+    installFsDirtyTracker(instance);
+
+    // visibilitychange / beforeunload still force-flush unconditionally:
+    // these are the "last chance before the tab goes away" boundaries
+    // where we'd rather pay a 5-30 ms hitch than lose a SAVE.
     const flushNow = () => syncfsPromise(instance, false).catch((e) => {
         console.warn('syncfs failed:', e);
     });
@@ -524,11 +742,14 @@ function wireFileIO(instance) {
         if (document.visibilityState === 'hidden') flushNow();
     });
     window.addEventListener('beforeunload', () => { flushNow(); });
-    // Cheap periodic flush covers BASIC-side writes (SAVE, KILL,
-    // EDIT's save-on-F1). 2 s is frequent enough that a quick tab
-    // close rarely loses work, sparse enough that idle pages cost
-    // almost nothing.
-    setInterval(flushNow, 2000);
+
+    // Poll the dirty flag every 2 s; if something changed on the FS
+    // since the last check, scheduleFlush queues an idle-time syncfs.
+    // Idle games with no FS writes pay nothing — the polled flag
+    // stays false and the timer body returns in microseconds.
+    setInterval(() => {
+        if (sdDirty) scheduleFlush(instance);
+    }, 2000);
 
     // Upload button (for mobile / touch where drag-drop is awkward).
     uploadInput.addEventListener('change', async (e) => {
@@ -636,6 +857,11 @@ try {
         printErr: (line) => console.warn('[picomite]', line),
     });
 
+    // Dev/test hook: expose the WASM instance so headless smoke tests
+    // can poke at HEAPU32, _wasm_framebuffer_generation, FS.readFile,
+    // etc. Not used by the page UI itself.
+    window.picomite = { instance };
+
     // Wire live slowdown updates now that the instance exists. Both
     // sides in µs, matching the native --slowdown flag. The WASM-side
     // host_sim_apply_slowdown accumulates µs and only sleeps on whole-ms
@@ -686,7 +912,7 @@ try {
 
     canvas.width  = fbWidth;
     canvas.height = fbHeight;
-    imageData = ctx.createImageData(fbWidth, fbHeight);
+    gl.viewport(0, 0, fbWidth, fbHeight);
     fitCanvas();
     window.addEventListener('resize', fitCanvas);
 

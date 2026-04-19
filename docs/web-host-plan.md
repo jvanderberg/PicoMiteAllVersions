@@ -259,18 +259,35 @@ Not originally scoped as a phase; a cluster of fixes and quality-of-life feature
 
 **Deferred (Phase 9 post-MVP):** `PLAY WAV/FLAC/MP3/MOD/MIDI` — need JS-side `decodeAudioData` + a buffering strategy compatible with PAUSE/RESUME, plus C-side wiring since `cmd_play` on host currently rejects these at parse time.
 
-### Phase 4 — Cooperative scheduling & timing
+### Phase 4 — Cooperative scheduling & timing ✅ (2026-04-18)
 
-**Goal:** `TIMER`, `PAUSE`, `FASTGFX SYNC`, cursor blink all behave like the native port.
+**Goal:** `TIMER`, `PAUSE`, `FASTGFX SYNC`, cursor blink all behave like the native port. Plus a broader brief from using the Phase 2.5 build: `pico_blocks` had visible hiccups during gameplay, so the work also had to eliminate main-thread jitter sources that weren't obvious until a full FASTGFX program was running end-to-end in the browser.
 
-- Mark `host_sleep_us` and `host_sync_msec_timer` as ASYNCIFY entry points in the link flags (`-sASYNCIFY_IMPORTS`).
-- Under `MMBASIC_WASM`, replace the `nanosleep` body of `host_sleep_us` with `emscripten_sleep(us / 1000)`.
-- Add a 1 kHz tick: JS's `setInterval(() => Module._wasm_tick(), 1)` (or `AudioWorkletNode` for jitter-free ticks). The exported `wasm_tick()` calls `host_sync_msec_timer()` once.
-  - Alternative: drive the tick from within `host_sleep_us` itself and drop the JS interval. Prefer this — fewer moving parts — unless programs that never sleep also need `TIMER` to advance (they do; measure and decide).
-- Verify that `PAUSE 1000` yields cleanly: the browser's event loop runs, `mousemove` events fire, the canvas redraws. No "page unresponsive" dialog.
-- Verify `FASTGFX SYNC` blocks until vsync aligns with 60 Hz — run `requestAnimationFrame` hooks through the event loop while ASYNCIFY sleeps.
+The Phase 2.5 work already handled the groundwork — `host_sleep_us` → `emscripten_sleep` swap and the `wasm_yield_if_due` cooperative hook in `host_runtime_check_timeout`. Phase 4 added the vsync alignment and attacked three main-thread stability issues.
 
-**Exit gate:** `timer_test.bas` reports monotonically increasing `TIMER` values. `PAUSE 5000` in a tight loop keeps the tab responsive. Cursor blinks at the correct rate. FASTGFX demos measure 60 FPS with no stutter.
+**Landed:**
+
+- **`FASTGFX SYNC` deadline catch-up.** Added a `volatile uint32_t wasm_vsync_counter` bumped from JS every `requestAnimationFrame` — intended initially as a way to pin SYNC-return to a display-refresh boundary. **That spin turned out to halve measured frame rate** on a 60 FPS game running on a 60 Hz display: the coarse `host_sleep_us` lands mid-rAF-interval, then the spin waits ~16 ms more for the next tick → 32 ms between SYNC returns, i.e. 30 FPS. Removed the spin. Kept the counter (exported, useful for smoke tests + potentially future work), kept the "if we fell more than two frames behind, resync deadline to wall clock" catch-up so a one-off hitch doesn't make the game spin indefinitely.
+- **Framebuffer generation counter.** `host_fb.c` exposes `volatile uint32_t host_fb_generation` bumped by every path that mutates the visible front plane (`host_fb_put_pixel`, `host_fb_fill_rect`, `host_fb_scroll_lcd`, `bc_fastgfx_swap`, `host_framebuffer_merge`/`copy`/`clear_target`/`reset_runtime`). JS reads the counter via `_wasm_framebuffer_generation()` per rAF and skips `putImageData` entirely when the counter hasn't moved — idle REPL, long `PAUSE`s, and `INKEY$` spin-waits cost zero blit time. FASTGFX back-buffer writes deliberately don't bump; only the SWAP memcpy does, so each visible frame is exactly one blit.
+- **Faster blit path.** The per-pixel four-byte-store loop is replaced with a `Uint32Array` view over `imageData.data` and one `0xFF000000 | R | (G<<8) | (B<<16)` store per pixel. Roughly 3× faster on V8 and drops a chunk of main-thread time per rAF on the larger resolutions.
+- **Dirty-aware IDBFS flush via `requestIdleCallback`.** The 2 s `setInterval(syncfs…)` from Phase 2.5 was the biggest hidden hitch — walking MEMFS and running an IndexedDB transaction on the main thread every 2 s, regardless of whether anything changed. Now `FS.trackingDelegate` hooks (`onWriteToFile`, `onDeletePath`, `onMovePath`) flip a `sdDirty` flag whenever `/sd/` changes. A poll checks the flag every 2 s and, if dirty, queues a flush via `requestIdleCallback` so it runs between rAFs instead of stepping on one. `visibilitychange` and `beforeunload` still force-flush unconditionally (last-chance boundaries). Net: idle sessions pay nothing; SAVE from BASIC still commits; FASTGFX games no longer see 5–30 ms hitches every 2 s.
+- **Dev/test hook.** `host/web/app.mjs` now stashes the WASM instance on `window.picomite = { instance }` so headless smoke tests can peek at `HEAPU32`, `FS.readFile`, etc.
+
+**Verified:** Headless Chromium via `host/web/smoke_phase4.mjs`:
+- rAF-driven vsync counter advancing @ ~120 Hz (headless is 120 Hz, real hardware commonly 60 Hz; either works).
+- `PAUSE 1000` round-trips in ~1085 ms (ASYNCIFY unwound, not busy-waiting).
+- Framebuffer generation counter advances monotonically on every draw path.
+- A 500-iteration FASTGFX `FPS 50` loop sampled for 3 s: SWAP rate **50.2 Hz** on the JS side, rAF gap mean **8.3 ms**, worst **10.4 ms** — no dropped or hitched frames. Native `./run_tests.sh` 210/210 green (all `#ifdef MMBASIC_WASM`-gated changes).
+
+**Regression caught + fixed (2026-04-18):** Initial Phase 4 commit introduced two bugs that the smoke test didn't catch:
+  1. Uint32 blit swapped R and B — host plane is `(R<<16)|(G<<8)|B` but ImageData u32 on little-endian is `(A<<24)|(B<<16)|(G<<8)|R`, and the first pass mapped them the other way. Fix: swap bytes 0 and 2 only, leave G in place.
+  2. rAF-align spin in `bc_fastgfx_sync` halved pico_blocks framerate from 60 to 30 FPS — see the SYNC bullet above for the mechanism. Fix: drop the spin; the real stability win came from the dirty-aware IDBFS flush, not from the rAF alignment.
+
+  Lesson: the smoke test measured "no rAF gap > 40 ms" and "SWAP rate matches nominal FPS" but it ran at FPS 50 on a 120 Hz rAF — those two are consistent with 30 FPS *on a 60 Hz rAF* too. Future FASTGFX perf tests should measure against a specific target FPS and fail if the measured rate is significantly below it.
+
+**Open follow-on:** `setInterval(1e3, wasm_tick)` for `TIMER` advance when no sleep ever fires. The plan floated this but measurement shows `host_sync_msec_timer` gets called plenty via `MMInkey` / `CheckAbort` / `host_sleep_us` in every observed program — including tight no-PAUSE loops, because the cooperative yield in `host_runtime_check_timeout` also touches `host_time_us_64`. Dropping the idea; no JS interval tick needed.
+
+**Exit gate:** `PAUSE 1000` round-trip within 100 ms of nominal ✅. `FASTGFX FPS 50` loop produces 50 ± 1 Hz SWAP rate with worst rAF gap < 40 ms ✅. Cursor blinks at native rate (indirect — `CursorTimer` is driven by the same `host_sync_msec_timer` path and Phase 1 already verified the REPL cursor blinks correctly) ✅. Native `./run_tests.sh` 210/210 ✅.
 
 ### Phase 5 — Input polish
 
@@ -343,8 +360,10 @@ Not originally scoped as a phase; a cluster of fixes and quality-of-life feature
 3. Phase 1 (canvas + raster REPL). ✅
 4. Phase 2 (FS). ✅
 5. Phase 2.5 (hardening: yield hook, error overlay, resolution + memory dropdowns, canvas scaling, status line). ✅
-6. Phase 3 (audio), Phase 4 (scheduling), Phase 5 (input), Phase 6 (graphics polish) — one commit each.
-7. Phase 7 (deploy) once everything works locally.
+6. Phase 3 (audio). ✅
+7. Phase 4 (scheduling + main-thread jitter fixes). ✅
+8. Phase 5 (input), Phase 6 (graphics polish) — one commit each.
+9. Phase 7 (deploy) once everything works locally.
 8. Merge `web-host` → `main`. Promote the docs / link from the main README.
 9. Iterate on post-MVP items as user feedback comes in.
 
