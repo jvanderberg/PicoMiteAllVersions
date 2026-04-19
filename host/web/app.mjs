@@ -242,19 +242,26 @@ let fbTexAllocated = false;
 let keyRingI32Base = 0, keyHeadIdx = 0, keyTailIdx = 0, keyRingMask = 0;
 
 const screenAreaEl = document.getElementById('screen-area');
+const screenWrapEl = document.getElementById('screen-wrap');
+
+function contentPadding(el) {
+    const s = getComputedStyle(el);
+    return {
+        x: parseFloat(s.paddingLeft) + parseFloat(s.paddingRight),
+        y: parseFloat(s.paddingTop)  + parseFloat(s.paddingBottom),
+    };
+}
 
 function fitCanvas() {
     if (!fbWidth || !fbHeight) return;
-    // Measure the actual screen-area container so sidebar, status bar,
-    // and CSS padding (for the focus ring's outline-offset) are all
-    // accounted for. getBoundingClientRect includes content + padding
-    // but we want content-only, so subtract the CSS padding.
-    const rect = screenAreaEl.getBoundingClientRect();
-    const style = getComputedStyle(screenAreaEl);
-    const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
-    const padY = parseFloat(style.paddingTop)  + parseFloat(style.paddingBottom);
-    const maxW = Math.max(160, rect.width  - padX);
-    const maxH = Math.max(160, rect.height - padY);
+    // Budget = screen-area content box minus wrapper padding. The
+    // wrapper carries the focus-ring outline, so its padding is
+    // non-negotiable; the canvas has to shrink to fit inside it.
+    const rect    = screenAreaEl.getBoundingClientRect();
+    const areaPad = contentPadding(screenAreaEl);
+    const wrapPad = contentPadding(screenWrapEl);
+    const maxW = Math.max(160, rect.width  - areaPad.x - wrapPad.x);
+    const maxH = Math.max(160, rect.height - areaPad.y - wrapPad.y);
     const fit = Math.min(maxW / fbWidth, maxH / fbHeight);
     const scale = Math.min(DESIRED_SCALE, fit);
     canvas.style.width  = `${Math.floor(fbWidth  * scale)}px`;

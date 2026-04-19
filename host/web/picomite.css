@@ -160,18 +160,29 @@ html, body {
     padding: 32px;  /* breathing room around the canvas + its focus ring */
 }
 
+/* The focus ring lives on a wrapper instead of the canvas itself.
+ * Using outline-offset on the canvas compounds border-radius with the
+ * offset distance, so a 2 px canvas corner with 14 px offset renders
+ * the ring at a 16 px radius. A wrapper with its own padding + radius
+ * keeps the ring's corners independent (here: a tight 3 px). */
+#screen-wrap {
+    padding: 14px;
+    border-radius: 3px;
+    outline: 2px solid transparent;
+    transition: outline-color 0.1s ease;
+}
+#screen-wrap:focus-within {
+    outline-color: var(--accent);
+}
+
 #screen {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     background: #000;
     border-radius: 2px;
-    outline: 2px solid transparent;
-    outline-offset: 14px;
+    outline: none;
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
-    transition: outline-color 0.1s ease;
-}
-#screen:focus {
-    outline-color: var(--accent);
+    display: block;
 }
 
 /* ---- Floating config button ------------------------------------ */
