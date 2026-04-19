@@ -7,71 +7,149 @@
     <link rel="stylesheet" href="./picomite.css">
 </head>
 <body>
-    <div id="status">Loading WASM module…</div>
-    <canvas id="screen" tabindex="0" width="320" height="320" aria-label="MMBasic screen"></canvas>
-    <div id="toolbar">
-        <label class="button">
-            <input type="file" id="upload" multiple accept=".bas,.inc,.txt">
-            <span>⬆ Load .bas</span>
+
+<!-- SVG icon sprite — referenced throughout the page with <use href="#ico-xxx">. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+        <!-- settings cog -->
+        <symbol id="ico-cog" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z M19.4 15a1.5 1.5 0 0 0 .3 1.65l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.5 1.5 0 0 0-1.65-.3 1.5 1.5 0 0 0-.91 1.37V21a2 2 0 1 1-4 0v-.09a1.5 1.5 0 0 0-1-1.37 1.5 1.5 0 0 0-1.65.3l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.5 1.5 0 0 0 .3-1.65 1.5 1.5 0 0 0-1.37-.91H3a2 2 0 1 1 0-4h.09a1.5 1.5 0 0 0 1.37-1 1.5 1.5 0 0 0-.3-1.65l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.5 1.5 0 0 0 1.65.3H9a1.5 1.5 0 0 0 .91-1.37V3a2 2 0 1 1 4 0v.09a1.5 1.5 0 0 0 .91 1.37 1.5 1.5 0 0 0 1.65-.3l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.5 1.5 0 0 0-.3 1.65V9a1.5 1.5 0 0 0 1.37.91H21a2 2 0 1 1 0 4h-.09a1.5 1.5 0 0 0-1.37.91Z"/>
+        </symbol>
+        <!-- file -->
+        <symbol id="ico-file" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Z M14 3v6h6"/>
+        </symbol>
+        <!-- upload arrow -->
+        <symbol id="ico-upload" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M12 17V3 M5 10l7-7 7 7 M5 21h14"/>
+        </symbol>
+        <!-- download arrow -->
+        <symbol id="ico-download" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M12 3v14 M5 10l7 7 7-7 M5 21h14"/>
+        </symbol>
+        <!-- trash -->
+        <symbol id="ico-trash" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M3 6h18 M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2 M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6 M10 11v6 M14 11v6"/>
+        </symbol>
+        <!-- refresh / reset -->
+        <symbol id="ico-reset" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M3 12a9 9 0 1 0 3-6.7 M3 4v5h5"/>
+        </symbol>
+        <!-- close -->
+        <symbol id="ico-close" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M6 6l12 12 M18 6L6 18"/>
+        </symbol>
+        <!-- speaker -->
+        <symbol id="ico-speaker" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+                  d="M11 5L6 9H2v6h4l5 4z M15.5 8.5a5 5 0 0 1 0 7 M19 5a9 9 0 0 1 0 14"/>
+        </symbol>
+    </defs>
+</svg>
+
+<main id="stage">
+    <aside id="files-panel" aria-label="Files in /sd/">
+        <header>
+            <h2>/sd/</h2>
+            <label class="icon-button" title="Upload files">
+                <input type="file" id="upload" multiple accept=".bas,.inc,.txt,.bmp,.wav">
+                <svg class="ico"><use href="#ico-upload"/></svg>
+            </label>
+        </header>
+        <ul id="files-list"></ul>
+        <footer>
+            <button type="button" class="icon-button" id="download-sd" title="Download everything as .zip">
+                <svg class="ico"><use href="#ico-download"/></svg>
+            </button>
+            <button type="button" class="icon-button" id="reset-sd" title="Wipe /sd/ and restore bundled demos">
+                <svg class="ico"><use href="#ico-reset"/></svg>
+            </button>
+        </footer>
+    </aside>
+
+    <section id="screen-area">
+        <button type="button" class="icon-button floating" id="open-config" title="Settings">
+            <svg class="ico"><use href="#ico-cog"/></svg>
+        </button>
+        <canvas id="screen" tabindex="0" width="320" height="320" aria-label="MMBasic screen"></canvas>
+    </section>
+</main>
+
+<div id="status">Loading WASM module…</div>
+
+<div id="drop-overlay" hidden>
+    <svg class="ico-large"><use href="#ico-upload"/></svg>
+    <span>Drop to import</span>
+</div>
+
+<div id="audio-hint" hidden>
+    <svg class="ico"><use href="#ico-speaker"/></svg>
+    <span>Click or press a key to enable audio</span>
+</div>
+
+<!-- Back-compat: app.mjs still references #hint for transient messages;
+     we repurpose #status as the transient feedback surface instead. -->
+<span id="hint" hidden></span>
+
+<dialog id="config-dialog">
+    <form method="dialog" id="config-form">
+        <header>
+            <h2>Settings</h2>
+            <button type="button" class="icon-button" id="config-close" aria-label="Close">
+                <svg class="ico"><use href="#ico-close"/></svg>
+            </button>
+        </header>
+
+        <label class="config-row">
+            <span class="config-label">Resolution</span>
+            <select id="resolution">
+                <option value="320x240">320 × 240</option>
+                <option value="320x320">320 × 320</option>
+                <option value="480x320">480 × 320</option>
+                <option value="640x360">640 × 360</option>
+                <option value="640x480">640 × 480</option>
+                <option value="800x480">800 × 480</option>
+                <option value="800x600">800 × 600</option>
+                <option value="1024x600">1024 × 600</option>
+                <option value="1024x768">1024 × 768</option>
+            </select>
         </label>
-        <button type="button" id="download-sd">⬇ Download all</button>
-        <button type="button" id="reset-sd" title="Wipe /sd/ and repopulate from the bundled demos">⟲ Reset /sd/</button>
-        <button type="button" id="open-config">⚙ Config</button>
-        <span id="hint">Drop .bas files anywhere on the page to import.</span>
-    </div>
-    <div id="drop-overlay" hidden>Drop to import into /sd/</div>
-    <div id="audio-hint" hidden>🔈 Click or press a key to enable audio</div>
+        <p class="config-hint">Changing resolution reloads the page.</p>
 
-    <dialog id="config-dialog">
-        <form method="dialog" id="config-form">
-            <h2>Config</h2>
+        <label class="config-row">
+            <span class="config-label">Memory</span>
+            <select id="memory">
+                <option value="131072">128 KB (RP2040)</option>
+                <option value="307200">300 KB (RP2350)</option>
+                <option value="524288">512 KB</option>
+                <option value="1048576">1 MB</option>
+                <option value="2097152">2 MB</option>
+                <option value="4194304">4 MB</option>
+                <option value="8388608">8 MB</option>
+            </select>
+        </label>
+        <p class="config-hint">Changing memory reloads the page.</p>
 
-            <label class="config-row">
-                <span class="config-label">Resolution</span>
-                <select id="resolution">
-                    <option value="320x240">320 × 240</option>
-                    <option value="320x320">320 × 320</option>
-                    <option value="480x320">480 × 320</option>
-                    <option value="640x360">640 × 360</option>
-                    <option value="640x480">640 × 480</option>
-                    <option value="800x480">800 × 480</option>
-                    <option value="800x600">800 × 600</option>
-                    <option value="1024x600">1024 × 600</option>
-                    <option value="1024x768">1024 × 768</option>
-                </select>
-            </label>
-            <p class="config-hint">Changing resolution reloads the page.</p>
+        <label class="config-row">
+            <span class="config-label">Slowdown (µs)</span>
+            <span class="slowdown-group">
+                <input type="range" id="slowdown-range" min="0" max="20" step="1" value="0">
+                <input type="number" id="slowdown-number" min="0" max="100000" step="1" value="0">
+            </span>
+        </label>
+        <p class="config-hint">Per-statement sleep. 0 = uncapped, 10 ≈ device-like.</p>
+    </form>
+</dialog>
 
-            <label class="config-row">
-                <span class="config-label">Memory</span>
-                <select id="memory">
-                    <option value="131072">128 KB (RP2040)</option>
-                    <option value="307200">300 KB (RP2350)</option>
-                    <option value="524288">512 KB</option>
-                    <option value="1048576">1 MB</option>
-                    <option value="2097152">2 MB</option>
-                    <option value="4194304">4 MB</option>
-                    <option value="8388608">8 MB</option>
-                </select>
-            </label>
-            <p class="config-hint">Changing memory reloads the page.</p>
+<script src="./ui/audio.js"></script>
+<script type="module" src="./app.mjs"></script>
 
-            <label class="config-row">
-                <span class="config-label">Slowdown (µs)</span>
-                <span class="slowdown-group">
-                    <input type="range" id="slowdown-range" min="0" max="20" step="1" value="0">
-                    <input type="number" id="slowdown-number" min="0" max="100000" step="1" value="0">
-                </span>
-            </label>
-            <p class="config-hint">Per-statement sleep in microseconds. 0 = uncapped, 10 ≈ device-like. Type into the box for values &gt; 20. Applies immediately.</p>
-
-            <div class="config-actions">
-                <button type="button" id="config-close">Close</button>
-            </div>
-        </form>
-    </dialog>
-
-    <script src="./ui/audio.js"></script>
-    <script type="module" src="./app.mjs"></script>
 </body>
 </html>

@@ -49,13 +49,10 @@ try {
         if (!isolated) fail('crossOriginIsolated = false');
         console.log('OK — crossOriginIsolated.');
 
-        // Check 2: status becomes Ready (worker booted, ready received,
-        // FS list for status line completed)
-        await page.waitForFunction(() => {
-            const s = document.getElementById('status');
-            return s && s.textContent.startsWith('Ready');
-        }, { timeout: 25000 });
-        console.log('OK — status reports Ready.');
+        // Check 2: worker has booted — window.picomite hook is installed
+        // by onWorkerReady after it receives 'ready' from the worker.
+        await page.waitForFunction(() => !!window.picomite?.memoryBytes, { timeout: 25000 });
+        console.log('OK — worker booted, window.picomite populated.');
 
         // Check 3: worker hook and shared memory populated
         const state = await page.evaluate(() => {

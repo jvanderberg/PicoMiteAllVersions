@@ -25,7 +25,7 @@ const memorySelect = document.getElementById('memory');
 const slowdownRange = document.getElementById('slowdown-range');
 const slowdownNumber = document.getElementById('slowdown-number');
 const dropOverlay = document.getElementById('drop-overlay');
-const hintEl = document.getElementById('hint');
+const filesListEl = document.getElementById('files-list');
 
 if (typeof SharedArrayBuffer === 'undefined') {
     statusEl.textContent = 'SharedArrayBuffer not available — page must be served with COOP/COEP headers (see serve.py).';
@@ -206,11 +206,6 @@ function applySlowdownInputs(us) {
     slowdownRange.value = String(Math.min(us, parseInt(slowdownRange.max, 10)));
 }
 
-function setStatus(text, isError = false) {
-    statusEl.textContent = text;
-    statusEl.classList.toggle('error', isError);
-}
-
 // ---- MMBasic key-code mapping -------------------------------------------
 
 const SPECIAL_KEYS = {
@@ -372,15 +367,98 @@ async function fsReset() {
     return m.count || 0;
 }
 
+function fsUnlink(path) {
+    worker.postMessage({ type: 'fs-unlink', path });
+}
+
 // ---- File IO UI ---------------------------------------------------------
 
 const SD_ROOT = '/sd';
 
-function flashHint(msg, durationMs = 2500) {
-    hintEl.textContent = msg;
-    setTimeout(() => {
-        hintEl.textContent = 'Drop .bas files anywhere on the page to import.';
+// Transient status-line messages. The status bar normally shows the
+// ready/capacity line; a transient message replaces it for a few
+// seconds after a user action (import, delete, reset) and then
+// restores the persistent text.
+let persistentStatus = '';
+let flashTimer = 0;
+function setStatus(text, isError = false) {
+    persistentStatus = text;
+    statusEl.textContent = text;
+    statusEl.classList.toggle('error', isError);
+}
+function flash(text, durationMs = 2500) {
+    statusEl.textContent = text;
+    statusEl.classList.remove('error');
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+        statusEl.textContent = persistentStatus;
     }, durationMs);
+}
+
+// File-list rendering. Refreshed after every import / delete / reset;
+// also polled every 3 s so BASIC-side SAVE shows up without needing to
+// hook the worker's FS tracker into a message stream.
+let lastFilesSig = '';
+async function refreshFilesList() {
+    let names;
+    try { names = await fsList(SD_ROOT); }
+    catch { names = []; }
+    names.sort((a, b) => a.localeCompare(b));
+    const sig = names.join('\u0001');
+    if (sig === lastFilesSig) return names;
+    lastFilesSig = sig;
+
+    filesListEl.textContent = '';
+    for (const name of names) {
+        const li = document.createElement('li');
+        const ico = document.createElement('span');
+        ico.className = 'file-icon';
+        ico.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-file"/></svg>';
+        const label = document.createElement('span');
+        label.className = 'file-name';
+        label.textContent = name;
+        label.title = name;
+        const actions = document.createElement('span');
+        actions.className = 'file-actions';
+
+        const dl = document.createElement('button');
+        dl.type = 'button';
+        dl.title = `Download ${name}`;
+        dl.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-download"/></svg>';
+        dl.addEventListener('click', () => downloadOne(name));
+        actions.appendChild(dl);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'delete-btn';
+        del.title = `Delete ${name}`;
+        del.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-trash"/></svg>';
+        del.addEventListener('click', () => deleteOne(name));
+        actions.appendChild(del);
+
+        li.appendChild(ico);
+        li.appendChild(label);
+        li.appendChild(actions);
+        filesListEl.appendChild(li);
+    }
+    return names;
+}
+
+async function downloadOne(name) {
+    try {
+        const data = await fsRead(`${SD_ROOT}/${name}`);
+        triggerDownload(new Blob([data], { type: 'application/octet-stream' }), name);
+    } catch (e) {
+        flash(`Download failed: ${e?.message || e}`);
+    }
+}
+
+async function deleteOne(name) {
+    if (!confirm(`Delete ${name}?`)) return;
+    fsUnlink(`${SD_ROOT}/${name}`);
+    await new Promise((r) => setTimeout(r, 60));  // let worker process
+    await refreshFilesList();
+    flash(`Deleted ${name}.`);
 }
 
 async function importFile(file) {
@@ -396,11 +474,11 @@ async function importFiles(files) {
         try { imported.push(await importFile(f)); }
         catch (e) { console.warn('import failed:', f.name, e); }
     }
-    if (imported.length === 1) {
-        flashHint(`Loaded ${imported[0]} — type FILES to list.`, 3500);
-    } else if (imported.length > 1) {
-        flashHint(`Loaded ${imported.length} files — type FILES to list.`, 3500);
-    }
+    // Give the worker a moment to commit the writes before we re-list.
+    await new Promise((r) => setTimeout(r, 60));
+    await refreshFilesList();
+    if (imported.length === 1) flash(`Imported ${imported[0]}.`);
+    else if (imported.length > 1) flash(`Imported ${imported.length} files.`);
     return imported;
 }
 
@@ -533,9 +611,10 @@ function wireFileIO() {
         if (!confirm('Wipe all files in /sd/ and restore the bundled demos? Any SAVEd programs you haven\'t downloaded will be lost.')) return;
         try {
             const n = await fsReset();
-            flashHint(`Reset /sd/ — ${n} demos restored. Type FILES.`, 3500);
+            await refreshFilesList();
+            flash(`Reset /sd/ — ${n} demos restored.`);
         } catch (e) {
-            flashHint('Reset failed: ' + (e?.message || e));
+            flash('Reset failed: ' + (e?.message || e));
         }
     });
 
@@ -550,11 +629,11 @@ function wireFileIO() {
                 console.warn('skip', n, e);
             }
         }
-        if (!entries.length) { flashHint('No files in /sd/ to download.'); return; }
+        if (!entries.length) { flash('No files in /sd/ to download.'); return; }
         const zip = buildZip(entries);
         const date = new Date().toISOString().slice(0, 10);
         triggerDownload(zip, `mmbasic-web-${date}.zip`);
-        flashHint(`Downloaded ${entries.length} files.`);
+        flash(`Downloaded ${entries.length} files.`);
     });
 }
 
@@ -709,12 +788,17 @@ async function onWorkerReady() {
         fsWrite: (path, bytes) => fsWrite(path, bytes),
     };
 
-    const demos = await fsList(SD_ROOT).catch(() => []);
+    const demos = await refreshFilesList();
+    // Poll the file list so BASIC-side SAVE shows up without any
+    // explicit worker notification. Cheap: a single postMessage
+    // round-trip returning a short string array every 3 s.
+    setInterval(() => { refreshFilesList().catch(() => {}); }, 3000);
+
     const memLabel = memoryBytesCfg >= 1024 * 1024
         ? `${(memoryBytesCfg / (1024 * 1024)).toFixed(memoryBytesCfg % (1024 * 1024) ? 1 : 0)} MB`
         : `${Math.round(memoryBytesCfg / 1024)} KB`;
-    const parts = [`${fbWidth}×${fbHeight}`, `${memLabel} heap`];
+    const parts = [`${fbWidth}×${fbHeight}`, `${memLabel}`];
     if (slowdownUs > 0) parts.push(`slowdown ${slowdownUs} µs`);
-    if (demos.length) parts.push(`${demos.length} demos in /sd/`);
-    setStatus(`Ready — ${parts.join(', ')}. Type FILES.`);
+    parts.push(`${demos.length} file${demos.length === 1 ? '' : 's'}`);
+    setStatus(parts.join(' · '));
 }

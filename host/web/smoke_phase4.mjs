@@ -51,11 +51,7 @@ try {
         page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 
         await page.goto(PAGE_URL, { waitUntil: 'load' });
-        await page.waitForFunction(() => {
-            const s = document.getElementById('status');
-            return s && s.textContent.startsWith('Ready');
-        }, { timeout: 25000 });
-        await page.waitForFunction(() => !!window.picomite?.memoryU32, { timeout: 5000 });
+        await page.waitForFunction(() => !!window.picomite?.memoryU32, { timeout: 25000 });
         await page.click('#screen');
 
         // ------ Check 1: main-thread rAF ------------------------------
