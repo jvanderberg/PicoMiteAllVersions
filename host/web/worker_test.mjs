@@ -1,7 +1,7 @@
 // worker_test.mjs — minimum A/B page that runs the wasm interpreter
 // in a worker (see worker.mjs) and blits the shared-memory framebuffer
-// from the main thread. Proves the Phase 8 worker architecture end-to-
-// end without touching the shipping app.mjs.
+// from the main thread. A/B test target against the shipping app.mjs
+// when the main-thread path has input-driven stutter under Chrome.
 //
 // Scope intentionally narrow:
 //   - One fixed 320×320 canvas, no resolution dropdown
@@ -133,7 +133,7 @@ worker.postMessage({
 function renderLoop() {
     if (ready && fbPtr) {
         // Shared-memory view — reading directly from the worker's
-        // wasm heap, no postMessage required. This is the Phase 8 win.
+        // wasm heap, no postMessage required.
         const bytes = new Uint8Array(memoryBytes.buffer, fbPtr, fbWidth * fbHeight * 4);
         if (!fbTexAllocated) {
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fbWidth, fbHeight, 0,

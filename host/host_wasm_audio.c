@@ -24,18 +24,16 @@
 
 #include <emscripten.h>
 
-/* Two dispatch paths:
- *   - Main-thread wasm (legacy): window.picomiteAudio is the Web Audio
- *     bridge installed by audio.js. Call directly.
- *   - Worker-thread wasm (Phase 8): there is no window and Web Audio
- *     APIs are not available in a worker. Fall back to postMessage —
- *     the main thread listener receives {type:'audio', op, args} and
- *     relays to its own window.picomiteAudio.
+/* Two dispatch paths — which one fires depends on where wasm runs:
+ *   - Main thread: window.picomiteAudio is the Web Audio bridge
+ *     installed by audio.js; call it directly.
+ *   - Worker thread: no window, no Web Audio. postMessage the call
+ *     back to main thread as {type:'audio', op, args}; the listener
+ *     there relays to its own window.picomiteAudio.
  *
- * Detection: `typeof window !== 'undefined'` is true only on main
- * thread; worker's globalThis exposes `postMessage` but not window.
- * Both guards are checked so a silent no-op is used if neither path
- * is available (e.g. headless environments without either bridge). */
+ * `typeof window !== 'undefined'` is true only on main thread. Both
+ * guards are checked so the call silently no-ops if neither bridge
+ * is available (e.g. headless environments without audio.js loaded). */
 
 void host_sim_audio_tone(double left_hz, double right_hz,
                          int has_duration, long long duration_ms) {

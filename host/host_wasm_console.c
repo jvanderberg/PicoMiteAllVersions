@@ -43,7 +43,7 @@ static int wasm_pending_byte = -1;
  *
  * Thread note: under plain ASYNCIFY we are single-threaded, so the
  * volatile + mask-based ring is overkill — but it costs nothing and
- * preempts trouble if Phase 8 moves the interpreter to a Web Worker.
+ * the interpreter may run on a dedicated worker in the future.
  */
 #ifdef __EMSCRIPTEN__
 EMSCRIPTEN_KEEPALIVE

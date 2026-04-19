@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Local static server with COOP/COEP headers for the PicoMite web bundle.
 
-SharedArrayBuffer (needed by the Phase 8 worker + pthreads path) requires
-the page to be served in a "cross-origin isolated" context. That means
+SharedArrayBuffer (needed by the worker + pthreads build) requires the
+page to be served in a "cross-origin isolated" context. That means
 every response must carry:
 
     Cross-Origin-Opener-Policy: same-origin

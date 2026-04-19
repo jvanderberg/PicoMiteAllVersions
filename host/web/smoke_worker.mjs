@@ -1,4 +1,4 @@
-// Headless smoke for the Phase 8 worker test page.
+// Headless smoke for the worker-backed test page (worker_test.html).
 //
 // Verifies:
 //   1. COOP/COEP are set → crossOriginIsolated = true, SAB available.

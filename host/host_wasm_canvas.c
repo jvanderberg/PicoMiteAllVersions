@@ -72,6 +72,17 @@ uint32_t wasm_framebuffer_generation(void) {
 }
 
 /*
+ * Address of the generation counter, so a JS thread that does not
+ * run the wasm module can still read it via a Uint32Array view over
+ * the shared memory — saves a ccall across the thread boundary on
+ * every rAF.
+ */
+EMSCRIPTEN_KEEPALIVE
+uintptr_t wasm_framebuffer_generation_ptr(void) {
+    return (uintptr_t)&host_fb_generation;
+}
+
+/*
  * Address of the volatile u32 that bc_fastgfx_sync spin-reads while
  * aligning to rAF. JS grabs this once at boot, then bumps
  * HEAPU32[ptr>>2] at the top of every rAF callback. Using a shared-
