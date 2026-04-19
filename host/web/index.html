@@ -45,6 +45,11 @@
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
                   d="M5 3h11l5 5v13a0 0 0 0 1 0 0H3V5a2 2 0 0 1 2-2Z M7 3v6h8V3 M7 21v-8h10v8"/>
         </symbol>
+        <!-- play / run -->
+        <symbol id="ico-play" viewBox="0 0 24 24">
+            <path fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
+                  d="M7 4v16l14-8z"/>
+        </symbol>
         <!-- upload arrow -->
         <symbol id="ico-upload" viewBox="0 0 24 24">
             <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
@@ -109,6 +114,9 @@
             <header>
                 <span id="editor-title"></span>
                 <span class="editor-actions">
+                    <button type="button" class="icon-button" id="editor-run" title="Run (F5) — save then RUN &quot;file.bas&quot;">
+                        <svg class="ico"><use href="#ico-play"/></svg>
+                    </button>
                     <button type="button" class="icon-button" id="editor-save" title="Save (Ctrl+S)">
                         <svg class="ico"><use href="#ico-save"/></svg>
                     </button>

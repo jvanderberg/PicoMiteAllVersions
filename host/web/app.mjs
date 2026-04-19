@@ -556,6 +556,7 @@ async function deleteOne(name) {
 const editorAreaEl = document.getElementById('editor-area');
 const editorTitleEl = document.getElementById('editor-title');
 const editorHostEl = document.getElementById('editor-host');
+const editorRunBtn = document.getElementById('editor-run');
 const editorSaveBtn = document.getElementById('editor-save');
 const editorCloseBtn = document.getElementById('editor-close');
 
@@ -638,14 +639,37 @@ function closeEditor() {
     canvas.focus();
 }
 
+// Save the current buffer, close the editor, then type
+// RUN "filename"<Enter> directly into the shared key ring so the
+// REPL picks it up as if the user had typed it. Best-effort: if the
+// REPL is mid-program or has unparsed text, the keystrokes just
+// land wherever MMBasic is reading from. Quotes around the filename
+// are optional for LOAD but required for RUN when the name contains
+// dots, so we always quote it.
+async function runEditor() {
+    if (!editorView || !editorPath) return;
+    const name = editorPath.split('/').pop();
+    await saveEditor();
+    // Brief delay so the worker commits the fs-write before RUN reads.
+    await new Promise((r) => setTimeout(r, 80));
+    closeEditor();
+    const cmd = `RUN "${name}"\r`;
+    for (const ch of cmd) pushKeyToRing(ch.charCodeAt(0));
+    flash(`Running ${name}…`);
+}
+
+editorRunBtn.addEventListener('click',  () => { runEditor(); });
 editorSaveBtn.addEventListener('click', () => { saveEditor(); });
 editorCloseBtn.addEventListener('click', closeEditor);
-// Ctrl/Cmd+S saves; Esc closes. Matches Editor conventions.
+// Ctrl/Cmd+S saves; F5 runs; Esc closes. Matches Editor conventions.
 document.addEventListener('keydown', (e) => {
     if (editorAreaEl.hidden) return;
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
         saveEditor();
+    } else if (e.key === 'F5') {
+        e.preventDefault();
+        runEditor();
     } else if (e.key === 'Escape') {
         e.preventDefault();
         closeEditor();
