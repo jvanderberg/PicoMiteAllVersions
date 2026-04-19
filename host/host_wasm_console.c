@@ -55,6 +55,24 @@ void wasm_push_key(int code) {
     wasm_key_ring_head = next;
 }
 
+/*
+ * Address exports so a JS thread that does not run wasm (the shipping
+ * app's main thread) can push keys directly into the ring via
+ * Atomics.store on shared memory — no postMessage round-trip, no
+ * per-keystroke worker wakeup. wasm_push_key is still exported for
+ * tests that want a portable entry point.
+ */
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+uintptr_t wasm_key_ring_ptr(void)      { return (uintptr_t)wasm_key_ring; }
+EMSCRIPTEN_KEEPALIVE
+uintptr_t wasm_key_ring_head_ptr(void) { return (uintptr_t)&wasm_key_ring_head; }
+EMSCRIPTEN_KEEPALIVE
+uintptr_t wasm_key_ring_tail_ptr(void) { return (uintptr_t)&wasm_key_ring_tail; }
+EMSCRIPTEN_KEEPALIVE
+int wasm_key_ring_size(void)           { return WASM_KEY_RING_SIZE; }
+#endif
+
 /* ---------------------------------------------------------------- host API */
 
 void host_raw_mode_enter(void) {

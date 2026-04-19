@@ -239,7 +239,13 @@ let fbWidth = 0, fbHeight = 0, fbPtr = 0;
 let fbGenerationIdx = 0;        // HEAPU32 index of the generation counter
 let memoryBytes = null;         // Uint8Array view over the worker's shared heap
 let memoryU32 = null;           // Uint32Array view, same buffer
+let memoryI32 = null;           // Int32Array view, same buffer
 let fbTexAllocated = false;
+
+// Direct-write indices into the wasm key ring (filled in when the
+// worker posts 'ready'). Main thread pushes keys via Atomics.store
+// without a postMessage round-trip.
+let keyRingI32Base = 0, keyHeadIdx = 0, keyTailIdx = 0, keyRingMask = 0;
 
 function fitCanvas() {
     if (!fbWidth || !fbHeight) return;
@@ -320,10 +326,15 @@ worker.onmessage = (e) => {
     if (m.type === 'ready') {
         memoryBytes = new Uint8Array(m.memoryBuffer);
         memoryU32   = new Uint32Array(m.memoryBuffer);
+        memoryI32   = new Int32Array(m.memoryBuffer);
         fbPtr       = m.fbPtr;
         fbWidth     = m.fbWidth;
         fbHeight    = m.fbHeight;
         fbGenerationIdx = m.fbGenerationPtr >>> 2;
+        keyRingI32Base  = m.keyRingPtr     >>> 2;
+        keyHeadIdx      = m.keyRingHeadPtr >>> 2;
+        keyTailIdx      = m.keyRingTailPtr >>> 2;
+        keyRingMask     = m.keyRingSize - 1;
         onWorkerReady();
         return;
     }
@@ -554,8 +565,22 @@ function wireFileIO() {
 // action games. We ignore event.repeat and drive a throttled schedule
 // per physical key. Passive listeners let Chrome commit compositor
 // frames without waiting for us — critical for smooth gameplay.
+//
+// Keys push directly into the wasm-side key ring through shared
+// memory: Atomics.store on the head index is a full memory barrier,
+// so by the time the worker observes the new head, the ring slot
+// write is also visible. No postMessage hop per key.
 const KEY_REPEAT_DELAY_MS    = 400;
 const KEY_REPEAT_INTERVAL_MS = 100;
+
+function pushKeyToRing(code) {
+    const head = Atomics.load(memoryU32, keyHeadIdx);
+    const tail = Atomics.load(memoryU32, keyTailIdx);
+    const next = (head + 1) & keyRingMask;
+    if (next === tail) return;  // ring full — drop, matches C path
+    memoryI32[keyRingI32Base + head] = code;
+    Atomics.store(memoryU32, keyHeadIdx, next);
+}
 
 function wireKeyboard() {
     const held = new Map();  // event.code -> {delayTimer, intervalTimer, mmCode}
@@ -571,7 +596,7 @@ function wireKeyboard() {
         const mm = mapKeyEvent(event);
         if (mm < 0) return;
         if (event.repeat) return;
-        worker.postMessage({ type: 'key', code: mm });
+        pushKeyToRing(mm);
 
         const stale = held.get(event.code);
         if (stale) { clearTimeout(stale.delayTimer); clearInterval(stale.intervalTimer); }
@@ -580,7 +605,7 @@ function wireKeyboard() {
         s.delayTimer = setTimeout(() => {
             s.delayTimer = 0;
             s.intervalTimer = setInterval(() => {
-                worker.postMessage({ type: 'key', code: s.mmCode });
+                pushKeyToRing(s.mmCode);
             }, KEY_REPEAT_INTERVAL_MS);
         }, KEY_REPEAT_DELAY_MS);
         held.set(event.code, s);

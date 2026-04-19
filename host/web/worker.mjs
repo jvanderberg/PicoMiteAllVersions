@@ -130,11 +130,15 @@ async function initInstance(cfg) {
 
     post({
         type: 'ready',
-        memoryBuffer:  instance.HEAPU8.buffer,  // SharedArrayBuffer (with -pthread)
-        fbPtr:         instance._wasm_framebuffer_ptr(),
-        fbWidth:       instance._wasm_framebuffer_width(),
-        fbHeight:      instance._wasm_framebuffer_height(),
+        memoryBuffer:    instance.HEAPU8.buffer,  // SharedArrayBuffer (with -pthread)
+        fbPtr:           instance._wasm_framebuffer_ptr(),
+        fbWidth:         instance._wasm_framebuffer_width(),
+        fbHeight:        instance._wasm_framebuffer_height(),
         fbGenerationPtr: instance._wasm_framebuffer_generation_ptr(),
+        keyRingPtr:      instance._wasm_key_ring_ptr(),
+        keyRingHeadPtr:  instance._wasm_key_ring_head_ptr(),
+        keyRingTailPtr:  instance._wasm_key_ring_tail_ptr(),
+        keyRingSize:     instance._wasm_key_ring_size(),
     });
 
     // wasm_boot enters MMBasic_RunPromptLoop which never returns under
