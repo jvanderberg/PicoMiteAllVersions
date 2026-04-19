@@ -314,20 +314,31 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.8rem 1rem;
+    padding: 0.5rem 0.5rem 0.5rem 0.9rem;
     border-bottom: 1px solid var(--panel-border);
 }
 #config-dialog h2 {
     margin: 0;
-    font-size: 0.88rem;
+    font-size: 0.95rem;
     font-weight: 600;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--fg);
+}
+/* Tighter close button in the dialog header — the generic .icon-button
+ * padding made the title and X look adrift. */
+#config-dialog #config-close {
+    width: 26px;
+    height: 26px;
     color: var(--fg-dim);
+}
+#config-dialog #config-close:hover {
+    color: var(--fg);
+    background: var(--panel-hi);
 }
 
 #config-form {
-    padding: 0.5rem 1rem 1rem 1rem;
+    padding: 0.9rem 1rem 1rem 1rem;
 }
 
 .config-row {
@@ -335,14 +346,15 @@ html, body {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    margin-top: 0.6rem;
+    margin-top: 0.75rem;
     font-size: 0.85rem;
 }
+.config-row:first-of-type { margin-top: 0; }
 
 .config-label {
-    color: var(--fg-dim);
+    color: var(--fg);
     min-width: 7rem;
-    font-size: 0.78rem;
+    font-size: 0.82rem;
 }
 
 .config-row select,
