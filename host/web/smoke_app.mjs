@@ -75,7 +75,7 @@ try {
                 const onMsg = (e) => {
                     if (e.data && e.data.type === 'fs-list-result' && e.data.reqId === id) {
                         window.picomite.worker.removeEventListener('message', onMsg);
-                        resolve(e.data.names || []);
+                        resolve((e.data.entries || []).map((x) => x.name));
                     }
                 };
                 window.picomite.worker.addEventListener('message', onMsg);

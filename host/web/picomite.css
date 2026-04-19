@@ -164,13 +164,13 @@ html, body {
     image-rendering: crisp-edges;
     background: #000;
     border-radius: 4px;
-    outline: none;
+    outline: 2px solid transparent;
+    outline-offset: 8px;
     box-shadow: 0 4px 30px rgba(0, 0, 0, 0.6);
+    transition: outline-color 0.08s ease;
 }
 #screen:focus {
-    box-shadow:
-        0 0 0 1px var(--accent),
-        0 4px 30px rgba(0, 0, 0, 0.6);
+    outline-color: var(--accent);
 }
 
 /* ---- Floating config button ------------------------------------ */

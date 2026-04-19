@@ -176,10 +176,21 @@ self.onmessage = async (e) => {
 
         case 'fs-list':
             try {
-                const names = instance.FS.readdir(msg.dir).filter(n => n !== '.' && n !== '..');
-                post({ type: 'fs-list-result', reqId: msg.reqId, dir: msg.dir, names });
+                const raw = instance.FS.readdir(msg.dir).filter(n => n !== '.' && n !== '..');
+                const entries = [];
+                for (const name of raw) {
+                    let isDir = false;
+                    let size = 0;
+                    try {
+                        const st = instance.FS.stat(`${msg.dir}/${name}`.replace(/\/+/g, '/'));
+                        isDir = (st.mode & 0xF000) === 0x4000;   // S_IFDIR
+                        size = st.size;
+                    } catch (_) { /* unreadable — list anyway */ }
+                    entries.push({ name, isDir, size });
+                }
+                post({ type: 'fs-list-result', reqId: msg.reqId, dir: msg.dir, entries });
             } catch (err) {
-                post({ type: 'fs-list-result', reqId: msg.reqId, dir: msg.dir, names: [], error: String(err) });
+                post({ type: 'fs-list-result', reqId: msg.reqId, dir: msg.dir, entries: [], error: String(err) });
             }
             break;
 

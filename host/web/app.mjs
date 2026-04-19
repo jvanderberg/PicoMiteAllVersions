@@ -353,7 +353,7 @@ function fsWrite(path, bytes) {
 
 async function fsList(dir) {
     const m = await workerRpc('fs-list', { dir });
-    return m.names || [];
+    return (m.entries || []).map((e) => e.name);
 }
 
 async function fsRead(path) {
@@ -395,58 +395,121 @@ function flash(text, durationMs = 2500) {
     }, durationMs);
 }
 
-// File-list rendering. Refreshed after every import / delete / reset;
-// also polled every 3 s so BASIC-side SAVE shows up without needing to
-// hook the worker's FS tracker into a message stream.
+// File-list rendering. currentDir navigates within /sd/ — clicking a
+// folder descends into it; a ".." row (shown when not at the root)
+// goes back up. Refreshed after every user action and polled every
+// 3 s so BASIC-side SAVE / MKDIR shows up without any worker→main
+// notification plumbing.
+let currentDir = SD_ROOT;
 let lastFilesSig = '';
+
+const filesTitleEl = document.querySelector('#files-panel > header h2');
+
+function joinPath(dir, name) {
+    return (dir === '/' ? '/' + name : dir + '/' + name).replace(/\/+/g, '/');
+}
+function parentPath(dir) {
+    if (dir === SD_ROOT || dir === '/') return dir;
+    const i = dir.lastIndexOf('/');
+    const p = i <= 0 ? '/' : dir.slice(0, i);
+    // Don't climb above /sd/ — that root is the MMBasic SD card.
+    return p.startsWith(SD_ROOT) ? p : SD_ROOT;
+}
+
+function iconUse(id) {
+    return `<svg class="ico" style="width:14px;height:14px"><use href="#${id}"/></svg>`;
+}
+
+function makeRow({ icon, label, onClick, actions = [], title }) {
+    const li = document.createElement('li');
+    const ico = document.createElement('span');
+    ico.className = 'file-icon';
+    ico.innerHTML = iconUse(icon);
+    const name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = label;
+    name.title = title || label;
+    if (onClick) name.addEventListener('click', onClick);
+    const actionsEl = document.createElement('span');
+    actionsEl.className = 'file-actions';
+    for (const a of actions) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.title = a.title;
+        if (a.danger) b.className = 'delete-btn';
+        b.innerHTML = iconUse(a.icon);
+        b.addEventListener('click', (e) => { e.stopPropagation(); a.onClick(); });
+        actionsEl.appendChild(b);
+    }
+    li.appendChild(ico);
+    li.appendChild(name);
+    li.appendChild(actionsEl);
+    return li;
+}
+
 async function refreshFilesList() {
-    let names;
-    try { names = await fsList(SD_ROOT); }
-    catch { names = []; }
-    names.sort((a, b) => a.localeCompare(b));
-    const sig = names.join('\u0001');
-    if (sig === lastFilesSig) return names;
+    let entries;
+    try { entries = (await fsListEntries(currentDir)) || []; }
+    catch { entries = []; }
+    // Dirs first, alpha within group.
+    entries.sort((a, b) => {
+        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    // Signature keyed on dir + sorted listing — cheap unchanged-skip so
+    // the 3 s poll doesn't rebuild the DOM when nothing changed.
+    const sig = currentDir + '\u0002' + entries.map(e => (e.isDir ? 'D' : 'F') + e.name).join('\u0001');
+    if (sig === lastFilesSig) return entries;
     lastFilesSig = sig;
 
-    filesListEl.textContent = '';
-    for (const name of names) {
-        const li = document.createElement('li');
-        const ico = document.createElement('span');
-        ico.className = 'file-icon';
-        ico.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-file"/></svg>';
-        const label = document.createElement('span');
-        label.className = 'file-name';
-        label.textContent = name;
-        label.title = name;
-        const actions = document.createElement('span');
-        actions.className = 'file-actions';
-
-        const dl = document.createElement('button');
-        dl.type = 'button';
-        dl.title = `Download ${name}`;
-        dl.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-download"/></svg>';
-        dl.addEventListener('click', () => downloadOne(name));
-        actions.appendChild(dl);
-
-        const del = document.createElement('button');
-        del.type = 'button';
-        del.className = 'delete-btn';
-        del.title = `Delete ${name}`;
-        del.innerHTML = '<svg class="ico" style="width:14px;height:14px"><use href="#ico-trash"/></svg>';
-        del.addEventListener('click', () => deleteOne(name));
-        actions.appendChild(del);
-
-        li.appendChild(ico);
-        li.appendChild(label);
-        li.appendChild(actions);
-        filesListEl.appendChild(li);
+    if (filesTitleEl) {
+        const rel = currentDir === SD_ROOT ? '/sd/' : currentDir.replace(/\/$/, '') + '/';
+        filesTitleEl.textContent = rel;
+        filesTitleEl.title = currentDir;
     }
-    return names;
+
+    filesListEl.textContent = '';
+
+    if (currentDir !== SD_ROOT) {
+        filesListEl.appendChild(makeRow({
+            icon: 'ico-up',
+            label: '..',
+            onClick: () => { currentDir = parentPath(currentDir); lastFilesSig = ''; refreshFilesList(); },
+            title: parentPath(currentDir),
+        }));
+    }
+
+    for (const e of entries) {
+        if (e.isDir) {
+            filesListEl.appendChild(makeRow({
+                icon: 'ico-folder',
+                label: e.name,
+                onClick: () => { currentDir = joinPath(currentDir, e.name); lastFilesSig = ''; refreshFilesList(); },
+            }));
+        } else {
+            filesListEl.appendChild(makeRow({
+                icon: 'ico-file',
+                label: e.name,
+                actions: [
+                    { icon: 'ico-download', title: `Download ${e.name}`, onClick: () => downloadOne(e.name) },
+                    { icon: 'ico-trash',    title: `Delete ${e.name}`,   danger: true, onClick: () => deleteOne(e.name) },
+                ],
+            }));
+        }
+    }
+    return entries;
+}
+
+async function fsListEntries(dir) {
+    const m = await workerRpc('fs-list', { dir });
+    return m.entries || [];
 }
 
 async function downloadOne(name) {
+    const path = joinPath(currentDir, name);
     try {
-        const data = await fsRead(`${SD_ROOT}/${name}`);
+        const data = await fsRead(path);
         triggerDownload(new Blob([data], { type: 'application/octet-stream' }), name);
     } catch (e) {
         flash(`Download failed: ${e?.message || e}`);
@@ -455,8 +518,9 @@ async function downloadOne(name) {
 
 async function deleteOne(name) {
     if (!confirm(`Delete ${name}?`)) return;
-    fsUnlink(`${SD_ROOT}/${name}`);
+    fsUnlink(joinPath(currentDir, name));
     await new Promise((r) => setTimeout(r, 60));  // let worker process
+    lastFilesSig = '';  // force redraw
     await refreshFilesList();
     flash(`Deleted ${name}.`);
 }
@@ -464,7 +528,7 @@ async function deleteOne(name) {
 async function importFile(file) {
     const buf = new Uint8Array(await file.arrayBuffer());
     const name = file.name.split(/[/\\]/).pop();  // strip any path
-    fsWrite(`${SD_ROOT}/${name}`, buf);
+    fsWrite(joinPath(currentDir, name), buf);
     return name;
 }
 
@@ -619,21 +683,31 @@ function wireFileIO() {
     });
 
     downloadBtn.addEventListener('click', async () => {
-        const names = await fsList(SD_ROOT);
+        // ZIP everything under /sd/ recursively, preserving paths
+        // relative to SD_ROOT so subdirectories come through intact
+        // (MKDIR / BASIC's structured storage).
         const entries = [];
-        for (const n of names) {
-            try {
-                const data = await fsRead(`${SD_ROOT}/${n}`);
-                entries.push({ name: n, data });
-            } catch (e) {
-                console.warn('skip', n, e);
+        async function walk(dir, relPrefix) {
+            let list;
+            try { list = await fsListEntries(dir); }
+            catch { return; }
+            for (const e of list) {
+                const path = joinPath(dir, e.name);
+                const rel  = relPrefix ? `${relPrefix}/${e.name}` : e.name;
+                if (e.isDir) {
+                    await walk(path, rel);
+                } else {
+                    try { entries.push({ name: rel, data: await fsRead(path) }); }
+                    catch (err) { console.warn('skip', path, err); }
+                }
             }
         }
+        await walk(SD_ROOT, '');
         if (!entries.length) { flash('No files in /sd/ to download.'); return; }
         const zip = buildZip(entries);
         const date = new Date().toISOString().slice(0, 10);
         triggerDownload(zip, `mmbasic-web-${date}.zip`);
-        flash(`Downloaded ${entries.length} files.`);
+        flash(`Downloaded ${entries.length} file${entries.length === 1 ? '' : 's'}.`);
     });
 }
 
