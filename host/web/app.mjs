@@ -650,29 +650,23 @@ const clampSlowInput = (raw) => {
     if (n > SLOW_MAX_US) n = SLOW_MAX_US;
     return n;
 };
-// Slowdown is applied at boot via init cfg. Live changes reload the
-// page with ?slow=N for simplicity — avoids a cross-thread setter.
-slowdownRange.addEventListener('change', () => {
-    const n = clampSlowInput(slowdownRange.value);
-    try { localStorage.setItem(SLOW_KEY, String(n)); } catch (_) {}
-    const url = new URL(window.location.href);
-    url.searchParams.set('slow', String(n));
-    window.location.href = url.toString();
-});
-slowdownNumber.addEventListener('change', () => {
-    const n = clampSlowInput(slowdownNumber.value);
-    try { localStorage.setItem(SLOW_KEY, String(n)); } catch (_) {}
-    const url = new URL(window.location.href);
-    url.searchParams.set('slow', String(n));
-    window.location.href = url.toString();
-});
-// Live number display while dragging — no reload.
+// Live slowdown: both inputs mirror each other and postMessage the
+// new value to the worker, which calls _wasm_set_slowdown_us. Applies
+// on the next BASIC statement — no reload.
+function applySlowdownLive(us) {
+    slowdownUs = us;
+    try { localStorage.setItem(SLOW_KEY, String(us)); } catch (_) {}
+    worker.postMessage({ type: 'set-slowdown', us });
+}
 slowdownRange.addEventListener('input', () => {
-    slowdownNumber.value = String(clampSlowInput(slowdownRange.value));
+    const n = clampSlowInput(slowdownRange.value);
+    slowdownNumber.value = String(n);
+    applySlowdownLive(n);
 });
 slowdownNumber.addEventListener('input', () => {
     const n = clampSlowInput(slowdownNumber.value);
     slowdownRange.value = String(Math.min(n, parseInt(slowdownRange.max, 10)));
+    applySlowdownLive(n);
 });
 
 // Flush IDBFS on tab-hide / beforeunload — best-effort "last chance"

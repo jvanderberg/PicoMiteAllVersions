@@ -210,5 +210,9 @@ self.onmessage = async (e) => {
             try { await syncfs(false); post({ type: 'fs-syncfs-result', reqId: msg.reqId }); }
             catch (err) { post({ type: 'fs-syncfs-result', reqId: msg.reqId, error: String(err) }); }
             break;
+
+        case 'set-slowdown':
+            instance._wasm_set_slowdown_us(msg.us);
+            break;
     }
 };
