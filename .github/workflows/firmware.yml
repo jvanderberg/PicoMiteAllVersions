@@ -87,10 +87,63 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          # GitHub always wraps artifacts in a zip when downloading from
-          # the web UI; the artifact name becomes the zip's filename.
-          # Putting .uf2 in the artifact name at least surfaces the file
-          # type on the download — the contents are still a single .uf2.
-          name: PicoMite-${{ matrix.label }}.uf2
+          name: PicoMite-${{ matrix.label }}
           path: artifacts/PicoMite-${{ matrix.label }}.uf2
           if-no-files-found: error
+
+  release:
+    # Publish both .uf2s as raw downloads on a rolling 'latest' release
+    # after both matrix builds succeed. No zip wrapper, direct links.
+    needs: build
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create/update releases + tags
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release assets
+        run: |
+          mkdir -p release
+          find artifacts -name '*.uf2' -exec cp -v {} release/ \;
+          ls -la release
+
+      - name: Upsert 'latest' release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse --short HEAD)
+          date=$(git log -1 --format=%cI)
+          summary=$(git log -1 --format='%s')
+
+          cat > notes.md <<EOF
+          Rolling build from \`main\`.
+
+          **Commit:** [\`$sha\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }}) — $summary
+          **Built:** $date
+
+          ### Downloads
+
+          | Target | File |
+          |---|---|
+          | RP2040 PicoCalc | \`PicoMite-rp2040-picocalc.uf2\` |
+          | RP2350 PicoCalc | \`PicoMite-rp2350-picocalc.uf2\` |
+
+          Web build: <https://jvanderberg.github.io/PicoMiteAllVersions/>
+          EOF
+
+          # 'gh release edit' doesn't replace assets cleanly; simplest
+          # is delete-then-recreate so stale uf2s from previous commits
+          # can't linger.
+          gh release delete latest --cleanup-tag --yes 2>/dev/null || true
+          gh release create latest \
+              --title "Latest build" \
+              --notes-file notes.md \
+              --target "${{ github.sha }}" \
+              release/*.uf2
