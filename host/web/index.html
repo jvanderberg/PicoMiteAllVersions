@@ -263,6 +263,26 @@
             <li><code>NEW</code> — clear the program buffer</li>
             <li><code>HELP</code> — browse the command list</li>
         </ul>
+        <h3>Why?</h3>
+        <p>
+            Strictly speaking this web version doesn't <em>need</em> to be
+            based on PicoMite — the port replaces the whole Pico SDK HAL
+            (flash, SPI, DMA, LCD, USB, ADC, PIO, audio, filesystem) with
+            a browser-side HAL, so nothing Pico-specific is running.
+            What's shared with PicoMite is the parts that matter:
+            the MMBasic parser, interpreter, command set, and bytecode
+            VM.
+        </p>
+        <p>
+            The point is a fast iteration loop for writing MMBasic
+            programs — especially games. Edit a file in the browser,
+            hit ▶ or ⚡, see the result instantly; no SD-card swap,
+            no flash cycle, no serial console, no separate toolchain.
+            When a program runs here, it'll run on a real PicoMite
+            (within the limits of whatever peripherals the program
+            touches).
+        </p>
+
         <p class="help-footnote">
             Local data (<code>/sd/</code>) is stored in your browser's IndexedDB.
             Use the ⟲ button at the bottom of the sidebar to wipe it and restore
