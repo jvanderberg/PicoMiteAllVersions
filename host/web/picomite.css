@@ -262,6 +262,11 @@ html, body {
     background: var(--panel-hi);
     border-color: var(--accent-dim);
 }
+/* The floating cog overlays the editor's top-right corner, hiding
+ * the editor's own close button. Swap it out while the editor is up. */
+#screen-area:has(#editor-area:not([hidden])) .icon-button.floating {
+    display: none;
+}
 
 .ico {
     width: 18px;
