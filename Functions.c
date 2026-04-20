@@ -1614,5 +1614,72 @@ void fun_struct(void) {
         return;
     }
 
+    if ((p = checkstring(ep, (unsigned char *)"OFFSET")) != NULL) {
+        // STRUCT(OFFSET typename$, element$)
+        getargs(&p, 3, (unsigned char *)",");
+        if (argc != 3) error("Syntax: STRUCT(OFFSET typename$, element$)");
+
+        unsigned char *typename_str = getstring(argv[0]);
+        unsigned char *element_str  = getstring(argv[2]);
+
+        for (int i = 0; i < g_structcnt; i++) {
+            if (g_structtbl[i] != NULL &&
+                (int)strlen((char *)g_structtbl[i]->name) == *typename_str &&
+                strncasecmp((char *)g_structtbl[i]->name, (char *)(typename_str + 1), *typename_str) == 0) {
+                int member_type, member_offset, member_size;
+                int member_idx = FindStructMember(i, element_str + 1,
+                                                  &member_type, &member_offset,
+                                                  &member_size, NULL);
+                if (member_idx < 0) error("Member not found in structure");
+                targ = T_INT;
+                iret = member_offset;
+                return;
+            }
+        }
+        error("Structure type not found");
+    }
+
+    if ((p = checkstring(ep, (unsigned char *)"SIZEOF")) != NULL) {
+        // STRUCT(SIZEOF typename$)
+        getargs(&p, 1, (unsigned char *)",");
+        if (argc != 1) error("Syntax: STRUCT(SIZEOF typename$)");
+        unsigned char *typename_str = getstring(argv[0]);
+        for (int i = 0; i < g_structcnt; i++) {
+            if (g_structtbl[i] != NULL &&
+                (int)strlen((char *)g_structtbl[i]->name) == *typename_str &&
+                strncasecmp((char *)g_structtbl[i]->name, (char *)(typename_str + 1), *typename_str) == 0) {
+                targ = T_INT;
+                iret = g_structtbl[i]->total_size;
+                return;
+            }
+        }
+        error("Structure type not found");
+    }
+
+    if ((p = checkstring(ep, (unsigned char *)"TYPE")) != NULL) {
+        // STRUCT(TYPE typename$, element$) — returns T_INT / T_NBR / T_STR code
+        getargs(&p, 3, (unsigned char *)",");
+        if (argc != 3) error("Syntax: STRUCT(TYPE typename$, element$)");
+
+        unsigned char *typename_str = getstring(argv[0]);
+        unsigned char *element_str  = getstring(argv[2]);
+
+        for (int i = 0; i < g_structcnt; i++) {
+            if (g_structtbl[i] != NULL &&
+                (int)strlen((char *)g_structtbl[i]->name) == *typename_str &&
+                strncasecmp((char *)g_structtbl[i]->name, (char *)(typename_str + 1), *typename_str) == 0) {
+                int member_type, member_offset, member_size;
+                int member_idx = FindStructMember(i, element_str + 1,
+                                                  &member_type, &member_offset,
+                                                  &member_size, NULL);
+                if (member_idx < 0) error("Member not found in structure");
+                targ = T_INT;
+                iret = member_type & (T_INT | T_NBR | T_STR);
+                return;
+            }
+        }
+        error("Structure type not found");
+    }
+
     error("Unknown STRUCT() subfunction");
 }
