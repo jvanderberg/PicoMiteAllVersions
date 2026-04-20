@@ -39,6 +39,7 @@ set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
 set(PICOMITE_BASE_COMMON_SOURCES
 	regex.c
+	re.c
 	ff.c
 	ffsystem.c
 	ffunicode.c

@@ -1449,20 +1449,26 @@ void __not_in_flash_func(fun_ternary)(void){
 }
 
 // ----------------------------------------------------------------------------
-// STRUCT( FIND ... )  — Phase 14, Upstream 6.02 parity.
-// Ported from UKTailwind/PicoMiteAllVersions Commands.c:8076-8297 (@04f81d0),
-// non-regex branch only.  Regex (`STRUCT(FIND arr().member, "\d+", , size)`)
-// lands in Phase 15 with the re.c library import; until then argc==7 errors
-// with a clear message.
+// STRUCT( FIND ... )  — Phase 14/15, Upstream 6.02 parity.
+// Ported from UKTailwind/PicoMiteAllVersions Commands.c:8076-8297 (@04f81d0).
 //
 // Syntax:
 //   STRUCT(FIND array().member, value)
 //   STRUCT(FIND array().member, value, start)
+//   STRUCT(FIND array().member, pattern$, , size%)  — regex (argc==7)
 //
 // Returns the array index of the first element whose member equals `value`,
 // or -1 if not found.  `start` skips the first (start - OptionBase) elements.
-// Following phases register additional subfunctions (OFFSET/SIZEOF/TYPE).
+// Regex mode uses re.c's re_match (string members only); the `size` variable
+// receives the match length (0 on no-match).  Following phases register
+// additional subfunctions (OFFSET/SIZEOF/TYPE).
 // ----------------------------------------------------------------------------
+/* xregex.h (included near the top of this file) aliases `re_match` to
+ * `xre_match`.  Drop the macro locally so the Phase 15 fun_struct FIND code
+ * can call re.c's `re_match(pattern, text, &len)` directly. */
+#undef re_match
+#include "re.h"
+
 void fun_struct(void) {
     unsigned char *p;
 
@@ -1471,12 +1477,15 @@ void fun_struct(void) {
         int var_idx, struct_type, struct_size;
         int member_type, member_offset, member_size;
         int num_elements, start_idx;
+        int use_regex = 0;
+        void *size_var = NULL;
+        int64_t *size_var_int = NULL;
+        MMFLOAT *size_var_float = NULL;
 
         getargs(&p, 7, (unsigned char *)",");
         if (argc != 3 && argc != 5 && argc != 7)
             error("Syntax: STRUCT(FIND array().member, value [, start] [, size])");
-        if (argc == 7)
-            error("STRUCT(FIND regex …) pending (Phase 15)");
+        if (argc == 7) use_regex = 1;
 
         member_base = findvar(argv[0], V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
         var_idx = g_VarIndex;
@@ -1527,6 +1536,21 @@ void fun_struct(void) {
             }
         }
 
+        if (use_regex) {
+            if (member_type != T_STR)
+                error("Regex search only works with string members");
+            if (!(t & T_STR))
+                error("Regex pattern must be a string");
+
+            size_var = findvar(argv[6], V_FIND);
+            int size_vtype = g_vartbl[g_VarIndex].type;
+            if (g_StructMemberType != 0) size_vtype = g_StructMemberType;
+            if (!(size_vtype & (T_NBR | T_INT)))
+                error("Size variable must be numeric");
+            if (size_vtype & T_INT) size_var_int = (int64_t *)size_var;
+            else                    size_var_float = (MMFLOAT *)size_var;
+        }
+
         targ = T_INT;
         for (int i = start_idx; i < num_elements; i++) {
             unsigned char *elem_ptr   = array_base + (i * struct_size);
@@ -1547,13 +1571,44 @@ void fun_struct(void) {
                 else                error("Type mismatch: expected numeric value");
                 if (val == search_val) { iret = i + g_OptionBase; return; }
             } else if (member_type == T_STR) {
-                if (!(t & T_STR)) error("Type mismatch: expected string value");
                 unsigned char *val = member_ptr;
-                if (*val == *s && memcmp(val + 1, s + 1, *s) == 0) {
-                    iret = i + g_OptionBase;
-                    return;
+
+                if (use_regex) {
+                    int match_length;
+                    char *text_cstr    = GetTempMemory(STRINGSIZE);
+                    char *pattern_cstr = GetTempMemory(STRINGSIZE);
+
+                    memcpy(text_cstr, val + 1, *val);
+                    text_cstr[*val] = '\0';
+                    memcpy(pattern_cstr, s + 1, *s);
+                    pattern_cstr[*s] = '\0';
+
+                    // re.c honours OptionEscape for backslash interpretation;
+                    // disable so `\d` / `\s` / `\b` are regex tokens, not escapes.
+                    unsigned char saved_escape = OptionEscape;
+                    OptionEscape = 0;
+                    int match_idx = re_match(pattern_cstr, text_cstr, &match_length);
+                    OptionEscape = saved_escape;
+
+                    if (match_idx != -1) {
+                        if (size_var_float) *size_var_float = (MMFLOAT)match_length;
+                        else                *size_var_int   = (int64_t)match_length;
+                        iret = i + g_OptionBase;
+                        return;
+                    }
+                } else {
+                    if (!(t & T_STR)) error("Type mismatch: expected string value");
+                    if (*val == *s && memcmp(val + 1, s + 1, *s) == 0) {
+                        iret = i + g_OptionBase;
+                        return;
+                    }
                 }
             }
+        }
+
+        if (use_regex) {
+            if (size_var_float) *size_var_float = 0.0;
+            else                *size_var_int   = 0;
         }
         iret = -1;
         return;
