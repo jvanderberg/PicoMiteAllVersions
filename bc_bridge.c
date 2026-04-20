@@ -463,12 +463,10 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len) {
     memcpy(buf, tok, len);
     buf[len] = 0;
 
-    int cmd_idx = bridge_decode_cmd(buf);
-
-    if (cmd_idx < 0 || cmd_idx >= CommandTableSize) {
-        bc_vm_error(vm, "Bridge: invalid command token %d", cmd_idx);
-        return;
-    }
+    /* Classify the first two bytes the same way the interpreter's ExecuteProgram
+     * line-loop does: two command-token bytes (high bit set on both) dispatch
+     * via commandtbl; otherwise try FindSubFun for a user-defined SUB call. */
+    int is_cmd = (buf[0] >= C_BASETOKEN && buf[1] >= C_BASETOKEN);
 
     /* Save interpreter context */
     int saved_cmdtoken = cmdtoken;
@@ -482,13 +480,48 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len) {
     sync_vm_to_mmbasic(vm);
     bridge_level = sync_vm_locals_to_mmbasic(vm, local_map);
 
-    /* Set up globals for the command handler */
-    cmdtoken = cmd_idx;
-    cmdline = buf + 2;  /* skip 2-byte command token */
-    nextstmt = buf + len;
-
-    /* Call the command handler */
-    commandtbl[cmd_idx].fptr();
+    if (is_cmd) {
+        int cmd_idx = bridge_decode_cmd(buf);
+        if (cmd_idx < 0 || cmd_idx >= CommandTableSize) {
+            bc_vm_error(vm, "Bridge: invalid command token %d", cmd_idx);
+            return;
+        }
+        cmdtoken = cmd_idx;
+        cmdline = buf + 2;
+        nextstmt = buf + len;
+        commandtbl[cmd_idx].fptr();
+    } else {
+        /* User-defined SUB call — e.g. `MovePoint p, 5, 10` where MovePoint
+         * takes a struct param (Phase 7) so the VM compiler bridged it.
+         *
+         * DefinedSubFun for SUBs is non-transitional: it pushes the caller's
+         * `nextstmt` onto gosubstack and sets nextstmt to the sub body, then
+         * returns.  The interpreter's main ExecuteProgram loop would normally
+         * drive the body; in the bridge we do that ourselves.  A double-NUL
+         * sentinel makes ExecuteProgram exit when `End Sub` / `Exit Sub`
+         * pops us back. */
+        if (!isnamestart((unsigned char)buf[0])) {
+            bc_vm_error(vm, "Bridge: invalid statement '%s'", (char *)buf);
+            return;
+        }
+        int idx = FindSubFun(buf, 0);
+        if (idx < 0) {
+            bc_vm_error(vm, "Bridge: unknown SUB '%s'", (char *)buf);
+            return;
+        }
+        static unsigned char sub_ret_sentinel[4] = {0, 0, 0, 0};
+        unsigned char *pre_nextstmt = nextstmt;
+        cmdline = buf;
+        nextstmt = sub_ret_sentinel;
+        DefinedSubFun(false, buf, idx, NULL, NULL, NULL, NULL);
+        if (nextstmt != sub_ret_sentinel) {
+            /* DefinedSubFun set nextstmt to the sub body — drive the body via
+             * a scoped ExecuteProgram.  cmd_return (invoked by End Sub) will
+             * pop gosubstack back to sub_ret_sentinel, the loop exits. */
+            ExecuteProgram(nextstmt);
+        }
+        nextstmt = pre_nextstmt;
+    }
 
     /* Sync modified variables back to VM */
     sync_mmbasic_locals_to_vm(vm, local_map);

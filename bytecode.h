@@ -652,6 +652,7 @@ typedef struct {
     uint8_t  param_types[BC_MAX_PARAMS]; /* T_INT, T_NBR, T_STR for each param */
     uint8_t  param_is_array[BC_MAX_PARAMS]; /* 1 if param is array (passed by ref) */
     uint8_t  return_type;       /* 0 for SUB, T_INT/T_NBR/T_STR for FUNCTION */
+    uint8_t  bridged;           /* 1 = owned by interpreter, call via OP_BRIDGE_CMD */
     uint16_t nlocals;           /* total local slots (params + LOCAL vars) */
 } BCSubFun;
 

@@ -43,10 +43,11 @@ typedef struct {
     int                  in_type_block;
     struct s_structdef  *struct_def_inprogress;    /* NULL outside TYPE blocks */
 
-    /* FUNCTION foo(...) AS <struct> — Phase 6 bridges every call to such
-     * functions via cmd_let (see source_lhs_is_whole_struct), so the VM
-     * never executes the body.  Set while scanning the body; statement
-     * compilation is short-circuited until END FUNCTION. */
+    /* FUNCTION foo(...) AS <struct>  (Phase 6) OR
+     * SUB/FUNCTION foo(... As <struct>, ...)  (Phase 7)
+     * Both cases bridge every call to the interpreter so the VM never
+     * executes the body.  The flag is set when we see the opening header
+     * and cleared on the matching END SUB / END FUNCTION. */
     int                  in_struct_fn;
 } BCSourceFrontend;
 
@@ -1914,7 +1915,8 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
 
         int sf_name_len = (suffix_type != 0 && name_len > 0) ? name_len - 1 : name_len;
         int sf_idx = bc_find_subfun(cs, name, sf_name_len);
-        if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0 && *after_name == '(') {
+        if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0 &&
+            !cs->subfuns[sf_idx].bridged && *after_name == '(') {
             p = after_name;
             int nargs = source_compile_call_args(fe, cs, &p, 1);
             if (cs->has_error) {
@@ -3487,6 +3489,50 @@ static void source_compile_inc(BCSourceFrontend *fe, BCCompiler *cs, const char 
     *pp = p;
 }
 
+// Lightweight pre-scan — returns 1 if any parameter in the `(...)` list
+// starting at `p` is declared `As <structtype>` (scalar or array).  Used
+// by the SUB / FUNCTION compilers to decide whether to skip native
+// compilation of the body and bridge call sites through the interpreter.
+static int source_params_contain_struct(const char *p) {
+    source_skip_space(&p);
+    if (*p != '(') return 0;
+    p++;
+    while (*p && *p != ')') {
+        source_skip_space(&p);
+        while (isnamechar((unsigned char)*p)) p++;   // name (may include dots)
+        if (*p == '$' || *p == '%' || *p == '!') p++;
+        source_skip_space(&p);
+        if (*p == '(') {                              // `name()` — array param
+            int d = 0;
+            do {
+                if (*p == '(') d++;
+                else if (*p == ')') d--;
+                else if (*p == 0) return 0;
+                p++;
+            } while (d > 0);
+            source_skip_space(&p);
+        }
+        // Optional `AS <type>` clause.  Only struct types trigger bridging.
+        if ((p[0] == 'A' || p[0] == 'a') && (p[1] == 'S' || p[1] == 's') &&
+            !isnamechar((unsigned char)p[2])) {
+            p += 2;
+            source_skip_space(&p);
+            if (strncasecmp(p, "INTEGER", 7) != 0 &&
+                strncasecmp(p, "FLOAT", 5) != 0 &&
+                strncasecmp(p, "STRING", 6) != 0 &&
+                isnamestart((unsigned char)*p)) {
+                // A type name that's not a scalar keyword — check g_structtbl.
+                if (FindStructType((unsigned char *)p) >= 0) return 1;
+            }
+            while (isnamechar((unsigned char)*p)) p++;     // skip type name
+            source_skip_space(&p);
+        }
+        if (*p == ',') { p++; continue; }
+        break;
+    }
+    return 0;
+}
+
 static int source_parse_params(BCCompiler *cs, const char **pp, int sf_idx) {
     const char *p = *pp;
     int nparams = 0;
@@ -3656,7 +3702,6 @@ static void source_compile_local(BCSourceFrontend *fe, BCCompiler *cs, const cha
 }
 
 static void source_compile_sub(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
-    (void)fe;
     const char *p = *pp;
     source_skip_space(&p);
 
@@ -3671,6 +3716,30 @@ static void source_compile_sub(BCSourceFrontend *fe, BCCompiler *cs, const char 
     }
     if (unused_type != 0) {
         bc_set_error(cs, "SUB name cannot have a type suffix");
+        *pp = p;
+        return;
+    }
+
+    /* Phase 7: if any parameter is `As <struct>`, skip body compilation and
+     * let the interpreter own the sub.  The predeclare pass may have already
+     * registered this sub in cs->subfuns[] (that pass runs before any TYPE
+     * blocks are resolved, so it couldn't detect the struct param) — flag
+     * that entry as bridged so the call-site dispatcher routes it through
+     * OP_BRIDGE_CMD instead of OP_CALL_SUB. */
+    if (source_params_contain_struct(p)) {
+        fe->in_struct_fn = 1;
+        int existing = bc_find_subfun(cs, name_start, name_len);
+        if (existing >= 0) cs->subfuns[existing].bridged = 1;
+        source_skip_space(&p);
+        if (*p == '(') {
+            int d = 0;
+            do {
+                if (*p == '(') d++;
+                else if (*p == ')') d--;
+                else if (*p == 0) break;
+                p++;
+            } while (d > 0);
+        }
         *pp = p;
         return;
     }
@@ -3737,11 +3806,13 @@ static void source_compile_function(BCSourceFrontend *fe, BCCompiler *cs, const 
     int sf_name_len = has_suffix ? name_len - 1 : name_len;
     if (ret_type == 0) ret_type = T_NBR;
 
-    /* Peek at the `AS <type>` clause WITHOUT committing — if it's a struct
-     * return, skip compilation of the body entirely.  Callers bridge such
-     * functions via source_lhs_is_whole_struct.  We still advance `p` past
-     * the params + AS clause so source_statement_end doesn't complain. */
+    /* Peek at the param list + `AS <type>` clause WITHOUT committing.  If
+     * either the return type or any parameter is `AS <struct>`, skip body
+     * compilation — the interpreter owns the function and call sites
+     * bridge (struct-return goes through source_lhs_is_whole_struct;
+     * struct-param subs/fns drop through to the statement-bridge). */
     {
+        int has_struct_param = source_params_contain_struct(p);
         const char *peek = p;
         source_skip_space(&peek);
         if (*peek == '(') {
@@ -3755,8 +3826,10 @@ static void source_compile_function(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
         int sidx = -1;
         uint8_t peek_type = source_parse_as_type_clause_ex(&peek, &sidx);
-        if (peek_type == T_STRUCT) {
+        if (has_struct_param || peek_type == T_STRUCT) {
             fe->in_struct_fn = 1;
+            int existing = bc_find_subfun(cs, name_start, sf_name_len);
+            if (existing >= 0) cs->subfuns[existing].bridged = 1;
             p = peek;
             *pp = p;
             return;
@@ -6753,9 +6826,63 @@ static void source_compile_endif(BCCompiler *cs) {
     bc_nest_pop(cs);
 }
 
+// Phase 7: does the statement text reference any user-defined SUB or
+// FUNCTION we have flagged as `.bridged`?  If so, native statement
+// compilation can't express it — any arg evaluation would try to load a
+// struct slot — so we bridge the whole line.  Scans identifier-shaped
+// tokens and checks against cs->subfuns[].
+static int source_stmt_references_bridged_subfun(BCCompiler *cs, const char *stmt) {
+    const char *p = stmt;
+    int in_str = 0;
+    while (*p) {
+        if (*p == '\"') { in_str = !in_str; p++; continue; }
+        if (in_str) { p++; continue; }
+        if (!isnamestart((unsigned char)*p)) { p++; continue; }
+        const char *nstart = p;
+        while (isnamechar((unsigned char)*p) && *p != '.') p++;
+        if (*p == '$' || *p == '%' || *p == '!') p++;
+        int nlen = (int)(p - nstart);
+        if (nlen == 0) continue;
+        /* Ignore trailing suffix for sub-name match — BCSubFun stores names
+         * without type suffix. */
+        int match_len = nlen;
+        unsigned char last = (unsigned char)nstart[nlen-1];
+        if (last == '$' || last == '%' || last == '!') match_len--;
+        int sf_idx = bc_find_subfun(cs, nstart, match_len);
+        if (sf_idx >= 0 && cs->subfuns[sf_idx].bridged) return 1;
+    }
+    return 0;
+}
+
 static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const char *stmt) {
     const char *p = stmt;
     source_skip_space(&p);
+
+    /* Phase 7 early-bridge: if the statement touches a user sub/fun with a
+     * struct parameter or struct return, bridge the whole line.  Native
+     * arg evaluation can't load struct slots.  Skip for SUB / FUNCTION /
+     * END declarations — the name there is the definition, not a call. */
+    {
+        const char *probe = stmt;
+        source_skip_space(&probe);
+        int is_def = (strncasecmp(probe, "SUB", 3) == 0 && !isnamechar((unsigned char)probe[3])) ||
+                     (strncasecmp(probe, "FUNCTION", 8) == 0 && !isnamechar((unsigned char)probe[8])) ||
+                     (strncasecmp(probe, "END", 3) == 0 && !isnamechar((unsigned char)probe[3])) ||
+                     (strncasecmp(probe, "EXIT", 4) == 0 && !isnamechar((unsigned char)probe[4])) ||
+                     (strncasecmp(probe, "LOCAL", 5) == 0 && !isnamechar((unsigned char)probe[5])) ||
+                     (strncasecmp(probe, "STATIC", 6) == 0 && !isnamechar((unsigned char)probe[6]));
+        if (!is_def && source_stmt_references_bridged_subfun(cs, stmt)) {
+            const char *line_end = stmt;
+            while (*line_end && *line_end != ':' && *line_end != '\'') line_end++;
+            size_t len = (size_t)(line_end - stmt);
+            if (len >= STRINGSIZE) len = STRINGSIZE - 1;
+            char tmp[STRINGSIZE];
+            memcpy(tmp, stmt, len);
+            tmp[len] = 0;
+            source_emit_bridge_for_stmt(cs, tmp);
+            return;
+        }
+    }
 
     if (*p == '?') {
         p++;
@@ -7300,7 +7427,8 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
             }
 
             int sf_idx = bc_find_subfun(cs, name, name_len);
-            if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type == 0) {
+            if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type == 0 &&
+                !cs->subfuns[sf_idx].bridged) {
                 p = after_name;
                 int nargs = source_compile_call_args(fe, cs, &p, 0);
                 if (!cs->has_error) {
@@ -7311,6 +7439,9 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
                 source_statement_end(cs, p);
                 return;
             }
+            /* Fall through to OP_BRIDGE_CMD at the bottom — either no such
+             * user-defined sub, or the sub takes a struct param and the
+             * interpreter owns it (Phase 7). */
         }
     }
 
@@ -7371,7 +7502,8 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
             (void)strtol(cp, &end, 10);
             if (end != cp) { cp = end; source_skip_space(&cp); }
         }
-        if (strncasecmp(cp, "END FUNCTION", 12) == 0 && !isnamechar((unsigned char)cp[12])) {
+        if ((strncasecmp(cp, "END FUNCTION", 12) == 0 && !isnamechar((unsigned char)cp[12])) ||
+            (strncasecmp(cp, "END SUB", 7) == 0 && !isnamechar((unsigned char)cp[7]))) {
             fe->in_struct_fn = 0;
         }
         return;
@@ -7570,7 +7702,16 @@ static void source_predeclare_line(BCCompiler *cs, const char *line, int line_no
         int name_len = 0;
         uint8_t type = 0;
         if (source_parse_varname(&p, name, &name_len, &type) && type == 0) {
-            (void)source_get_or_create_subfun(cs, name_start, name_len, 0);
+            /* Phase 7: subs with any `As <struct>` parameter are owned by the
+             * interpreter — don't register here, so the statement dispatcher
+             * drops calls through to the OP_BRIDGE_CMD fallback. */
+            /* Phase 7: subs with `As <struct>` params are interpreter-owned,
+             * but we still register them so source_compile_statement's
+             * early-bridge scan can detect `.bridged` and route the whole
+             * line through OP_BRIDGE_CMD. */
+            int has_struct = source_params_contain_struct(p);
+            int sf = source_get_or_create_subfun(cs, name_start, name_len, 0);
+            if (sf >= 0 && has_struct) cs->subfuns[sf].bridged = 1;
         }
         return;
     }
@@ -7587,12 +7728,19 @@ static void source_predeclare_line(BCCompiler *cs, const char *line, int line_no
         int sf_name_len = has_suffix ? name_len - 1 : name_len;
         if (ret_type == 0) ret_type = T_NBR;
 
+        /* Phase 6/7: functions whose params or return type involve a struct
+         * are interpreter-owned, but still register with .bridged = 1 so
+         * source_compile_statement's early-bridge check can see them and
+         * bridge the enclosing line. */
+        int has_struct_param = source_params_contain_struct(p);
         source_skip_space(&p);
         if (*p == '(') source_skip_parenthesized(&p);
         uint8_t as_type = source_parse_as_type_clause(&p);
         if (as_type != 0 && !has_suffix) ret_type = as_type;
 
-        (void)source_get_or_create_subfun(cs, name_start, sf_name_len, ret_type);
+        int sf = source_get_or_create_subfun(cs, name_start, sf_name_len, ret_type);
+        if (sf >= 0 && (has_struct_param || ret_type == T_STRUCT))
+            cs->subfuns[sf].bridged = 1;
     }
 }
 
@@ -7661,6 +7809,79 @@ static int source_read_logical_line(const char **pp, char *line, size_t line_cap
     return 1;
 }
 
+// Phase 7 helper: scan the program for `TYPE … END TYPE` blocks and populate
+// g_structtbl BEFORE source_predeclare_subfuns runs.  Without this pass,
+// predeclare can't tell a SUB/FUN apart from one whose `As <struct>` param
+// makes it interpreter-owned, and call sites emit OP_CALL_SUB for a sub
+// whose body we later flag `.bridged`.  Mirrors source_compile_line's TYPE
+// block handling but without any bytecode emission.
+static void source_prescan_types(BCCompiler *cs, const char *source) {
+    (void)cs;
+    int physical_line = 1;
+    int line_no = 1;
+    unsigned char continuation = 0;
+    const char *p = source;
+    char line[STRINGSIZE + 1];
+    struct s_structdef *sd = NULL;
+    int in_asm = 0;
+
+    while (source_read_logical_line(&p, line, sizeof(line), &physical_line, &line_no, &continuation)) {
+        const char *lp = line;
+        source_skip_space(&lp);
+        if (isdigit((unsigned char)*lp)) {
+            char *end = NULL;
+            (void)strtol(lp, &end, 10);
+            if (end != lp) { lp = end; source_skip_space(&lp); }
+        }
+        if (in_asm) {
+            if (*lp == '\'' && strncasecmp(lp, "'!ENDASM", 8) == 0) in_asm = 0;
+            continue;
+        }
+        if (*lp == '\'' && strncasecmp(lp, "'!ASM", 5) == 0 &&
+            (lp[5] == '\0' || lp[5] == ' ' || lp[5] == '\t' || lp[5] == '\r' || lp[5] == '\n')) {
+            in_asm = 1;
+            continue;
+        }
+
+        if (sd) {
+            if (strncasecmp(lp, "END TYPE", 8) == 0 && !isnamechar((unsigned char)lp[8])) {
+                if (sd->num_members > 0 && g_structcnt < MAX_STRUCT_TYPES) {
+                    int align = GetStructAlignment(sd);
+                    if (align > 1 && (sd->total_size % align) != 0)
+                        sd->total_size = ((sd->total_size + align - 1) / align) * align;
+                    g_structtbl[g_structcnt++] = sd;
+                } else {
+                    FreeMemory((unsigned char *)sd);
+                }
+                sd = NULL;
+                continue;
+            }
+            if (*lp == 0 || *lp == '\'') continue;
+            (void)ParseStructMember((unsigned char *)lp, sd);
+            continue;
+        }
+
+        if (strncasecmp(lp, "TYPE", 4) == 0 && !isnamechar((unsigned char)lp[4])) {
+            const char *tp = lp + 4;
+            source_skip_space(&tp);
+            unsigned char tname[MAXVARLEN + 1];
+            int tlen = 0;
+            while (isnamechar((unsigned char)*tp) && tlen < MAXVARLEN) {
+                tname[tlen++] = (unsigned char)mytoupper(*tp);
+                tp++;
+            }
+            tname[tlen] = 0;
+            if (tlen == 0) continue;
+            if (FindStructType(tname) >= 0) continue;      // already registered
+            if (g_structcnt >= MAX_STRUCT_TYPES) continue;
+            sd = (struct s_structdef *)GetMemory(sizeof(struct s_structdef));
+            memset(sd, 0, sizeof(*sd));
+            memcpy(sd->name, tname, tlen + 1);
+        }
+    }
+    if (sd) FreeMemory((unsigned char *)sd);
+}
+
 static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     int physical_line = 1;
     int line_no = 1;
@@ -7701,6 +7922,10 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
     fe.line_no = 1;
 
     bc_crash_checkpoint(BC_CK_COMPILE_PREDECLARE, "predeclare subfuns");
+    /* Populate g_structtbl up front so predeclare can recognise
+     * `SUB foo(p As Point)` as interpreter-owned before the main compile
+     * pass reaches either the TYPE block or the SUB body. */
+    source_prescan_types(cs, source);
     source_predeclare_subfuns(cs, source);
     if (cs->has_error) { source_asm_buf_free(&fe); return -1; }
 
