@@ -132,7 +132,7 @@ Do tier 1 first, tier 2 after. Within each tier, do smaller features first to bu
 2. **`CONST`** — one command, adds one flag to variable table. Dependency for Tier 1 feature interactions (`CONST TYPE x AS INTEGER = 5` style). **Already present at fork point; no port needed.**
 3. **`EXECUTE`** — runs a tokenized string. **Already present at fork point; no port needed.**
 4. **`REDIM`** — operates on an existing array. Touches DIM machinery, so needs careful testing against our array code which has been extended for VM slots. **DONE 2026-04-20. Interpreter-only — VM array slots are statically sized.**
-5. **`TYPE` / `STRUCT` / `END TYPE`** — the centerpiece of 6.02. Probably 3-5 days because it touches `PrepareProgramExt`, variable table, DIM parser, and field access syntax. **Sub-plan: [`docs/type-struct-port-plan.md`](type-struct-port-plan.md) (2026-04-20).** Eight phases, one commit + one test per phase, interpreter-only (same VM-slot limitation as REDIM).
+5. **`TYPE` / `STRUCT` / `END TYPE`** — the centerpiece of 6.02. Ported via `docs/type-struct-port-plan.md` as 19 phases on `catchup/type-struct`, each passing host `./run_tests.sh` compare + rp2040 + rp2350 + wasm gates. **DONE 2026-04-20** — all phases landed, 233/233 host tests green. Two narrow follow-ups documented in-plan: (a) string-array EXTRACT/INSERT in compare mode (interp vs VM layout mismatch — interp-only for now), (b) struct-array-member.field as BYREF user-SUB arg (interp error; PRINT/BOX/expression evaluation works). Neither blocks the `v6.01-parity-plus-lang` tag.
 
 Gate at end of Phase A: host test suite green, device build green, web build green. Tag `v6.01-parity-plus-lang`.
 
