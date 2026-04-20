@@ -149,6 +149,7 @@ void vm_sys_file_open(const char *filename, int fnbr, int mode) {
         case VM_FILE_MODE_INPUT:  fmode = FA_READ; break;
         case VM_FILE_MODE_OUTPUT: fmode = FA_WRITE | FA_CREATE_ALWAYS; break;
         case VM_FILE_MODE_APPEND: fmode = FA_WRITE | FA_OPEN_APPEND; break;
+        case VM_FILE_MODE_RANDOM: fmode = FA_WRITE | FA_OPEN_APPEND | FA_READ; break;
         default: error("File access mode");
     }
 
@@ -454,6 +455,8 @@ static int vm_file_lfs_mode(int mode) {
             return LFS_O_WRONLY | LFS_O_CREAT | LFS_O_TRUNC;
         case VM_FILE_MODE_APPEND:
             return LFS_O_WRONLY | LFS_O_CREAT | LFS_O_APPEND;
+        case VM_FILE_MODE_RANDOM:
+            return LFS_O_RDWR | LFS_O_CREAT;
         default:
             error("File access mode");
             return 0;
@@ -468,6 +471,8 @@ static int vm_file_fat_mode(int mode) {
             return FA_WRITE | FA_CREATE_ALWAYS;
         case VM_FILE_MODE_APPEND:
             return FA_WRITE | FA_OPEN_APPEND;
+        case VM_FILE_MODE_RANDOM:
+            return FA_WRITE | FA_OPEN_APPEND | FA_READ;
         default:
             error("File access mode");
             return 0;

@@ -49,6 +49,14 @@ typedef struct {
      * executes the body.  The flag is set when we see the opening header
      * and cleared on the matching END SUB / END FUNCTION. */
     int                  in_struct_fn;
+
+    /* Phase 11: set during prescan if the program uses STRUCT SAVE or
+     * STRUCT LOAD.  Those commands bridge to the interpreter, which has
+     * its own FileTable[] — disjoint from the VM's vm_files[].  To keep
+     * the file state coherent, OPEN / CLOSE / SEEK also route through the
+     * bridge when this flag is set, so a single table owns all I/O for
+     * the program. */
+    int                  uses_struct_file_io;
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend *fe) {
@@ -6026,6 +6034,8 @@ static void source_compile_open(BCSourceFrontend *fe, BCCompiler *cs, const char
         mode = VM_FILE_MODE_OUTPUT;
     } else if (source_keyword(&p, "APPEND")) {
         mode = VM_FILE_MODE_APPEND;
+    } else if (source_keyword(&p, "RANDOM")) {
+        mode = VM_FILE_MODE_RANDOM;
     } else {
         bc_set_error(cs, "Unsupported OPEN mode");
         *pp = p;
@@ -6873,6 +6883,28 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
                      (strncasecmp(probe, "LOCAL", 5) == 0 && !isnamechar((unsigned char)probe[5])) ||
                      (strncasecmp(probe, "STATIC", 6) == 0 && !isnamechar((unsigned char)probe[6]));
         if (!is_def && source_stmt_references_bridged_subfun(cs, stmt)) {
+            const char *line_end = stmt;
+            while (*line_end && *line_end != ':' && *line_end != '\'') line_end++;
+            size_t len = (size_t)(line_end - stmt);
+            if (len >= STRINGSIZE) len = STRINGSIZE - 1;
+            char tmp[STRINGSIZE];
+            memcpy(tmp, stmt, len);
+            tmp[len] = 0;
+            source_emit_bridge_for_stmt(cs, tmp);
+            return;
+        }
+
+        /* Phase 11: if the program uses STRUCT SAVE / STRUCT LOAD (which
+         * bridge to the interpreter's FileTable[]), keep all file state in
+         * the same table by bridging OPEN / CLOSE / SEEK too.  The VM's
+         * vm_files[] would otherwise be invisible to the bridged struct
+         * commands.  Scoped to the few file statements — PRINT # / INPUT #
+         * still compile natively but won't see interpreter-opened files,
+         * which is documented as the tradeoff. */
+        if (fe->uses_struct_file_io &&
+            ((strncasecmp(probe, "OPEN",  4) == 0 && !isnamechar((unsigned char)probe[4])) ||
+             (strncasecmp(probe, "CLOSE", 5) == 0 && !isnamechar((unsigned char)probe[5])) ||
+             (strncasecmp(probe, "SEEK",  4) == 0 && !isnamechar((unsigned char)probe[4])))) {
             const char *line_end = stmt;
             while (*line_end && *line_end != ':' && *line_end != '\'') line_end++;
             size_t len = (size_t)(line_end - stmt);
@@ -7996,6 +8028,29 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     }
 }
 
+/* Phase 11: detect whether the program uses STRUCT SAVE or STRUCT LOAD.
+ * If so, OPEN/CLOSE/SEEK also bridge — see comment on
+ * BCSourceFrontend.uses_struct_file_io.  Substring scan is fine here: both
+ * tokens are unique enough that false positives in comments / strings only
+ * cause a bit of extra bridging, not incorrect behaviour. */
+static int source_program_uses_struct_file_io(const char *source) {
+    const char *p = source;
+    while (*p) {
+        if ((*p == 's' || *p == 'S') &&
+            strncasecmp(p, "STRUCT", 6) == 0 &&
+            (p == source || !isnamechar((unsigned char)p[-1])) &&
+            !isnamechar((unsigned char)p[6])) {
+            const char *q = p + 6;
+            while (*q == ' ' || *q == '\t') q++;
+            if ((strncasecmp(q, "SAVE", 4) == 0 && !isnamechar((unsigned char)q[4])) ||
+                (strncasecmp(q, "LOAD", 4) == 0 && !isnamechar((unsigned char)q[4])))
+                return 1;
+        }
+        p++;
+    }
+    return 0;
+}
+
 int bc_compile_source(BCCompiler *cs, const char *source, const char *source_name) {
     BCSourceFrontend fe;
     memset(&fe, 0, sizeof(fe));
@@ -8008,6 +8063,7 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
      * pass reaches either the TYPE block or the SUB body. */
     source_prescan_types(cs, source);
     source_predeclare_subfuns(cs, source);
+    fe.uses_struct_file_io = source_program_uses_struct_file_io(source);
     if (cs->has_error) { source_asm_buf_free(&fe); return -1; }
 
     const char *p = source;

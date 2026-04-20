@@ -3997,6 +3997,94 @@ void MIPS16 cmd_struct(void) {
         }
         memset(var_ptr, 0, struct_size * num_elements);
     }
+    else if ((p = checkstring(cmdline, (unsigned char *)"SAVE")) != NULL) {
+        // STRUCT SAVE #n, var   STRUCT SAVE #n, array()   STRUCT SAVE #n, array(i)
+        int fnbr, var_idx, struct_type, struct_size, num_elements = 1;
+        unsigned char *var_ptr, *varname;
+
+        skipspace(p);
+        if (*p != '#') error("Expected #filenumber");
+        p++;
+        fnbr = getinteger(p);
+        if (fnbr < 1 || fnbr > MAXOPENFILES) error("Invalid file number");
+        if (FileTable[fnbr].com == 0) error("File not open");
+        if (FileTable[fnbr].com <= MAXCOMPORTS) error("Not a disk file");
+
+        while (*p && *p != ',') p++;
+        if (*p != ',') error("Expected comma");
+        p++;
+        skipspace(p);
+        varname = p;
+        var_ptr = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        var_idx = g_VarIndex;
+        if (!(g_vartbl[var_idx].type & T_STRUCT))
+            error("Expected a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot save a structure member, use whole structure");
+
+        struct_type = (int)g_vartbl[var_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        if (g_vartbl[var_idx].dims[0] != 0) {
+            unsigned char *paren = (unsigned char *)strchr((char *)varname, '(');
+            if (!paren) error("Array variable requires () or (index)");
+            paren++;
+            skipspace(paren);
+            if (*paren == ')') {
+                for (int d = 0; d < MAXDIM && g_vartbl[var_idx].dims[d] != 0; d++)
+                    num_elements *= (g_vartbl[var_idx].dims[d] + 1 - g_OptionBase);
+            }
+        }
+
+        // Byte-level write via FilePutChar — portable across device FATFS,
+        // device LittleFS, and host POSIX.  Upstream uses bulk FilePutData
+        // which we don't yet expose; add the bulk path later if profiling
+        // shows a hot spot.
+        int total = struct_size * num_elements;
+        for (int b = 0; b < total; b++)
+            FilePutChar((char)var_ptr[b], fnbr);
+    }
+    else if ((p = checkstring(cmdline, (unsigned char *)"LOAD")) != NULL) {
+        // STRUCT LOAD #n, var   STRUCT LOAD #n, array()   STRUCT LOAD #n, array(i)
+        int fnbr, var_idx, struct_type, struct_size, num_elements = 1;
+        unsigned char *var_ptr, *varname;
+
+        skipspace(p);
+        if (*p != '#') error("Expected #filenumber");
+        p++;
+        fnbr = getinteger(p);
+        if (fnbr < 1 || fnbr > MAXOPENFILES) error("Invalid file number");
+        if (FileTable[fnbr].com == 0) error("File not open");
+        if (FileTable[fnbr].com <= MAXCOMPORTS) error("Not a disk file");
+
+        while (*p && *p != ',') p++;
+        if (*p != ',') error("Expected comma");
+        p++;
+        skipspace(p);
+        varname = p;
+        var_ptr = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        var_idx = g_VarIndex;
+        if (!(g_vartbl[var_idx].type & T_STRUCT))
+            error("Expected a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot load into a structure member, use whole structure");
+
+        struct_type = (int)g_vartbl[var_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        if (g_vartbl[var_idx].dims[0] != 0) {
+            unsigned char *paren = (unsigned char *)strchr((char *)varname, '(');
+            if (!paren) error("Array variable requires () or (index)");
+            paren++;
+            skipspace(paren);
+            if (*paren == ')') {
+                for (int d = 0; d < MAXDIM && g_vartbl[var_idx].dims[d] != 0; d++)
+                    num_elements *= (g_vartbl[var_idx].dims[d] + 1 - g_OptionBase);
+            }
+        }
+
+        int total = struct_size * num_elements;
+        for (int b = 0; b < total; b++)
+            var_ptr[b] = (unsigned char)FileGetChar(fnbr);
+    }
     else if ((p = checkstring(cmdline, (unsigned char *)"SWAP")) != NULL) {
         // STRUCT SWAP var1, var2
         unsigned char *src_ptr, *dst_ptr, *tp;

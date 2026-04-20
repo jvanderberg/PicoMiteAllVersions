@@ -6,6 +6,7 @@
 #define VM_FILE_MODE_INPUT  1
 #define VM_FILE_MODE_OUTPUT 2
 #define VM_FILE_MODE_APPEND 3
+#define VM_FILE_MODE_RANDOM 4
 
 void vm_sys_file_open(const char *filename, int fnbr, int mode);
 void vm_sys_file_close(int fnbr);
