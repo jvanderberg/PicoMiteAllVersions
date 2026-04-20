@@ -45,6 +45,22 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hardware/dma.h"
 #include <hardware/structs/ioqspi.h>
 #include <hardware/sync.h>
+#include <hardware/structs/sio.h>
+#include "picomite_gpio_irq.h"
+
+// Read the output level of every bank-0 GPIO as a 64-bit mask.
+// Stock Pico SDK 2.2.0 ships gpio_get_pad / gpio_get_all64 / gpio_get_dir_all
+// but no gpio_get_out_level_all64 helper, so PicoMite used to patch the SDK's
+// gpio.h. We only have two call sites (cmd_port and fun_distance) and no other
+// consumer, so the helper now lives here and the SDK is left alone.
+static inline uint64_t gpio_get_out_level_all64(void) {
+#if NUM_BANK0_GPIOS <= 32
+    return sio_hw->gpio_out;
+#else
+    return sio_hw->gpio_out | (((uint64_t)sio_hw->gpio_hi_out) << 32u);
+#endif
+}
+
 #define ANA_AVERAGE     10
 #define ANA_DISCARD     2
 
@@ -507,22 +523,22 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     }
     ClearPin(pin);  //disable the link to any special functions
     if(pin == Option.INT1pin) {
-        if(CallBackEnabled==2) gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        if(CallBackEnabled==2) picomite_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         else gpio_set_irq_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~2);
     }
     if(pin == Option.INT2pin) {
-        if(CallBackEnabled==4) gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        if(CallBackEnabled==4) picomite_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         else gpio_set_irq_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~4);
     }
     if(pin == Option.INT3pin) {
-        if(CallBackEnabled==8) gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        if(CallBackEnabled==8) picomite_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         else gpio_set_irq_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~8);
     }
     if(pin == Option.INT4pin) {
-        if(CallBackEnabled==16) gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        if(CallBackEnabled==16) picomite_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         else gpio_set_irq_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~16);
     }
@@ -702,7 +718,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                                     PinSetBit(pin,TRISSET);
                                     if(pin == Option.INT1pin) {
                                     if(!CallBackEnabled){
-                                        gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, edge , true, &gpio_callback);
+                                        picomite_gpio_irq_set_enabled(PinDef[pin].GPno, edge , true);
                                         CallBackEnabled=2;
                                     } else {
                                         gpio_set_irq_enabled(PinDef[pin].GPno, edge, true);
@@ -716,7 +732,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                                 }
                                 if(pin == Option.INT2pin) {
                                     if(!CallBackEnabled){
-                                        gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, edge , true, &gpio_callback);
+                                        picomite_gpio_irq_set_enabled(PinDef[pin].GPno, edge , true);
                                         CallBackEnabled=4;
                                     } else {
                                         gpio_set_irq_enabled(PinDef[pin].GPno, edge, true);
@@ -730,7 +746,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                                 }
                                 if(pin == Option.INT3pin) {
                                     if(!CallBackEnabled){
-                                        gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, edge , true, &gpio_callback);
+                                        picomite_gpio_irq_set_enabled(PinDef[pin].GPno, edge , true);
                                         CallBackEnabled=8;
                                     } else {
                                         gpio_set_irq_enabled(PinDef[pin].GPno, edge, true);
@@ -744,7 +760,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                                 }
                                 if(pin == Option.INT4pin) {
                                     if(!CallBackEnabled){
-                                        gpio_set_irq_enabled_with_callback(PinDef[pin].GPno, edge , true, &gpio_callback);
+                                        picomite_gpio_irq_set_enabled(PinDef[pin].GPno, edge , true);
                                         CallBackEnabled=16;
                                     } else {
                                         gpio_set_irq_enabled(PinDef[pin].GPno, edge, true);
@@ -1771,7 +1787,7 @@ void cmd_ir(void) {
     int i, pin, dev, cmd;
     if(checkstring(cmdline, (unsigned char *)"CLOSE")) {
         if(IrState == IR_CLOSED) error("Not Open");
-        if(CallBackEnabled==1) gpio_set_irq_enabled_with_callback(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        if(CallBackEnabled==1) picomite_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         else gpio_set_irq_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         IrInterrupt = NULL;
         CallBackEnabled &= (~1);
@@ -1828,7 +1844,7 @@ void IrInit(void) {
     ExtCfg(IRpin, EXT_IR, 0);
     ExtCfg(IRpin, EXT_COM_RESERVED, 0);
     if(!CallBackEnabled){
-        gpio_set_irq_enabled_with_callback(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+        picomite_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
         CallBackEnabled=1;
     } else {
         gpio_set_irq_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
@@ -3894,27 +3910,27 @@ void MIPS16 ClearExternalIO(void) {
     irq_set_enabled(PWM_IRQ_WRAP_1, false);
 #endif
     closeframebuffer('A');
-    if(CallBackEnabled==1) gpio_set_irq_enabled_with_callback(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+    if(CallBackEnabled==1) picomite_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
     else if(CallBackEnabled & 1){
         gpio_set_irq_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~1);
     }
-    if(CallBackEnabled==2) gpio_set_irq_enabled_with_callback(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+    if(CallBackEnabled==2) picomite_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
     else if(CallBackEnabled & 2){
         gpio_set_irq_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~2);
     }
-    if(CallBackEnabled==4) gpio_set_irq_enabled_with_callback(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+    if(CallBackEnabled==4) picomite_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
     else if(CallBackEnabled & 4){
         gpio_set_irq_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~4);
     }
-    if(CallBackEnabled==8) gpio_set_irq_enabled_with_callback(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+    if(CallBackEnabled==8) picomite_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
     else  if(CallBackEnabled & 8){
         gpio_set_irq_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~8);
     }
-    if(CallBackEnabled==16) gpio_set_irq_enabled_with_callback(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+    if(CallBackEnabled==16) picomite_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
     else  if(CallBackEnabled & 16){
         gpio_set_irq_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~16);
@@ -3941,7 +3957,7 @@ void MIPS16 ClearExternalIO(void) {
     SPIClose();
     SPI2Close();
     if(IRpin!=99){
-        gpio_set_irq_enabled_with_callback(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+        picomite_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         IrInterrupt = NULL;
         ExtCfg(IRpin, EXT_NOT_CONFIG, 0);
     }

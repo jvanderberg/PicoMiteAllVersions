@@ -24,6 +24,7 @@ provisions:
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "picomite_gpio_irq.h"
 char *mouse0Interruptc=NULL;
 volatile int mouse0foundc=0;
 bool mouse0=false;
@@ -59,7 +60,7 @@ if (status)
     if (!CallBackEnabled)
     {
       CallBackEnabled = 64;
-      gpio_set_irq_enabled_with_callback(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+      picomite_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true);
     }
     else
     {
@@ -73,7 +74,7 @@ if (status)
 	PinSetBit(MOUSE_DATA, TRISSET);                                          // data low
     if (CallBackEnabled == 64){
 		CallBackEnabled=0;
-      	gpio_set_irq_enabled_with_callback(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, false, &gpio_callback);
+      	picomite_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, false);
 	} else {
       	gpio_set_irq_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, false);
     	CallBackEnabled &= (~64);

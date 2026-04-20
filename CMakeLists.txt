@@ -89,6 +89,7 @@ set(PICOMITE_LEGACY_CORE_SOURCES
 	GPS.c
 	Audio.c
 	CFunction.c
+	picomite_gpio_irq.c
 )
 
 set(PICOMITE_VM_SHARED_GFX_SOURCES

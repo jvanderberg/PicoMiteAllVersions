@@ -1,29 +1,38 @@
 # Local build notes
 
-## VM prototype build and test loop
-- Host oracle/VM harness:
-  - `make -C host`
-  - `./host/run_tests.sh`
-  - `./host/run_pixel_tests.sh`
-  - `./host/run_host_shim_tests.sh`
-  - `./host/run_frontend_tests.sh`
-  - `./host/run_optimizer_tests.sh`
-  - `bash host/run_unsupported_tests.sh`
-  - `./host/run_missing_syscall_tests.sh` (intentionally red syscall TODO inventory)
-- RP2350 firmware build:
-  - `make -C build2350 -j8`
-  - `arm-none-eabi-size build2350/PicoMite.elf`
-- Current host binary: `host/mmbasic_test`.
-- Current device program execution: `RUN` goes through the VM.
-- `FRUN` and interpreter bridge fallback are removed from the user-facing VM path.
-- If the host build links against stale command-table objects after header changes, use `make -B -C host`.
+## Firmware gate — `./build_firmware.sh`
 
-## rp2040 RAM overflow fix
-- Symptom: linking failed with `.heap` not fitting in `RAM` (`region 'RAM' overflowed by 20 bytes`) when building rp2040 variants.
+Canonical device build for local validation. Mirrors `.github/workflows/firmware.yml`: same Pico SDK 2.2.0, same `CMakeLists.txt` COMPILE switching, same artifacts. **Never mutates the SDK tree** — the historical `gpio.c`/`gpio.h` patches were eliminated on the `sdk-patch-removal` branch (the RAM-resident GPIO IRQ dispatcher now lives in `picomite_gpio_irq.c`).
+
+- `./build_firmware.sh`              — build both (rp2040 + rp2350)
+- `./build_firmware.sh rp2040`       — rp2040 only → `build/PicoMite.uf2`
+- `./build_firmware.sh rp2350`       — rp2350 only → `build2350/PicoMite.uf2`
+- `PICO_SDK_PATH=... ./build_firmware.sh` to override the SDK location (default `$HOME/pico/pico-sdk`)
+
+The script rewrites `CMakeLists.txt`'s active `set(COMPILE …)` line in-place per target and restores the git-tracked version on any exit path (including Ctrl-C). Requires `arm-none-eabi-gcc`, `cmake`, and a stock Pico SDK 2.2.0.
+
+Flashing: with the device in BOOTSEL mode, `cp build/PicoMite.uf2 /Volumes/RPI-RP2/` (macOS). The board auto-reboots once the copy completes.
+
+## Host oracle / VM harness
+- `make -C host`
+- `./host/run_tests.sh` — primary gate, runs every test through both interpreter and VM and compares output.
+- `./host/run_pixel_tests.sh`
+- `./host/run_host_shim_tests.sh`
+- `./host/run_frontend_tests.sh`
+- `./host/run_optimizer_tests.sh`
+- `bash host/run_unsupported_tests.sh`
+- `./host/run_missing_syscall_tests.sh` (intentionally red syscall TODO inventory)
+
+Host binary: `host/mmbasic_test`. If the host build links against stale command-table objects after header changes, use `make -B -C host`.
+
+## Web build
+- `./host/build_wasm.sh` → `host/web/picomite.{mjs,wasm}`.
+- `./host/web/serve.sh` and open `http://localhost:8000/` to smoke test.
+
+## rp2040 RAM overflow fix (historical note)
+- Symptom: linking failed with `.heap` not fitting in `RAM` (`region 'RAM' overflowed by 20 bytes`) on rp2040 variants.
 - Cause: rp2040 builds used `-DPICO_HEAP_SIZE=0x1000`, and the final layout exceeded the 256 KB RAM window by 20 bytes.
-- Fix: `CMakeLists.txt` now sets a helper variable `PICOMITE_HEAP_SIZE` to `0x0fe0` for rp2040 builds (keeps `0x1000` for others) and passes it via `-DPICO_HEAP_SIZE=${PICOMITE_HEAP_SIZE}`. This trims 0x20 bytes from the heap and brings the image under the RAM limit.
+- Fix: `CMakeLists.txt` sets `PICOMITE_HEAP_SIZE` to `0x0fe0` for rp2040 (keeps `0x1000` elsewhere) and passes it via `-DPICO_HEAP_SIZE=${PICOMITE_HEAP_SIZE}`.
 
-## Reconfigure after pulling this change
-- From the repo root, recreate or re-run CMake for each build dir (example):
-  - `rm -rf build && mkdir build && cd build && cmake .. && make`
-- Or run the helper: `./rebuildall.sh` (uses `PICO_SDK_PATH=$HOME/pico/pico-sdk`).
+## Legacy helpers
+- `./rebuildall.sh` — rp2040-only clean build. Kept for compatibility; `./build_firmware.sh rp2040` is equivalent and preferred.

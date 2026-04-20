@@ -17,12 +17,13 @@ Bring the fork up to parity with `UKTailwind/PicoMiteAllVersions` on language an
 
 ## Invariants
 
-1. **`host/run_tests.sh` stays green** at every feature-boundary commit (default comparison mode — interpreter vs VM). `--interp` and `--vm` modes are diagnostic only.
-2. **Device build stays green** (`CMakeLists.txt` + `CMakeLists 2350.txt`) at every feature boundary. Firmware `.uf2` artifacts must still build in CI.
-3. **Web host stays green** — Pages deploy workflow runs clean and the deployed site boots.
+1. **Host test gate** — `cd host && ./build.sh && ./run_tests.sh` (default compare mode, interp vs VM) must pass at every feature-boundary commit. `--interp` and `--vm` modes are diagnostic only.
+2. **Firmware gate** — `./build_firmware.sh` (both rp2040 and rp2350) must produce `.uf2` artifacts at every feature boundary. The script mirrors `.github/workflows/firmware.yml` exactly; if it passes locally, CI passes on push.
+3. **Web gate** — `./host/build_wasm.sh` must produce `host/web/picomite.{mjs,wasm}` cleanly. Pages deploy on main must stay green.
 4. **No new hardware `#ifdef` gates** added to core interpreter files (`MMBasic.c`, `Commands.c`, `Functions.c`, `Operators.c`). If an upstream feature requires a gate, the gate goes behind a HAL entry point, not into the core.
 5. **Bridge-first for new commands.** New `cmd_*` entries go to the interpreter path via `AllCommands.h`; VM gets a native opcode only when profiling shows it matters. Pattern per `docs/bridge-restoration-plan.md`.
-6. **Attribution preserved.** Per the MMBasic license, the `Version.h` copyright line must stay intact. Port notes in commit messages cite upstream commit / file / approximate line range for each ported feature so future maintainers can audit.
+6. **No SDK mutation.** The Pico SDK at `$PICO_SDK_PATH` must stay stock. The historical `gpio.c`/`gpio.h` patches were eliminated on the `sdk-patch-removal` branch (GPIO IRQ dispatcher now lives in `picomite_gpio_irq.c`). Any future change that would require patching SDK sources is a signal to refactor the dependency out, not to reintroduce the patch.
+7. **Attribution preserved.** Per the MMBasic license, the `Version.h` copyright line must stay intact. Port notes in commit messages cite upstream commit / file / approximate line range for each ported feature so future maintainers can audit.
 
 ## Feature inventory
 
@@ -89,7 +90,12 @@ For every feature ported, follow this loop exactly:
 5. **Update HAL split if needed.** If the feature touches `Draw.c` / `FileIO.c` / `Audio.c` / `MM_Misc.c`, mirror the split pattern already established there (device body vs. shared body). Do NOT introduce bare `#ifdef PICOMITE` gates into logic — route through the existing HAL entry points or add a new one.
 6. **Bridge, don't native-VM.** New commands land as interpreter entries + `OP_BRIDGE_CMD` bridging so `FRUN` still reaches them. Native VM opcodes only after profiling.
 7. **Write a test.** Every ported feature gets at least one `host/tests/*.bas` that exercises it. Regressions in tier-1 features bite hardest, so cover edge cases (empty string, negative index, nested TYPE, etc.).
-8. **Run the gate.** `cd host/ && ./build.sh && ./run_tests.sh` must pass (default comparison mode). Smoke the device build (`cmake`, verify `.uf2` size). Trigger the Pages workflow on a preview branch or locally run `host/web/smoke_*.mjs`.
+8. **Run the gate — all three must pass:**
+   - Host: `cd host && ./build.sh && ./run_tests.sh` (default compare mode).
+   - Firmware: `./build_firmware.sh` — both rp2040 and rp2350 must produce a `.uf2`. Mirrors CI exactly; if this passes locally, `firmware.yml` will pass on push.
+   - Web: `cd host && ./build_wasm.sh` — `host/web/picomite.{mjs,wasm}` must produce cleanly.
+
+   If any gate fails, the port is not done — do not commit.
 9. **Commit with reference.** Commit message cites upstream: *"Upstream 6.02 parity: TYPE/STRUCT — ported from UKTailwind/PicoMiteAllVersions Commands.c cmd_type (@04f81d0)"*.
 10. **Fast-forward `main` when green.** No merge commits on feature branches; rebase-and-ff or squash.
 

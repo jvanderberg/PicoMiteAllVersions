@@ -44,15 +44,6 @@ jobs:
           path: pico-sdk
           submodules: recursive
 
-      - name: Patch Pico SDK gpio implementation
-        # PicoMite uses functions (e.g. gpio_get_out_level_all64) that
-        # aren't in any released Pico SDK. The repo ships drop-in
-        # replacements at its root; apply them over SDK 2.2.0 before
-        # building.
-        run: |
-          cp gpio.c pico-sdk/src/rp2_common/hardware_gpio/gpio.c
-          cp gpio.h pico-sdk/src/rp2_common/hardware_gpio/include/hardware/gpio.h
-
       - name: Pick COMPILE target
         # The repo's CMakeLists has `set(COMPILE PICO)` hardcoded near the
         # top with the other variants commented out. Rewrite those lines
