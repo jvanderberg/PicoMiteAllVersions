@@ -1921,7 +1921,7 @@ void vm_sys_graphics_framebuffer_merge(int has_colour, int colour, int mode, int
             vm_sys_graphics_fb_stop_merge();
             if (!(((Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) ||
                    (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL)
-#if defined(rp2350)
+#if defined(PICOMITE) && defined(rp2350)
                    || Option.DISPLAY_TYPE >= NEXTGEN
 #endif
                    ))) {

@@ -9,29 +9,35 @@
 # it's a bug.
 #
 # Targets:
-#   rp2040        PICO          PicoCalc RP2040 (console + SD)         — default gate
-#   rp2350        PICORP2350    PicoCalc RP2350 (pimoroni_pga2350)     — default gate
-#   rp2040-web    WEB           RP2040 + cyw43 WiFi (pico_w)           — opt-in, known broken at HEAD
-#   rp2350-web    WEBRP2350     RP2350 + cyw43 WiFi (pico2_w)          — opt-in, known broken at HEAD
+#   rp2040        PICO          PicoCalc RP2040 (console + SD)
+#   rp2350        PICORP2350    PicoCalc RP2350 (pimoroni_pga2350)
 #
-# The WEB variants are known-broken on this fork (pre-existing, unrelated to
-# sdk-patch-removal): GUI.c is compiled without GUICONTROLS, vm_sys_graphics.c
-# references SPI-LCD types that aren't visible, etc. They are left as explicit
-# targets you can pass on the command line so they can be debugged later, but
-# are not part of the default gate until a separate branch repairs them.
+# WEB variants (COMPILE=WEB, WEBRP2350) are not supported on this fork.
+# Two orthogonal blockers:
+#
+#   1. GUI.c is compiled for WEB targets but references Option.MaxCtrls
+#      unconditionally. Upstream works around this by #defining
+#      GUICONTROLS for WEBRP2350 as a special case; we mirror that fix
+#      in CMakeLists.txt, but that alone isn't enough to link.
+#
+#   2. The bytecode VM (bc_vm.c, vm_sys_*.c, bc_runtime.c) references
+#      PICOMITE-only symbols: FASTGFX bridge (bc_fastgfx_*), ShadowBuf /
+#      fb_dma_chan, mergerunning / mergetimer, LocalKeyDown, and the
+#      multicore FIFO. These only exist under #if defined(PICOMITE).
+#      On WEB builds the VM links against nothing and fails.
+#
+# Making WEB variants build is a separate effort (gate the VM surface on
+# PICOMITE, or stub out FASTGFX for non-PICOMITE). Not this branch's job.
 #
 # Usage:
-#   ./build_firmware.sh                        Build the default gate (rp2040 + rp2350)
+#   ./build_firmware.sh                        Build both (rp2040 + rp2350)
 #   ./build_firmware.sh rp2040                 Build one target
-#   ./build_firmware.sh rp2040 rp2350          Build a subset
-#   ./build_firmware.sh rp2350-web             Opt into a known-broken WEB target
+#   ./build_firmware.sh rp2350                 Build the other
 #   PICO_SDK_PATH=... ./build_firmware.sh      Override SDK path (default $HOME/pico/pico-sdk)
 #
 # Outputs:
 #   build/PicoMite.uf2              (rp2040)
 #   build2350/PicoMite.uf2          (rp2350)
-#   build_web/PicoMite.uf2          (rp2040-web, if it builds)
-#   build2350_web/PicoMite.uf2      (rp2350-web, if it builds)
 #
 # Exit code: 0 only if every requested target produces a .uf2.
 
@@ -54,21 +60,17 @@ done
 
 target_to_compile() {
     case "$1" in
-        rp2040)      echo PICO         ;;
-        rp2040-web)  echo WEB          ;;
-        rp2350)      echo PICORP2350   ;;
-        rp2350-web)  echo WEBRP2350    ;;
-        *)           echo "" ;;
+        rp2040)  echo PICO        ;;
+        rp2350)  echo PICORP2350  ;;
+        *)       echo "" ;;
     esac
 }
 
 target_to_dir() {
     case "$1" in
-        rp2040)      echo build         ;;
-        rp2040-web)  echo build_web     ;;
-        rp2350)      echo build2350     ;;
-        rp2350-web)  echo build2350_web ;;
-        *)           echo "" ;;
+        rp2040)  echo build      ;;
+        rp2350)  echo build2350  ;;
+        *)       echo "" ;;
     esac
 }
 
@@ -76,12 +78,11 @@ target_to_dir() {
 
 TARGETS=()
 if [ $# -eq 0 ]; then
-    # Default gate: targets known to build. Opt into WEB variants explicitly.
     TARGETS=(rp2040 rp2350)
 else
     for arg in "$@"; do
         if [ -z "$(target_to_compile "$arg")" ]; then
-            echo "error: unknown target '$arg' (want: rp2040, rp2040-web, rp2350, rp2350-web)" >&2
+            echo "error: unknown target '$arg' (want: rp2040, rp2350)" >&2
             exit 2
         fi
         TARGETS+=("$arg")

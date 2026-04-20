@@ -11,7 +11,6 @@ set(PICOCALC true)
 
 # Compile for PICO 1 Board
 set(COMPILE PICO)
-#set(COMPILE WEB)
 
 # Compile for PICO 2 Board
 #set(COMPILE PICORP2350)
@@ -248,10 +247,13 @@ target_compile_options(PicoMite PRIVATE -DPICOMITE
 										-DPICO_CORE0_STACK_SIZE=0x1000
 										)
 endif()
-# GUI widget command family — rp2350 PicoMite variants only.  Costs ~10 KB
-# of static .bss (CTRLS[200] @ ~52 bytes each); rp2040 PicoCalc has no
-# touchscreen and needs that RAM for the MMHeap to compile larger programs.
-if (COMPILE STREQUAL "PICORP2350" OR COMPILE STREQUAL "PICOUSBRP2350")
+# GUI widget command family — rp2350 PicoMite variants + WEBRP2350. Costs
+# ~10 KB of static .bss (CTRLS[200] @ ~52 bytes each); rp2040 PicoCalc has
+# no touchscreen and needs that RAM for the MMHeap to compile larger
+# programs. WEBRP2350 needs GUICONTROLS because it compiles GUI.c, which
+# references Option.MaxCtrls and MAX_CAPTION_LINES unconditionally —
+# matches upstream's "#special case WEB RP2350 gets the GUI controls" block.
+if (COMPILE STREQUAL "PICORP2350" OR COMPILE STREQUAL "PICOUSBRP2350" OR COMPILE STREQUAL "WEBRP2350")
 target_compile_options(PicoMite PRIVATE -DGUICONTROLS)
 endif()
 # all VGA variants 
