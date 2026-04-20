@@ -72,6 +72,7 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
 static int source_compile_call_args(BCSourceFrontend *fe, BCCompiler *cs, const char **pp,
                                     int require_parens);
 static int source_parse_array_indices(BCSourceFrontend *fe, BCCompiler *cs, const char **pp);
+static void source_emit_bridge_for_stmt(BCCompiler *cs, const char *stmt);
 static void source_emit_int_conversion(BCCompiler *cs, uint8_t type);
 static void source_emit_syscall(BCCompiler *cs, uint16_t sysid, uint8_t argc,
                                 const uint8_t *aux, uint8_t auxlen);
@@ -389,6 +390,110 @@ static int source_parse_varname(const char **pp, char *name, int *name_len, uint
     *name_len = copy_len;
     *pp = p + len;
     return 1;
+}
+
+// LHS classifier — walks a struct-reference prefix WITHOUT emitting bytecode.
+// Returns 1 if the prefix parses as a whole-struct reference (scalar struct,
+// array element of struct, or chain terminating at a T_STRUCT member).  Does
+// not advance the caller's parse state.  Used by the assignment dispatcher
+// to bridge struct-to-struct stores to the interpreter.
+static int source_lhs_is_whole_struct(BCCompiler *cs, const char *stmt_line) {
+    const char *p = stmt_line;
+    source_skip_space(&p);
+    char name[MAXVARLEN + 1];
+    int name_len = 0;
+    uint8_t stype = 0;
+    const char *probe = p;
+    if (!source_parse_varname(&probe, name, &name_len, &stype)) return 0;
+
+    const char *dot = memchr(name, '.', name_len);
+    int baselen = dot ? (int)(dot - name) : name_len;
+    if (baselen == 0) return 0;
+    uint16_t slot = bc_find_slot(cs, name, baselen);
+    if (slot == 0xFFFF) return 0;
+    if (cs->slots[slot].type != T_STRUCT) return 0;
+
+    int current_idx = cs->slots[slot].struct_idx;
+    if (current_idx < 0 || current_idx >= g_structcnt ||
+        g_structtbl[current_idx] == NULL) return 0;
+
+    int terminal_m_type = T_STRUCT;                 // slot-level access is whole-struct
+    const char *dtp = dot ? (dot + 1) : NULL;
+    int dtp_rem = dot ? (name_len - baselen - 1) : 0;
+    const char *q = probe;                          // parse tail position
+
+    // Optional outer `(…)` subscript after slot name (when slot is array-of-struct).
+    source_skip_space(&q);
+    if (*q == '(' && dtp_rem == 0) {
+        int depth = 0;
+        do {
+            if (*q == '(') depth++;
+            else if (*q == ')') depth--;
+            else if (*q == 0) return 0;
+            q++;
+        } while (depth > 0);
+        // Terminal is still whole-struct (array element).
+    }
+
+    int depth = 0;
+    while (1) {
+        if (++depth > MAX_STRUCT_NEST_DEPTH) return 0;
+
+        // Consume leading '.' if present.
+        unsigned char mname[MAXVARLEN + 1];
+        int mlen = 0;
+        if (dtp_rem > 0) {
+            if (*dtp == '.') { dtp++; dtp_rem--; }
+            while (dtp_rem > 0 && mlen < MAXVARLEN) {
+                char c = *dtp;
+                if (c == '.' || c == '(') break;
+                mname[mlen++] = (unsigned char)mytoupper(c);
+                dtp++; dtp_rem--;
+            }
+            if (mlen > 0 && (mname[mlen-1] == '$' || mname[mlen-1] == '%' || mname[mlen-1] == '!'))
+                mlen--;
+        } else {
+            source_skip_space(&q);
+            if (*q != '.') break;                   // no more segments
+            q++;
+            source_skip_space(&q);
+            while (isnamechar((unsigned char)*q) && *q != '.' && mlen < MAXVARLEN) {
+                mname[mlen++] = (unsigned char)mytoupper(*q++);
+            }
+            if (*q == '$' || *q == '%' || *q == '!') q++;
+        }
+        if (mlen == 0) break;
+        mname[mlen] = 0;
+
+        int m_type = 0, m_offset = 0, m_size = 0;
+        short m_dims[MAXDIM];
+        int midx = FindStructMember(current_idx, mname,
+                                    &m_type, &m_offset, &m_size, m_dims);
+        if (midx < 0) return 0;
+        terminal_m_type = m_type;
+
+        // Skip any trailing `(…)` (we don't evaluate; just brace-match).
+        source_skip_space(&q);
+        if (*q == '(' && m_dims[0] != 0) {
+            int d = 0;
+            do {
+                if (*q == '(') d++;
+                else if (*q == ')') d--;
+                else if (*q == 0) return 0;
+                q++;
+            } while (d > 0);
+        }
+
+        // More to resolve?
+        if (dtp_rem > 0 && *dtp == '.') continue;
+        source_skip_space(&q);
+        if (*q == '.') continue;
+        break;
+    }
+
+    source_skip_space(&q);
+    if (*q != '=') return 0;
+    return terminal_m_type == T_STRUCT;
 }
 
 // Struct-chain walker — compiles `a.b.c`, `a(i).b.c`, `a.b(j).c(k)`, and the
@@ -2344,6 +2449,27 @@ static uint8_t source_parse_expression(BCSourceFrontend *fe, BCCompiler *cs, con
 
 static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
+
+    // Phase 5: whole-struct assignments (scalar struct / struct array element /
+    // struct-member chain ending at a T_STRUCT node) don't have native opcodes;
+    // we bridge the whole statement to the interpreter's cmd_let.  This also
+    // handles the RHS regardless of shape (scalar, array-elem, nested member,
+    // function return) because the interpreter resolves it via findvar.
+    if (source_lhs_is_whole_struct(cs, p)) {
+        /* Advance pp past the statement so the caller's statement_end is OK,
+         * but emit the original raw text as a BRIDGE_CMD. */
+        const char *line_end = p;
+        while (*line_end && *line_end != ':' && *line_end != '\'') line_end++;
+        size_t len = (size_t)(line_end - p);
+        if (len >= STRINGSIZE) len = STRINGSIZE - 1;
+        char tmp[STRINGSIZE];
+        memcpy(tmp, p, len);
+        tmp[len] = 0;
+        source_emit_bridge_for_stmt(cs, tmp);
+        *pp = line_end;
+        return;
+    }
+
     char name[MAXVARLEN + 1];
     int name_len = 0;
     uint8_t vtype = 0;

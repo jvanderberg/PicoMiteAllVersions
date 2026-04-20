@@ -587,6 +587,30 @@ void  MIPS16 __not_in_flash_func(cmd_let)(void) {
             (*(MMFLOAT *)p2) = f;
         else
             (*(MMFLOAT *)p2) = (MMFLOAT)i64;
+	}
+	else if (lhs_type & T_STRUCT) {
+		// Whole-struct assignment (Phase 5 — ported from UKTailwind 6.02
+		// Commands.c cmd_let @04f81d0).  Snapshot dst type+size before
+		// evaluate() runs, since evaluating the RHS may change g_VarIndex
+		// when it walks its own findvar path.
+		int dest_struct_idx = (g_StructMemberType != 0)
+			? g_StructMemberSize                             // nested member: struct-idx lives in member size
+			: (int)g_vartbl[g_VarIndex].size;                // scalar / array-elem LHS
+		if (dest_struct_idx < 0 || dest_struct_idx >= g_structcnt ||
+		    g_structtbl[dest_struct_idx] == NULL)
+			error("Invalid structure type");
+		int dest_struct_size = g_structtbl[dest_struct_idx]->total_size;
+
+		t = T_NOTYPE;
+		p1 = evaluate(p1, &f, &i64, &s, &t, false);
+
+		if (!(t & T_STRUCT))
+			error("Expected a structure value");
+		if (g_ExprStructType >= 0 && g_ExprStructType != dest_struct_idx)
+			error("Structure types must match");
+		if (s == NULL)
+			error("No struct value");
+		memcpy(p2, s, dest_struct_size);
 	} else {
 		t = T_INT;
 		p1 = evaluate(p1, &f, &i64, &s, &t, false);

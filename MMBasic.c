@@ -2018,11 +2018,15 @@ unsigned char MIPS16 __not_in_flash_func(*getvalue)(unsigned char *p, MMFLOAT *f
             // dot-hook to the member's type — use it to classify the value.
             if (g_StructMemberType != 0) {
                 t = TypeMask(g_StructMemberType);
-                g_ExprStructType = -1;
+                // When the resolved member is itself a T_STRUCT (Phase 4+),
+                // remember its struct-type idx so Phase 5 whole-struct
+                // assignment can type-check.  g_StructMemberSize holds the
+                // struct type index when the member is T_STRUCT (set by
+                // FindStructMember from the member's .size field).
+                g_ExprStructType = (t == T_STRUCT) ? g_StructMemberSize : -1;
             } else if (g_vartbl[g_VarIndex].type & T_STRUCT) {
-                // Whole-struct expression (e.g. `PRINT p` — Phase 5 needs this).
-                // For Phase 1 we just flag it; cmd_print's "reserved word" error
-                // still fires, which is the right behaviour until struct-print lands.
+                // Whole-struct expression (scalar struct or struct array
+                // element with no trailing member access).
                 t = T_STRUCT;
                 g_ExprStructType = (int)g_vartbl[g_VarIndex].size;
             } else {
