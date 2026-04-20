@@ -3520,6 +3520,64 @@ void MIPS16 cmd_dim(void) {
             	if(tokenfunction(*p) == op_equal) {
                     p++;                                            // step over the equals sign
                     skipspace(p);
+                    // Phase 17: `DIM s AS MyType = (v1, v2, ...)` initializer.
+                    // Ported from upstream Commands.c:6355-6494 (@04f81d0).
+                    // Walks the struct definition and assigns each member in
+                    // declared order; array members consume multiple values.
+                    // Struct-array initializers iterate the whole array.
+                    if (g_vartbl[g_VarIndex].type & T_STRUCT) {
+                        if (*p != '(') error("Expected '(' for structure initialisation");
+
+                        int struct_idx = (int)g_vartbl[VIndexSave].size;
+                        struct s_structdef *sd = g_structtbl[struct_idx];
+                        int struct_size = sd->total_size;
+                        unsigned char *struct_ptr = (unsigned char *)v;
+
+                        int num_elements = 1;
+                        if (g_vartbl[VIndexSave].dims[0] > 0) {
+                            for (j = 1, k = 0; k < MAXDIM && g_vartbl[VIndexSave].dims[k]; k++)
+                                num_elements *= (g_vartbl[VIndexSave].dims[k] + 1 - g_OptionBase);
+                        }
+
+                        p++;                                        // step over opening '('
+                        skipspace(p);
+
+                        for (int elem = 0; elem < num_elements; elem++) {
+                            for (int m = 0; m < sd->num_members; m++) {
+                                struct s_structmember *member = &sd->members[m];
+                                unsigned char *member_ptr = struct_ptr + member->offset;
+
+                                int member_elements = 1;
+                                if (member->dims[0] != 0) {
+                                    for (k = 0; k < MAXDIM && member->dims[k]; k++)
+                                        member_elements *= (member->dims[k] + 1 - g_OptionBase);
+                                }
+
+                                for (int me = 0; me < member_elements; me++) {
+                                    skipspace(p);
+                                    if (*p == ')' || *p == 0)
+                                        error("Not enough initialisation values");
+
+                                    int elem_size;
+                                    if (member->type & T_STR)       elem_size = member->size + 1;
+                                    else if (member->type & T_NBR)  elem_size = sizeof(MMFLOAT);
+                                    else if (member->type & T_INT)  elem_size = sizeof(long long int);
+                                    else                            error("Unsupported member type in initialisation");
+
+                                    p = SetValue(p, member->type, member_ptr);
+                                    member_ptr += elem_size;
+
+                                    skipspace(p);
+                                    if (*p == ',')      p++;
+                                    else if (*p != ')') error("Expected ',' or ')' in structure initialisation");
+                                }
+                            }
+                            struct_ptr += struct_size;
+                        }
+
+                        skipspace(p);
+                        if (*p != ')') error("Expected ')' at end of structure initialisation");
+                    } else
                     if(g_vartbl[g_VarIndex].dims[0] > 0 && *p == '(') {
                         // calculate the overall size of the array
                         for(j = 1, k = 0; k < MAXDIM && g_vartbl[VIndexSave].dims[k]; k++) {
