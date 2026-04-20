@@ -1,172 +1,175 @@
 # TYPE / STRUCT port plan
 
-Sub-plan for Phase A item 5 of `docs/upstream-catchup-plan.md`. The feature is the centerpiece of upstream 6.02, and the catch-up plan explicitly calls for a sub-plan before starting because the surface area spans the program loader, variable table, expression parser, DIM/REDIM/ERASE machinery, and a new family of commands.
+Sub-plan for Phase A item 5 of `docs/upstream-catchup-plan.md`. TYPE/STRUCT is the centerpiece of upstream 6.02 and its full surface is larger than a single-commit port can carry; the parent plan mandates a sub-plan.
 
-- **Upstream reference:** UKTailwind/PicoMiteAllVersions `@04f81d0`, version 6.02.02B0. Everything in scope is guarded by `#ifdef STRUCTENABLED`.
-- **Our branch:** `catchup/type-struct` (off `main`, will land per the standard catch-up workflow).
-- **Gate:** same as every catch-up port — host `./run_tests.sh` default compare mode green, `./build_firmware.sh rp2040` + `rp2350` green, `./host/build_wasm.sh` green.
+- **Upstream reference:** UKTailwind/PicoMiteAllVersions `@04f81d0`, version 6.02.02B0. Feature is guarded upstream by `#ifdef STRUCTENABLED`; we plan to drop the guard (see "Decisions").
+- **Acceptance spec:** `host/tests/acceptance/struct_full.bas` — the upstream `StructTest.bas`, 2188 lines, 86 numbered tests. When this passes under `./mmbasic_test ... --vm` and `--interp`, the port is done.
+- **Our branch:** `catchup/type-struct` (off `main`, lands per the standard catch-up workflow).
+- **Prerequisite:** bridge-rebinding fix in `bc_bridge.c` (lands as its own commit; unlocks REDIM-in-VM at the same time, and is what lets struct memory live in `g_vartbl` without breaking VM reads after a bridged allocation).
+- **Gate per phase:** host `./run_tests.sh` default compare mode green, `./build_firmware.sh rp2040 && ./build_firmware.sh rp2350` green, `./host/build_wasm.sh` green.
 
-## Feature surface
+## Architecture: single storage, shared by both engines
 
-Totals from the scope pass (see "Upstream anchors" below):
+The earlier draft of this plan marked TYPE/STRUCT as interpreter-only on the same grounds that made REDIM interpreter-only — the VM's `vm->arrays[slot]` is a private per-slot store disjoint from `g_vartbl`, so a bridged command can't coherently mutate a VM-owned buffer. That reading was incomplete. `bc_bridge.c:108-151` already aliases `g_vartbl[vi].val.ia/fa/s` to `vm->arrays[i].data` on the inbound side of every bridge call, and the post-bridge sync skips arrays on the assumption that bridged commands mutate data in place. REDIM violates that assumption by reallocating; the fix is a ~20-line post-bridge rebinding loop that detects `val.* != vm->arrays[i].data` and adopts the new pointer + refreshed dims.
 
-| file | approx lines added | what lands |
+Once that fix is in, **struct storage living in `g_vartbl`** is no longer a problem for the VM. The VM aliases the same memory on bridge calls, the bridge's rebinding loop catches any `DIM`/`REDIM`/`STRUCT COPY array()` reallocation, and struct field access compiles natively against the aliased pointer — no per-field bridge.
+
+Concretely:
+
+- **Struct instance memory** is allocated by the interpreter's `cmd_dim` via `findvar(V_FIND|V_DIM_VAR)` and stored in `g_vartbl[vi].val.s`, exactly as upstream does. `PrepareProgramExt` has already populated `g_structtbl[struct_idx]` before any bytecode executes (it runs at program-load time, before `bc_source.c` runs).
+- **VM slot bookkeeping** adds a `struct_idx` field to `BCSlot` so the compiler can resolve field offsets at compile time. The VM has no runtime struct registry — it trusts `g_structtbl` (populated by `PrepareProgramExt`), which is shared state.
+- **VM opcodes** resolve offsets at compile time:
+  - `OP_DIM_STRUCT slot, ndim` — bridges to `cmd_dim`, inherits the rebinding path.
+  - `OP_LOAD_STRUCT_FIELD_I/F/S slot, offset, size` — reads `((uint8_t*)arr->data) + array_index * struct_size + offset`. Array indices are popped off the stack first when `ndim > 0`.
+  - `OP_STORE_STRUCT_FIELD_I/F/S` — mirror.
+  - `OP_STRUCT_FIELD_REF slot, offset, size, type` — for `pt.x` used on the LHS of `INC`/`&` or passed as a BYREF arg. Pushes a tagged reference on the VM stack.
+- **`STRUCT COPY`/`SORT`/`CLEAR`/`SWAP`/`SAVE`/`LOAD`/`PRINT`/`EXTRACT`/`INSERT`** compile to `OP_BRIDGE_CMD`. They mutate the aliased `g_vartbl` memory; the post-bridge rebinding loop picks up any reallocation. Same story for `STRUCT(FIND …)` and friends on the function side — they use `OP_BRIDGE_FUN_*`.
+
+Result: every test in `struct_full.bas` runs in both engines. No `RUN_ARGS: --interp` on any struct test.
+
+## Feature surface (from `struct_full.bas`)
+
+Numbered by the test in the acceptance spec. Grouped into phases for commit cadence.
+
+| phase | tests | what it adds |
 |---|---|---|
-| `Commands.c` | ~700 | `cmd_type`, `cmd_endtype`, `cmd_struct` (COPY / SORT / CLEAR / SWAP / SAVE), `fun_struct` (`STRUCT(FIND …)`), `ParseStructMember`, `FindStructType`, `FindStructMember`, `CheckIfTypeSpecified` hook into `cmd_dim` |
-| `MMBasic.c` | ~300 | TYPE-block pass inside `PrepareProgramExt`, `ResolveStructMember`, `FindStructBase`, struct-aware `findvar` + `erase` paths |
-| `MMBasic.h` | ~50 | `T_STRUCT` type flag, `s_structdef` / `s_structmember` typedefs, `MAX_STRUCT_TYPES`, `MAX_STRUCT_MEMBERS`, `MAX_STRUCT_NEST_DEPTH`, new externs |
-| `AllCommands.h` | ~10 | `Type`, `End Type`, `Struct`, `Struct(` registrations |
+| 1 | 1, 2, 13 | TYPE/END TYPE parsing in `PrepareProgramExt`; `DIM s AS mytype` (scalar); scalar numeric/float field read+write; multiple struct types coexist |
+| 2 | 16, 31 | string members (`LENGTH`-qualified), ERASE cleanup path, struct packing with non-8-byte members |
+| 3 | 3, 5, 7, 12, 46, 47, 48 | array-of-struct (`DIM a(n) AS type`), `a(i).x` access with constant and variable index, `BOUND()` works on struct arrays, 2D struct arrays |
+| 4 | 51, 52, 53, 54 | nested structs (`type` containing `type`); `a.b.c` chained access; arrays of nested members; full `arr(i).member(j).member(k)` nesting |
+| 5 | 69, 70, 71, 72, 74, 74A, 74B | struct direct assignment `a = b` (single and array elements, across different arrays, with nested members, with variable index) |
+| 6 | 29, 30, 32, 73 | function returning struct (`FUNCTION Foo() AS mytype`); including structs with array members; direct assignment from function return |
+| 7 | 4, 6, 10, 11, 14 | struct as SUB/FUNCTION parameter (by reference), struct element passed, array-of-struct passed, read-only access invariance |
+| 8 | 19, 20, 21, 22 | `LOCAL` struct in sub/fun; `LOCAL` struct array; LOCAL with initializer; memory cleanup across many calls |
+| 9 | 8, 9, 33, 34, 35, 36, 49, 50 | `STRUCT COPY` (single, mixed types, `COPY array() TO array()` preserving extra elements), `STRUCT CLEAR` (single + array), `STRUCT SWAP` (single + array elements) |
+| 10 | 23, 24, 25, 26, 27, 28 | `STRUCT SORT` by integer / string / float member; reverse; case-insensitive; empty-strings-at-end |
+| 11 | 41, 64, 65, 66, 67, 75 | `STRUCT SAVE`/`STRUCT LOAD` to/from file; individual elements; array-of-struct; round-trip; random-access file I/O with struct arrays (via GET/PUT — verify existing file machinery handles struct types) |
+| 12 | 43, 44, 45 | `STRUCT PRINT` (single, element, whole array) |
+| 13 | 77, 78, 79, 80, 81, 82, 83, 84 | `STRUCT EXTRACT member → flat array`; `STRUCT INSERT flat array → member`; all three member types; preservation of non-extracted members |
+| 14 | 37, 38, 39, 40, 42 | `STRUCT(FIND arr().member, value [, start])`; int/float/string match, not-found returns -1, start parameter iterates duplicates |
+| 15 | 42A, 42B, 42C, 42D, 42E, 42F | `STRUCT(FIND)` with regex (empty start parameter triggers regex mode; digit classes `\d+`, character classes `[A-D]`, anchors `^`, wildcards) — **verify our existing regex module supports the subset used** |
+| 16 | 60, 61, 62, 63, 63a, 63b, 63c, 63d, 85, 85b, 85c, 85d | `STRUCT(SIZEOF typename)`, `STRUCT(OFFSET typename, member)`, `STRUCT(TYPE typename, member)`; case-insensitive; variable typename |
+| 17 | 15, 16, 17, 18 | `DIM s AS Point = (1, 2)` scalar initializer; string-member initializer; array-of-struct initializer; mixed-type init |
+| 18 | 55, 56, 57, 58, 59 | legacy-dotted-name coexistence (`Dim My.Variable%`, dotted subs, dotted functions, dotted arrays); mixed dotted identifiers with struct-member access in the same expression |
+| 19 | 76 | graphics commands taking struct-array members (e.g. `BOX pts().x, pts().y, …`) — once 3 and the bridge can alias struct arrays, this should mostly work via existing array-argument plumbing, but confirm |
 
-New globals: `g_structtbl[MAX_STRUCT_TYPES]`, `g_structcnt`, `g_StructArg`, `g_StructMemberType`, `g_StructMemberOffset`, `g_StructMemberSize`, `g_ExprStructType`, plus the tokens `cmdTYPE` / `cmdEND_TYPE` fetched in the init path.
+19 phases sounds like a lot; most are small after phases 1-4. Phases 1-3 build the scaffolding (typedefs, globals, `PrepareProgramExt` pass, `findvar` dot-notation hook, compile-time offset resolution in `bc_source.c`). Phases 4-18 add capabilities that mostly don't touch that scaffolding.
 
-Field reuse: **no new `s_vartbl` fields**. When `type & T_STRUCT`, the existing `size` byte holds the struct-type index. That overload is a load-bearing invariant the port must preserve.
+## Per-phase VM vs. interpreter work
+
+For each phase the interpreter-side port is a straight read-and-adapt from upstream (anchors in `docs/upstream-catchup-plan.md` and in the scope section below). The VM work per phase is much smaller because most of it rides on shared storage:
+
+| phase | interp work | VM work |
+|---|---|---|
+| 1 | TYPE scan in `PrepareProgramExt`; `FindStructType`; `ParseStructMember`; `cmd_type`/`cmd_endtype`; `CheckIfTypeSpecified` hook in `cmd_dim`; `ResolveStructMember` (scalar-only first cut); `FindStructBase`; `s_structdef`/`s_structmember` typedefs; `T_STRUCT` flag; new globals | `BCSlot` gains `struct_idx`; `bc_source.c` compiles `DIM v AS type` → emits `OP_DIM_STRUCT`; compiles `v.field` → `OP_LOAD_STRUCT_FIELD_*`/`OP_STORE_STRUCT_FIELD_*` with compile-time offset lookup in `g_structtbl`; three new VM opcodes |
+| 2 | String members in `ParseStructMember`; `erase()` walks struct members freeing T_STR | none — same opcodes handle string offset; VM just emits `OP_LOAD_STRUCT_FIELD_S` |
+| 3 | array-of-struct allocation in `cmd_dim`; `ResolveStructMember` handles `a(i).x` | `OP_LOAD_STRUCT_FIELD_*` already takes array-index params; bc_source.c parses the optional index |
+| 4 | `ResolveStructMember` walks chained `.` and `(…)` up to MAX_STRUCT_NEST_DEPTH | bc_source.c walks the chain at compile time, accumulates offset into a single compile-time constant; still one opcode emitted |
+| 5 | `cmd_subfun`/assignment path handles `a = b` for T_STRUCT (memcpy struct_size bytes) | `OP_STRUCT_ASSIGN dst_slot, dst_idx, src_slot, src_idx, size` or bridge — leaning toward bridge since it's used less than field access |
+| 6 | Function-return-struct machinery (`CopyStructReturn`) | new opcode or bridge — TBD after profiling; start with bridge |
+| 7 | SUB/FUNCTION argument passing for T_STRUCT; BYREF via pointer | bc_source.c emits argument-passing as pointer-to-struct-memory (new stack tag, analogous to existing array-ref tag) |
+| 8 | `LOCAL s AS type` / `STATIC s AS type` in `cmd_dim` local path | `OP_DIM_LOCAL_STRUCT`; local-slot version of load/store |
+| 9 | `cmd_struct` COPY / CLEAR / SWAP | bridged; no new VM opcodes |
+| 10 | `cmd_struct` SORT | bridged |
+| 11 | `cmd_struct` SAVE/LOAD with file I/O; random-access GET/PUT | bridged |
+| 12 | `cmd_struct` PRINT | bridged |
+| 13 | `cmd_struct` EXTRACT / INSERT | bridged |
+| 14 | `fun_struct` FIND | bridged via `OP_BRIDGE_FUN_I` |
+| 15 | regex in fun_struct FIND — uses existing regex (confirm it handles the upstream pattern subset; swap to upstream's `re.c` if not) | same as 14 |
+| 16 | `fun_struct` SIZEOF / OFFSET / TYPE | bridged |
+| 17 | `cmd_dim` initializer parsing | bc_source.c parses and emits a store sequence after `OP_DIM_STRUCT`; no new VM opcodes |
+| 18 | Tokenizer / `findvar` disambiguation of legacy dotted names from struct-member references | bc_source.c mirrors the same disambiguation: if `a` is a struct slot, parse `a.b` as field access; otherwise treat the whole `a.b` as a single identifier |
+| 19 | Graphics-command plumbing accepts struct-array-member "arrays" | none — existing array-argument path works once aliasing is in |
+
+Total new VM opcodes across the port: roughly 6-8 (DIM_STRUCT, LOAD_STRUCT_FIELD_I/F/S, STORE_STRUCT_FIELD_I/F/S, FIELD_REF, DIM_LOCAL_STRUCT). Every other struct operation bridges.
 
 ## Upstream anchors
 
-For every step below, the porter reads upstream first — do not copy blindly (per the top-level plan). The numbers are from `git show upstream/main:<file>` at `@04f81d0`.
+These are the code coordinates — the porter reads upstream first per the parent plan's invariants.
 
 | concern | file:line | notes |
 |---|---|---|
-| TYPE block scan | `MMBasic.c:949-1157` | inside `PrepareProgramExt`; walks the tokenized program looking for `cmdTYPE`, calls `ParseStructMember` per member, rejects nested TYPE |
-| `cmd_type` | `Commands.c:6663-6689` | runtime body just skips to `END TYPE` (definition already built in `PrepareProgramExt`) |
+| TYPE block scan | `MMBasic.c:949-1157` | inside `PrepareProgramExt`; walks tokenized program, calls `ParseStructMember` per member |
+| `cmd_type` | `Commands.c:6663-6689` | runtime body just skips to `END TYPE` |
 | `cmd_endtype` | `Commands.c:6690-6703` | error if reached directly |
-| `cmd_struct` | `Commands.c:6704-7400+` | COPY / SORT / CLEAR / SWAP / SAVE sub-commands |
-| `fun_struct` | `Commands.c:8060+` | `STRUCT(FIND …)` |
-| `ParseStructMember` | `Commands.c:7776-7980` | ~205 lines; member name + type + optional dims + alignment |
+| `cmd_struct` | `Commands.c:6704-7400+` | COPY / SORT / CLEAR / SWAP / SAVE / LOAD / PRINT / EXTRACT / INSERT sub-commands |
+| `fun_struct` | `Commands.c:8060+` | `STRUCT(FIND …)`, `STRUCT(SIZEOF …)`, `STRUCT(OFFSET …)`, `STRUCT(TYPE …)` |
+| `ParseStructMember` | `Commands.c:7776-7980` | member name + type + optional dims + alignment |
 | `FindStructType` | `Commands.c:7986-8010` | name → struct index |
 | `FindStructMember` | `Commands.c:8014-8060` | struct index + name → offset / type / size |
-| `ResolveStructMember` | `MMBasic.c:3371-3670` | ~300 lines; chained dot notation `a.b(i).c`, nesting depth up to `MAX_STRUCT_NEST_DEPTH`, sets `g_StructMemberType/Offset/Size`, returns pointer to member data |
+| `ResolveStructMember` | `MMBasic.c:3371-3670` | chained dot + array index; sets `g_StructMemberType/Offset/Size`; returns pointer |
 | `FindStructBase` | `MMBasic.c:3686-3750` | dot-notation entry in `findvar` |
-| `CheckIfTypeSpecified` + DIM init | `Commands.c:6286-6550` | resolves `AS mytype` via `FindStructType`; allocates `struct_size × num_elements`; supports `DIM s AS Point = (x, y, …)` initializer |
-| alignment | `Commands.c:7939`, `MMBasic.c:1125-1130` | 8-byte align for INTEGER / FLOAT / nested-struct members; struct padded up so array elements sit on aligned offsets |
-| REDIM with struct arrays | `Commands.c:5612-5705` | sets `g_StructArg = structIdx`, strips ` AS structtype` before `findvar`, PRESERVE copies existing struct data |
-| ERASE string-member cleanup | `Commands.c:5785` | walks struct members, frees T_STR members with `g_StructMemberType` / member-size contract |
-| `STRUCTENABLED` define | not located in scoping; check `configuration.h` and per-target CMake | needs a project-wide decision — see "Decisions" |
+| `CheckIfTypeSpecified` + DIM init | `Commands.c:6286-6550` | resolves `AS mytype`; allocates `struct_size × num_elements`; initializer `DIM s AS Point = (x, y, …)` |
+| alignment | `Commands.c:7939`, `MMBasic.c:1125-1130` | 8-byte align for INTEGER/FLOAT/nested; trailing pad for array elements |
+| ERASE string-member cleanup | `Commands.c:5785` | walks members, frees T_STR |
+| REDIM with struct arrays | `Commands.c:5612-5705` | `g_StructArg = structIdx` before `findvar`; strips ` AS structtype`; PRESERVE copies struct data |
+| dots-in-names parsing | `MMBasic.c:3879-3920` (inside findvar) | disambiguate legacy dotted name from struct field reference |
 
-## Why this is interpreter-only for now
+## Decisions
 
-The VM's array-slot model is the reason REDIM is interpreter-only (see `docs/upstream-catchup-plan.md` REDIM row and the commit note on `ef9fc5d`). TYPE/STRUCT has the same problem, harder:
-
-- `findvar` is the dot-notation entry point, but the VM emits `OP_LOAD_VAR_*` / `OP_LOAD_ARR_*` and never goes through `findvar`.
-- `ResolveStructMember` sets global state (`g_StructMemberOffset/Type/Size`) that the interpreter threads into subsequent operations. The VM has no call site that would read those globals.
-- `cmd_struct COPY/SORT/SWAP/SAVE` mutate interpreter-side memory that the VM's `vm->arrays[slot]` knows nothing about.
-
-So in the first cut, **every struct-touching test gets `' RUN_ARGS: --interp`** and a `FRUN` program that references a struct is a "do not do that" case. If later performance demands struct support in `FRUN`, that's a separate design: native `OP_DIM_STRUCT` / `OP_LOAD_STRUCT_FIELD_*` opcodes and a VM-side struct registry. Out of scope here — note only.
-
-## Decisions that need to be made before coding
-
-1. **Enable `STRUCTENABLED` globally or gate it?** Upstream wraps every struct site in `#ifdef STRUCTENABLED`. Our HAL-first philosophy pushes against more `#ifdef`s. Options:
-   - **Always on.** Add `#define STRUCTENABLED 1` in `configuration.h` (or remove the guard entirely from the port). Simpler, one less compile variant, but the feature ships into every firmware build.
-   - **Per target.** Keep the guard, define it in every target we ship (rp2040, rp2350, host, wasm). Mechanically identical to "always on" but leaves an escape hatch.
-   - **Keep it off somewhere.** No good reason — disabling the feature on rp2040 only splits the test matrix.
-
-   **Recommended:** always-on, drop the guard in ported code. That matches the catch-up plan's invariant #4 ("No new hardware `#ifdef` gates added to core interpreter files").
-
-2. **Alignment.** Upstream hardcodes 8-byte alignment for INTEGER / FLOAT / nested-struct members. That works across our targets too (ARM32 RP2040, ARM33 RP2350, x86_64 / arm64 host, wasm32). Keep it as-is.
-
-3. **Struct-type capacity.** Upstream uses `MAX_STRUCT_TYPES = 32`, `MAX_STRUCT_MEMBERS = 16`. We keep the same values unless a test case demands more — memory impact is `32 × sizeof(s_structdef)` globally.
-
-4. **Static memory vs. heap for `g_structtbl[]`.** Upstream allocates each `s_structdef` on the heap (`GetMemory`) from `PrepareProgramExt`. Keep that — it reuses the existing MMHeap management and is cleared on program reload.
-
-## Phased port plan
-
-Each phase ends with the full gate green. If a phase fails, its commit does not land — the next phase starts from the last green tree.
-
-### Phase 1 — minimum viable TYPE (skeleton)
-
-Goal: a program can declare a TYPE, `DIM` a scalar instance, write / read scalar numeric fields. No nested, no array-of-struct, no `STRUCT` sub-commands, no `fun_struct`.
-
-- `MMBasic.h`: add `T_STRUCT`, `s_structdef`, `s_structmember`, capacity defines, new externs.
-- `AllCommands.h`: register `Type`, `End Type`, `Struct` (body stub — sub-commands come later), no `Struct(`.
-- `MMBasic.c`: fetch `cmdTYPE` / `cmdEND_TYPE` in init. Add the PrepareProgramExt TYPE-scan pass.
-- `Commands.c`: add `cmd_type` (runtime skip), `cmd_endtype` (error), `ParseStructMember`, `FindStructType`, `FindStructMember`, `CheckIfTypeSpecified` (called from `cmd_dim` to resolve `AS mytype`).
-- `MMBasic.c`: add `FindStructBase` and `ResolveStructMember` — dot-notation for a single scalar numeric field. Array-of-struct and nested struct return "not yet supported" errors.
-- Test: `host/tests/frontend/t050_struct_basic.bas` (RUN_ARGS: --interp) — one TYPE with one INTEGER and one FLOAT member, DIM, assign, print.
-
-Gate. Commit: `"Upstream 6.02 parity: TYPE/STRUCT phase 1 (skeleton) — scalar numeric fields"`.
-
-### Phase 2 — string members
-
-Add `T_STR` struct members. Needs the ERASE cleanup path (`Commands.c:5785`) so `ERASE s` (and program reload) frees string members without leaking or double-freeing.
-
-Test: `t051_struct_string.bas` — string members assign / read / ERASE.
-
-### Phase 3 — array-of-struct + struct field access `a(i).x`
-
-Extend DIM allocation to `struct_size × (ubound+1)`. Extend `ResolveStructMember` to consume array indices before the dot (`points(i).x`). Extend `cmd_redim` to handle `AS structtype` arrays (the existing REDIM code already threads `g_StructArg` — port that call site).
-
-Test: `t052_struct_array.bas` — DIM `pts(10) AS Point`, FOR-NEXT assign, read back, REDIM PRESERVE.
-
-### Phase 4 — nested structs + chained field access `s.a.b.c`
-
-Extend `ResolveStructMember` to handle nesting up to `MAX_STRUCT_NEST_DEPTH` (upstream has a hard limit — preserve it; document the limit in an error message).
-
-Test: `t053_struct_nested.bas` — two TYPEs, one containing the other, chained read / write.
-
-### Phase 5 — `STRUCT COPY` / `STRUCT CLEAR` / `STRUCT SWAP`
-
-Port `cmd_struct` sub-commands COPY, CLEAR, SWAP (not SORT, not SAVE yet). These three are pure memory ops.
-
-Test: `t054_struct_copy_clear_swap.bas`.
-
-### Phase 6 — `STRUCT SORT`
-
-Port the Shell sort (`Commands.c:6818-7050`, ~233 lines). Supports reverse, case-insensitive, empty-at-end flags. Nontrivial — gets its own commit.
-
-Test: `t055_struct_sort.bas`.
-
-### Phase 7 — `STRUCT SAVE` + `STRUCT(FIND …)`
-
-File I/O for SAVE (`Commands.c:7157+`) and the `fun_struct` FIND subfunction (`Commands.c:8060+`). SAVE writes raw struct bytes — endian note in commit message.
-
-Test: `t056_struct_save_find.bas`.
-
-### Phase 8 — DIM initializer `DIM s AS Point = (1, 2)`
-
-The init-list syntax from `Commands.c:6450-6550`. Last because it is sugar — the phases above give working structs without it.
-
-Test: `t057_struct_dim_init.bas`.
+1. **`STRUCTENABLED` always-on.** Drop the guard; matches parent plan invariant #4 (no new hardware `#ifdef` gates in core interpreter files). One fewer compile variant to maintain.
+2. **Alignment: 8-byte.** Upstream's choice; valid across rp2040, rp2350, host (x86_64/arm64), wasm32.
+3. **Capacities: upstream's defaults** — `MAX_STRUCT_TYPES = 32`, `MAX_STRUCT_MEMBERS = 16`, `MAX_STRUCT_NEST_DEPTH` whatever upstream uses. Raise only if an acceptance test demands it.
+4. **Storage: `g_vartbl`.** Struct instances and struct arrays allocate through the interpreter's standard `cmd_dim` path; VM accesses via alias. Depends on the bridge-rebinding fix landing first.
+5. **`vm->arrays[slot]` for struct variables becomes "pointer-only".** `data` aliases `g_vartbl[vi].val.s`; `elem_type = T_STRUCT`; `dims[]` shadows `g_vartbl[vi].dims`. Rebinding loop keeps the pointer current. No separate BCValue storage for struct fields.
+6. **Field offsets resolved at compile time.** `bc_source.c` reads `g_structtbl` during compilation (which is safe because `PrepareProgramExt` runs first — confirmed by checking the FRUN command flow). If the user redefines a TYPE mid-program (upstream doesn't support this either), we error.
+7. **Bridge for aggregate-mutation commands.** COPY/SORT/SWAP/SAVE/LOAD/PRINT/EXTRACT/INSERT all bridge — they are rare in hot paths and mutate memory that's already aliased. Not worth native opcodes.
 
 ## Risks and gotchas
 
-From the scope report — things that will bite a porter who copies upstream verbatim:
+1. **`g_vartbl[idx].size` overload.** When `type & T_STRUCT`, `size` holds the struct-type index, not string length. Audit every `.size` reader in the tree (grep for the pattern) and guard each against `T_STRUCT`.
+2. **`NAMELEN_STATIC` collision.** Static variables tag `namelen` with a bit flag; dot-notation resolver must mask it before name comparison.
+3. **REDIM+struct.** Phase 3 must wire `g_StructArg` into our REDIM port. Cross-link the two ports so the REDIM author is aware.
+4. **ERASE string-member free.** Phase 2. Program reload must free struct strings without leaks.
+5. **Tokenizer: `End Type` as two tokens.** Command table is longest-match; confirm upstream's ordering and mirror it exactly.
+6. **Alignment on wasm32.** Emscripten `wasm32` uses 4-byte `size_t` but 8-byte `long long`. 8-byte alignment is correct; verify with a mixed-member struct in Phase 2 tests.
+7. **Program-reload / `NEW` cleanup.** `PrepareProgramExt` heap-allocates `g_structtbl[]` entries; reload must free them. Find upstream's cleanup site (likely `ClearRuntime` or a dedicated `ClearStructs`) and mirror.
+8. **Legacy dotted-name disambiguation (Phase 18).** This is where the whole port is most likely to regress working programs. Our tree probably already supports `Dim My.Var%`. The resolver change for struct notation has to leave that path intact. Strategy: disambiguation happens at `findvar` lookup time — if the prefix before the `.` is a declared struct variable, treat the rest as a field; otherwise treat the whole thing as a legacy dotted identifier.
+9. **Compile-time vs. runtime for VM opcodes.** `bc_source.c` resolves field offsets via `g_structtbl` at compile time. If TYPE is declared *after* a `DIM v AS type` that uses it (legal in MMBasic since `PrepareProgramExt` does a full scan first), our compile-time lookup still works because `PrepareProgramExt` has populated `g_structtbl` before the bytecode compiler runs.
+10. **`fun_struct FIND` regex.** Our existing regex module (`xregex.c` / `xregex2.h`) may not support the exact syntax upstream's tests use (`\d+`, `[A-D]`, `^`). Phase 15 starts with an audit — if our regex handles the cases, port `fun_struct FIND` as-is; if not, either limit feature scope or swap in upstream's `re.c` (tier-2 catchup item, already on the parent plan).
 
-1. **`g_vartbl[idx].size` overload.** Any code path that reads `.size` to mean "string length" must guard `!(type & T_STRUCT)`. Audit existing string-handling in `Commands.c` / `MATHS.c` / `I2C.c` for this pattern.
-2. **`NAMELEN_STATIC` collision.** Static variables tag `namelen` with a bit flag; `FindStructBase` must mask it off before name comparison. Upstream does; our port must keep that.
-3. **REDIM + struct arrays interaction.** Our REDIM port (commit `ef9fc5d`) doesn't know about `g_StructArg`. Phase 3 must wire that in — otherwise REDIM on a struct array crashes.
-4. **ERASE string-member free.** Phase 2 requirement. `ERASE s` on a struct with string members must free each string slot; otherwise reload leaks.
-5. **`checkstring` in `cmd_redim`'s LENGTH path.** My REDIM port synthesises `"VAR LENGTH n"` for string arrays. Struct-of-string-array is a new code path — verify the synthesis still works or extend it.
-6. **Tokenizer greediness.** `End Type` is two tokens in the command table, but `End` alone is already a command. Confirm upstream's `AllCommands.h` ordering (longest-match first) and mirror it exactly.
-7. **Alignment on wasm32.** Emscripten `wasm32` uses 4-byte `size_t` but 8-byte `long long`. Upstream's 8-byte align for INTEGER members is correct; test with a struct containing INTEGER + FLOAT + STR to be sure offsets match on all four targets.
-8. **Program-reload / `NEW` cleanup.** `PrepareProgramExt` allocates `g_structtbl[]` entries on the heap; program reload must free them. Upstream does this somewhere — find it and mirror (probably in `ClearRuntime` or a dedicated `ClearStructs`).
-9. **Commit size.** The skeleton (Phase 1) alone is ~400 lines across four files. Resist the temptation to squash Phase 1+2 into one commit — Phase 2 adds a new lifetime management concern (string-free on erase) that benefits from its own review.
+## Test cadence
 
-## Test list
+Each phase adds one focused test in `host/tests/frontend/t0NN_struct_*.bas` covering exactly that phase's slice. The phase lands when:
 
-Each phase gets one test. Running list lives in this doc — strike through as committed:
+1. Focused test passes under the default gate (compare mode).
+2. The corresponding test numbers in `host/tests/acceptance/struct_full.bas` pass when that file is run manually with `./mmbasic_test tests/acceptance/struct_full.bas`. (We check the numbered sections listed in the phase table above; later phases may cause earlier numbered tests to regress if scaffolding assumptions change — running the full acceptance file catches that.)
+3. All firmware + wasm builds green.
 
-- [ ] `t050_struct_basic.bas` — Phase 1
-- [ ] `t051_struct_string.bas` — Phase 2
-- [ ] `t052_struct_array.bas` — Phase 3
-- [ ] `t053_struct_nested.bas` — Phase 4
-- [ ] `t054_struct_copy_clear_swap.bas` — Phase 5
-- [ ] `t055_struct_sort.bas` — Phase 6
-- [ ] `t056_struct_save_find.bas` — Phase 7
-- [ ] `t057_struct_dim_init.bas` — Phase 8
+Focused-test filenames reserved up front (adjust numbers if other tests land first):
 
-Every test header: `' RUN_ARGS: --interp` (struct support is interpreter-only in this port — see "Why this is interpreter-only for now").
+- `t050_struct_phase1_scalar.bas`
+- `t051_struct_phase2_string.bas`
+- `t052_struct_phase3_array.bas`
+- `t053_struct_phase4_nested.bas`
+- `t054_struct_phase5_assign.bas`
+- `t055_struct_phase6_funreturn.bas`
+- `t056_struct_phase7_subarg.bas`
+- `t057_struct_phase8_local.bas`
+- `t058_struct_phase9_copy_clear_swap.bas`
+- `t059_struct_phase10_sort.bas`
+- `t060_struct_phase11_save_load.bas`
+- `t061_struct_phase12_print.bas`
+- `t062_struct_phase13_extract_insert.bas`
+- `t063_struct_phase14_find.bas`
+- `t064_struct_phase15_find_regex.bas`
+- `t065_struct_phase16_sizeof_offset_type.bas`
+- `t066_struct_phase17_dim_init.bas`
+- `t067_struct_phase18_dotted_names.bas`
+- `t068_struct_phase19_graphics_args.bas`
 
 ## Exit criteria
 
-- All eight phase tests green under `./run_tests.sh`.
-- Firmware builds (rp2040, rp2350) produce `.uf2` without new warnings.
+- `host/tests/acceptance/struct_full.bas` passes end-to-end under both `--interp` and `--vm` modes, i.e. `./mmbasic_test tests/acceptance/struct_full.bas` reports no `FAIL` lines in either engine.
+- All focused-test counterparts in `tests/frontend/` pass in the default compare gate.
+- Firmware (rp2040, rp2350) produces `.uf2` without new warnings.
 - WASM build produces `picomite.{mjs,wasm}` without new warnings.
-- `docs/upstream-catchup-plan.md` updated: Phase A item 5 marked DONE with the commit range.
-- Tag `v6.01-parity-plus-lang` applied on main (end of Phase A per the parent plan).
+- `docs/upstream-catchup-plan.md` updated: Phase A item 5 DONE with commit range.
+- Tag `v6.01-parity-plus-lang` applied on main (Phase A complete per parent plan).
+- Consider: once this and REDIM are both landed, dust off the `FRUN` documentation to remove any "not supported in VM mode" language for array/struct operations.
 
 ## Out of scope
 
-- Native VM opcodes for struct field access (`OP_LOAD_STRUCT_FIELD_*`). Deferred until a user program's profile justifies it.
-- TYPE inheritance (upstream doesn't have it).
-- Struct-returning functions beyond what upstream's `CopyStructReturn` already handles.
-- Anything in upstream's `STRUCTENABLED` block that isn't anchored in this doc — re-scope first, don't port cold.
+- Struct-type inheritance (not an upstream feature).
+- Compile-time struct literal constants (`CONST p AS Point = (1,2)` — upstream only supports CONST on scalars).
+- Anything in upstream's `STRUCTENABLED` block not listed in the phase table above — scope it first, don't port cold.
