@@ -3997,6 +3997,163 @@ void MIPS16 cmd_struct(void) {
         }
         memset(var_ptr, 0, struct_size * num_elements);
     }
+    else if ((p = checkstring(cmdline, (unsigned char *)"PRINT")) != NULL) {
+        // STRUCT PRINT var | array() | array(n)
+        // Debug-oriented pretty-print — structure type name, then each
+        // member (with nested-struct recursion up to one level).
+        int var_idx, struct_type, struct_size;
+        unsigned char *var_ptr;
+        struct s_structdef *sd;
+
+        skipspace(p);
+        var_ptr = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        var_idx = g_VarIndex;
+        if (!(g_vartbl[var_idx].type & T_STRUCT))
+            error("Expected a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot print a structure member, use whole structure");
+
+        struct_type = (int)g_vartbl[var_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        sd = g_structtbl[struct_type];
+
+        int num_elements = 1;
+        int is_array = (g_vartbl[var_idx].dims[0] != 0);
+        int single_element = 0;
+
+        unsigned char *paren = (unsigned char *)strchr((char *)p, '(');
+        if (paren && is_array) {
+            paren++;
+            skipspace(paren);
+            if (*paren != ')') {
+                single_element = 1;
+                num_elements = 1;
+            }
+        }
+
+        if (is_array && !single_element) {
+            for (int d = 0; d < MAXDIM && g_vartbl[var_idx].dims[d] != 0; d++)
+                num_elements *= (g_vartbl[var_idx].dims[d] + 1 - g_OptionBase);
+        }
+
+        MMPrintString((char *)sd->name);
+        if (is_array && !single_element) {
+            char buf[32];
+            sprintf(buf, " array (%d elements):\r\n", num_elements);
+            MMPrintString(buf);
+        } else {
+            MMPrintString(":\r\n");
+        }
+
+        for (int elem = 0; elem < num_elements; elem++) {
+            unsigned char *elem_ptr = var_ptr + (elem * struct_size);
+
+            if (is_array && !single_element) {
+                char buf[32];
+                sprintf(buf, "[%d]:\r\n", elem + g_OptionBase);
+                MMPrintString(buf);
+            }
+
+            for (int m = 0; m < sd->num_members; m++) {
+                struct s_structmember *sm = &sd->members[m];
+                unsigned char *member_ptr = elem_ptr + sm->offset;
+                char buf[STRINGSIZE];
+
+                int member_elements = 1;
+                for (int d = 0; d < MAXDIM && sm->dims[d] != 0; d++)
+                    member_elements *= (sm->dims[d] + 1 - g_OptionBase);
+
+                if (sm->type == T_STRUCT) {
+                    struct s_structdef *nested_sd = g_structtbl[sm->size];
+                    sprintf(buf, "  .%s = %s:\r\n", sm->name, nested_sd->name);
+                    MMPrintString(buf);
+
+                    for (int nm = 0; nm < nested_sd->num_members; nm++) {
+                        struct s_structmember *nsm = &nested_sd->members[nm];
+                        unsigned char *nested_ptr = member_ptr + nsm->offset;
+
+                        sprintf(buf, "    .%s = ", nsm->name);
+                        MMPrintString(buf);
+
+                        if (nsm->type == T_INT) {
+                            long long int val = *(long long int *)nested_ptr;
+                            sprintf(buf, "%lld", val);
+                            MMPrintString(buf);
+                        } else if (nsm->type == T_NBR) {
+                            MMFLOAT val = *(MMFLOAT *)nested_ptr;
+                            sprintf(buf, "%g", val);
+                            MMPrintString(buf);
+                        } else if (nsm->type == T_STR) {
+                            MMPrintString("\"");
+                            int len = *nested_ptr;
+                            for (int c = 0; c < len; c++) {
+                                char ch[2] = {(char)nested_ptr[c + 1], 0};
+                                MMPrintString(ch);
+                            }
+                            MMPrintString("\"");
+                        } else if (nsm->type == T_STRUCT) {
+                            MMPrintString("(nested struct - use deeper access)");
+                        }
+                        MMPrintString("\r\n");
+                    }
+                }
+                else if (member_elements == 1) {
+                    sprintf(buf, "  .%s = ", sm->name);
+                    MMPrintString(buf);
+
+                    if (sm->type == T_INT) {
+                        long long int val = *(long long int *)member_ptr;
+                        sprintf(buf, "%lld", val);
+                        MMPrintString(buf);
+                    } else if (sm->type == T_NBR) {
+                        MMFLOAT val = *(MMFLOAT *)member_ptr;
+                        sprintf(buf, "%g", val);
+                        MMPrintString(buf);
+                    } else if (sm->type == T_STR) {
+                        MMPrintString("\"");
+                        int len = *member_ptr;
+                        for (int c = 0; c < len; c++) {
+                            char ch[2] = {(char)member_ptr[c + 1], 0};
+                            MMPrintString(ch);
+                        }
+                        MMPrintString("\"");
+                    }
+                    MMPrintString("\r\n");
+                }
+                else {
+                    // Array member
+                    sprintf(buf, "  .%s() = ", sm->name);
+                    MMPrintString(buf);
+
+                    int elem_size = (sm->type == T_STR) ? sm->size + 1 : sm->size;
+
+                    for (int ai = 0; ai < member_elements; ai++) {
+                        unsigned char *arr_ptr = member_ptr + (ai * elem_size);
+                        if (ai > 0) MMPrintString(", ");
+
+                        if (sm->type == T_INT) {
+                            long long int val = *(long long int *)arr_ptr;
+                            sprintf(buf, "%lld", val);
+                            MMPrintString(buf);
+                        } else if (sm->type == T_NBR) {
+                            MMFLOAT val = *(MMFLOAT *)arr_ptr;
+                            sprintf(buf, "%g", val);
+                            MMPrintString(buf);
+                        } else if (sm->type == T_STR) {
+                            MMPrintString("\"");
+                            int len = *arr_ptr;
+                            for (int c = 0; c < len; c++) {
+                                char ch[2] = {(char)arr_ptr[c + 1], 0};
+                                MMPrintString(ch);
+                            }
+                            MMPrintString("\"");
+                        }
+                    }
+                    MMPrintString("\r\n");
+                }
+            }
+        }
+    }
     else if ((p = checkstring(cmdline, (unsigned char *)"SAVE")) != NULL) {
         // STRUCT SAVE #n, var   STRUCT SAVE #n, array()   STRUCT SAVE #n, array(i)
         int fnbr, var_idx, struct_type, struct_size, num_elements = 1;
