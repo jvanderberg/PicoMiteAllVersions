@@ -77,6 +77,8 @@ void cmd_exitmmb(void);
 void cmd_pause(void);
 void cmd_timer(void);
 void cmd_copyright(void);
+void cmd_type(void);
+void cmd_endtype(void);
 void cmd_seek(void);
 void cmd_library(void);
 void cmd_pio(void);
@@ -370,6 +372,7 @@ void fun_map(void);
 	{ (unsigned char *)"EndIf",		T_CMD,				0, cmd_null	},
 	{ (unsigned char *)"End Function",       T_CMD,                          0, cmd_endfun	},      // this entry must come before END and FUNCTION
 	{ (unsigned char *)"End Sub",            T_CMD,                          0, cmd_return	},      // this entry must come before END and SUB
+	{ (unsigned char *)"End Type",           T_CMD,                          0, cmd_endtype	},      // this entry must come before END and TYPE
 	{ (unsigned char *)"End",		T_CMD,				0, cmd_end	},
 	{ (unsigned char *)"Erase",		T_CMD,				0, cmd_erase	},
 	{ (unsigned char *)"Error",		T_CMD,				0, cmd_error	},
@@ -403,6 +406,7 @@ void fun_map(void);
     { (unsigned char *)"Static",		T_CMD,				0, cmd_dim		},
 	{ (unsigned char *)"Sub",		T_CMD,				0, cmd_subfun   },
 	{ (unsigned char *)"Trace",		T_CMD,				0, cmd_trace	},
+	{ (unsigned char *)"Type",		T_CMD,				0, cmd_type	},
 	{ (unsigned char *)"While",		T_CMD,				0, cmd_do	},
 	{ (unsigned char *)"Const",		T_CMD,				0, cmd_const	},
 	{ (unsigned char *)"Redim",		T_CMD,				0, cmd_redim	},

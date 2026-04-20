@@ -8,6 +8,7 @@
 #include "bc_compiler_internal.h"
 #include "bc_source.h"
 #include "MMBasic.h"
+#include "Memory.h"
 #include "Draw.h"
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
@@ -31,6 +32,16 @@ typedef struct {
     int asm_start_line;                            /* source line of '!ASM directive */
     char (*asm_lines)[ASM_MAX_LINE_LEN];           /* [ASM_MAX_LINES] — alloc on demand */
     int  *asm_line_nos;                            /* [ASM_MAX_LINES] — alloc on demand */
+
+    /* TYPE…END TYPE state.  In --vm mode PrepareProgramExt doesn't run (the
+     * source is compiled straight into bytecode), so the compiler has to
+     * populate g_structtbl itself.  We accumulate members into
+     * `struct_def_inprogress` as they arrive; on END TYPE we paste the result
+     * into g_structtbl[g_structcnt++].  In --interp + compare modes the
+     * entries may already exist from PrepareProgramExt — InitBasic resets
+     * g_structtbl, and compile-time duplicates are an upstream error. */
+    int                  in_type_block;
+    struct s_structdef  *struct_def_inprogress;    /* NULL outside TYPE blocks */
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend *fe) {
@@ -380,6 +391,95 @@ static int source_parse_varname(const char **pp, char *name, int *name_len, uint
     return 1;
 }
 
+// Struct-field load/store — compile `base.field` into OP_LOAD/STORE_STRUCT_FIELD_*
+// with the offset resolved from g_structtbl at compile time.  Returns 1 if the
+// reference was a struct field (and the opcode was emitted or an error raised),
+// 0 if the name isn't a declared struct slot (caller falls back to normal
+// variable handling, which preserves legacy dotted-name semantics).
+static int source_split_struct_member(BCCompiler *cs, const char *name, int name_len,
+                                      uint16_t *slot_out, int *offset_out,
+                                      int *member_type_out, int *member_size_out) {
+    const char *dot = memchr(name, '.', name_len);
+    if (!dot) return 0;
+    int baselen  = (int)(dot - name);
+    int fieldlen = name_len - baselen - 1;
+    if (baselen == 0 || fieldlen == 0) return 0;
+
+    uint16_t slot = bc_find_slot(cs, name, baselen);
+    if (slot == 0xFFFF) return 0;
+    if (cs->slots[slot].type != T_STRUCT) return 0;
+    int sidx = cs->slots[slot].struct_idx;
+    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) return 0;
+
+    unsigned char fname[MAXVARLEN + 1];
+    int flen = fieldlen;
+    if (flen > MAXVARLEN) flen = MAXVARLEN;
+    memcpy(fname, dot + 1, flen);
+    fname[flen] = 0;
+    // Strip any trailing suffix ($/%/!); the member's true type is in g_structtbl.
+    if (flen > 0 && (fname[flen-1] == '$' || fname[flen-1] == '%' || fname[flen-1] == '!')) {
+        fname[--flen] = 0;
+    }
+
+    int m_type = 0, m_offset = 0, m_size = 0;
+    short m_dims[MAXDIM];
+    int midx = FindStructMember(sidx, fname, &m_type, &m_offset, &m_size, m_dims);
+    if (midx < 0) {
+        bc_set_error(cs, "Unknown struct member: %s", fname);
+        return 1;
+    }
+    if (m_dims[0] != 0) {
+        bc_set_error(cs, "Struct member array not yet supported");
+        return 1;
+    }
+    if (m_type == T_STRUCT) {
+        bc_set_error(cs, "Nested struct member not yet supported");
+        return 1;
+    }
+
+    *slot_out        = slot;
+    *offset_out      = m_offset;
+    *member_type_out = m_type;
+    if (member_size_out) *member_size_out = m_size;
+    return 2;  // 2 = success (distinct from error-reported 1)
+}
+
+static int source_try_emit_struct_field_load(BCCompiler *cs, const char *name, int name_len,
+                                             uint8_t *type_out) {
+    uint16_t slot = 0;
+    int offset = 0, m_type = 0;
+    int r = source_split_struct_member(cs, name, name_len, &slot, &offset, &m_type, NULL);
+    if (r == 0) return 0;          // not a struct reference
+    if (r == 1) return 1;          // error already reported
+    uint8_t op = (m_type == T_INT) ? OP_LOAD_STRUCT_FIELD_I :
+                 (m_type == T_NBR) ? OP_LOAD_STRUCT_FIELD_F :
+                                     OP_LOAD_STRUCT_FIELD_S;
+    bc_emit_byte(cs, op);
+    bc_emit_u16(cs, slot);
+    bc_emit_u16(cs, (uint16_t)offset);
+    *type_out = (uint8_t)m_type;
+    return 1;
+}
+
+static int source_try_emit_struct_field_store(BCCompiler *cs, const char *name, int name_len,
+                                              uint8_t *type_out) {
+    uint16_t slot = 0;
+    int offset = 0, m_type = 0, m_size = 0;
+    int r = source_split_struct_member(cs, name, name_len, &slot, &offset, &m_type, &m_size);
+    if (r == 0) return 0;
+    if (r == 1) return 1;
+    uint8_t op;
+    if (m_type == T_INT)      op = OP_STORE_STRUCT_FIELD_I;
+    else if (m_type == T_NBR) op = OP_STORE_STRUCT_FIELD_F;
+    else                      op = OP_STORE_STRUCT_FIELD_S;
+    bc_emit_byte(cs, op);
+    bc_emit_u16(cs, slot);
+    bc_emit_u16(cs, (uint16_t)offset);
+    if (op == OP_STORE_STRUCT_FIELD_S) bc_emit_u16(cs, (uint16_t)m_size);
+    *type_out = (uint8_t)m_type;
+    return 1;
+}
+
 static uint16_t source_resolve_global(BCCompiler *cs, const char *name, int name_len,
                                       uint8_t type, int create) {
     uint16_t slot = bc_find_slot(cs, name, name_len);
@@ -595,8 +695,15 @@ static int source_name_eq(const char *name, int name_len, const char *want) {
     return name_len == want_len && strncasecmp(name, want, want_len) == 0;
 }
 
-static uint8_t source_parse_as_type_clause(const char **pp) {
+// Parses an `AS <type>` clause.  Returns T_INT / T_NBR / T_STR / T_STRUCT and
+// sets *struct_idx_out (−1 unless type is T_STRUCT).  Returns 0 if no `AS` is
+// present or the name after `AS` doesn't resolve to a known type — the caller
+// then falls back to the slot's default.  Struct names come from g_structtbl,
+// populated by PrepareProgramExt before the compiler runs, so a recognized
+// type name here is guaranteed stable at runtime.
+static uint8_t source_parse_as_type_clause_ex(const char **pp, int *struct_idx_out) {
     const char *p = *pp;
+    *struct_idx_out = -1;
     source_skip_space(&p);
     if (!source_keyword(&p, "AS")) return 0;
     source_skip_space(&p);
@@ -611,12 +718,23 @@ static uint8_t source_parse_as_type_clause(const char **pp) {
     } else if (strncasecmp(p, "STRING", 6) == 0 && !isnamechar((unsigned char)p[6])) {
         type = T_STR;
         p += 6;
+    } else if (isnamestart((unsigned char)*p)) {
+        int sidx = FindStructType((unsigned char *)p);
+        if (sidx < 0) return 0;
+        type = T_STRUCT;
+        *struct_idx_out = sidx;
+        while (isnamechar((unsigned char)*p)) p++;
     } else {
         return 0;
     }
 
     *pp = p;
     return type;
+}
+
+static uint8_t source_parse_as_type_clause(const char **pp) {
+    int ignored;
+    return source_parse_as_type_clause_ex(pp, &ignored);
 }
 
 static uint8_t source_compile_rgb_call(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
@@ -938,6 +1056,18 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
         uint8_t suffix_type = type;
         if (type == 0) type = source_default_var_type(cs, name, name_len);
+
+        // Struct field read: if `name` is "base.field" with base a declared
+        // T_STRUCT slot, emit OP_LOAD_STRUCT_FIELD_* and return the field
+        // type.  If base isn't a struct, falls through to normal handling so
+        // legacy dotted-name variables still work.
+        {
+            uint8_t ft = 0;
+            if (source_try_emit_struct_field_load(cs, name, name_len, &ft)) {
+                *pp = p;
+                return ft;
+            }
+        }
 
         const char *after_name = p;
         source_skip_space(&after_name);
@@ -1906,6 +2036,40 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
 
     if (vtype == 0) vtype = source_default_var_type(cs, name, name_len);
 
+    // Struct-member store: pt.x = expr → OP_STORE_STRUCT_FIELD_* (compile-time
+    // offset).  Same fallthrough behaviour as the read side — non-struct names
+    // take the normal path and legacy dotted names are unaffected.
+    source_skip_space(&p);
+    if (*p == '=' && memchr(name, '.', name_len)) {
+        uint16_t tmp_slot = 0;
+        int offset = 0, m_type = 0;
+        int r = source_split_struct_member(cs, name, name_len, &tmp_slot, &offset, &m_type, NULL);
+        if (r == 2) {
+            p++;                                            // skip '='
+            uint8_t etype = source_parse_expression(fe, cs, &p);
+            if (cs->has_error) { *pp = p; return; }
+            if ((m_type == T_STR) && !(etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign numeric expression to string member");
+                *pp = p; return;
+            }
+            if ((m_type != T_STR) && (etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign string expression to numeric member");
+                *pp = p; return;
+            }
+            if ((m_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
+            else if ((m_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
+            uint8_t op = (m_type == T_INT) ? OP_STORE_STRUCT_FIELD_I :
+                         (m_type == T_NBR) ? OP_STORE_STRUCT_FIELD_F :
+                                             OP_STORE_STRUCT_FIELD_S;
+            bc_emit_byte(cs, op);
+            bc_emit_u16(cs, tmp_slot);
+            bc_emit_u16(cs, (uint16_t)offset);
+            *pp = p;
+            return;
+        }
+        if (r == 1) { *pp = p; return; }                   // error already reported
+    }
+
     int is_local = 0;
     uint16_t slot = source_resolve_var(cs, name, name_len, vtype, 1, &is_local);
     source_skip_space(&p);
@@ -2416,6 +2580,62 @@ static void source_compile_const(BCSourceFrontend *fe, BCCompiler *cs, const cha
     *pp = p;
 }
 
+// Peek ahead on a DIM-arg sub-expression to see if its AS clause references
+// a registered struct type.  Returns struct_idx on hit, -1 otherwise.  Does
+// not consume p.  Used so source_compile_dim can decide whether to bridge.
+static int source_peek_dim_struct_type(const char *p) {
+    while (*p && *p != ',' && *p != '\'' && *p != '\n') {
+        if ((p[0] == 'A' || p[0] == 'a') && (p[1] == 'S' || p[1] == 's') &&
+            !isnamechar((unsigned char)p[2])) {
+            const char *q = p + 2;
+            while (*q == ' ' || *q == '\t') q++;
+            if (strncasecmp(q, "INTEGER", 7) == 0 && !isnamechar((unsigned char)q[7])) return -1;
+            if (strncasecmp(q, "FLOAT",   5) == 0 && !isnamechar((unsigned char)q[5])) return -1;
+            if (strncasecmp(q, "STRING",  6) == 0 && !isnamechar((unsigned char)q[6])) return -1;
+            if (isnamestart((unsigned char)*q)) return FindStructType((unsigned char *)q);
+            return -1;
+        }
+        p++;
+    }
+    return -1;
+}
+
+// Tokenize a DIM/other statement through MMBasic's tokeniser and emit a
+// BRIDGE_CMD with the resulting bytes.  Used to route DIM-of-struct through
+// the interpreter's cmd_dim so struct memory is allocated in g_vartbl (and
+// the post-bridge sync picks it up for subsequent VM field accesses).
+static void source_emit_bridge_for_stmt(BCCompiler *cs, const char *stmt) {
+    unsigned char saved_inpbuf[STRINGSIZE];
+    unsigned char saved_tknbuf[STRINGSIZE];
+    memcpy(saved_inpbuf, inpbuf, STRINGSIZE);
+    memcpy(saved_tknbuf, tknbuf, STRINGSIZE);
+
+    size_t slen = strlen(stmt);
+    if (slen >= STRINGSIZE) slen = STRINGSIZE - 1;
+    memcpy(inpbuf, stmt, slen);
+    inpbuf[slen] = 0;
+
+    tokenise(1);
+
+    unsigned char *tp = tknbuf;
+    while (*tp) {
+        if (*tp == T_LINENBR) { tp += 3; continue; }
+        tp++;
+    }
+    uint16_t tok_len = (uint16_t)(tp - tknbuf);
+
+    if (tok_len < 2) {
+        bc_set_error(cs, "Unable to tokenise DIM statement");
+    } else {
+        bc_emit_byte(cs, OP_BRIDGE_CMD);
+        bc_emit_u16(cs, tok_len);
+        for (uint16_t i = 0; i < tok_len; i++) bc_emit_byte(cs, tknbuf[i]);
+    }
+
+    memcpy(inpbuf, saved_inpbuf, STRINGSIZE);
+    memcpy(tknbuf, saved_tknbuf, STRINGSIZE);
+}
+
 static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
     uint8_t forced_type = 0;
@@ -2430,6 +2650,67 @@ static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char 
     } else if (strncasecmp(p, "STRING", 6) == 0 && !isnamechar((unsigned char)p[6])) {
         forced_type = T_STR;
         p += 6;
+    }
+
+    // If any DIM-arg uses `AS <structname>`, delegate the whole statement to
+    // the interpreter: we still have to register the slot in cs->slots (so
+    // later pt.x accesses resolve) but the actual allocation and initialisation
+    // happens via cmd_dim under BRIDGE_CMD.  Phase 1 doesn't handle mixed-kind
+    // DIMs (scalar + struct on one line) — bridge still works in that case,
+    // but the non-struct slots won't get the native OP_DIM_ARR_* fast path.
+    {
+        const char *peek = p;
+        int needs_bridge = 0;
+        while (*peek && *peek != '\n') {
+            if (source_peek_dim_struct_type(peek) >= 0) { needs_bridge = 1; break; }
+            while (*peek && *peek != ',') peek++;
+            if (*peek == ',') peek++;
+        }
+
+        if (needs_bridge) {
+            // Register each arg's slot with T_STRUCT + struct_idx (or skip
+            // through non-struct args; they just get compile-time resolution
+            // later when referenced).  We purposely don't emit any stores
+            // here — cmd_dim handles initialisation on the bridge side.
+            const char *walk = p;
+            while (*walk && *walk != '\n') {
+                char name[MAXVARLEN + 1];
+                int  name_len = 0;
+                uint8_t suffix_type = 0;
+                if (!source_parse_varname(&walk, name, &name_len, &suffix_type)) break;
+                source_skip_space(&walk);
+                int sidx = -1;
+                uint8_t as_type = source_parse_as_type_clause_ex(&walk, &sidx);
+                uint8_t vtype = suffix_type ? suffix_type :
+                                (as_type ? as_type :
+                                 (forced_type ? forced_type : T_NBR));
+                if (vtype == T_STRUCT) {
+                    uint16_t slot = source_resolve_global(cs, name, name_len, vtype, 1);
+                    if (slot != 0xFFFF) {
+                        cs->slots[slot].type = T_STRUCT;
+                        cs->slots[slot].struct_idx = (int16_t)sidx;
+                    }
+                }
+                while (*walk && *walk != ',' && *walk != '\n') walk++;
+                if (*walk == ',') walk++;
+            }
+
+            // Build the bridge statement "DIM <original args>" and emit.
+            char buf[STRINGSIZE];
+            int n = snprintf(buf, sizeof(buf), "DIM %s", *pp);
+            if (n > 0 && (size_t)n < sizeof(buf)) {
+                // Trim trailing comment/newline.
+                char *eol = buf;
+                while (*eol && *eol != '\n' && *eol != '\'') eol++;
+                *eol = 0;
+                source_emit_bridge_for_stmt(cs, buf);
+            }
+
+            // Advance pp past the DIM args.
+            while (*p && *p != '\n' && *p != '\'') p++;
+            *pp = p;
+            return;
+        }
     }
 
     while (!cs->has_error) {
@@ -5909,6 +6190,46 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
         return;
     }
 
+    if (source_keyword(&p, "TYPE")) {
+        // TYPE <name> … END TYPE — record the shape into g_structtbl so DIM
+        // with `AS <name>` can resolve struct_idx at compile time.  --interp
+        // also runs PrepareProgramExt, but InitBasic zeros g_structtbl and
+        // PrepareProgram frees stale entries on every program load, so the
+        // double-population is either identical or a clean no-op.  In --vm
+        // mode this is the only writer.  Block alignment padding is applied
+        // on END TYPE via GetStructAlignment inside PrepareProgramExt — we
+        // mirror that when finalizing below.
+        source_skip_space(&p);
+        unsigned char tname[MAXVARLEN + 1];
+        int tlen = 0;
+        while (isnamechar((unsigned char)*p) && tlen < MAXVARLEN) {
+            tname[tlen++] = (unsigned char)mytoupper(*p);
+            p++;
+        }
+        tname[tlen] = 0;
+        if (tlen == 0) {
+            bc_set_error(cs, "Invalid TYPE name");
+            return;
+        }
+        if (FindStructType(tname) >= 0) {
+            // Already registered (e.g. by PrepareProgramExt in compare mode).
+            // Skip members silently; the existing shape still matches.
+            fe->in_type_block = 1;
+            fe->struct_def_inprogress = NULL;
+            return;
+        }
+        if (g_structcnt >= MAX_STRUCT_TYPES) {
+            bc_set_error(cs, "Too many structure types");
+            return;
+        }
+        struct s_structdef *sd = (struct s_structdef *)GetMemory(sizeof(struct s_structdef));
+        memset(sd, 0, sizeof(*sd));
+        memcpy(sd->name, tname, tlen + 1);
+        fe->struct_def_inprogress = sd;
+        fe->in_type_block = 1;
+        return;
+    }
+
     if (source_keyword(&p, "CONST")) {
         source_compile_const(fe, cs, &p);
         source_statement_end(cs, p);
@@ -6454,6 +6775,47 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
     bc_crash_snapshot_cs(cs);
     const char *p = line;
     source_skip_space(&p);
+
+    /* Inside a TYPE block — consume member lines silently until END TYPE.
+     * We also register members into `fe->struct_def_inprogress` so --vm mode
+     * (which skips PrepareProgramExt) still ends up with a populated
+     * g_structtbl.  Skip any leading line-number prefix so tests that use
+     * numbered lines still terminate on `999 END TYPE`. */
+    if (fe->in_type_block) {
+        const char *cp = p;
+        if (isdigit((unsigned char)*cp)) {
+            char *end = NULL;
+            (void)strtol(cp, &end, 10);
+            if (end != cp) { cp = end; source_skip_space(&cp); }
+        }
+        if (strncasecmp(cp, "END TYPE", 8) == 0 && !isnamechar((unsigned char)cp[8])) {
+            struct s_structdef *sd = fe->struct_def_inprogress;
+            if (sd) {
+                if (sd->num_members > 0 && g_structcnt < MAX_STRUCT_TYPES) {
+                    // Pad total_size to natural alignment so arrays of structs
+                    // stay aligned (upstream PrepareProgramExt does the same).
+                    int align = GetStructAlignment(sd);
+                    if (align > 1 && (sd->total_size % align) != 0)
+                        sd->total_size = ((sd->total_size + align - 1) / align) * align;
+                    g_structtbl[g_structcnt++] = sd;
+                } else {
+                    int empty = (sd->num_members == 0);
+                    FreeMemory((unsigned char *)sd);
+                    if (empty) bc_set_error(cs, "TYPE has no members");
+                }
+                fe->struct_def_inprogress = NULL;
+            }
+            fe->in_type_block = 0;
+            return;
+        }
+        if (*cp == 0 || *cp == '\'') return;                        // blank / comment line
+        if (fe->struct_def_inprogress) {
+            const char *merr = ParseStructMember((unsigned char *)cp,
+                                                 fe->struct_def_inprogress);
+            if (merr) bc_set_error(cs, "%s", merr);
+        }
+        return;
+    }
 
     /* If inside '!ASM block, accumulate lines until '!ENDASM */
     if (fe->asm_active) {

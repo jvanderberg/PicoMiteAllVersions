@@ -57,8 +57,14 @@ extern "C" {
 #define T_IMPLIED   0x10                            // the variables type does not have to be specified with a suffix
 #define T_CONST     0x20                            // the contents of this variable cannot be changed
 #define T_BLOCKED   0x40                            // Hash table entry blocked after ERASE
-#define T_EXPLICIT  0x80                            // Was the variable specified with a type suffix
-#define TypeMask(a) ((a) & (T_NBR | T_INT | T_STR)) // macro to isolate the variable type bits
+#define T_STRUCT    0x80                            // variable is a structure type (upstream 6.02)
+#define TypeMask(a) ((a) & (T_NBR | T_INT | T_STR | T_STRUCT)) // isolate storage-type bits
+
+// NAMELEN flag bits on s_vartbl.namelen.  Length is no longer stored there (upstream 6.02).
+//   NAMELEN_EXPLICIT — variable was declared with a $/%/! type suffix (used by LIST).
+//   NAMELEN_STATIC   — static variable whose name legitimately contains '.' (skip struct-member lookup).
+#define NAMELEN_EXPLICIT    0x80
+#define NAMELEN_STATIC      0x40
 
 // types of tokens.  These are or'ed with the data types above to fully define a token
 #define T_INV       0                               // an invalid token
@@ -119,10 +125,51 @@ typedef struct s_vartbl {                               // structure of the vari
     }  val;
 } vartbl_val;
 
-typedef struct s_hash {                            
-	short hash;                                
-    short level;                       
+typedef struct s_hash {
+	short hash;
+    short level;
 } hash_val;
+
+// TYPE / STRUCT — ported from UKTailwind 6.02. Shared by interpreter and VM.
+typedef struct s_structmember {
+    unsigned char name[MAXVARLEN];      // member name (upper-cased, NUL-padded)
+    unsigned char type;                 // T_NBR / T_STR / T_INT / T_STRUCT
+    unsigned char size;                 // T_STR: max length; T_STRUCT: struct type index
+    int           offset;               // byte offset within the enclosing struct
+    short         dims[MAXDIM];         // 0 = scalar member
+} structmember_val;
+
+typedef struct s_structdef {
+    unsigned char         name[MAXVARLEN];                      // type name (upper-cased)
+    int                   num_members;
+    struct s_structmember members[MAX_STRUCT_MEMBERS];
+    int                   total_size;                           // bytes, padded to natural alignment
+} structdef_val;
+
+extern struct s_structdef *g_structtbl[MAX_STRUCT_TYPES];       // heap-allocated per TYPE
+extern int g_structcnt;                                         // number of defined struct types
+extern int g_StructArg;                                         // struct-idx signalled by CheckIfTypeSpecified (cmd_dim hook)
+extern int g_StructMemberType;                                  // set by findvar when a struct member was resolved
+extern int g_StructMemberOffset;                                // byte offset of the resolved member (for EXTRACT/INSERT/SORT)
+extern int g_StructMemberSize;                                  // size of the resolved member (for EXTRACT/INSERT/SORT)
+extern int g_ExprStructType;                                    // struct-idx flowing back from an expression returning a struct
+
+// Helpers for struct-member lookup and resolution (see Commands.c / MMBasic.c).
+const char *ParseStructMember(unsigned char *p, struct s_structdef *sd);
+int   FindStructType(unsigned char *name);
+int   FindStructMember(int struct_idx, unsigned char *membername, int *member_type, int *member_offset, int *member_size, short *member_dims);
+int   GetStructAlignment(struct s_structdef *sd);
+int   FindStructBase(unsigned char *basename, int baselen, int *pvindex);
+void *ResolveStructMember(unsigned char *struct_ptr, int struct_idx, unsigned char *member_path, unsigned char **pp, int *member_type);
+
+// Only fires after findvar: struct-member array syntax (e.g. pt.arr(i)) is unsupported in Phase 1.
+// Phase 3 adds array-of-struct-member support and this macro stops rejecting those calls.
+#define CHECK_STRUCT_MEMBER_ARRAY()                                              \
+    do {                                                                         \
+        if ((g_vartbl[g_VarIndex].type & T_STRUCT) && g_StructMemberType != 0 && \
+            g_vartbl[g_VarIndex].dims[0] > 0)                                    \
+            error("Struct member array not yet supported");                      \
+    } while (0)
 
 extern struct s_vartbl g_vartbl[];
 
@@ -244,6 +291,7 @@ extern const struct s_tokentbl commandtbl[];
 extern unsigned char tokenTHEN, tokenELSE, tokenGOTO, tokenEQUAL, tokenTO, tokenSTEP, tokenWHILE, tokenUNTIL, tokenGOSUB, tokenAS, tokenFOR;
 extern unsigned short cmdIF, cmdENDIF, cmdEND_IF, cmdELSEIF, cmdELSE_IF, cmdELSE, cmdSELECT_CASE, cmdFOR, cmdNEXT, cmdWHILE, cmdENDSUB, cmdENDFUNCTION, cmdLOCAL, cmdSTATIC, cmdCASE, cmdDO, cmdLOOP, cmdCASE_ELSE, cmdEND_SELECT;
 extern unsigned short cmdSUB, cmdFUN, cmdCSUB, cmdIRET, cmdComment, cmdEndComment;
+extern unsigned short cmdTYPE, cmdEND_TYPE;
 
 extern unsigned char *GetIntAddress(unsigned char *p);
 extern void MMPrintString(char *s);

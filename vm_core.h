@@ -18,9 +18,9 @@
 #define T_IMPLIED  0x10
 #define T_CONST    0x20
 #define T_BLOCKED  0x40
-#define T_EXPLICIT 0x80
+#define T_STRUCT   0x80                  // structure-typed variable (upstream 6.02)
 
-#define TypeMask(a) ((a) & (T_NBR | T_INT | T_STR))
+#define TypeMask(a) ((a) & (T_NBR | T_INT | T_STR | T_STRUCT))
 
 #ifndef isnamestart
 #define isnamestart(c)  (isalpha((unsigned char)(c)) || (c) == '_')

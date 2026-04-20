@@ -246,6 +246,7 @@ uint16_t bc_add_slot(BCCompiler *cs, const char *name, int name_len, uint8_t typ
     cs->slots[idx].is_array = (uint8_t)is_array;
     cs->slots[idx].ndims    = 0;
     memset(cs->slots[idx].dims, 0, sizeof(cs->slots[idx].dims));
+    cs->slots[idx].struct_idx = -1;
     return idx;
 }
 

@@ -177,6 +177,126 @@ unsigned char *getvalue(unsigned char *p, MMFLOAT *fa, long long int  *ia, unsig
 unsigned char tokenTHEN, tokenELSE, tokenGOTO, tokenEQUAL, tokenTO, tokenSTEP, tokenWHILE, tokenUNTIL, tokenGOSUB, tokenAS, tokenFOR;
 unsigned short cmdIF, cmdENDIF, cmdEND_IF, cmdELSEIF, cmdELSE_IF, cmdELSE, cmdSELECT_CASE, cmdFOR, cmdNEXT, cmdWHILE, cmdENDSUB, cmdENDFUNCTION, cmdLOCAL, cmdSTATIC, cmdCASE, cmdDO, cmdLOOP, cmdCASE_ELSE, cmdEND_SELECT;
 unsigned short cmdSUB, cmdFUN, cmdCFUN, cmdCSUB, cmdIRET, cmdComment, cmdEndComment;
+unsigned short cmdTYPE, cmdEND_TYPE;                            // TYPE block commands (upstream 6.02)
+
+// TYPE / STRUCT runtime state (upstream 6.02).
+struct s_structdef *g_structtbl[MAX_STRUCT_TYPES];              // heap-allocated per TYPE, cleared at InitBasic
+int g_structcnt = 0;
+int g_StructArg = -1;                                           // struct-idx signalled by CheckIfTypeSpecified
+int g_StructMemberType = 0;                                     // non-zero after findvar resolved a struct member
+int g_StructMemberOffset = 0;
+int g_StructMemberSize = 0;
+int g_ExprStructType = -1;
+
+// ----------------------------------------------------------------------------
+// TYPE / STRUCT helpers (ported from UKTailwind 6.02, scalar-only in Phase 1)
+// ----------------------------------------------------------------------------
+
+// Natural alignment for a struct: 8-byte if any member is INT/FLOAT/nested struct, else 1.
+// Used by PrepareProgramExt (and bc_source.c in --vm mode) to pad total_size so arrays
+// of structs align correctly.
+int GetStructAlignment(struct s_structdef *sd) {
+    int max_align = 1;
+    for (int i = 0; i < sd->num_members; i++) {
+        struct s_structmember *sm = &sd->members[i];
+        int align = 1;
+        if (sm->type == T_INT || sm->type == T_NBR) {
+            align = sizeof(long long int);
+        } else if (sm->type == T_STRUCT) {
+            if (sm->size >= 0 && sm->size < g_structcnt && g_structtbl[sm->size] != NULL)
+                align = GetStructAlignment(g_structtbl[sm->size]);
+            else
+                align = sizeof(long long int);
+        }
+        if (align > max_align) max_align = align;
+    }
+    return max_align;
+}
+
+// Locate a declared struct variable by base name (no dots).  Returns struct_idx >= 0 on hit,
+// -1 if not found or not a struct.  *pvindex gets the g_vartbl[] index on hit.
+// Mirrors findvar's two-table search (locals first, then globals) using our MAXVARHASH scheme.
+int FindStructBase(unsigned char *basename, int baselen, int *pvindex) {
+    uint32_t hash = FNV_offset_basis;
+    for (int i = 0; i < baselen; i++) {
+        hash ^= basename[i];
+        hash *= FNV_prime;
+    }
+    hash %= MAXVARHASH;
+
+    int vindex = -1;
+
+    // Local scan (only when inside a sub/fun).
+    if (g_LocalIndex) {
+        int h = hash, start = h;
+        do {
+            if (g_vartbl[h].type == T_NOTYPE) break;
+            if (g_vartbl[h].name[0] != 0 &&
+                memcmp(g_vartbl[h].name, basename, baselen) == 0 &&
+                (baselen == MAXVARLEN || g_vartbl[h].name[baselen] == 0) &&
+                g_vartbl[h].level == g_LocalIndex &&
+                !(g_vartbl[h].namelen & NAMELEN_STATIC)) {
+                vindex = h;
+                break;
+            }
+            h = (h + 1) % MAXVARHASH;
+        } while (h != start);
+    }
+
+    // Global scan (struct vars are always global in Phase 1).
+    if (vindex < 0) {
+        int h = hash + MAXVARHASH;
+        int start = h;
+        do {
+            if (g_vartbl[h].type == T_NOTYPE) break;
+            if (g_vartbl[h].name[0] != 0 &&
+                memcmp(g_vartbl[h].name, basename, baselen) == 0 &&
+                (baselen == MAXVARLEN || g_vartbl[h].name[baselen] == 0) &&
+                !(g_vartbl[h].namelen & NAMELEN_STATIC)) {
+                vindex = h;
+                break;
+            }
+            h++;
+            if (h >= MAXVARS) h = MAXVARHASH;
+        } while (h != start);
+    }
+
+    if (vindex >= 0 && (g_vartbl[vindex].type & T_STRUCT)) {
+        *pvindex = vindex;
+        return (int)g_vartbl[vindex].size;  // struct-idx lives in .size when T_STRUCT
+    }
+    return -1;
+}
+
+// Resolve `struct_ptr + offset` for `var.field` (scalar member, scalar struct).
+// Phase 1 deliberately omits array-of-struct indexing and nested-struct traversal —
+// those arrive with phases 3 and 4.  If `member_path` contains another '.' or the
+// parse tail looks like array indexing, we error out.
+void *ResolveStructMember(unsigned char *struct_ptr, int struct_idx,
+                          unsigned char *member_path, unsigned char **pp,
+                          int *member_type) {
+    if (struct_idx < 0 || struct_idx >= g_structcnt || g_structtbl[struct_idx] == NULL)
+        error("Invalid structure type");
+
+    // No nested dot support in Phase 1.
+    if (strchr((char *)member_path, '.') != NULL)
+        error("Nested struct member not yet supported");
+
+    int m_type = 0, m_offset = 0, m_size = 0;
+    short m_dims[MAXDIM] = {0};
+    int member_idx = FindStructMember(struct_idx, member_path,
+                                      &m_type, &m_offset, &m_size, m_dims);
+    if (member_idx < 0) error("Unknown structure member");
+
+    // Reject struct member arrays (Phase 3) and nested structs (Phase 4) for now.
+    if (m_dims[0] != 0) error("Struct member array not yet supported");
+    if (m_type == T_STRUCT) error("Nested struct member not yet supported");
+
+    g_StructMemberOffset = m_offset;
+    g_StructMemberSize = m_size;
+    *member_type = m_type;
+    return (void *)(struct_ptr + m_offset);
+}
 
 /********************************************************************************************************************************************
  Program management
@@ -229,6 +349,10 @@ void   MIPS16 InitBasic(void) {
     cmdCSUB = GetCommandValue( (unsigned char *)"CSub");
     cmdComment = GetCommandValue( (unsigned char *)"/*");
     cmdEndComment = GetCommandValue( (unsigned char *)"*/");
+    cmdTYPE     = GetCommandValue((unsigned char *)"Type");
+    cmdEND_TYPE = GetCommandValue((unsigned char *)"End Type");
+    for (int i = 0; i < MAX_STRUCT_TYPES; i++) g_structtbl[i] = NULL;
+    g_structcnt = 0;
 //  SInt(CommandTableSize);
 //  SIntComma(TokenTableSize);
 //  SSPrintString("\r\n");
@@ -344,7 +468,17 @@ void   MIPS16 PrepareProgram(int ErrAbort) {
     for(i = FONT_BUILTIN_NBR; i < FONT_TABLE_SIZE-1; i++)
         FontTable[i] = NULL;                                        // clear the font table
 
-    
+    // Drop any struct-type definitions left behind by a previous program.
+    // PrepareProgramExt may be called from the console after a prior RUN, so we
+    // re-parse TYPE blocks from scratch; free the old allocations to avoid leaks.
+    for (i = 0; i < MAX_STRUCT_TYPES; i++) {
+        if (g_structtbl[i] != NULL) {
+            FreeMemory((unsigned char *)g_structtbl[i]);
+            g_structtbl[i] = NULL;
+        }
+    }
+    g_structcnt = 0;
+
     NbrFuncts = 0;
     CFunctionFlash = CFunctionLibrary = NULL;
     if(Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE)
@@ -452,6 +586,97 @@ int   MIPS16 PrepareProgramExt(unsigned char *p, int i, unsigned char **CFunPtr,
                 if(ErrAbort) error("Invalid identifier");
                 i--;
                 continue;
+            }
+        } else if (tkn == cmdTYPE) {
+            // TYPE <name> / member* / END TYPE — register the struct shape in g_structtbl
+            // so DIM v AS <name> / v.field resolve at runtime.  Port of upstream
+            // MMBasic.c:949-1157.  Missing END TYPE / unknown type / duplicate name
+            // are reported to PreprogramError when ErrAbort, else we skip quietly.
+            unsigned char *tp = p + sizeof(CommandToken);
+            skipspace(tp);
+            if (!isnamestart(*tp)) {
+                if (ErrAbort) error("Invalid TYPE name");
+                while (*p) p++; continue;
+            }
+            unsigned char tname[MAXVARLEN + 1];
+            int tnamelen = 0;
+            while (isnamechar(*tp) && tnamelen < MAXVARLEN) {
+                tname[tnamelen++] = mytoupper(*tp++);
+            }
+            tname[tnamelen] = 0;
+
+            // Reject duplicate type names (fail loudly so the user can see the clash).
+            for (int k = 0; k < g_structcnt; k++) {
+                if (g_structtbl[k] != NULL &&
+                    strcmp((char *)tname, (char *)g_structtbl[k]->name) == 0) {
+                    if (ErrAbort) error("TYPE already defined");
+                }
+            }
+            if (g_structcnt >= MAX_STRUCT_TYPES) {
+                if (ErrAbort) error("Too many structure types");
+                while (*p) p++; continue;
+            }
+
+            g_structtbl[g_structcnt] = (struct s_structdef *)GetMemory(sizeof(struct s_structdef));
+            struct s_structdef *sd = g_structtbl[g_structcnt];
+            memset(sd, 0, sizeof(struct s_structdef));
+            memcpy(sd->name, tname, tnamelen + 1);
+            sd->num_members = 0;
+            sd->total_size = 0;
+
+            // Advance past the TYPE header line, then scan forward consuming member
+            // lines until we hit END TYPE.  Member lines aren't command tokens —
+            // we hand each to ParseStructMember to interpret "name AS TYPE".
+            while (*p) p++;
+            p++;  // step over the statement's 0-terminator
+
+            while (1) {
+                unsigned char c = *p;
+                if (c == 0) {
+                    if (ErrAbort) error("No matching END TYPE");
+                    break;
+                }
+                if (c == T_NEWLINE) {
+                    CurrentLinePtr = p;
+                    p++;
+                    c = *p;
+                }
+                if (c == T_LINENBR) { p += 3; c = *p; }
+                skipspace(p); c = *p;
+
+                if (c == 0) { p++; continue; }                              // blank line
+                if (c == '\'') { while (*p) p++; p++; continue; }           // comment line
+                if (c == T_LABEL) { p += p[1] + 2; skipspace(p); c = *p; }
+
+                if (p[0] >= C_BASETOKEN && p[1] >= C_BASETOKEN) {
+                    CommandToken mtkn = commandtbl_decode(p);
+                    if (mtkn == cmdTYPE) {
+                        if (ErrAbort) error("Nested TYPE not allowed");
+                        break;
+                    }
+                    if (mtkn == cmdEND_TYPE) {
+                        if (sd->num_members == 0) {
+                            if (ErrAbort) error("TYPE has no members");
+                        } else {
+                            int align = GetStructAlignment(sd);
+                            if (align > 1 && (sd->total_size % align) != 0)
+                                sd->total_size = ((sd->total_size + align - 1) / align) * align;
+                            g_structcnt++;
+                        }
+                        while (*p) p++;
+                        break;
+                    }
+                    if (ErrAbort) error("Invalid statement inside TYPE block");
+                    break;
+                }
+
+                const char *merr = ParseStructMember(p, sd);
+                if (merr) {
+                    if (ErrAbort) error((char *)merr);
+                    break;
+                }
+                while (*p) p++;
+                p++;
             }
         }
         while(*p) p++;                                              // look for the zero marking the start of the next element
@@ -1611,7 +1836,21 @@ unsigned char MIPS16 __not_in_flash_func(*getvalue)(unsigned char *p, MMFLOAT *f
             CurrentLinePtr = SaveCurrentLinePtr;
         } else {
             s = (unsigned char *)findvar(p, V_FIND);                         // if it is a string then the string pointer is automatically set
-            t = TypeMask(g_vartbl[g_VarIndex].type);
+            // Struct member read: g_StructMemberType was set by the findvar
+            // dot-hook to the member's type — use it to classify the value.
+            if (g_StructMemberType != 0) {
+                t = TypeMask(g_StructMemberType);
+                g_ExprStructType = -1;
+            } else if (g_vartbl[g_VarIndex].type & T_STRUCT) {
+                // Whole-struct expression (e.g. `PRINT p` — Phase 5 needs this).
+                // For Phase 1 we just flag it; cmd_print's "reserved word" error
+                // still fires, which is the right behaviour until struct-print lands.
+                t = T_STRUCT;
+                g_ExprStructType = (int)g_vartbl[g_VarIndex].size;
+            } else {
+                t = TypeMask(g_vartbl[g_VarIndex].type);
+                g_ExprStructType = -1;
+            }
             if(t & T_NBR) f = (*(MMFLOAT *)s);
             if(t & T_INT) i64 = (*(long long int  *)s);
         }
@@ -2175,6 +2414,51 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
     else
         vtype = 0;
 
+    g_StructMemberType = 0;
+    g_StructMemberOffset = 0;
+    g_StructMemberSize = 0;
+
+    // Struct member access: if the upper-cased name already in `name` contains a dot,
+    // see if the prefix before the dot is a declared struct variable.  If so, resolve
+    // the rest of the path against its type.  If the prefix isn't a struct, we fall
+    // through to normal processing, which preserves legacy dotted-name syntax and
+    // keeps STATIC variable naming (subname.var) intact because STATIC vars carry
+    // NAMELEN_STATIC so FindStructBase skips them.
+    {
+        unsigned char *dot = (unsigned char *)strchr((char *)name, '.');
+        if (dot != NULL) {
+            int baselen = dot - name;
+            unsigned char basename_buf[MAXVARLEN + 1];
+            unsigned char membername_buf[MAXVARLEN + 1];
+            memcpy(basename_buf, name, baselen);
+            basename_buf[baselen] = 0;
+
+            unsigned char *src = dot + 1;
+            int mlen = 0;
+            while (src[mlen] && mlen < MAXVARLEN) {
+                membername_buf[mlen] = src[mlen];
+                mlen++;
+            }
+            membername_buf[mlen] = 0;
+
+            int struct_vindex = -1;
+            int struct_idx = FindStructBase(basename_buf, baselen, &struct_vindex);
+            if (struct_idx >= 0) {
+                int member_type = 0;
+                void *result = ResolveStructMember(
+                    (unsigned char *)g_vartbl[struct_vindex].val.s,
+                    struct_idx,
+                    membername_buf,
+                    &p,
+                    &member_type);
+                g_VarIndex = struct_vindex;
+                g_StructMemberType = member_type;
+                return result;
+            }
+            // Not a struct — fall through to legacy dotted-name handling.
+        }
+    }
+
     // check if this is an array
     if(*p == '(') {
         char *pp = (char *)p + 1;
@@ -2357,6 +2641,8 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
 
         // if it is a non arrayed variable or an empty array it is easy, just calculate and return a pointer to the value
         if(dnbr == -1 || g_vartbl[vindex].dims[0] == 0) {
+            if (g_vartbl[vindex].type & T_STRUCT)
+                return g_vartbl[vindex].val.s;                        // struct data lives in the allocated buffer
             if(dnbr == -1 || g_vartbl[vindex].type & (T_PTR | T_STR))
                 return g_vartbl[vindex].val.s;                        // if it is a string or pointer just return the pointer to the data
             else
@@ -2398,7 +2684,7 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
         error("$ is not declared", name);
     if(vtype == 0) {
         if(action & T_IMPLIED)
-            vtype = (action & (T_NBR | T_INT | T_STR));
+            vtype = (action & (T_NBR | T_INT | T_STR | T_STRUCT));
         else
             vtype = DefaultType;
     }
@@ -2481,7 +2767,7 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
     while(j--) *x++ = *s++;
     if(namelen < MAXVARLEN)*x++ = 0;
     g_vartbl[ifree].type = vtype | (action & (T_IMPLIED | T_CONST));
-    if(suffix)g_vartbl[ifree].type|=T_EXPLICIT;
+    g_vartbl[ifree].namelen = suffix ? NAMELEN_EXPLICIT : 0;
     if(ifree<MAXVARS/2){
     	g_hashlist[g_hashlistpointer].level=g_LocalIndex;
     	g_hashlist[g_hashlistpointer++].hash=ifree;
@@ -2499,6 +2785,16 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
         } else if(vtype & T_INT) {
             g_vartbl[ifree].val.i = 0;
             return &(g_vartbl[ifree].val.i);
+        } else if (vtype & T_STRUCT) {
+            // Scalar struct: allocate total_size bytes and park the struct-type
+            // index in .size (upstream's overload of the field).  g_StructArg is
+            // set by CheckIfTypeSpecified just before this findvar call.
+            if (g_StructArg < 0 || g_StructArg >= g_structcnt || g_structtbl[g_StructArg] == NULL)
+                error("Invalid structure type");
+            int structsize = g_structtbl[g_StructArg]->total_size;
+            g_vartbl[ifree].size = (unsigned char)g_StructArg;
+            g_vartbl[ifree].val.s = GetMemory(structsize);
+            return g_vartbl[ifree].val.s;
         }
     }
 
@@ -2545,7 +2841,7 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
     // the variable that were saved previously and set the variables pointer to the
     // allocated memory
     g_vartbl[ifree].type = vtype | (action & (T_IMPLIED | T_CONST));
-    if(suffix)g_vartbl[ifree].type|=T_EXPLICIT;
+    g_vartbl[ifree].namelen = suffix ? NAMELEN_EXPLICIT : 0;
     *g_vartbl[ifree].name = i;
     g_vartbl[ifree].dims[0] = j;
     g_vartbl[ifree].size = size;

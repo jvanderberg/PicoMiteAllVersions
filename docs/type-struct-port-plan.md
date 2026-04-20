@@ -33,7 +33,7 @@ Numbered by the test in the acceptance spec. Grouped into phases for commit cade
 
 | phase | tests | what it adds |
 |---|---|---|
-| 1 | 1, 2, 13 | TYPE/END TYPE parsing in `PrepareProgramExt`; `DIM s AS mytype` (scalar); scalar numeric/float field read+write; multiple struct types coexist |
+| 1 ✅ | 1, 2, 13 | TYPE/END TYPE parsing in `PrepareProgramExt`; `DIM s AS mytype` (scalar); scalar numeric/float field read+write; multiple struct types coexist — landed 2026-04-20 on `catchup/type-struct` (host 214/214 compare, both firmware builds + wasm clean, acceptance tests 1 & 13 pass both engines; t050_struct_phase1_scalar covers the phase in compare-gate) |
 | 2 | 16, 31 | string members (`LENGTH`-qualified), ERASE cleanup path, struct packing with non-8-byte members |
 | 3 | 3, 5, 7, 12, 46, 47, 48 | array-of-struct (`DIM a(n) AS type`), `a(i).x` access with constant and variable index, `BOUND()` works on struct arrays, 2D struct arrays |
 | 4 | 51, 52, 53, 54 | nested structs (`type` containing `type`); `a.b.c` chained access; arrays of nested members; full `arr(i).member(j).member(k)` nesting |

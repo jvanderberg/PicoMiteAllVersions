@@ -1731,6 +1731,14 @@ void bc_vm_execute(BCVMState *vm) {
         [OP_DIM_ARR_F]      = &&op_dim_arr_f,
         [OP_DIM_ARR_S]      = &&op_dim_arr_s,
 
+        /* TYPE / STRUCT field access (offsets baked in at compile time) */
+        [OP_LOAD_STRUCT_FIELD_I]  = &&op_load_struct_field_i,
+        [OP_LOAD_STRUCT_FIELD_F]  = &&op_load_struct_field_f,
+        [OP_LOAD_STRUCT_FIELD_S]  = &&op_load_struct_field_s,
+        [OP_STORE_STRUCT_FIELD_I] = &&op_store_struct_field_i,
+        [OP_STORE_STRUCT_FIELD_F] = &&op_store_struct_field_f,
+        [OP_STORE_STRUCT_FIELD_S] = &&op_store_struct_field_s,
+
         /* Native string functions */
         [OP_STR_LEN]        = &&op_str_len,
         [OP_STR_LEFT]       = &&op_str_left,
@@ -3237,6 +3245,80 @@ op_dim_arr_s: {
         if (!arr->data[i].s) bc_vm_error(vm, "Out of memory for string array");
         arr->data[i].s[0] = 0;  /* empty string (length prefix = 0) */
     }
+    DISPATCH();
+}
+
+    /* ==================================================================
+     * TYPE / STRUCT field access
+     *
+     * Compile-time resolved: each opcode carries the VM slot and a byte offset
+     * into g_vartbl[vi].val.s.  sync_mmbasic_to_vm (after the DIM bridge)
+     * caches the vartbl pointer into vm->arrays[slot].data so we don't call
+     * findvar on every access.  If data is NULL the struct wasn't dimensioned
+     * (or the bridge hasn't run yet) — that's a programmer error, not a silent
+     * miss, so we bail loudly.
+     * ================================================================== */
+
+op_load_struct_field_i: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    int64_t v;
+    memcpy(&v, base + offset, sizeof(v));
+    PUSH_I(v);
+    DISPATCH();
+}
+
+op_load_struct_field_f: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    MMFLOAT v;
+    memcpy(&v, base + offset, sizeof(v));
+    PUSH_F(v);
+    DISPATCH();
+}
+
+op_load_struct_field_s: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    PUSH_S(base + offset);
+    DISPATCH();
+}
+
+op_store_struct_field_i: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    int64_t v = (vm->stack_types[vm->sp] == T_NBR) ? (int64_t)POP_F() : POP_I();
+    memcpy(base + offset, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_field_f: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    MMFLOAT v = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
+    memcpy(base + offset, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_field_s: {
+    uint16_t slot   = READ_U16();
+    uint16_t offset = READ_U16();
+    uint16_t size   = READ_U16();   /* max string length declared for this member */
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    uint8_t *src = POP_S();
+    if (src[0] > size) bc_vm_error(vm, "String too long");
+    Mstrcpy(base + offset, src);
     DISPATCH();
 }
 

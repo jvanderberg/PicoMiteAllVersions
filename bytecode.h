@@ -151,6 +151,14 @@ typedef enum {
     OP_DIM_ARR_F    = 0x91,  /* slot:16, ndim:8 */
     OP_DIM_ARR_S    = 0x92,  /* slot:16, ndim:8 */
 
+    /* TYPE / STRUCT — field access; DIM still routes via OP_BRIDGE_CMD in Phase 1. */
+    OP_LOAD_STRUCT_FIELD_I  = 0x93,  /* slot:16, offset:16 — push int64 from struct buffer */
+    OP_LOAD_STRUCT_FIELD_F  = 0x94,  /* slot:16, offset:16 — push float */
+    OP_LOAD_STRUCT_FIELD_S  = 0x95,  /* slot:16, offset:16 — push MMBasic string pointer */
+    OP_STORE_STRUCT_FIELD_I = 0x96,  /* slot:16, offset:16 — pop int64, store */
+    OP_STORE_STRUCT_FIELD_F = 0x97,  /* slot:16, offset:16 — pop float, store */
+    OP_STORE_STRUCT_FIELD_S = 0x98,  /* slot:16, offset:16, size:16 — pop string, store */
+
     /* Native string functions (compiled arguments) */
     OP_STR_LEN      = 0xA0,  /* pop str, push int len */
     OP_STR_LEFT     = 0xA1,  /* pop int n, pop str, push str LEFT$(s,n) */
@@ -591,13 +599,14 @@ typedef enum {
  */
 typedef struct {
     char     name[MAXVARLEN + 1];
-    uint8_t  type;              /* T_INT, T_NBR, T_STR */
+    uint8_t  type;              /* T_INT, T_NBR, T_STR, T_STRUCT */
     uint8_t  is_array;
     uint8_t  is_const;          /* 1 if Const — value inlined, no slot load */
     uint8_t  ndims;
     int      dims[MAXDIM];      /* array dimension sizes, 0 if unknown at compile time */
     int64_t  const_ival;        /* integer value if is_const && type==T_INT */
     double   const_fval;        /* float value if is_const && type==T_NBR */
+    int16_t  struct_idx;        /* g_structtbl index if type == T_STRUCT, else -1 */
 } BCSlot;
 
 /*

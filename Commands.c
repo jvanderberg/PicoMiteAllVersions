@@ -562,15 +562,25 @@ void  MIPS16 __not_in_flash_func(cmd_let)(void) {
     size = g_vartbl[g_VarIndex].size;
     if(g_vartbl[g_VarIndex].type & T_CONST) error("Cannot change a constant");
 
+    // If this was a struct-member LHS (e.g. `pt.x = ...`), the findvar dot-hook
+    // returned a pointer into the struct's backing buffer and stashed the member's
+    // type in g_StructMemberType.  Use that instead of the enclosing struct's type
+    // (which would be T_STRUCT and route to the wrong width below).
+    int lhs_type = g_vartbl[g_VarIndex].type;
+    if (g_StructMemberType != 0) {
+        lhs_type = g_StructMemberType;
+        size = g_StructMemberSize;
+    }
+
 	// step over the equals sign, evaluate the rest of the command and save in the variable
 	p1++;
-	if(g_vartbl[g_VarIndex].type & T_STR) {
+	if(lhs_type & T_STR) {
 		t = T_STR;
 		p1 = evaluate(p1, &f, &i64, &s, &t, false);
 		if(*s > size) error("String too long");
 		Mstrcpy(p2, s);
 	}
-	else if(g_vartbl[g_VarIndex].type & T_NBR) {
+	else if(lhs_type & T_NBR) {
 		t = T_NBR;
 		p1 = evaluate(p1, &f, &i64, &s, &t, false);
 		if(t & T_NBR)
@@ -796,26 +806,26 @@ void MIPS16 cmd_list(void) {
 			if(g_vartbl[i].type & (T_INT|T_STR|T_NBR)){
 				if(g_vartbl[i].level==0)strcpy(out,"DIM ");
 				else strcpy(out,"LOCAL ");
-				if(!(g_vartbl[i].type & T_EXPLICIT)){
+				if(!(g_vartbl[i].namelen & NAMELEN_EXPLICIT)){
 					if(g_vartbl[i].type & T_INT){
-						if(!(g_vartbl[i].type & T_EXPLICIT))strcat(out,"INTEGER ");
+						strcat(out,"INTEGER ");
 					}
 					if(g_vartbl[i].type & T_STR){
-						if(!(g_vartbl[i].type & T_EXPLICIT))strcat(out,"STRING ");
+						strcat(out,"STRING ");
 					}
 					if(g_vartbl[i].type & T_NBR){
-						if(!(g_vartbl[i].type & T_EXPLICIT))strcat(out,"FLOAT ");
+						strcat(out,"FLOAT ");
 					}
 				}
 				strcat(out,(char *)g_vartbl[i].name);
 				if(g_vartbl[i].type & T_INT){
-					if(g_vartbl[i].type & T_EXPLICIT)strcat(out,"%");
+					if(g_vartbl[i].namelen & NAMELEN_EXPLICIT)strcat(out,"%");
 				}
 				if(g_vartbl[i].type & T_STR){
-					if(g_vartbl[i].type & T_EXPLICIT)strcat(out,"$");
+					if(g_vartbl[i].namelen & NAMELEN_EXPLICIT)strcat(out,"$");
 				}
 				if(g_vartbl[i].type & T_NBR){
-					if(g_vartbl[i].type & T_EXPLICIT)strcat(out,"!");
+					if(g_vartbl[i].namelen & NAMELEN_EXPLICIT)strcat(out,"!");
 				}
 				if(g_vartbl[i].dims[0]>0){
 					strcat(out,"(");
@@ -3355,6 +3365,8 @@ void cmd_on(void) {
 unsigned char *CheckIfTypeSpecified(unsigned char *p, int *type, int AllowDefaultType) {
     unsigned char *tp;
 
+    g_StructArg = -1;                                               // consumed by cmd_dim when we return T_STRUCT
+
     if((tp = checkstring(p, (unsigned char *)"INTEGER")) != NULL)
         *type = T_INT | T_IMPLIED;
     else if((tp = checkstring(p, (unsigned char *)"STRING")) != NULL)
@@ -3362,6 +3374,19 @@ unsigned char *CheckIfTypeSpecified(unsigned char *p, int *type, int AllowDefaul
     else if((tp = checkstring(p, (unsigned char *)"FLOAT")) != NULL)
         *type = T_NBR | T_IMPLIED;
     else {
+        // Named struct type, e.g. `AS Point`.  Accept only a pre-registered type
+        // name; otherwise fall back to the default-type branch so the caller's
+        // existing error path ("Variable type" / DefaultType) kicks in normally.
+        skipspace(p);
+        int sidx = FindStructType(p);
+        if (sidx >= 0) {
+            *type = T_STRUCT | T_IMPLIED;
+            g_StructArg = sidx;
+            tp = p;
+            while (isnamechar(*tp)) tp++;
+            skipspace(tp);
+            return tp;
+        }
         if(!AllowDefaultType) error("Variable type");
         tp = p;
         *type = DefaultType;                                        // if the type is not specified use the default
@@ -3546,6 +3571,175 @@ void  cmd_const(void) {
 			}
         }
     }
+}
+
+// ----------------------------------------------------------------------------
+// TYPE / STRUCT — Phase 1 scalar support (upstream UKTailwind 6.02 anchors:
+// Commands.c:6663-7980, MMBasic.c:949-1157).  Nested / array / SORT / COPY
+// paths arrive in later phases per docs/type-struct-port-plan.md.
+// ----------------------------------------------------------------------------
+
+// Walks a single "name AS TYPE" member line and appends to sd.  p points
+// past any leading newline/linenumber tokens; returns NULL on success, or a
+// static error string on failure (caller reports via SetPreprogramError /
+// error()).  Phase 1 accepts scalar INTEGER / FLOAT / STRING [LENGTH n] and
+// previously-declared struct names.
+const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
+    unsigned char name[MAXVARLEN + 1];
+    int namelen = 0;
+    int type = T_NOTYPE;
+    int size = 0;
+
+    if (sd->num_members >= MAX_STRUCT_MEMBERS)
+        return "Too many members in TYPE";
+
+    skipspace(p);
+    if (!isnamestart(*p)) return "Invalid member definition in TYPE";
+
+    while (isnamechar(*p) && *p != '(' && namelen < MAXVARLEN) {
+        name[namelen++] = mytoupper(*p++);
+    }
+    name[namelen] = 0;
+
+    skipspace(p);
+
+    // Phase 1 rejects array members; Phase 3 will lift this and wire up
+    // `member(dim)` dims[] tracking in s_structmember.
+    if (*p == '(') return "Struct array members not yet supported";
+
+    // Expect `AS` — tokenized form (tokenAS) or literal `AS`.
+    if (*p == tokenAS) {
+        p++;
+    } else if ((p[0] == 'A' || p[0] == 'a') &&
+               (p[1] == 'S' || p[1] == 's') && !isnamechar(p[2])) {
+        p += 2;
+    } else {
+        return "Invalid member definition in TYPE";
+    }
+    skipspace(p);
+
+    unsigned char *tp;
+    if ((tp = checkstring(p, (unsigned char *)"INTEGER")) != NULL ||
+        (tp = checkstring(p, (unsigned char *)"INT")) != NULL) {
+        type = T_INT; size = sizeof(long long int); p = tp;
+    } else if ((tp = checkstring(p, (unsigned char *)"FLOAT")) != NULL) {
+        type = T_NBR; size = sizeof(MMFLOAT); p = tp;
+    } else if ((tp = checkstring(p, (unsigned char *)"STRING")) != NULL) {
+        type = T_STR; p = tp;
+        skipspace(p);
+        if ((tp = checkstring(p, (unsigned char *)"LENGTH")) != NULL) {
+            p = tp; skipspace(p);
+            size = 0;
+            while (*p >= '0' && *p <= '9') { size = size * 10 + (*p - '0'); p++; }
+            if (size < 1) size = 1;
+            if (size > MAXSTRLEN) size = MAXSTRLEN;
+        } else {
+            size = MAXSTRLEN;
+        }
+    } else {
+        // Nested struct member: reject with a clear error in Phase 1.
+        unsigned char typename[MAXVARLEN + 1];
+        int tl = 0;
+        unsigned char *tp2 = p;
+        while (isnamechar(*tp2) && tl < MAXVARLEN) {
+            typename[tl++] = mytoupper(*tp2++);
+        }
+        typename[tl] = 0;
+        if (tl > 0) {
+            for (int i = 0; i < g_structcnt; i++) {
+                if (g_structtbl[i] != NULL &&
+                    strcmp((char *)typename, (char *)g_structtbl[i]->name) == 0) {
+                    return "Nested TYPE members not yet supported";
+                }
+            }
+        }
+        return "Unknown type in TYPE definition";
+    }
+
+    // Align INTEGER / FLOAT members on 8-byte boundaries (upstream behaviour).
+    int offset = sd->total_size;
+    if ((type == T_INT || type == T_NBR) && (offset % 8) != 0) {
+        offset = ((offset / 8) + 1) * 8;
+    }
+
+    struct s_structmember *sm = &sd->members[sd->num_members];
+    memcpy(sm->name, name, namelen + 1);
+    sm->type = (unsigned char)type;
+    sm->size = (unsigned char)size;
+    sm->offset = offset;
+    for (int i = 0; i < MAXDIM; i++) sm->dims[i] = 0;
+
+    sd->num_members++;
+
+    if (type == T_STR) sd->total_size = offset + (size + 1);    // +1 for length byte
+    else               sd->total_size = offset + size;
+
+    return NULL;
+}
+
+int FindStructType(unsigned char *name) {
+    unsigned char uname[MAXVARLEN + 1];
+    int namelen = 0;
+    while (isnamechar(*name) && *name != '.' && namelen < MAXVARLEN) {
+        uname[namelen++] = mytoupper(*name++);
+    }
+    uname[namelen] = 0;
+    for (int i = 0; i < g_structcnt; i++) {
+        if (g_structtbl[i] != NULL &&
+            strcmp((char *)uname, (char *)g_structtbl[i]->name) == 0) return i;
+    }
+    return -1;
+}
+
+int FindStructMember(int struct_idx, unsigned char *membername,
+                     int *member_type, int *member_offset, int *member_size,
+                     short *member_dims) {
+    if (struct_idx < 0 || struct_idx >= g_structcnt || g_structtbl[struct_idx] == NULL)
+        return -1;
+
+    unsigned char uname[MAXVARLEN + 1];
+    int namelen = 0;
+    while (isnamechar(*membername) && *membername != '.' &&
+           *membername != '(' && namelen < MAXVARLEN) {
+        uname[namelen++] = mytoupper(*membername++);
+    }
+    uname[namelen] = 0;
+
+    struct s_structdef *sd = g_structtbl[struct_idx];
+    for (int i = 0; i < sd->num_members; i++) {
+        if (strcmp((char *)uname, (char *)sd->members[i].name) == 0) {
+            if (member_type)   *member_type   = sd->members[i].type;
+            if (member_offset) *member_offset = sd->members[i].offset;
+            if (member_size)   *member_size   = sd->members[i].size;
+            if (member_dims) {
+                for (int j = 0; j < MAXDIM; j++) member_dims[j] = sd->members[i].dims[j];
+            }
+            return i;
+        }
+    }
+    return -1;
+}
+
+// TYPE <name> ... END TYPE — at runtime we just skip to END TYPE; the shape
+// was registered in g_structtbl by PrepareProgramExt before execution began.
+void MIPS16 cmd_type(void) {
+    unsigned char *p = nextstmt;
+    while (1) {
+        p = GetNextCommand(p, NULL, (unsigned char *)"No matching END TYPE");
+        CommandToken tkn = commandtbl_decode(p);
+        if (tkn == cmdTYPE) error("Nested TYPE not allowed");
+        if (tkn == cmdEND_TYPE) {
+            skipelement(p);
+            nextstmt = p;
+            break;
+        }
+    }
+}
+
+// END TYPE is only ever reached via cmd_type's forward scan; hitting it
+// directly means the user typed it without a matching TYPE.
+void MIPS16 cmd_endtype(void) {
+    error("END TYPE without TYPE");
 }
 
 // Ported from upstream UKTailwind/PicoMiteAllVersions (@04f81d0):

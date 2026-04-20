@@ -63,6 +63,7 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
 
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
         if (vm->arrays[i].data || slot->is_array) continue;
+        if (slot->type == T_STRUCT) continue;   // handled by the struct-only pass below
 
         unsigned char namebuf[MAXVARLEN + 2];
         int nlen = strlen(slot->name);
@@ -102,6 +103,33 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
                 v->val.s = GetTempMemory(STRINGSIZE);
                 Mstrcpy(v->val.s, vm->globals[i].s);
             }
+        }
+    }
+
+    /* Sync struct variables — resolve by name once, alias val.s into
+     * vm->arrays[i].data so OP_LOAD/STORE_STRUCT_FIELD_* can reach the
+     * backing buffer.  Phase 1 only handles scalar struct vars; arrays of
+     * structs arrive with Phase 3 and will need a size-aware extension. */
+    for (uint16_t i = 0; i < cs->slot_count; i++) {
+        BCSlot *slot = &cs->slots[i];
+        if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
+        if (slot->type != T_STRUCT) continue;
+
+        unsigned char namebuf[MAXVARLEN + 2];
+        int nlen = strlen(slot->name);
+        memcpy(namebuf, slot->name, nlen);
+        namebuf[nlen] = 0;
+
+        if (!slot_map_initialized || slot_to_vartbl[i] < 0) {
+            void *vp = findvar(namebuf, V_FIND | V_NOFIND_NULL);
+            if (vp == NULL) continue;
+            slot_to_vartbl[i] = g_VarIndex;
+        }
+        int vi = slot_to_vartbl[i];
+        struct s_vartbl *v = &g_vartbl[vi];
+        if (v->val.s != NULL) {
+            vm->arrays[i].data = (BCValue *)v->val.s;
+            vm->arrays[i].data_external = 1;
         }
     }
 
@@ -202,6 +230,7 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
         BCSlot *slot = &cs->slots[i];
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
         if (!vm->arrays[i].data) continue;
+        if (slot->type == T_STRUCT) continue;   // struct rebinding pass handles these
 
         unsigned char namebuf[MAXVARLEN + 4];
         int nlen = strlen(slot->name);
@@ -243,6 +272,31 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
         }
         arr->ndims = (uint8_t)ndims;
         arr->total_elements = total;
+    }
+
+    /* Struct rebinding pass — resolve T_STRUCT slots by name (possibly for the
+     * first time after cmd_dim allocates them) and cache val.s into
+     * vm->arrays[i].data so OP_LOAD/STORE_STRUCT_FIELD_* can reach the buffer
+     * without re-calling findvar on every access. */
+    for (uint16_t i = 0; i < cs->slot_count; i++) {
+        BCSlot *slot = &cs->slots[i];
+        if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
+        if (slot->type != T_STRUCT) continue;
+
+        unsigned char namebuf[MAXVARLEN + 2];
+        int nlen = strlen(slot->name);
+        memcpy(namebuf, slot->name, nlen);
+        namebuf[nlen] = 0;
+
+        void *vp = findvar(namebuf, V_FIND | V_NOFIND_NULL);
+        if (vp == NULL) continue;
+        slot_to_vartbl[i] = g_VarIndex;
+
+        struct s_vartbl *v = &g_vartbl[slot_to_vartbl[i]];
+        if (v->val.s == NULL) continue;
+        if (vm->arrays[i].data == (BCValue *)v->val.s) continue;   // unchanged
+        vm->arrays[i].data = (BCValue *)v->val.s;
+        vm->arrays[i].data_external = 1;
     }
 }
 

@@ -267,6 +267,11 @@ extern uint8_t PSRAMpin;
 #define MAXSOUNDS           4
 #define MAXKEYLEN           64 
 #define MAXPID 8
+
+// TYPE / STRUCT limits (ported from UKTailwind 6.02).
+#define MAX_STRUCT_TYPES    32                  // max distinct TYPE definitions per program
+#define MAX_STRUCT_MEMBERS  16                  // max members per TYPE
+#define MAX_STRUCT_NEST_DEPTH 8                 // max nesting depth of TYPE-of-TYPE
 // define the maximum number of arguments to PRINT, INPUT, WRITE, ON, DIM, ERASE, DATA and READ
 // each entry uses zero bytes.  The number is limited by the length of a command line
 #define MAX_ARG_COUNT       75
