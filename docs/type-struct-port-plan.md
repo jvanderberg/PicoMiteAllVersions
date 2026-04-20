@@ -4,7 +4,7 @@ Sub-plan for Phase A item 5 of `docs/upstream-catchup-plan.md`. TYPE/STRUCT is t
 
 - **Upstream reference:** UKTailwind/PicoMiteAllVersions `@04f81d0`, version 6.02.02B0. Feature is guarded upstream by `#ifdef STRUCTENABLED`; we plan to drop the guard (see "Decisions").
 - **Acceptance spec:** `host/tests/acceptance/struct_full.bas` — the upstream `StructTest.bas`, 2188 lines, 86 numbered tests. When this passes under `./mmbasic_test ... --vm` and `--interp`, the port is done.
-- **Our branch:** `catchup/type-struct` (off `main`, lands per the standard catch-up workflow).
+- **Our branch:** `catchup/type-struct` (off `catchup-integration`, lands per the standard catch-up workflow — **never directly to `main`**; see the "Merge target" section of `docs/upstream-catchup-plan.md`).
 - **Prerequisite:** bridge-rebinding fix in `bc_bridge.c` (lands as its own commit; unlocks REDIM-in-VM at the same time, and is what lets struct memory live in `g_vartbl` without breaking VM reads after a bridged allocation).
 - **Gate per phase:** host `./run_tests.sh` default compare mode green, `./build_firmware.sh rp2040 && ./build_firmware.sh rp2350` green, `./host/build_wasm.sh` green.
 
@@ -165,7 +165,7 @@ Focused-test filenames reserved up front (adjust numbers if other tests land fir
 - Firmware (rp2040, rp2350) produces `.uf2` without new warnings.
 - WASM build produces `picomite.{mjs,wasm}` without new warnings.
 - `docs/upstream-catchup-plan.md` updated: Phase A item 5 DONE with commit range.
-- Tag `v6.01-parity-plus-lang` applied on main (Phase A complete per parent plan).
+- Catch-up milestone complete on `catchup-integration`. Device-validation step per parent plan — flash both rp2040 and rp2350 `.uf2`s on real hardware, run acceptance programs on the PicoCalc — clears before any `main` merge. Tag `v6.01-parity-plus-lang` applied only after that.
 - Consider: once this and REDIM are both landed, dust off the `FRUN` documentation to remove any "not supported in VM mode" language for array/struct operations.
 
 ## Out of scope

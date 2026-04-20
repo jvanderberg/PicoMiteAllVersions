@@ -4,8 +4,27 @@ Bring the fork up to parity with `UKTailwind/PicoMiteAllVersions` on language an
 
 - **Fork point:** `c0f666f` (2025-08-21), version 6.01.00b10.
 - **Upstream HEAD:** `04f81d0` (2026-04-05), version 6.02.02B0.
-- **Our lead branch:** `main`.
+- **Our lead branch:** `main` — but **no catch-up work lands here directly.** See "Merge target" below.
+- **Integration branch:** `catchup-integration`. Every feature port commits here.
 - **Reference remote:** `upstream` (`UKTailwind/PicoMiteAllVersions`). Kept up to date with `git fetch upstream` but never merged into our history.
+
+## Merge target — READ THIS BEFORE COMMITTING
+
+**No catch-up commit goes on `main` until the entire plan is landed on `catchup-integration` and validated on real device hardware.** Running the host + wasm + firmware-build gates locally proves that the tree compiles and passes compare-mode tests, but it does not prove that a rp2040 or rp2350 with a real PicoCalc LCD, SD card, keyboard, and audio DAC actually runs the ported feature correctly. The PC simulator elides timing, peripheral behaviour, and concurrency that only the device exposes.
+
+The workflow is therefore:
+
+1. Every feature port and supporting infrastructure (bridge fixes, plan rewrites, test imports) commits to `catchup-integration`, not `main`. Per-feature working branches (`catchup/<feature>`) fast-forward into `catchup-integration` when their own gate is green.
+2. `catchup-integration` accumulates commits until the plan's exit criteria (Phase A complete, Phase B complete — whatever the current milestone is) are met.
+3. A `.uf2` from `catchup-integration` is flashed onto physical PicoCalc hardware (both rp2040 and rp2350) and the acceptance test programs are run end-to-end on device — not just `host/tests/acceptance/struct_full.bas` through the simulator, but the actual programs on real glass. Anything that looks wrong gets fixed on `catchup-integration` before main sees a single commit.
+4. Only after device validation does `catchup-integration` merge (or rebase-and-fast-forward) into `main` as a single coherent set.
+
+Corollaries:
+
+- The simulator gates (host `./run_tests.sh`, firmware `.uf2` builds, `./host/build_wasm.sh`) remain required at every per-feature boundary — they catch regressions early — but they are necessary, not sufficient.
+- Sub-plans (e.g. `docs/type-struct-port-plan.md`) follow the same rule. Their phases commit to `catchup-integration` (or to feature branches that fast-forward into it).
+- Docs-only updates to the catch-up plan itself (clarifications, status, scope notes) also land on `catchup-integration` so `main` doesn't see "catch-up is happening" until the work is actually validated.
+- The earlier catch-up commits on `main` (TRIM$ `291d525`, initial plan doc `55548fb`) predate this policy. They stay where they are rather than get force-rewritten out of published history; the policy applies from the next commit forward.
 
 ## Why manual, not merge
 
@@ -83,23 +102,25 @@ These touch hardware or peripheral bus code. They make sense for device builds o
 
 For every feature ported, follow this loop exactly:
 
-1. **Branch off current `main`.** Name the branch `catchup/<feature>` (e.g. `catchup/type-struct`, `catchup/fun-trim`).
+1. **Branch off current `catchup-integration`.** Name the branch `catchup/<feature>` (e.g. `catchup/type-struct`, `catchup/fun-trim`). Never branch off `main` for catch-up work.
 2. **Fetch fresh upstream.** `git fetch upstream` so the reference is current.
 3. **Read, don't copy blindly.** Open the upstream implementation in its new location. Read the full function, every helper it calls, every new field on `Option`, every new entry in `AllCommands.h` / command table.
 4. **Port source changes.** Apply the minimum diff to our files (`Commands.c`, `Functions.c`, `AllCommands.h`, `MMBasic.h` as needed). Keep our surrounding code untouched.
 5. **Update HAL split if needed.** If the feature touches `Draw.c` / `FileIO.c` / `Audio.c` / `MM_Misc.c`, mirror the split pattern already established there (device body vs. shared body). Do NOT introduce bare `#ifdef PICOMITE` gates into logic — route through the existing HAL entry points or add a new one.
 6. **Bridge, don't native-VM.** New commands land as interpreter entries + `OP_BRIDGE_CMD` bridging so `FRUN` still reaches them. Native VM opcodes only after profiling.
 7. **Write a test.** Every ported feature gets at least one `host/tests/*.bas` that exercises it. Regressions in tier-1 features bite hardest, so cover edge cases (empty string, negative index, nested TYPE, etc.).
-8. **Run the gate — all three must pass:**
+8. **Run the simulator gate — all three must pass:**
    - Host: `cd host && ./build.sh && ./run_tests.sh` (default compare mode).
    - Firmware: `./build_firmware.sh` — both rp2040 and rp2350 must produce a `.uf2`. Mirrors CI exactly; if this passes locally, `firmware.yml` will pass on push.
    - Web: `cd host && ./build_wasm.sh` — `host/web/picomite.{mjs,wasm}` must produce cleanly.
 
-   If any gate fails, the port is not done — do not commit.
+   If any gate fails, the port is not done — do not commit. These are necessary but **not** sufficient; see "Merge target" above.
 9. **Commit with reference.** Commit message cites upstream: *"Upstream 6.02 parity: TYPE/STRUCT — ported from UKTailwind/PicoMiteAllVersions Commands.c cmd_type (@04f81d0)"*.
-10. **Fast-forward `main` when green.** No merge commits on feature branches; rebase-and-ff or squash.
+10. **Fast-forward `catchup-integration` when green.** No merge commits on feature branches; rebase-and-ff or squash. **Do not touch `main`.**
 
-A feature may span more than one commit if it's large. Each commit must still pass the gate on its own.
+A feature may span more than one commit if it's large. Each commit must still pass the simulator gate on its own.
+
+When the plan's current milestone is complete (all Phase A features landed on `catchup-integration`, for example), the catch-up milestone ships via the device-validation step described in "Merge target" — flash the `.uf2`, run the acceptance programs on real hardware, fix whatever the simulator missed, then and only then merge to `main`.
 
 ## Ordered plan
 
