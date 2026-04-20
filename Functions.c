@@ -1447,3 +1447,117 @@ void __not_in_flash_func(fun_ternary)(void){
 		return;
 	} else error("Syntax");
 }
+
+// ----------------------------------------------------------------------------
+// STRUCT( FIND ... )  — Phase 14, Upstream 6.02 parity.
+// Ported from UKTailwind/PicoMiteAllVersions Commands.c:8076-8297 (@04f81d0),
+// non-regex branch only.  Regex (`STRUCT(FIND arr().member, "\d+", , size)`)
+// lands in Phase 15 with the re.c library import; until then argc==7 errors
+// with a clear message.
+//
+// Syntax:
+//   STRUCT(FIND array().member, value)
+//   STRUCT(FIND array().member, value, start)
+//
+// Returns the array index of the first element whose member equals `value`,
+// or -1 if not found.  `start` skips the first (start - OptionBase) elements.
+// Following phases register additional subfunctions (OFFSET/SIZEOF/TYPE).
+// ----------------------------------------------------------------------------
+void fun_struct(void) {
+    unsigned char *p;
+
+    if ((p = checkstring(ep, (unsigned char *)"FIND")) != NULL) {
+        unsigned char *member_base;
+        int var_idx, struct_type, struct_size;
+        int member_type, member_offset, member_size;
+        int num_elements, start_idx;
+
+        getargs(&p, 7, (unsigned char *)",");
+        if (argc != 3 && argc != 5 && argc != 7)
+            error("Syntax: STRUCT(FIND array().member, value [, start] [, size])");
+        if (argc == 7)
+            error("STRUCT(FIND regex …) pending (Phase 15)");
+
+        member_base = findvar(argv[0], V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        var_idx = g_VarIndex;
+        if (!(g_vartbl[var_idx].type & T_STRUCT))
+            error("Expected a structure array");
+        if (g_vartbl[var_idx].dims[0] == 0)
+            error("Expected an array of structures");
+        if (g_StructMemberType == 0)
+            error("Must specify a member (e.g., array().membername)");
+
+        struct_type   = (int)g_vartbl[var_idx].size;
+        struct_size   = g_structtbl[struct_type]->total_size;
+        member_offset = g_StructMemberOffset;
+        member_size   = g_StructMemberSize;
+        (void)member_size;
+
+        unsigned char *array_base = member_base - member_offset;
+
+        num_elements = 1;
+        for (int d = 0; d < MAXDIM && g_vartbl[var_idx].dims[d] != 0; d++)
+            num_elements *= (g_vartbl[var_idx].dims[d] + 1 - g_OptionBase);
+
+        // Upstream classifies by looking at member_size: > 8 means string.
+        // That heuristic doesn't cover 64-bit int vs float, so we walk the
+        // struct definition by offset for a clean type read.
+        struct s_structdef *sd = g_structtbl[struct_type];
+        member_type = T_NBR;
+        for (int m = 0; m < sd->num_members; m++) {
+            if (sd->members[m].offset == member_offset) {
+                member_type = sd->members[m].type & (T_INT | T_NBR | T_STR);
+                break;
+            }
+        }
+
+        MMFLOAT f;
+        long long int i64;
+        unsigned char *s = NULL;
+        int t = T_NOTYPE;
+        evaluate(argv[2], &f, &i64, &s, &t, false);
+
+        start_idx = 0;
+        if (argc >= 5 && *argv[4]) {
+            start_idx = getint(argv[4], g_OptionBase, g_OptionBase + num_elements) - g_OptionBase;
+            if (start_idx >= num_elements) {
+                targ = T_INT;
+                iret = -1;
+                return;
+            }
+        }
+
+        targ = T_INT;
+        for (int i = start_idx; i < num_elements; i++) {
+            unsigned char *elem_ptr   = array_base + (i * struct_size);
+            unsigned char *member_ptr = elem_ptr  + member_offset;
+
+            if (member_type == T_INT) {
+                long long int val = *(long long int *)member_ptr;
+                long long int search_val;
+                if (t & T_INT)      search_val = i64;
+                else if (t & T_NBR) search_val = (long long int)f;
+                else                error("Type mismatch: expected numeric value");
+                if (val == search_val) { iret = i + g_OptionBase; return; }
+            } else if (member_type == T_NBR) {
+                MMFLOAT val = *(MMFLOAT *)member_ptr;
+                MMFLOAT search_val;
+                if (t & T_NBR)      search_val = f;
+                else if (t & T_INT) search_val = (MMFLOAT)i64;
+                else                error("Type mismatch: expected numeric value");
+                if (val == search_val) { iret = i + g_OptionBase; return; }
+            } else if (member_type == T_STR) {
+                if (!(t & T_STR)) error("Type mismatch: expected string value");
+                unsigned char *val = member_ptr;
+                if (*val == *s && memcmp(val + 1, s + 1, *s) == 0) {
+                    iret = i + g_OptionBase;
+                    return;
+                }
+            }
+        }
+        iret = -1;
+        return;
+    }
+
+    error("Unknown STRUCT() subfunction");
+}

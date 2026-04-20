@@ -306,6 +306,7 @@ void fun_bin2str(void);
 void fun_str2bin(void);
 void fun_test(void);
 void fun_bound(void);
+void fun_struct(void);
 void fun_ternary(void);
 void fun_call(void);
 void fun_GPS(void);
@@ -650,6 +651,7 @@ void fun_map(void);
 	{ (unsigned char *)"Sqr(",		T_FUN  | T_NBR,			0, fun_sqr		},
 	{ (unsigned char *)"Str$(",		T_FUN  | T_STR,			0, fun_str		},
 	{ (unsigned char *)"String$(",           T_FUN  | T_STR,			0, fun_string           },
+	{ (unsigned char *)"Struct(",		T_FUN  | T_INT,			0, fun_struct	},
 	{ (unsigned char *)"Tab(",		T_FUN  | T_STR,                 0, fun_tab,		},
 	{ (unsigned char *)"Tan(",		T_FUN  | T_NBR,			0, fun_tan		},
 	{ (unsigned char *)"Trim$(",		T_FUN  | T_STR,			0, fun_trim		},
