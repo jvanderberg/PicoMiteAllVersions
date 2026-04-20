@@ -3577,21 +3577,22 @@ void  cmd_const(void) {
 }
 
 // ----------------------------------------------------------------------------
-// TYPE / STRUCT — Phase 1 scalar support (upstream UKTailwind 6.02 anchors:
-// Commands.c:6663-7980, MMBasic.c:949-1157).  Nested / array / SORT / COPY
-// paths arrive in later phases per docs/type-struct-port-plan.md.
+// TYPE / STRUCT — ported from UKTailwind 6.02 (Commands.c:7776-7980) with the
+// `#ifdef STRUCTENABLED` guard dropped per docs/upstream-catchup-plan.md.
+// Phase 4 lifts the Phase 1 "nested struct" and "array member" restrictions so
+// `Type T; a(n) As Inner; End Type` / `x As InnerType` are accepted.
 // ----------------------------------------------------------------------------
 
-// Walks a single "name AS TYPE" member line and appends to sd.  p points
-// past any leading newline/linenumber tokens; returns NULL on success, or a
-// static error string on failure (caller reports via SetPreprogramError /
-// error()).  Phase 1 accepts scalar INTEGER / FLOAT / STRING [LENGTH n] and
-// previously-declared struct names.
+// Walks a single "name [ (dims) ] AS TYPE" member line and appends to sd.
+// Returns NULL on success or a static error string on failure.
 const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
     unsigned char name[MAXVARLEN + 1];
     int namelen = 0;
     int type = T_NOTYPE;
     int size = 0;
+    short dims[MAXDIM] = {0};
+    int ndims = 0;
+    int array_elements = 1;
 
     if (sd->num_members >= MAX_STRUCT_MEMBERS)
         return "Too many members in TYPE";
@@ -3606,9 +3607,30 @@ const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
 
     skipspace(p);
 
-    // Phase 1 rejects array members; Phase 3 will lift this and wire up
-    // `member(dim)` dims[] tracking in s_structmember.
-    if (*p == '(') return "Struct array members not yet supported";
+    // Optional array dimensions: `coords(4)`, `grid(3,2)`, etc.  We're running
+    // inside PrepareProgramExt so the regular getint/evaluate machinery isn't
+    // wired up yet; parse digits by hand.
+    if (*p == '(') {
+        p++;
+        skipspace(p);
+        while (*p && *p != ')' && ndims < MAXDIM) {
+            int dim = 0;
+            int have_digits = 0;
+            while (*p >= '0' && *p <= '9') {
+                dim = dim * 10 + (*p - '0');
+                have_digits = 1;
+                p++;
+            }
+            if (!have_digits) return "Dimensions";
+            if (dim <= g_OptionBase) return "Dimensions";
+            dims[ndims++] = (short)dim;
+            array_elements *= (dim + 1 - g_OptionBase);
+            skipspace(p);
+            if (*p == ',') { p++; skipspace(p); }
+        }
+        if (*p == ')') p++;
+        skipspace(p);
+    }
 
     // Expect `AS` — tokenized form (tokenAS) or literal `AS`.
     if (*p == tokenAS) {
@@ -3640,7 +3662,7 @@ const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
             size = MAXSTRLEN;
         }
     } else {
-        // Nested struct member: reject with a clear error in Phase 1.
+        // Possibly a previously-declared TYPE name → nested struct member.
         unsigned char typename[MAXVARLEN + 1];
         int tl = 0;
         unsigned char *tp2 = p;
@@ -3648,20 +3670,25 @@ const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
             typename[tl++] = mytoupper(*tp2++);
         }
         typename[tl] = 0;
+        int nested_idx = -1;
         if (tl > 0) {
             for (int i = 0; i < g_structcnt; i++) {
                 if (g_structtbl[i] != NULL &&
                     strcmp((char *)typename, (char *)g_structtbl[i]->name) == 0) {
-                    return "Nested TYPE members not yet supported";
+                    nested_idx = i;
+                    break;
                 }
             }
         }
-        return "Unknown type in TYPE definition";
+        if (nested_idx < 0) return "Unknown type in TYPE definition";
+        type = T_STRUCT;
+        size = nested_idx;                      // struct-type index lives in size
+        p = tp2;
     }
 
-    // Align INTEGER / FLOAT members on 8-byte boundaries (upstream behaviour).
+    // 8-byte align INT / FLOAT / nested struct members (matches upstream).
     int offset = sd->total_size;
-    if ((type == T_INT || type == T_NBR) && (offset % 8) != 0) {
+    if ((type == T_INT || type == T_NBR || type == T_STRUCT) && (offset % 8) != 0) {
         offset = ((offset / 8) + 1) * 8;
     }
 
@@ -3670,12 +3697,18 @@ const char *ParseStructMember(unsigned char *p, struct s_structdef *sd) {
     sm->type = (unsigned char)type;
     sm->size = (unsigned char)size;
     sm->offset = offset;
-    for (int i = 0; i < MAXDIM; i++) sm->dims[i] = 0;
+    for (int i = 0; i < MAXDIM; i++) sm->dims[i] = dims[i];
 
     sd->num_members++;
 
-    if (type == T_STR) sd->total_size = offset + (size + 1);    // +1 for length byte
-    else               sd->total_size = offset + size;
+    if (type == T_STR) {
+        sd->total_size = offset + (size + 1) * array_elements;      // +1 length byte/elem
+    } else if (type == T_STRUCT) {
+        int nested_size = g_structtbl[size]->total_size;
+        sd->total_size = offset + nested_size * array_elements;
+    } else {
+        sd->total_size = offset + size * array_elements;
+    }
 
     return NULL;
 }

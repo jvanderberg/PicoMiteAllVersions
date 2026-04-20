@@ -391,93 +391,421 @@ static int source_parse_varname(const char **pp, char *name, int *name_len, uint
     return 1;
 }
 
-// Struct-field load/store — compile `base.field` into OP_LOAD/STORE_STRUCT_FIELD_*
-// with the offset resolved from g_structtbl at compile time.  Returns 1 if the
-// reference was a struct field (and the opcode was emitted or an error raised),
-// 0 if the name isn't a declared struct slot (caller falls back to normal
-// variable handling, which preserves legacy dotted-name semantics).
-static int source_split_struct_member(BCCompiler *cs, const char *name, int name_len,
-                                      uint16_t *slot_out, int *offset_out,
-                                      int *member_type_out, int *member_size_out) {
+// Struct-chain walker — compiles `a.b.c`, `a(i).b.c`, `a.b(j).c(k)`, and the
+// fully-general `a(i).b(j).c(k).d` into the appropriate opcode:
+//   * All-scalar chain            → OP_LOAD/STORE_STRUCT_FIELD_*
+//   * Outer-index-only chain      → OP_LOAD/STORE_STRUCT_ELEM_*
+//   * Any intermediate `(idx)`    → OP_LOAD/STORE_STRUCT_NESTED_*  (Phase 4)
+//
+// The walker emits each `(idx)` expression inline as it encounters the segment
+// so runtime indices end up on the stack in the order the NESTED opcode expects
+// (outermost outer index first, then innermost-nested-first for pops).
+
+#define CHAIN_MAX_NESTED 8
+
+typedef struct {
+    int    is_indexed;          /* 1 if `(idx)` followed this member */
+    int    const_off;            /* offset added to base before indexing */
+    int    stride;               /* sizeof(elem) when indexed */
+    int    m_type;               /* T_INT/T_NBR/T_STR/T_STRUCT */
+    int    m_size;               /* member size (struct-idx for T_STRUCT, len for T_STR) */
+} ChainSeg;
+
+// Walk the `.member[(idx)]…` tail starting from `current_struct_idx`.
+// Returns 0 on error (bc_set_error called), 1 on success.
+// On return:
+//   *leaf_type  = terminal member's storage type (T_INT/T_NBR/T_STR)
+//   *leaf_size  = terminal member's .size field (string maxlen or struct idx)
+//   *nested_nseg = count of indexed segments (emitted index exprs are on stack)
+//   nested_off[i], nested_stride[i] = per-nested-segment const+stride (i < *nested_nseg)
+//   *scalar_total_offset = offset to add to the base pointer for all-scalar chains
+//      (only meaningful when *nested_nseg == 0, else caller uses nested segs + final_offset)
+//   *final_offset = trailing scalar offset after the last indexed segment
+//      (only meaningful when *nested_nseg > 0)
+static int source_walk_struct_tail(BCSourceFrontend *fe, BCCompiler *cs,
+                                   int current_struct_idx,
+                                   const char *dotted_tail, int dotted_tail_len,
+                                   const char **pp,
+                                   int *leaf_type, int *leaf_size,
+                                   int *nested_nseg,
+                                   int nested_off[CHAIN_MAX_NESTED],
+                                   int nested_stride[CHAIN_MAX_NESTED],
+                                   int *scalar_total_offset,
+                                   int *final_offset) {
+    const char *dtp = dotted_tail;
+    int dtp_rem = dotted_tail_len;
+    const char *p = *pp;
+    int accum_off = 0;     // accumulating const offset for the current (pre-index) run
+    int nseg = 0;
+    int depth = 0;
+    int term_type = 0;
+    int term_size = 0;
+
+    while (1) {
+        if (++depth > MAX_STRUCT_NEST_DEPTH) {
+            bc_set_error(cs, "Structure nesting too deep");
+            return 0;
+        }
+
+        // Pull the next member name.  Read first from dotted_tail (the member
+        // path captured by the tokenizer — dots included) while characters
+        // remain; fall through to the parse stream once it's exhausted.  We
+        // always consume the leading '.' here so the "more to resolve" block
+        // below can leave the '.' un-consumed and stay symmetric.
+        unsigned char mname[MAXVARLEN + 1];
+        int mlen = 0;
+        if (dtp_rem > 0) {
+            if (*dtp == '.') { dtp++; dtp_rem--; }      // eat any leading dot
+            while (dtp_rem > 0 && mlen < MAXVARLEN) {
+                char c = *dtp;
+                if (c == '.' || c == '(') break;
+                mname[mlen++] = (unsigned char)mytoupper(c);
+                dtp++; dtp_rem--;
+            }
+            if (mlen > 0 && (mname[mlen-1] == '$' || mname[mlen-1] == '%' || mname[mlen-1] == '!')) {
+                mlen--;
+            }
+        } else {
+            source_skip_space(&p);
+            if (*p == '.') p++;
+            source_skip_space(&p);
+            // `isnamechar` also matches `.`, so read one segment only.
+            while (isnamechar((unsigned char)*p) && *p != '.' && mlen < MAXVARLEN) {
+                mname[mlen++] = (unsigned char)mytoupper(*p++);
+            }
+            if (*p == '$' || *p == '%' || *p == '!') p++;
+        }
+        mname[mlen] = 0;
+        if (mlen == 0) {
+            bc_set_error(cs, "Empty struct member name");
+            return 0;
+        }
+
+        int m_type = 0, m_offset = 0, m_size = 0;
+        short m_dims[MAXDIM];
+        int midx = FindStructMember(current_struct_idx, mname,
+                                    &m_type, &m_offset, &m_size, m_dims);
+        if (midx < 0) {
+            bc_set_error(cs, "Unknown struct member: %s", (const char *)mname);
+            return 0;
+        }
+
+        // Is this member indexed in the source?  Either "(idx)" in the parse
+        // stream (most common), or we've exhausted the dotted_tail and the
+        // tail now has `(`.
+        int indexed = 0;
+        {
+            const char *q;
+            if (dtp_rem > 0 && *dtp == '(') {
+                // Shouldn't happen — tokenizer would have stopped before `(`.
+                // Guard anyway.
+                bc_set_error(cs, "Index in struct path prefix not supported");
+                return 0;
+            }
+            q = p;
+            source_skip_space(&q);
+            if (*q == '(' && m_dims[0] != 0) indexed = 1;
+        }
+
+        if (indexed) {
+            if (nseg >= CHAIN_MAX_NESTED) {
+                bc_set_error(cs, "Too many nested struct indices (max %d)", CHAIN_MAX_NESTED);
+                return 0;
+            }
+            // Parse and emit index expressions — expected one per dim.
+            int expected_dims = 0;
+            for (int di = 0; di < MAXDIM && m_dims[di] != 0; di++) expected_dims++;
+            if (expected_dims != 1) {
+                // Multi-dim nested-array members aren't supported in this phase
+                // (acceptance tests 51-54 only use 1-D nested arrays).  Fall
+                // through to error so we know if a program needs it.
+                bc_set_error(cs, "Multi-dim nested struct member array not yet supported");
+                return 0;
+            }
+            source_skip_space(&p);
+            if (*p != '(') {
+                bc_set_error(cs, "Expected '(' for struct member array index");
+                return 0;
+            }
+            p++;
+            uint8_t ix_type = source_parse_expression(fe, cs, &p);
+            if (cs->has_error) return 0;
+            source_emit_int_conversion(cs, ix_type);
+            source_skip_space(&p);
+            if (*p != ')') {
+                bc_set_error(cs, "Expected ')' for struct member array index");
+                return 0;
+            }
+            p++;
+
+            int elem_sz;
+            if (m_type == T_STRUCT) {
+                if (m_size < 0 || m_size >= g_structcnt || g_structtbl[m_size] == NULL) {
+                    bc_set_error(cs, "Invalid nested struct type");
+                    return 0;
+                }
+                elem_sz = g_structtbl[m_size]->total_size;
+            } else if (m_type == T_STR) {
+                elem_sz = m_size + 1;
+            } else {
+                elem_sz = m_size;
+            }
+            nested_off[nseg]    = accum_off + m_offset;
+            nested_stride[nseg] = elem_sz;
+            nseg++;
+            accum_off = 0;
+        } else {
+            accum_off += m_offset;
+            if (m_dims[0] != 0 && m_type != T_STRUCT) {
+                bc_set_error(cs, "Array member requires index");
+                return 0;
+            }
+        }
+
+        // Decide: continue descending, or stop here?  Leave the '.' in place —
+        // the iter-start block at the top of the loop consumes it.
+        int more = 0;
+        if (dtp_rem > 0 && *dtp == '.') {
+            more = 1;
+        } else {
+            const char *q = p;
+            source_skip_space(&q);
+            if (*q == '.') {
+                p = q;
+                more = 1;
+            }
+        }
+
+        if (more) {
+            if (m_type != T_STRUCT) {
+                bc_set_error(cs, "Not a nested structure");
+                return 0;
+            }
+            current_struct_idx = m_size;
+            continue;
+        }
+
+        // Terminal.
+        if (m_type == T_STRUCT) {
+            bc_set_error(cs, "Whole-struct read/write not yet supported");
+            return 0;
+        }
+        term_type = m_type;
+        term_size = m_size;
+        break;
+    }
+
+    *pp = p;
+    *leaf_type = term_type;
+    *leaf_size = term_size;
+    *nested_nseg = nseg;
+    if (nseg == 0) {
+        *scalar_total_offset = accum_off;
+        *final_offset = 0;
+    } else {
+        *scalar_total_offset = 0;
+        *final_offset = accum_off;
+    }
+    return 1;
+}
+
+// Emit the right load opcode for a struct chain.  `slot` is the base slot,
+// outer_ndim is the number of outer-array indices already on the stack (0 if
+// outer is a scalar struct).  Returns the terminal member type on success.
+static uint8_t source_emit_struct_chain_load(BCSourceFrontend *fe, BCCompiler *cs,
+                                             uint16_t slot, int outer_ndim,
+                                             const char *dotted_tail, int dotted_tail_len,
+                                             const char **pp) {
+    int sidx = cs->slots[slot].struct_idx;
+    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
+        bc_set_error(cs, "Invalid struct type on slot");
+        return 0;
+    }
+    int leaf_type = 0, leaf_size = 0, nseg = 0;
+    int nested_off[CHAIN_MAX_NESTED];
+    int nested_stride[CHAIN_MAX_NESTED];
+    int scalar_off = 0, final_off = 0;
+    if (!source_walk_struct_tail(fe, cs, sidx, dotted_tail, dotted_tail_len,
+                                 pp, &leaf_type, &leaf_size, &nseg,
+                                 nested_off, nested_stride,
+                                 &scalar_off, &final_off))
+        return 0;
+
+    if (nseg == 0 && outer_ndim == 0) {
+        uint8_t op = (leaf_type == T_INT) ? OP_LOAD_STRUCT_FIELD_I :
+                     (leaf_type == T_NBR) ? OP_LOAD_STRUCT_FIELD_F :
+                                            OP_LOAD_STRUCT_FIELD_S;
+        bc_emit_byte(cs, op);
+        bc_emit_u16(cs, slot);
+        bc_emit_u16(cs, (uint16_t)scalar_off);
+        return (uint8_t)leaf_type;
+    }
+
+    if (nseg == 0) {
+        // Outer indexing only — ELEM opcode.
+        int elem_size = g_structtbl[sidx]->total_size;
+        uint8_t op = (leaf_type == T_INT) ? OP_LOAD_STRUCT_ELEM_I :
+                     (leaf_type == T_NBR) ? OP_LOAD_STRUCT_ELEM_F :
+                                            OP_LOAD_STRUCT_ELEM_S;
+        bc_emit_byte(cs, op);
+        bc_emit_u16(cs, slot);
+        bc_emit_u16(cs, (uint16_t)scalar_off);
+        bc_emit_u16(cs, (uint16_t)elem_size);
+        bc_emit_byte(cs, (uint8_t)outer_ndim);
+        return (uint8_t)leaf_type;
+    }
+
+    // Nested: NESTED opcode.
+    int outer_stride = g_structtbl[sidx]->total_size;
+    uint8_t op = (leaf_type == T_INT) ? OP_LOAD_STRUCT_NESTED_I :
+                 (leaf_type == T_NBR) ? OP_LOAD_STRUCT_NESTED_F :
+                                        OP_LOAD_STRUCT_NESTED_S;
+    bc_emit_byte(cs, op);
+    bc_emit_u16(cs, slot);
+    bc_emit_byte(cs, (uint8_t)outer_ndim);
+    bc_emit_byte(cs, (uint8_t)nseg);
+    bc_emit_u16(cs, (uint16_t)outer_stride);
+    for (int i = 0; i < nseg; i++) {
+        bc_emit_u16(cs, (uint16_t)nested_off[i]);
+        bc_emit_u16(cs, (uint16_t)nested_stride[i]);
+    }
+    bc_emit_u16(cs, (uint16_t)final_off);
+    return (uint8_t)leaf_type;
+}
+
+// Emit the right store opcode.  Caller emits the RHS expression AFTER the
+// indices so the value is on the top of stack (nested/outer indices below it).
+// NOTE: the walker emits index expressions while executing; callers must
+// therefore invoke this walker BEFORE evaluating the RHS.
+static int source_emit_struct_chain_store(BCSourceFrontend *fe, BCCompiler *cs,
+                                          uint16_t slot, int outer_ndim,
+                                          const char *dotted_tail, int dotted_tail_len,
+                                          const char **pp,
+                                          int *leaf_type_out, int *leaf_size_out,
+                                          int *scalar_off_out, int *final_off_out,
+                                          int *nseg_out,
+                                          int nested_off_out[CHAIN_MAX_NESTED],
+                                          int nested_stride_out[CHAIN_MAX_NESTED]) {
+    int sidx = cs->slots[slot].struct_idx;
+    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
+        bc_set_error(cs, "Invalid struct type on slot");
+        return 0;
+    }
+    int leaf_type = 0, leaf_size = 0, nseg = 0;
+    int scalar_off = 0, final_off = 0;
+    if (!source_walk_struct_tail(fe, cs, sidx, dotted_tail, dotted_tail_len,
+                                 pp, &leaf_type, &leaf_size, &nseg,
+                                 nested_off_out, nested_stride_out,
+                                 &scalar_off, &final_off))
+        return 0;
+    *leaf_type_out   = leaf_type;
+    *leaf_size_out   = leaf_size;
+    *scalar_off_out  = scalar_off;
+    *final_off_out   = final_off;
+    *nseg_out        = nseg;
+    (void)outer_ndim;  // stored by caller when emitting opcode
+    (void)slot;
+    return 1;
+}
+
+// Finalise the store opcode emission after the RHS expression has been parsed
+// and pushed to the stack.
+static void source_emit_struct_chain_store_finish(BCCompiler *cs, uint16_t slot,
+                                                  int outer_ndim, int leaf_type,
+                                                  int leaf_size, int scalar_off,
+                                                  int final_off, int nseg,
+                                                  const int *nested_off,
+                                                  const int *nested_stride) {
+    if (nseg == 0 && outer_ndim == 0) {
+        uint8_t op = (leaf_type == T_INT) ? OP_STORE_STRUCT_FIELD_I :
+                     (leaf_type == T_NBR) ? OP_STORE_STRUCT_FIELD_F :
+                                            OP_STORE_STRUCT_FIELD_S;
+        bc_emit_byte(cs, op);
+        bc_emit_u16(cs, slot);
+        bc_emit_u16(cs, (uint16_t)scalar_off);
+        if (op == OP_STORE_STRUCT_FIELD_S) bc_emit_u16(cs, (uint16_t)leaf_size);
+        return;
+    }
+    int sidx = cs->slots[slot].struct_idx;
+    int outer_stride = g_structtbl[sidx]->total_size;
+    if (nseg == 0) {
+        uint8_t op = (leaf_type == T_INT) ? OP_STORE_STRUCT_ELEM_I :
+                     (leaf_type == T_NBR) ? OP_STORE_STRUCT_ELEM_F :
+                                            OP_STORE_STRUCT_ELEM_S;
+        bc_emit_byte(cs, op);
+        bc_emit_u16(cs, slot);
+        bc_emit_u16(cs, (uint16_t)scalar_off);
+        bc_emit_u16(cs, (uint16_t)outer_stride);
+        bc_emit_byte(cs, (uint8_t)outer_ndim);
+        if (op == OP_STORE_STRUCT_ELEM_S) bc_emit_u16(cs, (uint16_t)leaf_size);
+        return;
+    }
+    uint8_t op = (leaf_type == T_INT) ? OP_STORE_STRUCT_NESTED_I :
+                 (leaf_type == T_NBR) ? OP_STORE_STRUCT_NESTED_F :
+                                        OP_STORE_STRUCT_NESTED_S;
+    bc_emit_byte(cs, op);
+    bc_emit_u16(cs, slot);
+    bc_emit_byte(cs, (uint8_t)outer_ndim);
+    bc_emit_byte(cs, (uint8_t)nseg);
+    bc_emit_u16(cs, (uint16_t)outer_stride);
+    for (int i = 0; i < nseg; i++) {
+        bc_emit_u16(cs, (uint16_t)nested_off[i]);
+        bc_emit_u16(cs, (uint16_t)nested_stride[i]);
+    }
+    bc_emit_u16(cs, (uint16_t)final_off);
+    if (op == OP_STORE_STRUCT_NESTED_S) bc_emit_u16(cs, (uint16_t)leaf_size);
+}
+
+// Load-side entry for the scalar-dot path: name contains `.`, no outer indices.
+static int source_try_emit_struct_field_load(BCSourceFrontend *fe, BCCompiler *cs,
+                                             const char *name, int name_len,
+                                             const char **pp, uint8_t *type_out) {
     const char *dot = memchr(name, '.', name_len);
     if (!dot) return 0;
     int baselen  = (int)(dot - name);
-    int fieldlen = name_len - baselen - 1;
-    if (baselen == 0 || fieldlen == 0) return 0;
-
+    if (baselen == 0) return 0;
     uint16_t slot = bc_find_slot(cs, name, baselen);
     if (slot == 0xFFFF) return 0;
     if (cs->slots[slot].type != T_STRUCT) return 0;
-    int sidx = cs->slots[slot].struct_idx;
-    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) return 0;
 
-    unsigned char fname[MAXVARLEN + 1];
-    int flen = fieldlen;
-    if (flen > MAXVARLEN) flen = MAXVARLEN;
-    memcpy(fname, dot + 1, flen);
-    fname[flen] = 0;
-    // Strip any trailing suffix ($/%/!); the member's true type is in g_structtbl.
-    if (flen > 0 && (fname[flen-1] == '$' || fname[flen-1] == '%' || fname[flen-1] == '!')) {
-        fname[--flen] = 0;
-    }
-
-    int m_type = 0, m_offset = 0, m_size = 0;
-    short m_dims[MAXDIM];
-    int midx = FindStructMember(sidx, fname, &m_type, &m_offset, &m_size, m_dims);
-    if (midx < 0) {
-        bc_set_error(cs, "Unknown struct member: %s", fname);
-        return 1;
-    }
-    if (m_dims[0] != 0) {
-        bc_set_error(cs, "Struct member array not yet supported");
-        return 1;
-    }
-    if (m_type == T_STRUCT) {
-        bc_set_error(cs, "Nested struct member not yet supported");
-        return 1;
-    }
-
-    *slot_out        = slot;
-    *offset_out      = m_offset;
-    *member_type_out = m_type;
-    if (member_size_out) *member_size_out = m_size;
-    return 2;  // 2 = success (distinct from error-reported 1)
-}
-
-static int source_try_emit_struct_field_load(BCCompiler *cs, const char *name, int name_len,
-                                             uint8_t *type_out) {
-    uint16_t slot = 0;
-    int offset = 0, m_type = 0;
-    int r = source_split_struct_member(cs, name, name_len, &slot, &offset, &m_type, NULL);
-    if (r == 0) return 0;          // not a struct reference
-    if (r == 1) return 1;          // error already reported
-    uint8_t op = (m_type == T_INT) ? OP_LOAD_STRUCT_FIELD_I :
-                 (m_type == T_NBR) ? OP_LOAD_STRUCT_FIELD_F :
-                                     OP_LOAD_STRUCT_FIELD_S;
-    bc_emit_byte(cs, op);
-    bc_emit_u16(cs, slot);
-    bc_emit_u16(cs, (uint16_t)offset);
-    *type_out = (uint8_t)m_type;
+    int tail_len = name_len - baselen - 1;
+    uint8_t t = source_emit_struct_chain_load(fe, cs, slot, /*outer_ndim=*/0,
+                                              dot + 1, tail_len, pp);
+    if (cs->has_error) return 1;
+    *type_out = t;
     return 1;
 }
 
-static int source_try_emit_struct_field_store(BCCompiler *cs, const char *name, int name_len,
-                                              uint8_t *type_out) {
-    uint16_t slot = 0;
-    int offset = 0, m_type = 0, m_size = 0;
-    int r = source_split_struct_member(cs, name, name_len, &slot, &offset, &m_type, &m_size);
-    if (r == 0) return 0;
-    if (r == 1) return 1;
-    uint8_t op;
-    if (m_type == T_INT)      op = OP_STORE_STRUCT_FIELD_I;
-    else if (m_type == T_NBR) op = OP_STORE_STRUCT_FIELD_F;
-    else                      op = OP_STORE_STRUCT_FIELD_S;
-    bc_emit_byte(cs, op);
-    bc_emit_u16(cs, slot);
-    bc_emit_u16(cs, (uint16_t)offset);
-    if (op == OP_STORE_STRUCT_FIELD_S) bc_emit_u16(cs, (uint16_t)m_size);
-    *type_out = (uint8_t)m_type;
-    return 1;
+// Store-side entry for the scalar-dot path.  Caller has not yet parsed the RHS;
+// this walker emits index expressions first, then caller parses RHS, then the
+// caller calls the _finish helper.  Returns 2 on walker success, 1 on error
+// already reported, 0 if not a struct reference.
+static int source_try_begin_struct_field_store(BCSourceFrontend *fe, BCCompiler *cs,
+                                               const char *name, int name_len,
+                                               const char **pp,
+                                               uint16_t *slot_out,
+                                               int *leaf_type_out, int *leaf_size_out,
+                                               int *scalar_off_out, int *final_off_out,
+                                               int *nseg_out,
+                                               int nested_off_out[CHAIN_MAX_NESTED],
+                                               int nested_stride_out[CHAIN_MAX_NESTED]) {
+    const char *dot = memchr(name, '.', name_len);
+    if (!dot) return 0;
+    int baselen = (int)(dot - name);
+    if (baselen == 0) return 0;
+    uint16_t slot = bc_find_slot(cs, name, baselen);
+    if (slot == 0xFFFF) return 0;
+    if (cs->slots[slot].type != T_STRUCT) return 0;
+
+    int tail_len = name_len - baselen - 1;
+    if (!source_emit_struct_chain_store(fe, cs, slot, /*outer_ndim=*/0,
+                                        dot + 1, tail_len, pp,
+                                        leaf_type_out, leaf_size_out,
+                                        scalar_off_out, final_off_out,
+                                        nseg_out, nested_off_out, nested_stride_out))
+        return 1;
+    *slot_out = slot;
+    return 2;
 }
 
 static uint16_t source_resolve_global(BCCompiler *cs, const char *name, int name_len,
@@ -1057,13 +1385,14 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
         uint8_t suffix_type = type;
         if (type == 0) type = source_default_var_type(cs, name, name_len);
 
-        // Struct field read: if `name` is "base.field" with base a declared
-        // T_STRUCT slot, emit OP_LOAD_STRUCT_FIELD_* and return the field
-        // type.  If base isn't a struct, falls through to normal handling so
-        // legacy dotted-name variables still work.
+        // Struct field read: if `name` is "base.field[.more]" with base a
+        // declared T_STRUCT slot, emit the right load opcode.  If base isn't a
+        // struct, falls through to normal handling so legacy dotted-name
+        // variables still work.  The chain walker also consumes `(idx)` tails
+        // in `p` for nested-array members.
         {
             uint8_t ft = 0;
-            if (source_try_emit_struct_field_load(cs, name, name_len, &ft)) {
+            if (source_try_emit_struct_field_load(fe, cs, name, name_len, &p, &ft)) {
                 *pp = p;
                 return ft;
             }
@@ -1614,52 +1943,20 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             uint16_t slot = source_resolve_var(cs, name, name_len, type, 1, &is_local);
             if (!is_local && slot != 0xFFFF) cs->slots[slot].is_array = 1;
 
-            /* Struct array element field access — `points(i).x` — compile-time
-             * resolve the member offset + size from g_structtbl and emit the
-             * element-field opcode.  Indices were left on the stack by
-             * source_parse_array_indices, which is exactly what the opcode
-             * expects. */
+            /* Struct array element field access — `points(i).x` up through
+             * `points(i).b(j).c(k)` — the chain walker resolves each `.name`
+             * and emits inner index expressions, then emits FIELD / ELEM /
+             * NESTED based on chain shape.  Outer indices are already on the
+             * stack from source_parse_array_indices above. */
             if (!is_local && slot != 0xFFFF && cs->slots[slot].type == T_STRUCT) {
                 const char *after_idx = p;
                 source_skip_space(&after_idx);
                 if (*after_idx == '.') {
-                    after_idx++;
-                    source_skip_space(&after_idx);
-                    char mname[MAXVARLEN + 1];
-                    int mlen = 0;
-                    while (isnamechar((unsigned char)*after_idx) && *after_idx != '.' && *after_idx != '(' && mlen < MAXVARLEN) {
-                        mname[mlen++] = *after_idx++;
-                    }
-                    if (*after_idx == '$' || *after_idx == '%' || *after_idx == '!') after_idx++;
-                    mname[mlen] = 0;
-                    int sidx = cs->slots[slot].struct_idx;
-                    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
-                        bc_set_error(cs, "Invalid struct type on slot");
-                        *pp = p; return 0;
-                    }
-                    int m_type = 0, m_offset = 0, m_size = 0;
-                    short m_dims[MAXDIM];
-                    int midx = FindStructMember(sidx, (unsigned char *)mname,
-                                                &m_type, &m_offset, &m_size, m_dims);
-                    if (midx < 0) {
-                        bc_set_error(cs, "Unknown struct member: %s", mname);
-                        *pp = p; return 0;
-                    }
-                    if (m_type == T_STRUCT) {
-                        bc_set_error(cs, "Nested struct member not yet supported");
-                        *pp = p; return 0;
-                    }
-                    int elem_size = g_structtbl[sidx]->total_size;
-                    uint8_t op = (m_type == T_INT) ? OP_LOAD_STRUCT_ELEM_I :
-                                 (m_type == T_NBR) ? OP_LOAD_STRUCT_ELEM_F :
-                                                     OP_LOAD_STRUCT_ELEM_S;
-                    bc_emit_byte(cs, op);
-                    bc_emit_u16(cs, slot);
-                    bc_emit_u16(cs, (uint16_t)m_offset);
-                    bc_emit_u16(cs, (uint16_t)elem_size);
-                    bc_emit_byte(cs, (uint8_t)ndim);
+                    uint8_t t = source_emit_struct_chain_load(fe, cs, slot, ndim,
+                                                              NULL, 0, &after_idx);
+                    if (cs->has_error) { *pp = after_idx; return 0; }
                     *pp = after_idx;
-                    return (uint8_t)m_type;
+                    return t;
                 }
                 /* Whole-element read (Phase 5) — not supported yet. */
                 bc_set_error(cs, "Whole-struct element read not yet supported");
@@ -2090,34 +2387,43 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
 
     if (vtype == 0) vtype = source_default_var_type(cs, name, name_len);
 
-    // Struct-member store: pt.x = expr → OP_STORE_STRUCT_FIELD_* (compile-time
-    // offset).  Same fallthrough behaviour as the read side — non-struct names
-    // take the normal path and legacy dotted names are unaffected.
+    // Struct-member store: pt.x = expr / a.b.c = expr / a.b(j).c = expr.
+    // Fallthrough behaviour matches the read side — non-struct names take the
+    // normal path and legacy dotted names are unaffected.
     source_skip_space(&p);
-    if (*p == '=' && memchr(name, '.', name_len)) {
+    if (memchr(name, '.', name_len)) {
         uint16_t tmp_slot = 0;
-        int offset = 0, m_type = 0;
-        int r = source_split_struct_member(cs, name, name_len, &tmp_slot, &offset, &m_type, NULL);
+        int leaf_type = 0, leaf_size = 0, scalar_off = 0, final_off = 0, nseg = 0;
+        int nested_off[CHAIN_MAX_NESTED];
+        int nested_stride[CHAIN_MAX_NESTED];
+        int r = source_try_begin_struct_field_store(fe, cs, name, name_len, &p,
+                                                    &tmp_slot, &leaf_type, &leaf_size,
+                                                    &scalar_off, &final_off, &nseg,
+                                                    nested_off, nested_stride);
         if (r == 2) {
-            p++;                                            // skip '='
+            // Walker already emitted any nested-index exprs; RHS goes next.
+            source_skip_space(&p);
+            if (*p != '=') {
+                bc_set_error(cs, "Expected '='");
+                *pp = p; return;
+            }
+            p++;
             uint8_t etype = source_parse_expression(fe, cs, &p);
             if (cs->has_error) { *pp = p; return; }
-            if ((m_type == T_STR) && !(etype & T_STR)) {
+            if ((leaf_type == T_STR) && !(etype & T_STR)) {
                 bc_set_error(cs, "Cannot assign numeric expression to string member");
                 *pp = p; return;
             }
-            if ((m_type != T_STR) && (etype & T_STR)) {
+            if ((leaf_type != T_STR) && (etype & T_STR)) {
                 bc_set_error(cs, "Cannot assign string expression to numeric member");
                 *pp = p; return;
             }
-            if ((m_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
-            else if ((m_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
-            uint8_t op = (m_type == T_INT) ? OP_STORE_STRUCT_FIELD_I :
-                         (m_type == T_NBR) ? OP_STORE_STRUCT_FIELD_F :
-                                             OP_STORE_STRUCT_FIELD_S;
-            bc_emit_byte(cs, op);
-            bc_emit_u16(cs, tmp_slot);
-            bc_emit_u16(cs, (uint16_t)offset);
+            if ((leaf_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
+            else if ((leaf_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
+            source_emit_struct_chain_store_finish(cs, tmp_slot, /*outer_ndim=*/0,
+                                                  leaf_type, leaf_size,
+                                                  scalar_off, final_off,
+                                                  nseg, nested_off, nested_stride);
             *pp = p;
             return;
         }
@@ -2136,34 +2442,24 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
         if (!is_local && slot != 0xFFFF) cs->slots[slot].is_array = 1;
         source_skip_space(&p);
 
-        /* Struct array element field store — `points(i).x = ...`.  Same
-         * compile-time resolution as the load side; the stored value is
-         * evaluated after the indices, and the VM pops value-then-indices. */
+        /* Struct array element field store — `points(i).x = ...` through
+         * `points(i).b(j).c = ...`.  The chain walker emits nested-index
+         * expressions while it walks; we then parse the RHS (also pushed) and
+         * call the finish helper to emit the right opcode. */
         if (!is_local && slot != 0xFFFF && cs->slots[slot].type == T_STRUCT && *p == '.') {
-            p++;
-            source_skip_space(&p);
-            char mname[MAXVARLEN + 1];
-            int mlen = 0;
-            while (isnamechar((unsigned char)*p) && *p != '.' && *p != '(' && mlen < MAXVARLEN) {
-                mname[mlen++] = *p++;
-            }
-            if (*p == '$' || *p == '%' || *p == '!') p++;
-            mname[mlen] = 0;
             int sidx = cs->slots[slot].struct_idx;
             if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
                 bc_set_error(cs, "Invalid struct type on slot");
                 *pp = p; return;
             }
-            int m_type = 0, m_offset = 0, m_size = 0;
-            short m_dims[MAXDIM];
-            int midx = FindStructMember(sidx, (unsigned char *)mname,
-                                        &m_type, &m_offset, &m_size, m_dims);
-            if (midx < 0) {
-                bc_set_error(cs, "Unknown struct member: %s", mname);
-                *pp = p; return;
-            }
-            if (m_type == T_STRUCT) {
-                bc_set_error(cs, "Nested struct member not yet supported");
+            int leaf_type = 0, leaf_size = 0, scalar_off = 0, final_off = 0, nseg = 0;
+            int nested_off[CHAIN_MAX_NESTED];
+            int nested_stride[CHAIN_MAX_NESTED];
+            if (!source_emit_struct_chain_store(fe, cs, slot, ndim,
+                                                NULL, 0, &p,
+                                                &leaf_type, &leaf_size,
+                                                &scalar_off, &final_off, &nseg,
+                                                nested_off, nested_stride)) {
                 *pp = p; return;
             }
             source_skip_space(&p);
@@ -2174,26 +2470,20 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
             p++;
             uint8_t etype = source_parse_expression(fe, cs, &p);
             if (cs->has_error) { *pp = p; return; }
-            if ((m_type == T_STR) && !(etype & T_STR)) {
+            if ((leaf_type == T_STR) && !(etype & T_STR)) {
                 bc_set_error(cs, "Cannot assign numeric expression to string member");
                 *pp = p; return;
             }
-            if ((m_type != T_STR) && (etype & T_STR)) {
+            if ((leaf_type != T_STR) && (etype & T_STR)) {
                 bc_set_error(cs, "Cannot assign string expression to numeric member");
                 *pp = p; return;
             }
-            if ((m_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
-            else if ((m_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
-            int elem_size = g_structtbl[sidx]->total_size;
-            uint8_t op = (m_type == T_INT) ? OP_STORE_STRUCT_ELEM_I :
-                         (m_type == T_NBR) ? OP_STORE_STRUCT_ELEM_F :
-                                             OP_STORE_STRUCT_ELEM_S;
-            bc_emit_byte(cs, op);
-            bc_emit_u16(cs, slot);
-            bc_emit_u16(cs, (uint16_t)m_offset);
-            bc_emit_u16(cs, (uint16_t)elem_size);
-            bc_emit_byte(cs, (uint8_t)ndim);
-            if (op == OP_STORE_STRUCT_ELEM_S) bc_emit_u16(cs, (uint16_t)m_size);
+            if ((leaf_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
+            else if ((leaf_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
+            source_emit_struct_chain_store_finish(cs, slot, ndim,
+                                                  leaf_type, leaf_size,
+                                                  scalar_off, final_off,
+                                                  nseg, nested_off, nested_stride);
             *pp = p;
             return;
         }

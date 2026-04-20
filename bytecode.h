@@ -170,6 +170,28 @@ typedef enum {
     OP_STORE_STRUCT_ELEM_F  = 0x9D,
     OP_STORE_STRUCT_ELEM_S  = 0x9E,  /* slot:16, offset:16, elem_size:16, ndim:8, maxstrlen:16 */
 
+    /* Phase 4 — chained struct access with intermediate array indexing.
+     * Used for expressions like `a.b(j).c` or `a(i).b(j).c(k)` where at least
+     * one nested member is indexed at runtime.  All-scalar chains (`a.b.c`)
+     * and outer-index-only chains (`a(i).b.c`) still use the FIELD / ELEM
+     * opcodes above with an accumulated compile-time offset.
+     *
+     * Encoding:
+     *   slot:16, outer_ndim:8, n_nested:8, outer_stride:16,
+     *   per nested seg: const_offset:16, stride:16,
+     *   final_offset:16,
+     *   (store_s only) maxstrlen:16
+     *
+     * Stack at entry:  ... outer_indices ... nested_indices ... [value_for_store]
+     * Innermost nested index is on top.  Store opcodes pop the value FIRST,
+     * then all indices. */
+    OP_LOAD_STRUCT_NESTED_I  = 0x9F,
+    OP_LOAD_STRUCT_NESTED_F  = 0x16,
+    OP_LOAD_STRUCT_NESTED_S  = 0x17,
+    OP_STORE_STRUCT_NESTED_I = 0x18,
+    OP_STORE_STRUCT_NESTED_F = 0x19,
+    OP_STORE_STRUCT_NESTED_S = 0x1A,
+
     /* Native string functions (compiled arguments) */
     OP_STR_LEN      = 0xA0,  /* pop str, push int len */
     OP_STR_LEFT     = 0xA1,  /* pop int n, pop str, push str LEFT$(s,n) */

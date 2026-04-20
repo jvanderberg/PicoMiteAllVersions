@@ -268,34 +268,212 @@ int FindStructBase(unsigned char *basename, int baselen, int *pvindex) {
     return -1;
 }
 
-// Resolve `struct_ptr + offset` for `var.field` (scalar member, scalar struct).
-// Phase 1 deliberately omits array-of-struct indexing and nested-struct traversal —
-// those arrive with phases 3 and 4.  If `member_path` contains another '.' or the
-// parse tail looks like array indexing, we error out.
+// Resolve `struct_ptr + offset` for `var.field`, `var.nested.field`, `var.arr(i).field`,
+// `var.nested(i).sub(j).field`, etc.  Walks the chained path up to MAX_STRUCT_NEST_DEPTH
+// levels, accumulating byte offset across every `.member` / `(idx)` step.  Returns a
+// pointer to the final member and sets *member_type to its type (T_INT/T_NBR/T_STR).
+// Ported from UKTailwind 6.02 MMBasic.c ResolveStructMember (@04f81d0) — the guarded
+// `#ifdef STRUCTENABLED` is dropped per the catch-up plan.
 void *ResolveStructMember(unsigned char *struct_ptr, int struct_idx,
                           unsigned char *member_path, unsigned char **pp,
                           int *member_type) {
     if (struct_idx < 0 || struct_idx >= g_structcnt || g_structtbl[struct_idx] == NULL)
         error("Invalid structure type");
 
-    // No nested dot support in Phase 1.
-    if (strchr((char *)member_path, '.') != NULL)
-        error("Nested struct member not yet supported");
+    int total_offset = 0;
+    int current_struct_idx = struct_idx;
+    unsigned char *current_member = member_path;
+    unsigned char *p = *pp;
+    int nest_depth = 0;
+    // Static buffer survives loop iterations because we assign current_member to it
+    // when the next segment comes from *pp rather than from the member_path string.
+    static unsigned char cont_member[MAXVARLEN + 1];
 
-    int m_type = 0, m_offset = 0, m_size = 0;
-    short m_dims[MAXDIM] = {0};
-    int member_idx = FindStructMember(struct_idx, member_path,
-                                      &m_type, &m_offset, &m_size, m_dims);
-    if (member_idx < 0) error("Unknown structure member");
+    while (1) {
+        if (++nest_depth > MAX_STRUCT_NEST_DEPTH)
+            error("Structure nesting too deep (max %)", MAX_STRUCT_NEST_DEPTH);
 
-    // Reject struct member arrays (Phase 3) and nested structs (Phase 4) for now.
-    if (m_dims[0] != 0) error("Struct member array not yet supported");
-    if (m_type == T_STRUCT) error("Nested struct member not yet supported");
+        // Extract the first name component of current_member (up to dot, paren,
+        // type suffix, or end of string).
+        unsigned char single_member[MAXVARLEN + 1];
+        int single_len = 0;
+        while (current_member[single_len] &&
+               current_member[single_len] != '.' &&
+               current_member[single_len] != '(' &&
+               single_len < MAXVARLEN) {
+            single_member[single_len] = current_member[single_len];
+            single_len++;
+        }
+        single_member[single_len] = 0;
 
-    g_StructMemberOffset = m_offset;
-    g_StructMemberSize = m_size;
-    *member_type = m_type;
-    return (void *)(struct_ptr + m_offset);
+        unsigned char *next_dot = NULL;
+        if (current_member[single_len] == '.') next_dot = &current_member[single_len];
+
+        int m_type = 0, m_offset = 0, m_size = 0;
+        short m_dims[MAXDIM] = {0};
+        int member_idx = FindStructMember(current_struct_idx, single_member,
+                                          &m_type, &m_offset, &m_size, m_dims);
+        if (member_idx < 0) error("Unknown structure member");
+        total_offset += m_offset;
+
+        skipspace(p);
+        int more_to_resolve = (next_dot != NULL);
+
+        // `member(i).next` — peek past the matching `)` for a `.`.
+        if (!more_to_resolve && m_type == T_STRUCT && m_dims[0] != 0 && *p == '(') {
+            unsigned char *check = p;
+            int depth = 0;
+            while (*check) {
+                if (*check == '(') depth++;
+                else if (*check == ')') { depth--; if (depth == 0) { check++; break; } }
+                check++;
+            }
+            skipspace(check);
+            if (*check == '.') more_to_resolve = 1;
+        }
+        // `.member.next` where next follows in *p (wasn't captured in member_path).
+        if (!more_to_resolve && *p == '.') more_to_resolve = 1;
+
+        if (more_to_resolve) {
+            if (m_type != T_STRUCT) error("Not a nested structure");
+
+            // If this member is an array of nested structs, we *must* have an index.
+            if (m_dims[0] != 0) {
+                skipspace(p);
+                if (*p != '(') error("Array of nested structures requires index");
+
+                int nested_struct_size = g_structtbl[m_size]->total_size;
+
+                unsigned char *pstart = p;
+                int paren_depth = 0;
+                unsigned char *pend = p;
+                while (*pend) {
+                    if (*pend == '(') paren_depth++;
+                    else if (*pend == ')') { paren_depth--; if (paren_depth == 0) { pend++; break; } }
+                    pend++;
+                }
+
+                unsigned char idx_buf[128];
+                int blen = pend - pstart;
+                if (blen >= 128) blen = 127;
+                memcpy(idx_buf, pstart, blen);
+                idx_buf[blen] = 0;
+
+                unsigned char *argptr = idx_buf;
+                int mem_dim[MAXDIM] = {0};
+                int mem_dnbr;
+                getargs(&argptr, MAXDIM * 2, (unsigned char *)"(,");
+                if ((argc & 0x01) == 0) error("Dimensions");
+                mem_dnbr = argc / 2 + 1;
+                for (int ai = 0; ai < argc; ai += 2) {
+                    MMFLOAT f; long long int in; char *s; int targ = T_NOTYPE;
+                    evaluate(argv[ai], &f, &in, (unsigned char **)&s, &targ, false);
+                    if (targ == T_NBR) in = FloatToInt32(f);
+                    mem_dim[ai / 2] = (int)in;
+                }
+                int expected_dims = 0;
+                for (int di = 0; di < MAXDIM && m_dims[di] != 0; di++) expected_dims++;
+                if (mem_dnbr != expected_dims) error("Wrong number of dimensions");
+                for (int di = 0; di < mem_dnbr; di++)
+                    if (mem_dim[di] < g_OptionBase || mem_dim[di] > m_dims[di])
+                        error("Index out of bounds");
+
+                int linear_idx = mem_dim[0] - g_OptionBase;
+                int mult = 1;
+                for (int di = 1; di < mem_dnbr; di++) {
+                    mult *= (m_dims[di - 1] + 1 - g_OptionBase);
+                    linear_idx += (mem_dim[di] - g_OptionBase) * mult;
+                }
+                total_offset += linear_idx * nested_struct_size;
+                p = pend;
+            }
+
+            current_struct_idx = m_size;
+
+            if (next_dot != NULL) {
+                current_member = next_dot + 1;
+            } else {
+                skipspace(p);
+                if (*p == '.') {
+                    p++;
+                    unsigned char membuf[MAXVARLEN + 1];
+                    int ml = 0;
+                    while (isnamechar(*p) && ml < MAXVARLEN) membuf[ml++] = *p++;
+                    membuf[ml] = 0;
+                    if (*p == '$' || *p == '%' || *p == '!') p++;
+                    memcpy(cont_member, membuf, ml + 1);
+                    current_member = cont_member;
+                }
+            }
+            continue;
+        }
+
+        // Terminal member: handle the possible trailing (idx...) for an array-of-non-struct
+        // member (e.g. `pt.coords(i)` where coords is `coords(n) AS INTEGER`).
+        int array_offset = 0;
+        skipspace(p);
+        if (*p == '(') {
+            if (m_dims[0] == 0) error("Not an array member");
+
+            int element_size = m_size;
+            if (m_type & T_STR) element_size = m_size + 1;
+            else if (m_type & T_STRUCT) {
+                if (m_size < 0 || m_size >= g_structcnt || g_structtbl[m_size] == NULL)
+                    error("Invalid structure type index");
+                element_size = g_structtbl[m_size]->total_size;
+            }
+
+            unsigned char *pstart = p;
+            int paren_depth = 0;
+            unsigned char *pend = p;
+            while (*pend) {
+                if (*pend == '(') paren_depth++;
+                else if (*pend == ')') { paren_depth--; if (paren_depth == 0) { pend++; break; } }
+                pend++;
+            }
+            unsigned char idx_buf[128];
+            int blen = pend - pstart;
+            if (blen >= 128) blen = 127;
+            memcpy(idx_buf, pstart, blen);
+            idx_buf[blen] = 0;
+
+            unsigned char *argptr = idx_buf;
+            int mem_dim[MAXDIM] = {0};
+            int mem_dnbr;
+            getargs(&argptr, MAXDIM * 2, (unsigned char *)"(,");
+            if ((argc & 0x01) == 0) error("Dimensions");
+            mem_dnbr = argc / 2 + 1;
+            for (int ai = 0; ai < argc; ai += 2) {
+                MMFLOAT f; long long int in; char *s; int targ = T_NOTYPE;
+                evaluate(argv[ai], &f, &in, (unsigned char **)&s, &targ, false);
+                if (targ == T_NBR) in = FloatToInt32(f);
+                mem_dim[ai / 2] = (int)in;
+            }
+            int expected_dims = 0;
+            for (int di = 0; di < MAXDIM && m_dims[di] != 0; di++) expected_dims++;
+            if (mem_dnbr != expected_dims) error("Wrong number of dimensions");
+            for (int di = 0; di < mem_dnbr; di++)
+                if (mem_dim[di] < g_OptionBase || mem_dim[di] > m_dims[di])
+                    error("Index out of bounds");
+
+            int linear_idx = mem_dim[0] - g_OptionBase;
+            int mult = 1;
+            for (int di = 1; di < mem_dnbr; di++) {
+                mult *= (m_dims[di - 1] + 1 - g_OptionBase);
+                linear_idx += (mem_dim[di] - g_OptionBase) * mult;
+            }
+            array_offset = linear_idx * element_size;
+            p = pend;
+        } else if (m_dims[0] != 0 && m_type != T_STRUCT) {
+            error("Array member requires index");
+        }
+
+        g_StructMemberOffset = total_offset;
+        g_StructMemberSize = m_size;
+        *member_type = m_type;
+        *pp = p;
+        return (void *)(struct_ptr + total_offset + array_offset);
+    }
 }
 
 /********************************************************************************************************************************************
@@ -2668,10 +2846,10 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
             nbr += (dim[i] - g_OptionBase) * j;
         }
         // Struct array element: compute element_ptr = val.s + nbr * struct_size,
-        // then if the expression has a trailing `.member` apply the field offset
-        // and set g_StructMemberType/Offset/Size for the caller's type routing.
-        // Advancing `p` past the closing bracket is necessary because the array
-        // subscript was parsed via getargs which doesn't update our local p.
+        // then if a trailing `.member(...)`-chain follows, delegate to the unified
+        // ResolveStructMember walker.  Advancing `p` past the closing bracket is
+        // necessary because the subscript was parsed via getargs which doesn't
+        // update our local p.
         if (g_vartbl[vindex].type & T_STRUCT) {
             int sidx = g_vartbl[vindex].size;
             if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL)
@@ -2685,19 +2863,15 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
                 skipspace(after);
                 unsigned char mname[MAXVARLEN + 1];
                 int mlen = 0;
-                while (isnamechar(*after) && *after != '.' && *after != '(' && mlen < MAXVARLEN) {
+                while (isnamechar(*after) && mlen < MAXVARLEN) {
                     mname[mlen++] = mytoupper(*after++);
                 }
+                if (*after == '$' || *after == '%' || *after == '!') after++;
                 mname[mlen] = 0;
-                int m_type = 0, m_offset = 0, m_size = 0;
-                short m_dims[MAXDIM];
-                int midx = FindStructMember(sidx, mname, &m_type, &m_offset, &m_size, m_dims);
-                if (midx < 0) error("Unknown structure member");
-                if (m_type == T_STRUCT) error("Nested struct member not yet supported");
-                g_StructMemberType = m_type;
-                g_StructMemberOffset = m_offset;
-                g_StructMemberSize = m_size;
-                return elem_ptr + m_offset;
+                int member_type = 0;
+                void *result = ResolveStructMember(elem_ptr, sidx, mname, &after, &member_type);
+                g_StructMemberType = member_type;
+                return result;
             }
             return elem_ptr;   // whole-struct element (caller handles T_STRUCT)
         }
@@ -3786,9 +3960,10 @@ unsigned char MIPS16 __not_in_flash_func(*skipvar)(unsigned char *p, int noerror
         }
         p++;        // step over the closing bracket
     }
-    // Struct array element: `a(i).field` has a trailing member access that
-    // skipvar must consume so the caller's expression parser advances past it.
-    {
+    // Struct chain: `a(i).b.c` / `a.b(i).c(j).d` etc.  skipvar must consume the
+    // whole `(idx)` / `.name` tail so the caller's expression parser advances
+    // past the complete reference.
+    while (1) {
         unsigned char *ap = p;
         skipspace(ap);
         if (*ap == '.') {
@@ -3796,7 +3971,24 @@ unsigned char MIPS16 __not_in_flash_func(*skipvar)(unsigned char *p, int noerror
             while (isnamechar(*ap)) ap++;
             if (*ap == '$' || *ap == '%' || *ap == '!') ap++;
             p = ap;
+            continue;
         }
+        if (*ap == '(') {
+            p = ap + 1;
+            int depth = 1;
+            int inq = 0;
+            while (*p && depth > 0) {
+                if (*p == '\"') inq = !inq;
+                if (!inq) {
+                    if (*p == '(') depth++;
+                    else if (*p == ')') depth--;
+                }
+                if (depth == 0) { p++; break; }
+                p++;
+            }
+            continue;
+        }
+        break;
     }
     return p;
 }

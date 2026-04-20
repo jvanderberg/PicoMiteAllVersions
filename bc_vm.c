@@ -1745,6 +1745,12 @@ void bc_vm_execute(BCVMState *vm) {
         [OP_STORE_STRUCT_ELEM_I]  = &&op_store_struct_elem_i,
         [OP_STORE_STRUCT_ELEM_F]  = &&op_store_struct_elem_f,
         [OP_STORE_STRUCT_ELEM_S]  = &&op_store_struct_elem_s,
+        [OP_LOAD_STRUCT_NESTED_I]   = &&op_load_struct_nested_i,
+        [OP_LOAD_STRUCT_NESTED_F]   = &&op_load_struct_nested_f,
+        [OP_LOAD_STRUCT_NESTED_S]   = &&op_load_struct_nested_s,
+        [OP_STORE_STRUCT_NESTED_I]  = &&op_store_struct_nested_i,
+        [OP_STORE_STRUCT_NESTED_F]  = &&op_store_struct_nested_f,
+        [OP_STORE_STRUCT_NESTED_S]  = &&op_store_struct_nested_s,
 
         /* Native string functions */
         [OP_STR_LEN]        = &&op_str_len,
@@ -3435,6 +3441,93 @@ op_store_struct_elem_s: {
     Mstrcpy(base + nbr * elem_size + offset, src);
     DISPATCH();
 }
+
+    /* ==================================================================
+     * Phase 4 — nested struct access with intermediate array indices.
+     * See bytecode.h for the encoding.  The NESTED_RESOLVE macro reads
+     * the opcode operands, pops nested indices (innermost first) then
+     * outer indices, and computes the final base pointer.
+     * ================================================================== */
+#define NESTED_MAX_SEG 8
+#define NESTED_RESOLVE(_base)                                                 \
+    uint16_t _ns_slot = READ_U16();                                           \
+    uint8_t  _ns_outer_ndim = READ_U8();                                      \
+    uint8_t  _ns_nseg = READ_U8();                                            \
+    uint16_t _ns_outer_stride = READ_U16();                                   \
+    uint16_t _ns_seg_off[NESTED_MAX_SEG];                                     \
+    uint16_t _ns_seg_str[NESTED_MAX_SEG];                                     \
+    for (int _ns_i = 0; _ns_i < _ns_nseg; _ns_i++) {                          \
+        _ns_seg_off[_ns_i] = READ_U16();                                      \
+        _ns_seg_str[_ns_i] = READ_U16();                                      \
+    }                                                                         \
+    uint16_t _ns_final = READ_U16();                                          \
+    int64_t _ns_idx[NESTED_MAX_SEG];                                          \
+    for (int _ns_i = _ns_nseg - 1; _ns_i >= 0; _ns_i--) _ns_idx[_ns_i] = POP_I(); \
+    uint8_t *_base = (uint8_t *)vm->arrays[_ns_slot].data;                    \
+    if (!_base) bc_vm_error(vm, "Struct variable not dimensioned");           \
+    if (_ns_outer_ndim > 0) {                                                 \
+        int64_t _ns_outer_idx[MAXDIM];                                        \
+        for (int _ns_i = _ns_outer_ndim - 1; _ns_i >= 0; _ns_i--)             \
+            _ns_outer_idx[_ns_i] = POP_I();                                   \
+        int64_t _ns_linear = _ns_outer_idx[0] - g_OptionBase;                 \
+        int64_t _ns_mult = 1;                                                 \
+        for (int _ns_i = 1; _ns_i < _ns_outer_ndim; _ns_i++) {                \
+            _ns_mult *= (int64_t)(vm->arrays[_ns_slot].dims[_ns_i - 1] + 1 - g_OptionBase); \
+            _ns_linear += (_ns_outer_idx[_ns_i] - g_OptionBase) * _ns_mult;   \
+        }                                                                     \
+        _base += _ns_linear * _ns_outer_stride;                               \
+    }                                                                         \
+    for (int _ns_i = 0; _ns_i < _ns_nseg; _ns_i++) {                          \
+        _base += _ns_seg_off[_ns_i] + (_ns_idx[_ns_i] - g_OptionBase) * _ns_seg_str[_ns_i]; \
+    }                                                                         \
+    _base += _ns_final
+
+op_load_struct_nested_i: {
+    NESTED_RESOLVE(base);
+    int64_t v;
+    memcpy(&v, base, sizeof(v));
+    PUSH_I(v);
+    DISPATCH();
+}
+
+op_load_struct_nested_f: {
+    NESTED_RESOLVE(base);
+    MMFLOAT v;
+    memcpy(&v, base, sizeof(v));
+    PUSH_F(v);
+    DISPATCH();
+}
+
+op_load_struct_nested_s: {
+    NESTED_RESOLVE(base);
+    PUSH_S(base);
+    DISPATCH();
+}
+
+op_store_struct_nested_i: {
+    int64_t v = (vm->stack_types[vm->sp] == T_NBR) ? (int64_t)POP_F() : POP_I();
+    NESTED_RESOLVE(base);
+    memcpy(base, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_nested_f: {
+    MMFLOAT v = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
+    NESTED_RESOLVE(base);
+    memcpy(base, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_nested_s: {
+    uint8_t *src = POP_S();
+    NESTED_RESOLVE(base);
+    uint16_t maxstrlen = READ_U16();
+    if (src[0] > maxstrlen) bc_vm_error(vm, "String too long");
+    Mstrcpy(base, src);
+    DISPATCH();
+}
+#undef NESTED_RESOLVE
+#undef NESTED_MAX_SEG
 #undef ELEM_LINEAR
 
     /* ==================================================================
