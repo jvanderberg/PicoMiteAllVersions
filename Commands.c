@@ -3802,6 +3802,146 @@ void MIPS16 cmd_endtype(void) {
     error("END TYPE without TYPE");
 }
 
+// ----------------------------------------------------------------------------
+// STRUCT <subcommand> — Phase 9 subset: COPY / CLEAR / SWAP.
+// Ported from UKTailwind 6.02 Commands.c:6704-7150 (@04f81d0).  Remaining
+// subcommands (SORT / SAVE / LOAD / PRINT / EXTRACT / INSERT) land in later
+// phases; the dispatcher errors on unknown subcommand so future additions
+// replace the error arm rather than reshuffle the whole function.
+// ----------------------------------------------------------------------------
+void MIPS16 cmd_struct(void) {
+    unsigned char *p;
+
+    if ((p = checkstring(cmdline, (unsigned char *)"COPY")) != NULL) {
+        // STRUCT COPY source TO destination
+        // STRUCT COPY source() TO destination()  — copy entire array
+        unsigned char *src_ptr, *dst_ptr, *tp;
+        int src_idx, dst_idx, src_struct_type, dst_struct_type;
+        int src_is_array = 0, dst_is_array = 0;
+        int src_num_elements = 1, dst_num_elements = 1;
+
+        skipspace(p);
+        src_ptr = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        src_idx = g_VarIndex;
+        if (!(g_vartbl[src_idx].type & T_STRUCT))
+            error("Source must be a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot copy structure member, use whole structure");
+        src_struct_type = (int)g_vartbl[src_idx].size;
+
+        if (g_vartbl[src_idx].dims[0] != 0) {
+            unsigned char *paren = (unsigned char *)strchr((char *)p, '(');
+            if (paren) {
+                paren++;
+                skipspace(paren);
+                if (*paren == ')') {
+                    src_is_array = 1;
+                    for (int d = 0; d < MAXDIM && g_vartbl[src_idx].dims[d] != 0; d++)
+                        src_num_elements *= (g_vartbl[src_idx].dims[d] + 1 - g_OptionBase);
+                }
+            }
+        }
+
+        tp = skipvar(p, false);
+        skipspace(tp);
+        if (*tp != tokenTO) error("Expected TO");
+        tp++;
+        skipspace(tp);
+
+        dst_ptr = findvar(tp, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        dst_idx = g_VarIndex;
+        if (!(g_vartbl[dst_idx].type & T_STRUCT))
+            error("Destination must be a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot copy to structure member, use whole structure");
+        dst_struct_type = (int)g_vartbl[dst_idx].size;
+
+        if (g_vartbl[dst_idx].dims[0] != 0) {
+            unsigned char *paren = (unsigned char *)strchr((char *)tp, '(');
+            if (paren) {
+                paren++;
+                skipspace(paren);
+                if (*paren == ')') {
+                    dst_is_array = 1;
+                    for (int d = 0; d < MAXDIM && g_vartbl[dst_idx].dims[d] != 0; d++)
+                        dst_num_elements *= (g_vartbl[dst_idx].dims[d] + 1 - g_OptionBase);
+                }
+            }
+        }
+
+        if (src_struct_type != dst_struct_type)
+            error("Structure types must match");
+        if (src_is_array != dst_is_array)
+            error("Both source and destination must be arrays or both must be single structs");
+        if (src_is_array && dst_num_elements < src_num_elements)
+            error("Destination array too small");
+
+        int struct_size = g_structtbl[src_struct_type]->total_size;
+        memcpy(dst_ptr, src_ptr, struct_size * src_num_elements);
+    }
+    else if ((p = checkstring(cmdline, (unsigned char *)"CLEAR")) != NULL) {
+        // STRUCT CLEAR var  or  STRUCT CLEAR array()
+        unsigned char *var_ptr;
+        int var_idx, struct_type, struct_size, num_elements = 1;
+
+        skipspace(p);
+        var_ptr = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        var_idx = g_VarIndex;
+        if (!(g_vartbl[var_idx].type & T_STRUCT))
+            error("Expected a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot clear a structure member, use whole structure");
+
+        struct_type = (int)g_vartbl[var_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        if (g_vartbl[var_idx].dims[0] != 0) {
+            for (int d = 0; d < MAXDIM && g_vartbl[var_idx].dims[d] != 0; d++)
+                num_elements *= (g_vartbl[var_idx].dims[d] + 1 - g_OptionBase);
+        }
+        memset(var_ptr, 0, struct_size * num_elements);
+    }
+    else if ((p = checkstring(cmdline, (unsigned char *)"SWAP")) != NULL) {
+        // STRUCT SWAP var1, var2
+        unsigned char *src_ptr, *dst_ptr, *tp;
+        int src_idx, dst_idx, src_struct_type, dst_struct_type;
+
+        skipspace(p);
+        src_ptr = findvar(p, V_FIND | V_NOFIND_ERR);
+        src_idx = g_VarIndex;
+        if (!(g_vartbl[src_idx].type & T_STRUCT))
+            error("First argument must be a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot swap structure member, use whole structure");
+        src_struct_type = (int)g_vartbl[src_idx].size;
+
+        tp = skipvar(p, false);
+        skipspace(tp);
+        if (*tp != ',') error("Expected comma");
+        tp++;
+        skipspace(tp);
+
+        dst_ptr = findvar(tp, V_FIND | V_NOFIND_ERR);
+        dst_idx = g_VarIndex;
+        if (!(g_vartbl[dst_idx].type & T_STRUCT))
+            error("Second argument must be a structure variable");
+        if (g_StructMemberType != 0)
+            error("Cannot swap structure member, use whole structure");
+        dst_struct_type = (int)g_vartbl[dst_idx].size;
+
+        if (src_struct_type != dst_struct_type)
+            error("Structure types must match");
+
+        int swap_size = g_structtbl[src_struct_type]->total_size;
+        unsigned char *temp = GetTempMemory(swap_size);
+        memcpy(temp, src_ptr, swap_size);
+        memcpy(src_ptr, dst_ptr, swap_size);
+        memcpy(dst_ptr, temp, swap_size);
+    }
+    else {
+        error("Unknown STRUCT subcommand");
+    }
+}
+
 // Ported from upstream UKTailwind/PicoMiteAllVersions (@04f81d0):
 // - parse_and_strip + array_comp in Commands.c
 // - helper body adapted from erase() in MMBasic.c 5612

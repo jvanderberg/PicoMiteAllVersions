@@ -79,6 +79,7 @@ void cmd_timer(void);
 void cmd_copyright(void);
 void cmd_type(void);
 void cmd_endtype(void);
+void cmd_struct(void);
 void cmd_seek(void);
 void cmd_library(void);
 void cmd_pio(void);
@@ -404,6 +405,7 @@ void fun_map(void);
 	{ (unsigned char *)"Run",		T_CMD,				0, cmd_run	},
 	{ (unsigned char *)"Save",		T_CMD,				0, cmd_save		},
     { (unsigned char *)"Static",		T_CMD,				0, cmd_dim		},
+	{ (unsigned char *)"Struct",		T_CMD,				0, cmd_struct	},
 	{ (unsigned char *)"Sub",		T_CMD,				0, cmd_subfun   },
 	{ (unsigned char *)"Trace",		T_CMD,				0, cmd_trace	},
 	{ (unsigned char *)"Type",		T_CMD,				0, cmd_type	},
