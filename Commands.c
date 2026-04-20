@@ -3879,6 +3879,103 @@ void MIPS16 cmd_struct(void) {
         int struct_size = g_structtbl[src_struct_type]->total_size;
         memcpy(dst_ptr, src_ptr, struct_size * src_num_elements);
     }
+    else if ((p = checkstring(cmdline, (unsigned char *)"SORT")) != NULL) {
+        // STRUCT SORT array().membername [, flags]
+        // flags: bit0=reverse, bit1=case-insensitive (strings), bit2=empty-at-end (strings)
+        int arr_idx, struct_type, num_elements, struct_size;
+        int member_type, member_offset;
+        int flags = 0;
+        unsigned char *tp;
+
+        skipspace(p);
+        findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        arr_idx = g_VarIndex;
+        if (!(g_vartbl[arr_idx].type & T_STRUCT))
+            error("Expected a structure array");
+        if (g_vartbl[arr_idx].dims[0] == 0)
+            error("Expected a structure array");
+        if (g_StructMemberType == 0)
+            error("Expected structarray().membername syntax");
+
+        member_type   = g_StructMemberType;
+        member_offset = g_StructMemberOffset;
+        if (member_type == T_STRUCT)
+            error("Cannot sort by nested structure member");
+
+        struct_type = (int)g_vartbl[arr_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+
+        num_elements = 1;
+        for (int d = 0; d < MAXDIM && g_vartbl[arr_idx].dims[d] != 0; d++)
+            num_elements *= (g_vartbl[arr_idx].dims[d] + 1 - g_OptionBase);
+
+        tp = skipvar(p, false);
+        skipspace(tp);
+        if (*tp == ',') {
+            tp++;
+            skipspace(tp);
+            flags = (int)getint(tp, 0, 7);
+        }
+
+        unsigned char *base_ptr = g_vartbl[arr_idx].val.s;
+        unsigned char *temp = GetTempMemory(struct_size);
+
+        int reverse          = flags & 1;
+        int case_insensitive = flags & 2;
+        int empty_at_end     = flags & 4;
+
+        // Shell sort — upstream's algorithm, kept verbatim.
+        int gap, i, j;
+        for (gap = num_elements / 2; gap > 0; gap /= 2) {
+            for (i = gap; i < num_elements; i++) {
+                memcpy(temp, base_ptr + i * struct_size, struct_size);
+                for (j = i; j >= gap; j -= gap) {
+                    unsigned char *elem_j_gap = base_ptr + (j - gap) * struct_size;
+                    unsigned char *val_a = elem_j_gap + member_offset;
+                    unsigned char *val_b = temp + member_offset;
+                    int cmp = 0;
+
+                    if (member_type & T_INT) {
+                        long long int a = *(long long int *)val_a;
+                        long long int b = *(long long int *)val_b;
+                        cmp = (a < b) ? -1 : (a > b) ? 1 : 0;
+                    } else if (member_type & T_NBR) {
+                        MMFLOAT a = *(MMFLOAT *)val_a;
+                        MMFLOAT b = *(MMFLOAT *)val_b;
+                        cmp = (a < b) ? -1 : (a > b) ? 1 : 0;
+                    } else if (member_type & T_STR) {
+                        int len_a = *val_a;
+                        int len_b = *val_b;
+                        int both_empty = (len_a == 0 && len_b == 0);
+                        int a_empty_b_not = (len_a == 0 && len_b != 0);
+                        int b_empty_a_not = (len_a != 0 && len_b == 0);
+
+                        if (empty_at_end && (a_empty_b_not || b_empty_a_not || both_empty)) {
+                            cmp = a_empty_b_not ? 1 : b_empty_a_not ? -1 : 0;
+                        } else {
+                            int minlen = (len_a < len_b) ? len_a : len_b;
+                            for (int k = 1; k <= minlen; k++) {
+                                int ca = case_insensitive ? toupper(val_a[k]) : val_a[k];
+                                int cb = case_insensitive ? toupper(val_b[k]) : val_b[k];
+                                if (ca < cb) { cmp = -1; break; }
+                                if (ca > cb) { cmp =  1; break; }
+                            }
+                            if (cmp == 0)
+                                cmp = (len_a < len_b) ? -1 : (len_a > len_b) ? 1 : 0;
+                        }
+                    }
+
+                    if (reverse) cmp = -cmp;
+                    if (cmp > 0) {
+                        memcpy(base_ptr + j * struct_size, elem_j_gap, struct_size);
+                    } else {
+                        break;
+                    }
+                }
+                memcpy(base_ptr + j * struct_size, temp, struct_size);
+            }
+        }
+    }
     else if ((p = checkstring(cmdline, (unsigned char *)"CLEAR")) != NULL) {
         // STRUCT CLEAR var  or  STRUCT CLEAR array()
         unsigned char *var_ptr;

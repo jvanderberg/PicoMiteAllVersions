@@ -2848,6 +2848,36 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
 
         // if it is a non arrayed variable or an empty array it is easy, just calculate and return a pointer to the value
         if(dnbr == -1 || g_vartbl[vindex].dims[0] == 0) {
+            // Empty-array struct-member access (e.g. `sa().x` used by STRUCT
+            // SORT / EXTRACT / INSERT / FIND).  The top-of-block `(` parse
+            // didn't advance p past the `()`, so step over it here before
+            // looking for a trailing dot.  Matches upstream UKTailwind 6.02
+            // MMBasic.c:4215 (guarded there by STRUCTENABLED — we drop the
+            // guard per docs/upstream-catchup-plan.md).
+            if (dnbr == -1 && (g_vartbl[vindex].type & T_STRUCT) && *p == '(') {
+                p++;
+                skipspace(p);
+                if (*p == ')') p++;
+                skipspace(p);
+            }
+            if ((g_vartbl[vindex].type & T_STRUCT) && *p == '.') {
+                p++;                                                  // skip the dot
+                skipspace(p);
+                unsigned char membername[MAXVARLEN + 1];
+                int mn = 0;
+                while (isnamechar(*p) && mn < MAXVARLEN) {
+                    membername[mn++] = *p++;
+                }
+                membername[mn] = 0;
+                if (*p == '$' || *p == '%' || *p == '!') p++;
+                int member_type = 0;
+                void *result = ResolveStructMember(
+                    (unsigned char *)g_vartbl[vindex].val.s,
+                    (int)g_vartbl[vindex].size,
+                    membername, &p, &member_type);
+                g_StructMemberType = member_type;
+                return result;
+            }
             if (g_vartbl[vindex].type & T_STRUCT)
                 return g_vartbl[vindex].val.s;                        // struct data lives in the allocated buffer
             if(dnbr == -1 || g_vartbl[vindex].type & (T_PTR | T_STR))
