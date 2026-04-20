@@ -225,6 +225,68 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
         }
     }
 
+    /* Phase 13: first-time adoption for bridged int/float DIMs.  When a
+     * DIM allocates a non-struct non-string sized array via the bridge
+     * (because fe->uses_struct_extract_insert forced it), vm->arrays[i].data
+     * starts NULL.  Walk g_vartbl directly, look up by suffix-stripped name,
+     * and adopt the pointer so subsequent OP_LOAD/STORE_ARR_* opcodes see
+     * the contiguous g_vartbl buffer.
+     *
+     * String arrays (T_STR) are intentionally excluded: the VM stores them
+     * as `BCValue[] → 256-byte buffer per element`, which is incompatible
+     * with g_vartbl's contiguous layout.  Programs that do
+     * `STRUCT EXTRACT arr().member, dest$()` / `INSERT src$(), arr().member`
+     * therefore only run correctly under `--interp` for the string case;
+     * the compare-mode test skips those paths explicitly. */
+    for (uint16_t i = 0; i < cs->slot_count; i++) {
+        BCSlot *slot = &cs->slots[i];
+        if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
+        if (!slot->is_array) continue;
+        if (vm->arrays[i].data) continue;
+        if (slot->type == T_STRUCT || slot->type == T_STR) continue;
+
+        /* Strip trailing type suffix — g_vartbl stores names without it. */
+        int nlen = (int)strlen(slot->name);
+        if (nlen > 0) {
+            char last = slot->name[nlen - 1];
+            if (last == '$' || last == '%' || last == '!') nlen--;
+        }
+        int vi = -1;
+        for (int gv = 0; gv < MAXVARS; gv++) {
+            if (g_vartbl[gv].name[0] == 0) continue;
+            if ((g_vartbl[gv].type & slot->type) == 0) continue;
+            if (g_vartbl[gv].dims[0] == 0) continue;
+            if (strncasecmp((char *)g_vartbl[gv].name, slot->name, nlen) != 0) continue;
+            if (nlen < MAXVARLEN && g_vartbl[gv].name[nlen] != 0) continue;
+            vi = gv;
+            break;
+        }
+        if (vi < 0) continue;
+
+        struct s_vartbl *v = &g_vartbl[vi];
+        void *ptr = (slot->type == T_INT) ? (void *)v->val.ia :
+                    (slot->type == T_NBR) ? (void *)v->val.fa : NULL;
+        if (!ptr) continue;
+
+        slot_to_vartbl[i] = vi;
+        BCArray *arr = &vm->arrays[i];
+        arr->data = (BCValue *)ptr;
+        arr->data_external = 1;
+
+        int ndims = 0;
+        uint32_t total = 1;
+        for (int d = 0; d < MAXDIM; d++) {
+            int sz = v->dims[d];
+            arr->dims[d] = sz;
+            if (sz > 0) {
+                total *= (uint32_t)(sz + 1);
+                ndims = d + 1;
+            }
+        }
+        arr->ndims = (uint8_t)ndims;
+        arr->total_elements = total;
+    }
+
     /* Array rebinding pass.
      *
      * The pre-bridge sync (sync_vm_to_mmbasic) aliases g_vartbl[vi].val.ia/fa/s

@@ -57,6 +57,18 @@ typedef struct {
      * bridge when this flag is set, so a single table owns all I/O for
      * the program. */
     int                  uses_struct_file_io;
+
+    /* Phase 13: set during prescan if the program uses STRUCT EXTRACT or
+     * STRUCT INSERT.  Those commands memcpy into/from a flat array
+     * assuming the interpreter's contiguous `(len+1) * N` string layout,
+     * but the VM stores `DIM s$(n)` as an array of `BCValue` (pointer +
+     * padding) pointing to per-element 256-byte buffers.  When bridged
+     * and aliased through `v->val.s = arr->data`, the interpreter walks
+     * the pointer array as if it were contiguous strings and corrupts
+     * memory.  When this flag is set, DIMs that allocate non-struct
+     * string arrays also bridge, so the array lives in g_vartbl with
+     * the contiguous layout the bridged EXTRACT/INSERT expects. */
+    int                  uses_struct_extract_insert;
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend *fe) {
@@ -3185,6 +3197,23 @@ static void source_emit_bridge_for_stmt(BCCompiler *cs, const char *stmt) {
     memcpy(tknbuf, saved_tknbuf, STRINGSIZE);
 }
 
+// Phase 13: DIM arg contains `(` sized array but no `AS <struct>` and no
+// `LENGTH`.  Used with fe->uses_struct_extract_insert to bridge these DIMs
+// so their storage is contiguous g_vartbl memory, matching what cmd_struct
+// EXTRACT/INSERT assumes when it memcpys into/out of the destination array.
+static int source_peek_dim_has_sized_array(const char *p) {
+    while (*p && *p != ',' && *p != '\'' && *p != '\n') {
+        if (*p == '(') {
+            const char *q = p + 1;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q != ')') return 1;     // non-empty parens → sized
+            return 0;
+        }
+        p++;
+    }
+    return 0;
+}
+
 static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     const char *p = *pp;
     uint8_t forced_type = 0;
@@ -3214,6 +3243,43 @@ static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char 
             if (source_peek_dim_struct_type(peek) >= 0) { needs_bridge = 1; break; }
             while (*peek && *peek != ',') peek++;
             if (*peek == ',') peek++;
+        }
+        /* Phase 13: DIM with an explicit LENGTH clause (`DIM s$(n) LENGTH m`)
+         * isn't modelled by our native DIM compiler — bridge the whole line
+         * to cmd_dim which handles LENGTH natively.  Substring scan is fine
+         * since `LENGTH` never appears inside a struct type name. */
+        if (!needs_bridge) {
+            const char *scan = p;
+            int in_str = 0;
+            while (*scan && *scan != '\n' && *scan != '\'') {
+                if (*scan == '"') { in_str = !in_str; scan++; continue; }
+                if (!in_str && (scan[0] == 'L' || scan[0] == 'l') &&
+                    strncasecmp(scan, "LENGTH", 6) == 0 &&
+                    (scan == p || !isnamechar((unsigned char)scan[-1])) &&
+                    !isnamechar((unsigned char)scan[6])) {
+                    needs_bridge = 1;
+                    break;
+                }
+                scan++;
+            }
+        }
+        /* Phase 13: if the program uses STRUCT EXTRACT or STRUCT INSERT, any
+         * DIM that allocates a non-struct sized array goes through the bridge
+         * so the storage lives in g_vartbl's contiguous layout — the VM's
+         * native BCValue[] layout for T_STR arrays is incompatible with
+         * cmd_struct's memcpy assumption.  Blunt for non-string types too,
+         * since the bridge path is safe for int/float arrays and the prescan
+         * flag is specific to programs that already bridge struct commands. */
+        if (!needs_bridge && fe && fe->uses_struct_extract_insert) {
+            const char *peek_arr = p;
+            while (*peek_arr && *peek_arr != '\n') {
+                if (source_peek_dim_has_sized_array(peek_arr)) {
+                    needs_bridge = 1;
+                    break;
+                }
+                while (*peek_arr && *peek_arr != ',') peek_arr++;
+                if (*peek_arr == ',') peek_arr++;
+            }
         }
 
         if (needs_bridge) {
@@ -3257,6 +3323,19 @@ static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char 
                         cs->slots[slot].type = T_STRUCT;
                         cs->slots[slot].struct_idx = (int16_t)sidx;
                         cs->slots[slot].is_array = (uint8_t)is_array;
+                        cs->slots[slot].ndims = (uint8_t)arr_ndim;
+                    }
+                } else if (is_array) {
+                    /* Phase 13: a bridged DIM that allocates a non-struct
+                     * array (e.g. `DIM s$(n) LENGTH m`) still needs the slot
+                     * registered so later VM references emit the right
+                     * OP_LOAD_ARR_* opcode.  cmd_dim owns the allocation on
+                     * the bridge side; here we just claim the slot and tag
+                     * it as an array of the right type. */
+                    uint16_t slot = source_resolve_global(cs, name, name_len, vtype, 1);
+                    if (slot != 0xFFFF) {
+                        cs->slots[slot].type = vtype;
+                        cs->slots[slot].is_array = 1;
                         cs->slots[slot].ndims = (uint8_t)arr_ndim;
                     }
                 }
@@ -8028,12 +8107,11 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     }
 }
 
-/* Phase 11: detect whether the program uses STRUCT SAVE or STRUCT LOAD.
- * If so, OPEN/CLOSE/SEEK also bridge — see comment on
- * BCSourceFrontend.uses_struct_file_io.  Substring scan is fine here: both
- * tokens are unique enough that false positives in comments / strings only
+/* Phase 11/13: detect whether the program uses any STRUCT subcommand in
+ * `wanted` (NULL-terminated list of uppercase names).  Substring scan — both
+ * tokens are unique enough that false positives in comments/strings only
  * cause a bit of extra bridging, not incorrect behaviour. */
-static int source_program_uses_struct_file_io(const char *source) {
+static int source_program_uses_struct_subcmd(const char *source, const char *const *wanted) {
     const char *p = source;
     while (*p) {
         if ((*p == 's' || *p == 'S') &&
@@ -8042,13 +8120,25 @@ static int source_program_uses_struct_file_io(const char *source) {
             !isnamechar((unsigned char)p[6])) {
             const char *q = p + 6;
             while (*q == ' ' || *q == '\t') q++;
-            if ((strncasecmp(q, "SAVE", 4) == 0 && !isnamechar((unsigned char)q[4])) ||
-                (strncasecmp(q, "LOAD", 4) == 0 && !isnamechar((unsigned char)q[4])))
-                return 1;
+            for (const char *const *w = wanted; *w; w++) {
+                int wl = (int)strlen(*w);
+                if (strncasecmp(q, *w, wl) == 0 && !isnamechar((unsigned char)q[wl]))
+                    return 1;
+            }
         }
         p++;
     }
     return 0;
+}
+
+static int source_program_uses_struct_file_io(const char *source) {
+    static const char *const wanted[] = {"SAVE", "LOAD", NULL};
+    return source_program_uses_struct_subcmd(source, wanted);
+}
+
+static int source_program_uses_struct_extract_insert(const char *source) {
+    static const char *const wanted[] = {"EXTRACT", "INSERT", NULL};
+    return source_program_uses_struct_subcmd(source, wanted);
 }
 
 int bc_compile_source(BCCompiler *cs, const char *source, const char *source_name) {
@@ -8064,6 +8154,7 @@ int bc_compile_source(BCCompiler *cs, const char *source, const char *source_nam
     source_prescan_types(cs, source);
     source_predeclare_subfuns(cs, source);
     fe.uses_struct_file_io = source_program_uses_struct_file_io(source);
+    fe.uses_struct_extract_insert = source_program_uses_struct_extract_insert(source);
     if (cs->has_error) { source_asm_buf_free(&fe); return -1; }
 
     const char *p = source;

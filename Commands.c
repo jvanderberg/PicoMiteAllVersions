@@ -4279,6 +4279,162 @@ void MIPS16 cmd_struct(void) {
         memcpy(src_ptr, dst_ptr, swap_size);
         memcpy(dst_ptr, temp, swap_size);
     }
+    else if ((p = checkstring(cmdline, (unsigned char *)"EXTRACT")) != NULL) {
+        // STRUCT EXTRACT structarray().membername, destarray()
+        int src_idx, dst_idx, struct_type, struct_size;
+        int member_type, member_offset, member_size;
+        int src_num_elements, dst_num_elements;
+        unsigned char *src_base, *dst_base, *tp;
+
+        skipspace(p);
+        findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        src_idx = g_VarIndex;
+        if (!(g_vartbl[src_idx].type & T_STRUCT))
+            error("Expected a structure array");
+        if (g_vartbl[src_idx].dims[0] == 0)
+            error("Expected a structure array, not a single structure");
+        if (g_vartbl[src_idx].dims[1] != 0)
+            error("Only 1-dimensional structure arrays are supported");
+        if (g_StructMemberType == 0)
+            error("Expected structarray().membername syntax");
+
+        member_type   = g_StructMemberType;
+        member_offset = g_StructMemberOffset;
+        member_size   = g_StructMemberSize;
+        if (member_type == T_STRUCT)
+            error("Cannot extract nested structure member");
+
+        struct_type = (int)g_vartbl[src_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        src_num_elements = g_vartbl[src_idx].dims[0] + 1 - g_OptionBase;
+        src_base = g_vartbl[src_idx].val.s;
+
+        tp = skipvar(p, false);
+        skipspace(tp);
+        if (*tp != ',') error("Expected comma and destination array");
+        tp++;
+        skipspace(tp);
+
+        dst_base = findvar(tp, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        dst_idx = g_VarIndex;
+        if (g_vartbl[dst_idx].type & T_STRUCT)
+            error("Destination must be a simple array, not a structure");
+        if (g_vartbl[dst_idx].dims[0] == 0)
+            error("Destination must be an array");
+        if (g_vartbl[dst_idx].dims[1] != 0)
+            error("Destination must be a 1-dimensional array");
+
+        dst_num_elements = g_vartbl[dst_idx].dims[0] + 1 - g_OptionBase;
+        if (dst_num_elements != src_num_elements)
+            error("Arrays must have the same size");
+
+        int dst_type = g_vartbl[dst_idx].type & (T_INT | T_NBR | T_STR);
+        if (dst_type != member_type)
+            error("Type mismatch: structure member and destination array must have same type");
+        if (member_type == T_STR) {
+            int dst_str_size = g_vartbl[dst_idx].size;
+            if (dst_str_size != member_size)
+                error("String length mismatch");
+        }
+
+        if (member_type == T_INT) {
+            long long int *dst = (long long int *)dst_base;
+            for (int i = 0; i < src_num_elements; i++) {
+                unsigned char *src_elem = src_base + (i * struct_size) + member_offset;
+                dst[i] = *(long long int *)src_elem;
+            }
+        } else if (member_type == T_NBR) {
+            MMFLOAT *dst = (MMFLOAT *)dst_base;
+            for (int i = 0; i < src_num_elements; i++) {
+                unsigned char *src_elem = src_base + (i * struct_size) + member_offset;
+                dst[i] = *(MMFLOAT *)src_elem;
+            }
+        } else if (member_type == T_STR) {
+            int str_size = member_size + 1;   // +1 for length byte
+            for (int i = 0; i < src_num_elements; i++) {
+                unsigned char *src_elem = src_base + (i * struct_size) + member_offset;
+                unsigned char *dst_elem = dst_base + (i * str_size);
+                memcpy(dst_elem, src_elem, str_size);
+            }
+        }
+    }
+    else if ((p = checkstring(cmdline, (unsigned char *)"INSERT")) != NULL) {
+        // STRUCT INSERT srcarray(), structarray().membername
+        int src_idx, dst_idx, struct_type, struct_size;
+        int member_type, member_offset, member_size;
+        int src_num_elements, dst_num_elements;
+        unsigned char *src_base, *dst_base, *tp;
+
+        skipspace(p);
+        src_base = findvar(p, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        src_idx = g_VarIndex;
+        if (g_vartbl[src_idx].type & T_STRUCT)
+            error("Source must be a simple array, not a structure");
+        if (g_vartbl[src_idx].dims[0] == 0)
+            error("Source must be an array");
+        if (g_vartbl[src_idx].dims[1] != 0)
+            error("Source must be a 1-dimensional array");
+
+        src_num_elements = g_vartbl[src_idx].dims[0] + 1 - g_OptionBase;
+        int src_type = g_vartbl[src_idx].type & (T_INT | T_NBR | T_STR);
+        int src_str_size = g_vartbl[src_idx].size;
+
+        tp = skipvar(p, false);
+        skipspace(tp);
+        if (*tp != ',') error("Expected comma after source array");
+        tp++;
+        skipspace(tp);
+
+        dst_base = findvar(tp, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+        dst_idx = g_VarIndex;
+        if (!(g_vartbl[dst_idx].type & T_STRUCT))
+            error("Expected a structure array");
+        if (g_vartbl[dst_idx].dims[0] == 0)
+            error("Expected a structure array, not a single structure");
+        if (g_vartbl[dst_idx].dims[1] != 0)
+            error("Only 1-dimensional structure arrays are supported");
+        if (g_StructMemberType == 0)
+            error("Expected structarray().membername syntax");
+
+        member_type   = g_StructMemberType;
+        member_offset = g_StructMemberOffset;
+        member_size   = g_StructMemberSize;
+        if (member_type == T_STRUCT)
+            error("Cannot insert into nested structure member");
+
+        struct_type = (int)g_vartbl[dst_idx].size;
+        struct_size = g_structtbl[struct_type]->total_size;
+        dst_num_elements = g_vartbl[dst_idx].dims[0] + 1 - g_OptionBase;
+        dst_base = g_vartbl[dst_idx].val.s;
+
+        if (src_num_elements != dst_num_elements)
+            error("Arrays must have the same size");
+        if (src_type != member_type)
+            error("Type mismatch: source array and structure member must have same type");
+        if (member_type == T_STR && src_str_size != member_size)
+            error("String length mismatch");
+
+        if (member_type == T_INT) {
+            long long int *src = (long long int *)src_base;
+            for (int i = 0; i < dst_num_elements; i++) {
+                unsigned char *dst_elem = dst_base + (i * struct_size) + member_offset;
+                *(long long int *)dst_elem = src[i];
+            }
+        } else if (member_type == T_NBR) {
+            MMFLOAT *src = (MMFLOAT *)src_base;
+            for (int i = 0; i < dst_num_elements; i++) {
+                unsigned char *dst_elem = dst_base + (i * struct_size) + member_offset;
+                *(MMFLOAT *)dst_elem = src[i];
+            }
+        } else if (member_type == T_STR) {
+            int str_size = member_size + 1;
+            for (int i = 0; i < dst_num_elements; i++) {
+                unsigned char *src_elem = src_base + (i * str_size);
+                unsigned char *dst_elem = dst_base + (i * struct_size) + member_offset;
+                memcpy(dst_elem, src_elem, str_size);
+            }
+        }
+    }
     else {
         error("Unknown STRUCT subcommand");
     }
