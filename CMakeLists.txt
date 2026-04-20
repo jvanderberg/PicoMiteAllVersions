@@ -11,6 +11,7 @@ set(PICOCALC true)
 
 # Compile for PICO 1 Board
 set(COMPILE PICO)
+#set(COMPILE WEB)
 
 # Compile for PICO 2 Board
 #set(COMPILE PICORP2350)

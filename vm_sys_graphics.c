@@ -17,6 +17,9 @@
 #include "vm_sys_graphics.h"
 
 #ifndef MMBASIC_HOST
+#ifdef PICOMITE
+#include "Draw.h"               /* for merge_optimized() (PICOMITE only) */
+#endif
 #include "pico/multicore.h"
 #include "hardware/dma.h"
 #endif
@@ -122,11 +125,16 @@ static void vm_sys_graphics_fb_merge_now(uint8_t transparent) {
 
     if (LayerBuf == NULL || FrameBuf == NULL) return;
 
-    /* If ShadowBuf is present (FRAMEBUFFER CREATE FAST), use DMA-optimized merge */
+    /* If ShadowBuf is present (FRAMEBUFFER CREATE FAST), use DMA-optimized merge.
+     * ShadowBuf / merge_optimized only exist on PICOMITE (non-VGA, non-WEB) —
+     * WEB variants never allocate it, so the call is unreachable there. Guard
+     * the call so the symbol isn't referenced on those build targets. */
+#ifdef PICOMITE
     if (ShadowBuf != NULL) {
         merge_optimized(transparent);
         return;
     }
+#endif
 
     stride = HRes / 2;
     if (stride <= 0) return;

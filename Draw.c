@@ -188,13 +188,9 @@ int ScreenSize=0;
     extern int SSD1963data;
     int map[16]={0};
     #ifdef PICOMITEWEB
-    #ifndef rp2350
-    short gui_font_width, gui_font_height;
-    int last_bcolour, last_fcolour;
-    volatile int CursorTimer=0;               // used to time the flashing cursor
-    int display_backlight;                  // the brightness of the backlight (1 to 100)
-    #else
-    #endif
+    /* CursorTimer / gui_font_* / display_backlight are already defined
+     * by the !GUICONTROLS block at the top of this file for every
+     * rp2040 build that doesn't compile GUI.c (WEB included). */
     extern int InvokingCtrl;
     #else
     extern int InvokingCtrl;

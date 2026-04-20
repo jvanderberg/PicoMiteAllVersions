@@ -34,5 +34,3 @@ Host binary: `host/mmbasic_test`. If the host build links against stale command-
 - Cause: rp2040 builds used `-DPICO_HEAP_SIZE=0x1000`, and the final layout exceeded the 256 KB RAM window by 20 bytes.
 - Fix: `CMakeLists.txt` sets `PICOMITE_HEAP_SIZE` to `0x0fe0` for rp2040 (keeps `0x1000` elsewhere) and passes it via `-DPICO_HEAP_SIZE=${PICOMITE_HEAP_SIZE}`.
 
-## Legacy helpers
-- `./rebuildall.sh` — rp2040-only clean build. Kept for compatibility; `./build_firmware.sh rp2040` is equivalent and preferred.
