@@ -3549,7 +3549,7 @@ void MIPS16 cmd_dim(void) {
                 tv = findvar(argv[i], typeSave | V_LOCAL | V_NOFIND_NULL);    						// check if the local variable exists
                 if(tv != NULL) error("$ already declared", argv[i]);
                 tv = findvar(argv[i], typeSave | V_LOCAL | V_FIND | V_DIM_VAR);         			// create the variable
-                if(g_vartbl[VIndexSave].dims[0] > 0 || (g_vartbl[VIndexSave].type & T_STR)) {
+                if(g_vartbl[VIndexSave].dims[0] > 0 || (g_vartbl[VIndexSave].type & (T_STR | T_STRUCT))) {
                     FreeMemorySafe((void **)&tv);                                                                 // we don't need the memory allocated to the local
                     g_vartbl[g_VarIndex].val.s = g_vartbl[VIndexSave].val.s;                              // point to the memory of the global variable
                 } else

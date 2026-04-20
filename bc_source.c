@@ -3720,16 +3720,16 @@ static void source_compile_sub(BCSourceFrontend *fe, BCCompiler *cs, const char 
         return;
     }
 
-    /* Phase 7: if any parameter is `As <struct>`, skip body compilation and
-     * let the interpreter own the sub.  The predeclare pass may have already
-     * registered this sub in cs->subfuns[] (that pass runs before any TYPE
-     * blocks are resolved, so it couldn't detect the struct param) — flag
-     * that entry as bridged so the call-site dispatcher routes it through
-     * OP_BRIDGE_CMD instead of OP_CALL_SUB. */
-    if (source_params_contain_struct(p)) {
+    /* Phase 7/8: if any parameter is `As <struct>`, or the predeclare body
+     * scan already flagged this SUB as bridged (Phase 8: body contains
+     * `LOCAL … AS <struct>`), skip body compilation and let the interpreter
+     * own the sub.  The predeclare pass populates cs->subfuns[] before the
+     * main compile pass runs, so .bridged is reliable here. */
+    int predecl_idx = bc_find_subfun(cs, name_start, name_len);
+    int predecl_bridged = (predecl_idx >= 0 && cs->subfuns[predecl_idx].bridged);
+    if (predecl_bridged || source_params_contain_struct(p)) {
         fe->in_struct_fn = 1;
-        int existing = bc_find_subfun(cs, name_start, name_len);
-        if (existing >= 0) cs->subfuns[existing].bridged = 1;
+        if (predecl_idx >= 0) cs->subfuns[predecl_idx].bridged = 1;
         source_skip_space(&p);
         if (*p == '(') {
             int d = 0;
@@ -3826,10 +3826,11 @@ static void source_compile_function(BCSourceFrontend *fe, BCCompiler *cs, const 
         }
         int sidx = -1;
         uint8_t peek_type = source_parse_as_type_clause_ex(&peek, &sidx);
-        if (has_struct_param || peek_type == T_STRUCT) {
+        int predecl_idx = bc_find_subfun(cs, name_start, sf_name_len);
+        int predecl_bridged = (predecl_idx >= 0 && cs->subfuns[predecl_idx].bridged);
+        if (predecl_bridged || has_struct_param || peek_type == T_STRUCT) {
             fe->in_struct_fn = 1;
-            int existing = bc_find_subfun(cs, name_start, sf_name_len);
-            if (existing >= 0) cs->subfuns[existing].bridged = 1;
+            if (predecl_idx >= 0) cs->subfuns[predecl_idx].bridged = 1;
             p = peek;
             *pp = p;
             return;
@@ -7882,6 +7883,37 @@ static void source_prescan_types(BCCompiler *cs, const char *source) {
     if (sd) FreeMemory((unsigned char *)sd);
 }
 
+/* Phase 8 helper: does this LOCAL/STATIC declarator line have an `AS <name>`
+ * clause where <name> resolves to a registered struct type?  Returns 1 if so.
+ * Walks identifier-shaped tokens, skipping quoted strings and tail comments,
+ * so spurious hits inside `"AS Point"` string literals are ignored. */
+static int source_local_line_has_struct_as(const char *line) {
+    const char *p = line;
+    int in_str = 0;
+    while (*p && *p != '\'') {
+        if (*p == '"') { in_str = !in_str; p++; continue; }
+        if (in_str) { p++; continue; }
+        if (!isnamestart((unsigned char)*p)) { p++; continue; }
+        const char *ns = p;
+        while (isnamechar((unsigned char)*p)) p++;
+        int nlen = (int)(p - ns);
+        if (nlen == 2 && (ns[0] | 0x20) == 'a' && (ns[1] | 0x20) == 's') {
+            source_skip_space(&p);
+            if (isnamestart((unsigned char)*p)) {
+                unsigned char tname[MAXVARLEN + 1];
+                int tl = 0;
+                while (isnamechar((unsigned char)*p) && tl < MAXVARLEN) {
+                    tname[tl++] = (unsigned char)mytoupper(*p);
+                    p++;
+                }
+                tname[tl] = 0;
+                if (FindStructType(tname) >= 0) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     int physical_line = 1;
     int line_no = 1;
@@ -7889,6 +7921,11 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
     const char *p = source;
     char line[STRINGSIZE + 1];
     int in_asm = 0;
+    /* Phase 8: track the enclosing SUB/FUNCTION across lines.  A body-level
+     * `LOCAL … AS <struct>` (or STATIC) can't be compiled natively — the VM
+     * frame only knows scalar slots — so we mark the sub bridged here, and
+     * source_compile_statement routes any call to it through OP_BRIDGE_CMD. */
+    int current_sf = -1;
 
     while (!cs->has_error &&
            source_read_logical_line(&p, line, sizeof(line), &physical_line, &line_no, &continuation)) {
@@ -7912,6 +7949,50 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
             continue;
         }
         source_predeclare_line(cs, line, line_no);
+
+        /* Phase 8 body-scan: update current_sf on SUB/FUNCTION boundaries and
+         * mark the sub bridged when its body declares a struct-typed LOCAL. */
+        if (strncasecmp(lp, "SUB", 3) == 0 && !isnamechar((unsigned char)lp[3])) {
+            const char *np = lp + 3;
+            source_skip_space(&np);
+            const char *ns = np;
+            char sn[MAXVARLEN + 1];
+            int snl = 0;
+            uint8_t stype = 0;
+            current_sf = (source_parse_varname(&np, sn, &snl, &stype) && stype == 0)
+                             ? bc_find_subfun(cs, ns, snl)
+                             : -1;
+            continue;
+        }
+        if (strncasecmp(lp, "FUNCTION", 8) == 0 && !isnamechar((unsigned char)lp[8])) {
+            const char *np = lp + 8;
+            source_skip_space(&np);
+            const char *ns = np;
+            char sn[MAXVARLEN + 1];
+            int snl = 0;
+            uint8_t stype = 0;
+            if (source_parse_varname(&np, sn, &snl, &stype)) {
+                int match_len = (stype != 0) ? snl - 1 : snl;
+                current_sf = bc_find_subfun(cs, ns, match_len);
+            } else {
+                current_sf = -1;
+            }
+            continue;
+        }
+        if ((strncasecmp(lp, "END SUB", 7) == 0 && !isnamechar((unsigned char)lp[7])) ||
+            (strncasecmp(lp, "END FUNCTION", 12) == 0 && !isnamechar((unsigned char)lp[12]))) {
+            current_sf = -1;
+            continue;
+        }
+        if (current_sf < 0 || cs->subfuns[current_sf].bridged) continue;
+
+        int is_local  = (strncasecmp(lp, "LOCAL",  5) == 0 && !isnamechar((unsigned char)lp[5]));
+        int is_static = (strncasecmp(lp, "STATIC", 6) == 0 && !isnamechar((unsigned char)lp[6]));
+        if (!is_local && !is_static) continue;
+        const char *decls = lp + (is_local ? 5 : 6);
+        if (source_local_line_has_struct_as(decls)) {
+            cs->subfuns[current_sf].bridged = 1;
+        }
     }
 }
 
