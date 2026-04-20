@@ -815,6 +815,14 @@ typedef struct {
     int         dims[MAXDIM];   /* dimension sizes */
     uint8_t     ndims;
     uint8_t     elem_type;      /* T_INT, T_NBR, T_STR */
+    uint8_t     data_external;  /* 1 = data is aliased into g_vartbl
+                                 *     (bridged REDIM rebound the buffer);
+                                 *     bc_array_release must NOT bc_free it.
+                                 *     On device MMHeap is shared so the
+                                 *     distinction is cosmetic, but on host
+                                 *     bc_alloc/bc_free use libc malloc
+                                 *     while g_vartbl uses the MMHeap
+                                 *     simulator — mixing them crashes. */
     uint32_t    total_elements;
 } BCArray;
 

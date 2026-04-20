@@ -183,6 +183,13 @@ static void vm_output_mstr(BCVMState *vm, uint8_t *s) {
 
 static void bc_array_release(BCArray *arr) {
     if (!arr || !arr->data) return;
+    if (arr->data_external) {
+        /* Buffer is aliased into g_vartbl — the interpreter owns the
+         * memory (and the element strings) via cmd_redim / cmd_erase.
+         * We only zero our handle. */
+        memset(arr, 0, sizeof(*arr));
+        return;
+    }
     if (arr->elem_type == T_STR) {
         for (uint32_t i = 0; i < arr->total_elements; i++) {
             if (arr->data[i].s) {

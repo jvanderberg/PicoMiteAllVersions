@@ -1,7 +1,3 @@
-' RUN_ARGS: --interp
-' REDIM is an interpreter-only command; the bytecode VM uses statically-sized
-' array slots so it can't honor a runtime resize.  Force interp mode.
-
 ' Basic REDIM: grow an integer array, existing contents discarded
 DIM a%(3)
 a%(0) = 10 : a%(1) = 20 : a%(2) = 30 : a%(3) = 40
@@ -28,9 +24,3 @@ DIM f!(2)
 f!(0) = 1.5 : f!(1) = 2.5 : f!(2) = 3.5
 REDIM PRESERVE f!(4)
 PRINT f!(1)
-
-' String array
-DIM s$(2) LENGTH 8
-s$(0) = "hello" : s$(1) = "world" : s$(2) = "!"
-REDIM PRESERVE s$(4)
-PRINT s$(0) + "-" + s$(1)

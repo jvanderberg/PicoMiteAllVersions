@@ -3687,6 +3687,25 @@ void cmd_redim(void) {
                 oldsize   = MemSize(oldmemory);
                 for (int k = 0; k < MAXDIM; k++)
                     dims[k] = g_vartbl[g_VarIndex].dims[k];
+                if (oldsize == 0 && oldmemory != NULL) {
+                    /* MemSize returns 0 for pointers outside MMHeap — happens on
+                     * host when the old buffer came from the VM's separate
+                     * bc_alloc arena (the bridge aliased it into g_vartbl before
+                     * calling us).  Fall back to computing the byte count from
+                     * the stored dims + element type so REDIM PRESERVE copies the
+                     * right amount of data.  On device MMHeap is shared, MemSize
+                     * works, and this branch is skipped. */
+                    int num = 1;
+                    for (int k = 0; k < MAXDIM; k++) {
+                        if (dims[k])
+                            num *= (dims[k] + 1 - g_OptionBase);
+                    }
+                    int elem_bytes;
+                    if      (type & T_INT) elem_bytes = sizeof(long long int);
+                    else if (type & T_NBR) elem_bytes = sizeof(MMFLOAT);
+                    else                   elem_bytes = g_vartbl[g_VarIndex].size + 1;
+                    oldsize = num * elem_bytes;
+                }
                 if (!array_comp(dims, newdims) && preserve)
                     error("Only the last array index can be changed");
             }

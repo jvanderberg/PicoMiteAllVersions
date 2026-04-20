@@ -163,7 +163,7 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
     for (uint16_t i = 0; i < cs->slot_count; i++) {
         BCSlot *slot = &cs->slots[i];
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
-        if (vm->arrays[i].data) continue;  /* arrays share data pointer */
+        if (vm->arrays[i].data) continue;  /* arrays handled separately below */
         if (slot_to_vartbl[i] < 0) continue;
 
         struct s_vartbl *v = &g_vartbl[slot_to_vartbl[i]];
@@ -182,6 +182,67 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
                 }
             }
         }
+    }
+
+    /* Array rebinding pass.
+     *
+     * The pre-bridge sync (sync_vm_to_mmbasic) aliases g_vartbl[vi].val.ia/fa/s
+     * to vm->arrays[i].data, which works for every bridged command that
+     * mutates array contents in place.  REDIM (and any future command that
+     * reallocates an array's backing buffer) breaks that contract: the
+     * interpreter frees the old buffer, allocates a new one in g_vartbl,
+     * and may shuffle the variable's slot index (redim_erase_var clears
+     * the original slot).  After the bridge returns we re-resolve the
+     * vartbl entry by name, detect a changed pointer, and adopt it into
+     * vm->arrays[i] so subsequent OP_LOAD_ARR_* / OP_STORE_ARR_* opcodes
+     * read the fresh buffer.  The adopted buffer is owned by g_vartbl, so
+     * we flag it data_external = 1 to prevent bc_array_release from
+     * bc_free-ing interpreter-owned memory at program teardown. */
+    for (uint16_t i = 0; i < cs->slot_count; i++) {
+        BCSlot *slot = &cs->slots[i];
+        if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
+        if (!vm->arrays[i].data) continue;
+
+        unsigned char namebuf[MAXVARLEN + 4];
+        int nlen = strlen(slot->name);
+        memcpy(namebuf, slot->name, nlen);
+
+        int action = sync_find_action(slot->type);
+        namebuf[nlen] = '(';
+        namebuf[nlen + 1] = ')';
+        namebuf[nlen + 2] = 0;
+        void *vp = findvar(namebuf, action | V_EMPTY_OK | V_NOFIND_NULL);
+        if (vp == NULL) {
+            namebuf[nlen] = 0;
+            vp = findvar(namebuf, action | V_NOFIND_NULL);
+        }
+        if (vp == NULL) continue;  /* variable was erased — leave VM array as-is */
+        slot_to_vartbl[i] = g_VarIndex;
+
+        struct s_vartbl *v = &g_vartbl[slot_to_vartbl[i]];
+        void *new_ptr = (slot->type == T_INT) ? (void *)v->val.ia :
+                        (slot->type == T_NBR) ? (void *)v->val.fa :
+                                                (void *)v->val.s;
+
+        if (new_ptr == vm->arrays[i].data) continue;  /* unchanged — fast path */
+
+        BCArray *arr = &vm->arrays[i];
+        arr->data = (BCValue *)new_ptr;
+        arr->data_external = 1;
+
+        /* Refresh dims and total_elements from the interpreter's view. */
+        int ndims = 0;
+        uint32_t total = 1;
+        for (int d = 0; d < MAXDIM; d++) {
+            int size = v->dims[d];
+            arr->dims[d] = size;
+            if (size > 0) {
+                total *= (uint32_t)(size + 1);  /* 0..N inclusive, matches OP_DIM_ARR_* */
+                ndims = d + 1;
+            }
+        }
+        arr->ndims = (uint8_t)ndims;
+        arr->total_elements = total;
     }
 }
 
