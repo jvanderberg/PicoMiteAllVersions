@@ -42,6 +42,12 @@ typedef struct {
      * g_structtbl, and compile-time duplicates are an upstream error. */
     int                  in_type_block;
     struct s_structdef  *struct_def_inprogress;    /* NULL outside TYPE blocks */
+
+    /* FUNCTION foo(...) AS <struct> — Phase 6 bridges every call to such
+     * functions via cmd_let (see source_lhs_is_whole_struct), so the VM
+     * never executes the body.  Set while scanning the body; statement
+     * compilation is short-circuited until END FUNCTION. */
+    int                  in_struct_fn;
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend *fe) {
@@ -3715,7 +3721,6 @@ static void source_compile_end_sub(BCCompiler *cs) {
 }
 
 static void source_compile_function(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
-    (void)fe;
     const char *p = *pp;
     source_skip_space(&p);
 
@@ -3731,6 +3736,32 @@ static void source_compile_function(BCSourceFrontend *fe, BCCompiler *cs, const 
     int has_suffix = (ret_type != 0);
     int sf_name_len = has_suffix ? name_len - 1 : name_len;
     if (ret_type == 0) ret_type = T_NBR;
+
+    /* Peek at the `AS <type>` clause WITHOUT committing — if it's a struct
+     * return, skip compilation of the body entirely.  Callers bridge such
+     * functions via source_lhs_is_whole_struct.  We still advance `p` past
+     * the params + AS clause so source_statement_end doesn't complain. */
+    {
+        const char *peek = p;
+        source_skip_space(&peek);
+        if (*peek == '(') {
+            int d = 0;
+            do {
+                if (*peek == '(') d++;
+                else if (*peek == ')') d--;
+                else if (*peek == 0) break;
+                peek++;
+            } while (d > 0);
+        }
+        int sidx = -1;
+        uint8_t peek_type = source_parse_as_type_clause_ex(&peek, &sidx);
+        if (peek_type == T_STRUCT) {
+            fe->in_struct_fn = 1;
+            p = peek;
+            *pp = p;
+            return;
+        }
+    }
 
     int sf_idx = source_get_or_create_subfun(cs, name_start, sf_name_len, ret_type);
     if (sf_idx < 0) {
@@ -7328,6 +7359,23 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
     bc_crash_snapshot_cs(cs);
     const char *p = line;
     source_skip_space(&p);
+
+    /* Inside a FUNCTION foo() AS <struct> body — skip every line until we
+     * see `END FUNCTION`.  The interpreter owns such functions (calls reach
+     * them via bridged cmd_let); the VM doesn't emit any bytecode for the
+     * body. */
+    if (fe->in_struct_fn) {
+        const char *cp = p;
+        if (isdigit((unsigned char)*cp)) {
+            char *end = NULL;
+            (void)strtol(cp, &end, 10);
+            if (end != cp) { cp = end; source_skip_space(&cp); }
+        }
+        if (strncasecmp(cp, "END FUNCTION", 12) == 0 && !isnamechar((unsigned char)cp[12])) {
+            fe->in_struct_fn = 0;
+        }
+        return;
+    }
 
     /* Inside a TYPE block — consume member lines silently until END TYPE.
      * We also register members into `fe->struct_def_inprogress` so --vm mode

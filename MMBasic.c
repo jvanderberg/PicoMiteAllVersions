@@ -1021,6 +1021,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     // if this is a function we check to find if the function's type has been specified with AS <type> and save it
     CurrentLinePtr = SubLinePtr;                                    // report errors at the definition
     FunType = T_NOTYPE;
+    int SavedStructArg = -1;                                        // struct-idx for an `AS <type>` function return (Phase 6)
     if(isfun) {
         ttp = skipvar(ttp, false);                                  // point to after the function name and bracketed arguments
         skipspace(ttp);
@@ -1028,6 +1029,7 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
             ttp++;                                                  // step over the AS token
             ttp = CheckIfTypeSpecified(ttp, &FunType, true);        // get the type
             if(!(FunType & T_IMPLIED)) error("Variable type");
+            SavedStructArg = g_StructArg;                           // argument processing below clobbers g_StructArg
         }
         FunType |= (V_FIND | V_DIM_VAR | V_LOCAL | V_EMPTY_OK);
     }
@@ -1242,14 +1244,21 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
     //   - When that returns we need to restore the global variables
     //   - Get the variable's value and save that in the return value globals (fret or sret)
     //   - Return to the expression parser
+    g_StructArg = SavedStructArg;                                   // restore struct-idx so findvar allocates struct_size bytes
     tp = findvar(fun_name, FunType | V_FUNCT);                      // declare the local variable
     FunType = g_vartbl[g_VarIndex].type;
+    int FunStructType = -1;                                         // struct-type idx iff FunType & T_STRUCT
     if(FunType & T_STR) {
         FreeMemorySafe((void **)&g_vartbl[g_VarIndex].val.s);                         // free the memory if it is a string
         g_vartbl[g_VarIndex].type |= T_PTR;
         g_LocalIndex--;                                               // allocate the memory at the previous level
         g_vartbl[g_VarIndex].val.s = tp = GetTempMemory(STRINGSIZE);    // and use our own memory
         g_LocalIndex++;
+    } else if (FunType & T_STRUCT) {
+        FunStructType = (int)g_vartbl[g_VarIndex].size;             // struct-idx lives in .size for T_STRUCT
+        // tp already points at the struct's backing buffer (val.s) — that's
+        // what findvar returns for a V_DIM_VAR struct local.  Body code
+        // writes fields there; we copy out to temp memory after ExecuteProgram.
     }
     skipelement(p);                                                 // point to the body of the function
 
@@ -1269,6 +1278,22 @@ void MIPS16 __not_in_flash_func(DefinedSubFun)(int isfun, unsigned char *cmd, in
         *fa = *(MMFLOAT *)tp;
     else if(FunType & T_INT)
         *i64a = *(long long int  *)tp;
+    else if(FunType & T_STRUCT) {
+        // Phase 6 — function returns a struct.  Copy the struct body to temp
+        // memory allocated at the caller's LocalIndex so it survives ClearVars
+        // below.  Ported from UKTailwind 6.02 MMBasic.c CopyStructReturn
+        // @04f81d0.
+        if (FunStructType < 0 || FunStructType >= g_structcnt ||
+            g_structtbl[FunStructType] == NULL)
+            error("Invalid structure type");
+        int struct_size = g_structtbl[FunStructType]->total_size;
+        g_LocalIndex--;                                             // allocate at caller's level
+        unsigned char *temp_struct = GetTempMemory(struct_size);
+        g_LocalIndex++;
+        memcpy(temp_struct, tp, struct_size);
+        *sa = temp_struct;
+        g_ExprStructType = FunStructType;                           // for cmd_let's type check
+    }
     else
         *sa = tp;                                                   // for a string we just need to return the local memory
     *typ = FunType;                                                 // save the function type for the caller
