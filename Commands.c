@@ -1213,7 +1213,10 @@ void MIPS16 cmd_erase(void) {
             }
             if(!(len == 0 && (*x == 0 || strlen(p) == MAXVARLEN))) continue;
     		// found the variable
-			if(((g_vartbl[j].type & T_STR) || g_vartbl[j].dims[0] != 0) && !(g_vartbl[j].type & T_PTR)) {
+			if(((g_vartbl[j].type & (T_STR | T_STRUCT)) || g_vartbl[j].dims[0] != 0) && !(g_vartbl[j].type & T_PTR)) {
+				// Struct members live inline inside val.s (a single GetMemory allocation);
+				// freeing the backing buffer releases all T_STR members too.  See
+				// docs/type-struct-port-plan.md Phase 2 for why no per-member walk is needed.
 				FreeMemorySafe((void **)&g_vartbl[j].val.s);                        // free any memory (if allocated)
 				g_vartbl[j].val.s=NULL;
 			}

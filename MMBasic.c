@@ -3435,9 +3435,10 @@ void MIPS16 __not_in_flash_func(ClearVars)(int level, bool all) {
 				hashnext = hashcurrent = g_hashlist[i].hash;
 				hashnext++;
 				hashnext %= MAXVARS/2;
-				if(((g_vartbl[hashcurrent].type & T_STR) || g_vartbl[hashcurrent].dims[0] != 0) && !(g_vartbl[hashcurrent].type & T_PTR) && ((uint32_t)g_vartbl[hashcurrent].val.s<(uint32_t)MMHeap + heap_memory_size)&& ((uint32_t)g_vartbl[hashcurrent].val.s>(uint32_t)MMHeap)) {
+				if(((g_vartbl[hashcurrent].type & (T_STR | T_STRUCT)) || g_vartbl[hashcurrent].dims[0] != 0) && !(g_vartbl[hashcurrent].type & T_PTR) && ((uint32_t)g_vartbl[hashcurrent].val.s<(uint32_t)MMHeap + heap_memory_size)&& ((uint32_t)g_vartbl[hashcurrent].val.s>(uint32_t)MMHeap)) {
 					FreeMemorySafe((void **)&g_vartbl[hashcurrent].val.s);
-					// free any memory (if allocated)
+					// free any memory (if allocated) — T_STRUCT included so struct locals
+					// get their GetMemory-allocated backing buffer released on scope exit
 				}
 //				MMPrintString("Deleting ");MMPrintString(g_vartbl[g_hashlist[i].hash].name);PIntComma(g_hashlist[i].level);PIntComma(g_hashlist[i].hash);PRet();
 				g_hashlist[i].level=-1;
@@ -3453,7 +3454,7 @@ void MIPS16 __not_in_flash_func(ClearVars)(int level, bool all) {
 		g_hashlistpointer=newhashpointer;
 	} else {
 		for(i = 0; i < MAXVARS; i++) {
-			if(((g_vartbl[i].type & T_STR) || g_vartbl[i].dims[0] != 0) && !(g_vartbl[i].type & T_PTR)) {
+			if(((g_vartbl[i].type & (T_STR | T_STRUCT)) || g_vartbl[i].dims[0] != 0) && !(g_vartbl[i].type & T_PTR)) {
 				if((uint32_t)g_vartbl[i].val.s>(uint32_t)MMHeap && (uint32_t)g_vartbl[i].val.s<(uint32_t)MMHeap + heap_memory_size){
                     FreeMemorySafe((void **)&g_vartbl[i].val.s);                        // free any memory (if allocated)
                 }
@@ -3461,7 +3462,7 @@ void MIPS16 __not_in_flash_func(ClearVars)(int level, bool all) {
 #ifdef rp2350
 #ifndef PICOMITEWEB
             if(all){
-                if(((g_vartbl[i].type & T_STR) || g_vartbl[i].dims[0] != 0) && !(g_vartbl[i].type & T_PTR)) {
+                if(((g_vartbl[i].type & (T_STR | T_STRUCT)) || g_vartbl[i].dims[0] != 0) && !(g_vartbl[i].type & T_PTR)) {
                     if((uint32_t)g_vartbl[i].val.s>(uint32_t)PSRAMbase && (uint32_t)g_vartbl[i].val.s<(uint32_t)PSRAMbase + PSRAMsize){
                         FreeMemorySafe((void **)&g_vartbl[i].val.s);                        // free any memory (if allocated)
                     }
