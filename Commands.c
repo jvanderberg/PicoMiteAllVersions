@@ -3548,6 +3548,169 @@ void  cmd_const(void) {
     }
 }
 
+// Ported from upstream UKTailwind/PicoMiteAllVersions (@04f81d0):
+// - parse_and_strip + array_comp in Commands.c
+// - helper body adapted from erase() in MMBasic.c 5612
+// - cmd_redim in Commands.c 5613
+// Host-safe: uses void* throughout instead of upstream's uint32_t (which
+// truncates on 64-bit).  STRUCTENABLED paths are omitted — TYPE/STRUCT is
+// not yet ported.
+#ifdef rp2350
+static void parse_and_strip(char *string, int *dims)
+#else
+static void parse_and_strip(char *string, short *dims)
+#endif
+{
+    for (int i = 0; i < MAXDIM; i++) dims[i] = 0;
+    char *open  = strchr(string, '(');
+    char *close = strchr(string, ')');
+    if (open && close && close > open) {
+        char buffer[256];
+        strncpy(buffer, open + 1, close - open - 1);
+        buffer[close - open - 1] = '\0';
+
+        unsigned char *p = (unsigned char *)buffer;
+        int idx = 0;
+        while (*p && idx < MAXDIM) {
+            skipspace(p);
+            if (*p == 0) break;
+            unsigned char *start = p;
+            int paren_depth = 0;
+            while (*p && !(*p == ',' && paren_depth == 0)) {
+                if      (*p == '(') paren_depth++;
+                else if (*p == ')') paren_depth--;
+                p++;
+            }
+            unsigned char saved = *p;
+            *p = 0;
+            dims[idx++] = getinteger(start);
+            *p = saved;
+            if (*p == ',') p++;
+        }
+        *(open + 1) = '\0';
+        strcpy(open + 1, ")");
+    }
+}
+
+#ifdef rp2350
+static bool array_comp(int in[MAXDIM], int out[MAXDIM])
+#else
+static bool array_comp(short in[MAXDIM], short out[MAXDIM])
+#endif
+{
+    int last_in = -1, last_out = -1;
+    for (int i = MAXDIM - 1; i >= 0; i--) {
+        if (last_in  == -1 && in[i]  != 0) last_in  = i;
+        if (last_out == -1 && out[i] != 0) last_out = i;
+    }
+    if (last_in != last_out) return false;
+    if (last_in == -1)       return true;
+    for (int i = 0; i < MAXDIM; i++) {
+        if (i == last_in) continue;
+        if (in[i] != out[i]) return false;
+    }
+    return true;
+}
+
+// Find a variable by name, capture its current memory pointer, and clear its
+// vartbl slot.  If nofree=false, also free the memory; if nofree=true, leave
+// the memory allocated (REDIM ... PRESERVE copies from it before freeing).
+// Returns the old memory pointer (or NULL if the variable had none).
+static void *redim_erase_var(char *p, bool nofree) {
+    int j, len;
+    char *s, *x;
+    void *addr = NULL;
+
+    while (strlen(p) > 0 && !isnamechar(p[strlen(p) - 1]))
+        p[strlen(p) - 1] = 0;
+    makeupper((unsigned char *)p);
+
+    for (j = MAXVARS / 2; j < MAXVARS; j++) {
+        s = p; x = (char *)g_vartbl[j].name; len = strlen(p);
+        while (len > 0 && *s == *x) { len--; s++; x++; }
+        if (!(len == 0 && (*x == 0 || strlen(p) == MAXVARLEN))) continue;
+
+        if (((g_vartbl[j].type & T_STR) || g_vartbl[j].dims[0] != 0)
+            && !(g_vartbl[j].type & T_PTR)) {
+            addr = g_vartbl[j].val.s;
+            if (!nofree) FreeMemorySafe((void **)&g_vartbl[j].val.s);
+            g_vartbl[j].val.s = NULL;
+        }
+
+        int k = j + 1;
+        if (k == MAXVARS) k = MAXVARS / 2;
+        if (g_vartbl[k].type) {
+            g_vartbl[j].name[0] = '~';
+            g_vartbl[j].type    = T_BLOCKED;
+        } else {
+            g_vartbl[j].name[0] = 0;
+            g_vartbl[j].type    = T_NOTYPE;
+        }
+        g_vartbl[j].dims[0] = 0;
+        g_vartbl[j].level   = 0;
+        g_Globalvarcnt--;
+        return addr;
+    }
+    error("Cannot find $", p);
+    return NULL;
+}
+
+void cmd_redim(void) {
+#ifdef rp2350
+    int   dims[MAXDIM]    = {0};
+    int   newdims[MAXDIM] = {0};
+#else
+    short dims[MAXDIM]    = {0};
+    short newdims[MAXDIM] = {0};
+#endif
+    void *oldmemory = NULL, *newmemory = NULL;
+    int oldsize = 0, newsize = 0;
+    int length  = -1;
+    unsigned char *tp;
+    unsigned char old[MAXVARLEN + 1];
+    int preserve = ((tp = checkstring(cmdline, (unsigned char *)"PRESERVE")) ? 1 : 0);
+    if (tp == NULL) tp = cmdline;
+    {
+        getargs(&tp, MAX_ARG_COUNT, (unsigned char *)",");
+        for (int i = 0; i < argc; i += 2) {
+            strncpy((char *)old, (char *)argv[i], MAXVARLEN);
+            old[MAXVARLEN] = 0;
+            parse_and_strip((char *)old, newdims);
+            findvar(old, V_FIND | V_NOFIND_ERR | V_EMPTY_OK);
+            if (g_vartbl[g_VarIndex].type & T_STR)
+                length = g_vartbl[g_VarIndex].size;
+            if (!g_vartbl[g_VarIndex].dims[0])
+                error("$ is not an array", argv[i]);
+            int type = TypeMask(g_vartbl[g_VarIndex].type);
+            if (g_vartbl[g_VarIndex].dims[0] > 0) {
+                oldmemory = g_vartbl[g_VarIndex].val.s;
+                oldsize   = MemSize(oldmemory);
+                for (int k = 0; k < MAXDIM; k++)
+                    dims[k] = g_vartbl[g_VarIndex].dims[k];
+                if (!array_comp(dims, newdims) && preserve)
+                    error("Only the last array index can be changed");
+            }
+            (void)redim_erase_var((char *)old, preserve ? true : false);
+            if (type & T_STR) {
+                unsigned char *newstring = GetTempMemory(STRINGSIZE);
+                strcpy((char *)newstring, (char *)argv[i]);
+                strcat((char *)newstring, " LENGTH ");
+                IntToStr((char *)&newstring[strlen((char *)newstring)], length, 10);
+                findvar(newstring, type | V_FIND | V_DIM_VAR);
+            } else {
+                findvar(argv[i], type | V_FIND | V_DIM_VAR);
+            }
+            newmemory = g_vartbl[g_VarIndex].val.s;
+            newsize   = MemSize(newmemory);
+            if (preserve) {
+                if (newsize < oldsize) oldsize = newsize;
+                memcpy(newmemory, oldmemory, oldsize);
+                FreeMemorySafe(&oldmemory);
+            }
+        }
+    }
+}
+
 /**
  * @cond
  * The following section will be excluded from the documentation.

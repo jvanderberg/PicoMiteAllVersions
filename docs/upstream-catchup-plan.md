@@ -35,11 +35,11 @@ These are interpreter-core changes that benefit every target (device, host, web)
 
 | feature | upstream anchor | size | notes |
 |---|---|---|---|
-| `CONST` declaration | `Commands.c:cmd_const` (~6610) | small | Pure interpreter. Adds to variable table with immutable flag. |
+| `CONST` declaration | `Commands.c:cmd_const` (~6610) | small | Pure interpreter. Adds to variable table with immutable flag. **Already present at fork point — `Commands.c:cmd_const` line 3516, registered in `AllCommands.h`, covered by `host/tests/frontend/t009_const_assign.bas`. Confirmed matches upstream logic; no port needed.** |
 | `TYPE` / `END TYPE` / `STRUCT` | `Commands.c:cmd_type` (~6663), `cmd_struct` (~6704), `cmd_endtype` | medium | User-defined record types. Structure definition happens in `PrepareProgramExt`; runtime `cmd_type` just skips to `END TYPE`. Check variable-table and DIM machinery. |
-| `REDIM` | `Commands.c:cmd_redim` (~5613) | small | Runtime array resize. Needs to preserve existing data (upstream semantics). |
-| `EXECUTE` | `Commands.c:cmd_execute` | small | Runs a BASIC statement from a string. Essentially `tokenise(string) → ExecuteProgram`. Check stack/recursion safety. |
-| `fun_trim` | `Functions.c:fun_trim` | tiny | String trim (whitespace on both sides). |
+| `REDIM` | `Commands.c:cmd_redim` (~5613) | small | Runtime array resize. Needs to preserve existing data (upstream semantics). **DONE 2026-04-20. Interpreter-only: VM compiles each array to a fixed-size `vm->arrays[slot]` at DIM time, so a runtime resize from bridged REDIM can't sync back. Tests that use REDIM need `' RUN_ARGS: --interp`. If REDIM support in `FRUN` programs is wanted later, it needs native opcodes (`OP_REDIM_ARR_I/F/S`) analogous to `OP_DIM_ARR_*`.** |
+| `EXECUTE` | `Commands.c:cmd_execute` | small | Runs a BASIC statement from a string. Essentially `tokenise(string) → ExecuteProgram`. Check stack/recursion safety. **Already present at fork point — `Commands.c:execute()` line 3755 + `cmd_execute()` line 3814. Matches upstream behavior; no port needed.** |
+| `fun_trim` | `Functions.c:fun_trim` | tiny | String trim (whitespace on both sides). **DONE 2026-04-20 (291d525).** |
 | `INC` command | already in ours | — | Already shared. No action. |
 
 ### Tier 2 — portable commands (new drawing / computation)
@@ -107,10 +107,10 @@ Do tier 1 first, tier 2 after. Within each tier, do smaller features first to bu
 
 ### Phase A — tier 1 language features
 
-1. **`fun_trim`** — smallest possible port. Proves the workflow end-to-end against an extremely low-risk surface. Estimated: half a day.
-2. **`CONST`** — one command, adds one flag to variable table. Dependency for Tier 1 feature interactions (`CONST TYPE x AS INTEGER = 5` style). Estimated: 1 day.
-3. **`REDIM`** — operates on an existing array. Touches DIM machinery, so needs careful testing against our array code which has been extended for VM slots. Estimated: 1 day.
-4. **`EXECUTE`** — runs a tokenized string. Verify stack depth, `mark` jmp_buf save/restore (see CLAUDE.md note on `mark` around VM execution), and error routing back to the caller. Estimated: 1-2 days.
+1. **`fun_trim`** — smallest possible port. Proves the workflow end-to-end against an extremely low-risk surface. **DONE 2026-04-20 (291d525).**
+2. **`CONST`** — one command, adds one flag to variable table. Dependency for Tier 1 feature interactions (`CONST TYPE x AS INTEGER = 5` style). **Already present at fork point; no port needed.**
+3. **`EXECUTE`** — runs a tokenized string. **Already present at fork point; no port needed.**
+4. **`REDIM`** — operates on an existing array. Touches DIM machinery, so needs careful testing against our array code which has been extended for VM slots. **DONE 2026-04-20. Interpreter-only — VM array slots are statically sized.**
 5. **`TYPE` / `STRUCT` / `END TYPE`** — the centerpiece of 6.02. Probably 3-5 days because it touches `PrepareProgramExt`, variable table, DIM parser, and field access syntax. Worth a sub-plan if it gets hairy; do that as a separate doc once scoping is done.
 
 Gate at end of Phase A: host test suite green, device build green, web build green. Tag `v6.01-parity-plus-lang`.

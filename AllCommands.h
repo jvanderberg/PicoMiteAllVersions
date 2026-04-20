@@ -55,6 +55,7 @@ void cmd_troff(void);
 void cmd_tron(void);
 void cmd_trace(void);
 void cmd_const(void);
+void cmd_redim(void);
 void cmd_select(void);
 void cmd_case(void);
 void cmd_option(void);
@@ -404,6 +405,7 @@ void fun_map(void);
 	{ (unsigned char *)"Trace",		T_CMD,				0, cmd_trace	},
 	{ (unsigned char *)"While",		T_CMD,				0, cmd_do	},
 	{ (unsigned char *)"Const",		T_CMD,				0, cmd_const	},
+	{ (unsigned char *)"Redim",		T_CMD,				0, cmd_redim	},
 	{ (unsigned char *)"Execute",	T_CMD,				0, cmd_execute	},
 	{ (unsigned char *)"MID$(",		T_CMD | T_FUN,		0, cmd_mid      },
 	{ (unsigned char *)"/*",		T_CMD,				0, cmd_comment   },
