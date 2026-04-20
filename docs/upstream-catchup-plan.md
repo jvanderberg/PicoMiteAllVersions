@@ -138,14 +138,18 @@ Gate at end of Phase A: host test suite green, device build green, web build gre
 
 ### Phase B — tier 2 portable commands
 
-Order by size. Work through them one per branch, one per port:
+**Next up: `TILEMAP` + `SPRITE` (item 6)** — prioritized over the smaller tier-2 items because it's the single most game-enabling port left. Owner picked this as the next step on 2026-04-20 after confirming it slots cleanly into our shared graphics path and noting that sprites alone would meaningfully improve `pico_blocks.bas` (explosion animation, ball rendering, collision tests). Afterward return to size-ordered items (7-12).
 
-6. `Mandelbrot` command (if we want it — the bundled `mand.bas` already demonstrates the capability, this is the built-in form).
-7. `planet.c` / `Astro` — small, pure math.
-8. Individual drawing primitives: `Bezier`, `Star`, `Bitstream`, `Fill`.
-9. `Tilemap` — tile-atlas memory model check.
-10. `Turtle` — self-contained new file, bulk port.
-11. `re.c` regex swap — only if we see a regex bug that upstream's version fixes, or if we plan to ship new regex features. Otherwise defer.
+6. **`TILEMAP` + `SPRITE` + `FLASH LOAD IMAGE`** — 3 co-dependent ports, ~1100 lines total. Sub-steps:
+   - 6a. **`FLASH LOAD IMAGE slot, "file.bmp"`** (~90 lines, upstream FileIO.c:947). Missing prerequisite — our `cmd_flash` has ERASE/OVERWRITE/LIST but not LOAD IMAGE. Reuses our existing `BmpDecoder.c`. Output writes into `flash_target_contents` (RAM-backed on host/wasm, real flash on device). Host note: the `LOAD IMAGE` we already have (`cmd_LoadImage` in FileIO.c:984) is the *screen-blit* variant — decodes BMP and draws to the framebuffer. FLASH LOAD IMAGE is a different command that writes to a flash slot for later reuse. Don't conflate the two.
+   - 6b. **`TILEMAP` command family** (~500 lines, upstream Draw.c:15225+). 4-slot tilemap registry backed by a flash-resident tileset + heap-allocated `uint16_t` map grid. Subcommands: `CREATE / DESTROY / CLOSE / VIEW / VIEWX / VIEWY / SCROLL / DRAW / SET / ATTR`. Functions: `TILEMAP(id, COLS/ROWS/W/H/TILE/COLLISION/HIT, ...)`. Bridged — no VM opcodes. Uses RGB121 packed format (3 bits/pixel, 8 colors) for the tile atlas to match device rendering; no plan to widen to RGB565.
+   - 6c. **`SPRITE` command family** (~500 lines, upstream Draw.c:15013+). Lightweight pixel-positioned actors that share a TILEMAP's tileset. Subcommands: `CREATE / DESTROY / MOVE / SET / DRAW`. Functions: `SPRITE(id, X/Y/W/H/ST/A/COLLISION/OBJECT, ...)`. Collision-by-BBox against other sprites and against tilemap cells with attribute bits set. `MAX_SPRITES` cap (upstream: 32).
+   - Gate each sub-step independently behind the standard four checks. Feature branch: `catchup/tilemap-sprite`. One focused `host/tests/` test per sub-step, plus a demo game using sprites (probably a reworked ball+explosion for `pico_blocks.bas`) once all three are in.
+7. `Mandelbrot` command (if we want it — the bundled `mand.bas` already demonstrates the capability, this is the built-in form).
+8. `planet.c` / `Astro` — small, pure math.
+9. Individual drawing primitives: `Bezier`, `Star`, `Bitstream`, `Fill`.
+10. `Turtle` — self-contained new file, bulk port. Low priority unless someone asks.
+11. `re.c` regex swap — **partially DONE.** Imported `re.c` + `re.h` in TYPE/STRUCT Phase 15 (@commit `1a97b33`) for `STRUCT(FIND ... regex)`. Legacy `xregex.c` still handles `cmd_regex` / `fun_regex`. Full swap (delete xregex, migrate legacy callers, ~2000 lines saved) is opportunistic cleanup, not blocking anything.
 
 Gate at end of Phase B: same as Phase A. Tag `v6.02-core-parity`.
 
