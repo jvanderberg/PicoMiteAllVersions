@@ -1565,6 +1565,7 @@ void bc_vm_execute(BCVMState *vm) {
     /* ---- Helper macros ---- */
 #define DISPATCH() goto *dispatch_table[*vm->pc++]
 
+#define READ_U8()  (*vm->pc++)
 #define READ_U16() ({ uint16_t _v; memcpy(&_v, vm->pc, 2); vm->pc += 2; _v; })
 #define READ_I16() ({ int16_t  _v; memcpy(&_v, vm->pc, 2); vm->pc += 2; _v; })
 #define READ_U32() ({ uint32_t _v; memcpy(&_v, vm->pc, 4); vm->pc += 4; _v; })
@@ -1738,6 +1739,12 @@ void bc_vm_execute(BCVMState *vm) {
         [OP_STORE_STRUCT_FIELD_I] = &&op_store_struct_field_i,
         [OP_STORE_STRUCT_FIELD_F] = &&op_store_struct_field_f,
         [OP_STORE_STRUCT_FIELD_S] = &&op_store_struct_field_s,
+        [OP_LOAD_STRUCT_ELEM_I]   = &&op_load_struct_elem_i,
+        [OP_LOAD_STRUCT_ELEM_F]   = &&op_load_struct_elem_f,
+        [OP_LOAD_STRUCT_ELEM_S]   = &&op_load_struct_elem_s,
+        [OP_STORE_STRUCT_ELEM_I]  = &&op_store_struct_elem_i,
+        [OP_STORE_STRUCT_ELEM_F]  = &&op_store_struct_elem_f,
+        [OP_STORE_STRUCT_ELEM_S]  = &&op_store_struct_elem_s,
 
         /* Native string functions */
         [OP_STR_LEN]        = &&op_str_len,
@@ -3321,6 +3328,114 @@ op_store_struct_field_s: {
     Mstrcpy(base + offset, src);
     DISPATCH();
 }
+
+    /* ==================================================================
+     * TYPE / STRUCT — array element field access
+     *
+     * Pops ndim indices off the stack, uses vm->arrays[slot].dims[] to
+     * compute a linear offset (same convention as MMBasic: OPTION BASE is
+     * applied by the interpreter when dims[] are copied from g_vartbl, so
+     * incoming indices are already base-adjusted — we just multiply).
+     * Then reads/writes at base + linear * elem_size + offset.
+     *
+     * ELEM_LINEAR is a macro (not a helper fn) because POP_I is only in
+     * scope inside bc_vm_execute.  It leaves the linear element index in
+     * _linear; caller multiplies by elem_size.
+     * ================================================================== */
+
+#define ELEM_LINEAR(_slot, _ndim, _linear)                                    \
+    int64_t _linear##_idx[MAXDIM];                                            \
+    for (int _i = (_ndim) - 1; _i >= 0; _i--) _linear##_idx[_i] = POP_I();    \
+    int64_t _linear = _linear##_idx[0] - g_OptionBase;                        \
+    {                                                                         \
+        int64_t _j = 1;                                                       \
+        for (int _i = 1; _i < (_ndim); _i++) {                                \
+            _j *= (int64_t)(vm->arrays[_slot].dims[_i - 1] + 1 - g_OptionBase); \
+            _linear += (_linear##_idx[_i] - g_OptionBase) * _j;               \
+        }                                                                     \
+    }
+
+op_load_struct_elem_i: {
+    uint16_t slot      = READ_U16();
+    uint16_t offset    = READ_U16();
+    uint16_t elem_size = READ_U16();
+    uint8_t  ndim      = READ_U8();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    ELEM_LINEAR(slot, ndim, nbr);
+    int64_t v;
+    memcpy(&v, base + nbr * elem_size + offset, sizeof(v));
+    PUSH_I(v);
+    DISPATCH();
+}
+
+op_load_struct_elem_f: {
+    uint16_t slot      = READ_U16();
+    uint16_t offset    = READ_U16();
+    uint16_t elem_size = READ_U16();
+    uint8_t  ndim      = READ_U8();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    ELEM_LINEAR(slot, ndim, nbr);
+    MMFLOAT v;
+    memcpy(&v, base + nbr * elem_size + offset, sizeof(v));
+    PUSH_F(v);
+    DISPATCH();
+}
+
+op_load_struct_elem_s: {
+    uint16_t slot      = READ_U16();
+    uint16_t offset    = READ_U16();
+    uint16_t elem_size = READ_U16();
+    uint8_t  ndim      = READ_U8();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    ELEM_LINEAR(slot, ndim, nbr);
+    PUSH_S(base + nbr * elem_size + offset);
+    DISPATCH();
+}
+
+op_store_struct_elem_i: {
+    uint16_t slot      = READ_U16();
+    uint16_t offset    = READ_U16();
+    uint16_t elem_size = READ_U16();
+    uint8_t  ndim      = READ_U8();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    int64_t v = (vm->stack_types[vm->sp] == T_NBR) ? (int64_t)POP_F() : POP_I();
+    ELEM_LINEAR(slot, ndim, nbr);
+    memcpy(base + nbr * elem_size + offset, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_elem_f: {
+    uint16_t slot      = READ_U16();
+    uint16_t offset    = READ_U16();
+    uint16_t elem_size = READ_U16();
+    uint8_t  ndim      = READ_U8();
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    MMFLOAT v = (vm->stack_types[vm->sp] == T_INT) ? (MMFLOAT)POP_I() : POP_F();
+    ELEM_LINEAR(slot, ndim, nbr);
+    memcpy(base + nbr * elem_size + offset, &v, sizeof(v));
+    DISPATCH();
+}
+
+op_store_struct_elem_s: {
+    uint16_t slot       = READ_U16();
+    uint16_t offset     = READ_U16();
+    uint16_t elem_size  = READ_U16();
+    uint8_t  ndim       = READ_U8();
+    uint16_t maxstrlen  = READ_U16();   /* declared LENGTH of the member */
+    uint8_t *base = (uint8_t *)vm->arrays[slot].data;
+    if (!base) bc_vm_error(vm, "Struct variable not dimensioned");
+    uint8_t *src = POP_S();
+    ELEM_LINEAR(slot, ndim, nbr);
+    if (src[0] > maxstrlen) bc_vm_error(vm, "String too long");
+    Mstrcpy(base + nbr * elem_size + offset, src);
+    DISPATCH();
+}
+#undef ELEM_LINEAR
 
     /* ==================================================================
      * Native String Functions

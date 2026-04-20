@@ -107,29 +107,42 @@ static void sync_vm_to_mmbasic(BCVMState *vm) {
     }
 
     /* Sync struct variables — resolve by name once, alias val.s into
-     * vm->arrays[i].data so OP_LOAD/STORE_STRUCT_FIELD_* can reach the
-     * backing buffer.  Phase 1 only handles scalar struct vars; arrays of
-     * structs arrive with Phase 3 and will need a size-aware extension. */
+     * vm->arrays[i].data so OP_LOAD/STORE_STRUCT_FIELD_* and the array-
+     * element variants can reach the backing buffer.  For struct arrays we
+     * also copy g_vartbl's dims[] into vm->arrays[i].dims so the element
+     * opcodes can compute multi-dim linear indices without re-reading g_vartbl. */
     for (uint16_t i = 0; i < cs->slot_count; i++) {
         BCSlot *slot = &cs->slots[i];
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
         if (slot->type != T_STRUCT) continue;
 
-        unsigned char namebuf[MAXVARLEN + 2];
+        /* Direct scan over g_vartbl by name — findvar requires a matching
+         * subscript for arrays, which we don't have at this call site. */
+        int vi = -1;
         int nlen = strlen(slot->name);
-        memcpy(namebuf, slot->name, nlen);
-        namebuf[nlen] = 0;
-
-        if (!slot_map_initialized || slot_to_vartbl[i] < 0) {
-            void *vp = findvar(namebuf, V_FIND | V_NOFIND_NULL);
-            if (vp == NULL) continue;
-            slot_to_vartbl[i] = g_VarIndex;
+        for (int gv = 0; gv < MAXVARS; gv++) {
+            if (g_vartbl[gv].name[0] == 0) continue;
+            if ((g_vartbl[gv].type & T_STRUCT) == 0) continue;
+            if (strncasecmp((char *)g_vartbl[gv].name, slot->name, nlen) != 0) continue;
+            if (nlen < MAXVARLEN && g_vartbl[gv].name[nlen] != 0) continue;
+            vi = gv;
+            break;
         }
-        int vi = slot_to_vartbl[i];
+        if (vi < 0) continue;
+        slot_to_vartbl[i] = vi;
+
         struct s_vartbl *v = &g_vartbl[vi];
         if (v->val.s != NULL) {
             vm->arrays[i].data = (BCValue *)v->val.s;
             vm->arrays[i].data_external = 1;
+            if (slot->is_array && v->dims[0] != 0) {
+                int nd = 0;
+                for (int d = 0; d < MAXDIM && v->dims[d] != 0; d++) nd++;
+                vm->arrays[i].ndims = (uint8_t)nd;
+                for (int d = 0; d < MAXDIM; d++) {
+                    vm->arrays[i].dims[d] = v->dims[d];
+                }
+            }
         }
     }
 
@@ -276,24 +289,39 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
 
     /* Struct rebinding pass — resolve T_STRUCT slots by name (possibly for the
      * first time after cmd_dim allocates them) and cache val.s into
-     * vm->arrays[i].data so OP_LOAD/STORE_STRUCT_FIELD_* can reach the buffer
-     * without re-calling findvar on every access. */
+     * vm->arrays[i].data so the field-access opcodes can reach the buffer
+     * without re-calling findvar on every access.  Array dims also flow back
+     * so multi-dim element indexing can use vm->arrays[i].dims. */
     for (uint16_t i = 0; i < cs->slot_count; i++) {
         BCSlot *slot = &cs->slots[i];
         if (!slot->name[0] || !isnamestart((unsigned char)slot->name[0])) continue;
         if (slot->type != T_STRUCT) continue;
 
-        unsigned char namebuf[MAXVARLEN + 2];
+        int vi = -1;
         int nlen = strlen(slot->name);
-        memcpy(namebuf, slot->name, nlen);
-        namebuf[nlen] = 0;
+        for (int gv = 0; gv < MAXVARS; gv++) {
+            if (g_vartbl[gv].name[0] == 0) continue;
+            if ((g_vartbl[gv].type & T_STRUCT) == 0) continue;
+            if (strncasecmp((char *)g_vartbl[gv].name, slot->name, nlen) != 0) continue;
+            if (nlen < MAXVARLEN && g_vartbl[gv].name[nlen] != 0) continue;
+            vi = gv;
+            break;
+        }
+        if (vi < 0) continue;
+        slot_to_vartbl[i] = vi;
 
-        void *vp = findvar(namebuf, V_FIND | V_NOFIND_NULL);
-        if (vp == NULL) continue;
-        slot_to_vartbl[i] = g_VarIndex;
-
-        struct s_vartbl *v = &g_vartbl[slot_to_vartbl[i]];
+        struct s_vartbl *v = &g_vartbl[vi];
         if (v->val.s == NULL) continue;
+
+        if (slot->is_array && v->dims[0] != 0) {
+            int nd = 0;
+            for (int d = 0; d < MAXDIM && v->dims[d] != 0; d++) nd++;
+            vm->arrays[i].ndims = (uint8_t)nd;
+            for (int d = 0; d < MAXDIM; d++) {
+                vm->arrays[i].dims[d] = v->dims[d];
+            }
+        }
+
         if (vm->arrays[i].data == (BCValue *)v->val.s) continue;   // unchanged
         vm->arrays[i].data = (BCValue *)v->val.s;
         vm->arrays[i].data_external = 1;

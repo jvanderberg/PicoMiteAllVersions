@@ -2667,6 +2667,40 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
             j *= (g_vartbl[vindex].dims[i - 1] + 1 - g_OptionBase);
             nbr += (dim[i] - g_OptionBase) * j;
         }
+        // Struct array element: compute element_ptr = val.s + nbr * struct_size,
+        // then if the expression has a trailing `.member` apply the field offset
+        // and set g_StructMemberType/Offset/Size for the caller's type routing.
+        // Advancing `p` past the closing bracket is necessary because the array
+        // subscript was parsed via getargs which doesn't update our local p.
+        if (g_vartbl[vindex].type & T_STRUCT) {
+            int sidx = g_vartbl[vindex].size;
+            if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL)
+                error("Invalid structure type");
+            int struct_size = g_structtbl[sidx]->total_size;
+            unsigned char *elem_ptr = g_vartbl[vindex].val.s + (nbr * struct_size);
+            unsigned char *after = getclosebracket(p) + 1;
+            skipspace(after);
+            if (*after == '.') {
+                after++;
+                skipspace(after);
+                unsigned char mname[MAXVARLEN + 1];
+                int mlen = 0;
+                while (isnamechar(*after) && *after != '.' && *after != '(' && mlen < MAXVARLEN) {
+                    mname[mlen++] = mytoupper(*after++);
+                }
+                mname[mlen] = 0;
+                int m_type = 0, m_offset = 0, m_size = 0;
+                short m_dims[MAXDIM];
+                int midx = FindStructMember(sidx, mname, &m_type, &m_offset, &m_size, m_dims);
+                if (midx < 0) error("Unknown structure member");
+                if (m_type == T_STRUCT) error("Nested struct member not yet supported");
+                g_StructMemberType = m_type;
+                g_StructMemberOffset = m_offset;
+                g_StructMemberSize = m_size;
+                return elem_ptr + m_offset;
+            }
+            return elem_ptr;   // whole-struct element (caller handles T_STRUCT)
+        }
         // finally return a pointer to the value
         if(g_vartbl[vindex].type & T_NBR)
             return g_vartbl[vindex].val.s + (nbr * sizeof(MMFLOAT));
@@ -2825,7 +2859,15 @@ void MIPS16 __not_in_flash_func(*findvar)(unsigned char *p, int action) {
 
 
 	// Now, grab the memory
-    if(vtype & (T_NBR | T_INT)) {
+    if(vtype & T_STRUCT) {
+        // Array of structs: nbr * struct_total_size bytes, and remember the
+        // struct-type index in .size for the element-access path.
+        if (g_StructArg < 0 || g_StructArg >= g_structcnt || g_structtbl[g_StructArg] == NULL)
+            error("Invalid structure type");
+        tmp = nbr * g_structtbl[g_StructArg]->total_size;
+        size = g_StructArg;                                   // stash struct-type index in .size (set below)
+        mptr = GetMemory(tmp);
+    } else if(vtype & (T_NBR | T_INT)) {
     	tmp=(nbr * sizeof(MMFLOAT));
         if(tmp<=256)mptr = GetMemory(STRINGSIZE);
         else mptr = GetMemory(tmp);
@@ -3743,6 +3785,18 @@ unsigned char MIPS16 __not_in_flash_func(*skipvar)(unsigned char *p, int noerror
             p++;
         }
         p++;        // step over the closing bracket
+    }
+    // Struct array element: `a(i).field` has a trailing member access that
+    // skipvar must consume so the caller's expression parser advances past it.
+    {
+        unsigned char *ap = p;
+        skipspace(ap);
+        if (*ap == '.') {
+            ap++;
+            while (isnamechar(*ap)) ap++;
+            if (*ap == '$' || *ap == '%' || *ap == '!') ap++;
+            p = ap;
+        }
     }
     return p;
 }

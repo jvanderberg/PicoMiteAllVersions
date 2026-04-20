@@ -1613,6 +1613,60 @@ static uint8_t source_parse_primary(BCSourceFrontend *fe, BCCompiler *cs, const 
             int is_local = 0;
             uint16_t slot = source_resolve_var(cs, name, name_len, type, 1, &is_local);
             if (!is_local && slot != 0xFFFF) cs->slots[slot].is_array = 1;
+
+            /* Struct array element field access — `points(i).x` — compile-time
+             * resolve the member offset + size from g_structtbl and emit the
+             * element-field opcode.  Indices were left on the stack by
+             * source_parse_array_indices, which is exactly what the opcode
+             * expects. */
+            if (!is_local && slot != 0xFFFF && cs->slots[slot].type == T_STRUCT) {
+                const char *after_idx = p;
+                source_skip_space(&after_idx);
+                if (*after_idx == '.') {
+                    after_idx++;
+                    source_skip_space(&after_idx);
+                    char mname[MAXVARLEN + 1];
+                    int mlen = 0;
+                    while (isnamechar((unsigned char)*after_idx) && *after_idx != '.' && *after_idx != '(' && mlen < MAXVARLEN) {
+                        mname[mlen++] = *after_idx++;
+                    }
+                    if (*after_idx == '$' || *after_idx == '%' || *after_idx == '!') after_idx++;
+                    mname[mlen] = 0;
+                    int sidx = cs->slots[slot].struct_idx;
+                    if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
+                        bc_set_error(cs, "Invalid struct type on slot");
+                        *pp = p; return 0;
+                    }
+                    int m_type = 0, m_offset = 0, m_size = 0;
+                    short m_dims[MAXDIM];
+                    int midx = FindStructMember(sidx, (unsigned char *)mname,
+                                                &m_type, &m_offset, &m_size, m_dims);
+                    if (midx < 0) {
+                        bc_set_error(cs, "Unknown struct member: %s", mname);
+                        *pp = p; return 0;
+                    }
+                    if (m_type == T_STRUCT) {
+                        bc_set_error(cs, "Nested struct member not yet supported");
+                        *pp = p; return 0;
+                    }
+                    int elem_size = g_structtbl[sidx]->total_size;
+                    uint8_t op = (m_type == T_INT) ? OP_LOAD_STRUCT_ELEM_I :
+                                 (m_type == T_NBR) ? OP_LOAD_STRUCT_ELEM_F :
+                                                     OP_LOAD_STRUCT_ELEM_S;
+                    bc_emit_byte(cs, op);
+                    bc_emit_u16(cs, slot);
+                    bc_emit_u16(cs, (uint16_t)m_offset);
+                    bc_emit_u16(cs, (uint16_t)elem_size);
+                    bc_emit_byte(cs, (uint8_t)ndim);
+                    *pp = after_idx;
+                    return (uint8_t)m_type;
+                }
+                /* Whole-element read (Phase 5) — not supported yet. */
+                bc_set_error(cs, "Whole-struct element read not yet supported");
+                *pp = p;
+                return 0;
+            }
+
             source_emit_load_array(cs, slot, type, is_local, ndim);
             *pp = p;
             return type;
@@ -2081,6 +2135,69 @@ static void source_compile_assignment(BCSourceFrontend *fe, BCCompiler *cs, cons
         }
         if (!is_local && slot != 0xFFFF) cs->slots[slot].is_array = 1;
         source_skip_space(&p);
+
+        /* Struct array element field store — `points(i).x = ...`.  Same
+         * compile-time resolution as the load side; the stored value is
+         * evaluated after the indices, and the VM pops value-then-indices. */
+        if (!is_local && slot != 0xFFFF && cs->slots[slot].type == T_STRUCT && *p == '.') {
+            p++;
+            source_skip_space(&p);
+            char mname[MAXVARLEN + 1];
+            int mlen = 0;
+            while (isnamechar((unsigned char)*p) && *p != '.' && *p != '(' && mlen < MAXVARLEN) {
+                mname[mlen++] = *p++;
+            }
+            if (*p == '$' || *p == '%' || *p == '!') p++;
+            mname[mlen] = 0;
+            int sidx = cs->slots[slot].struct_idx;
+            if (sidx < 0 || sidx >= g_structcnt || g_structtbl[sidx] == NULL) {
+                bc_set_error(cs, "Invalid struct type on slot");
+                *pp = p; return;
+            }
+            int m_type = 0, m_offset = 0, m_size = 0;
+            short m_dims[MAXDIM];
+            int midx = FindStructMember(sidx, (unsigned char *)mname,
+                                        &m_type, &m_offset, &m_size, m_dims);
+            if (midx < 0) {
+                bc_set_error(cs, "Unknown struct member: %s", mname);
+                *pp = p; return;
+            }
+            if (m_type == T_STRUCT) {
+                bc_set_error(cs, "Nested struct member not yet supported");
+                *pp = p; return;
+            }
+            source_skip_space(&p);
+            if (*p != '=') {
+                bc_set_error(cs, "Expected '='");
+                *pp = p; return;
+            }
+            p++;
+            uint8_t etype = source_parse_expression(fe, cs, &p);
+            if (cs->has_error) { *pp = p; return; }
+            if ((m_type == T_STR) && !(etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign numeric expression to string member");
+                *pp = p; return;
+            }
+            if ((m_type != T_STR) && (etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign string expression to numeric member");
+                *pp = p; return;
+            }
+            if ((m_type == T_INT) && (etype & T_NBR)) bc_emit_byte(cs, OP_CVT_F2I);
+            else if ((m_type == T_NBR) && (etype & T_INT)) bc_emit_byte(cs, OP_CVT_I2F);
+            int elem_size = g_structtbl[sidx]->total_size;
+            uint8_t op = (m_type == T_INT) ? OP_STORE_STRUCT_ELEM_I :
+                         (m_type == T_NBR) ? OP_STORE_STRUCT_ELEM_F :
+                                             OP_STORE_STRUCT_ELEM_S;
+            bc_emit_byte(cs, op);
+            bc_emit_u16(cs, slot);
+            bc_emit_u16(cs, (uint16_t)m_offset);
+            bc_emit_u16(cs, (uint16_t)elem_size);
+            bc_emit_byte(cs, (uint8_t)ndim);
+            if (op == OP_STORE_STRUCT_ELEM_S) bc_emit_u16(cs, (uint16_t)m_size);
+            *pp = p;
+            return;
+        }
+
         if (*p != '=') {
             bc_set_error(cs, "Expected '='");
             *pp = p;
@@ -2679,6 +2796,24 @@ static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char 
                 uint8_t suffix_type = 0;
                 if (!source_parse_varname(&walk, name, &name_len, &suffix_type)) break;
                 source_skip_space(&walk);
+                // Skip over any array subscript `(...)` before looking for AS
+                // so `DIM points(5) AS Point` registers the slot correctly.
+                int is_array = 0;
+                int arr_ndim = 0;
+                if (*walk == '(') {
+                    is_array = 1;
+                    arr_ndim = 1;
+                    walk++;
+                    int depth = 1;
+                    while (*walk && depth > 0) {
+                        if (*walk == '(') depth++;
+                        else if (*walk == ')') { depth--; if (!depth) break; }
+                        else if (*walk == ',' && depth == 1) arr_ndim++;
+                        walk++;
+                    }
+                    if (*walk == ')') walk++;
+                    source_skip_space(&walk);
+                }
                 int sidx = -1;
                 uint8_t as_type = source_parse_as_type_clause_ex(&walk, &sidx);
                 uint8_t vtype = suffix_type ? suffix_type :
@@ -2689,6 +2824,8 @@ static void source_compile_dim(BCSourceFrontend *fe, BCCompiler *cs, const char 
                     if (slot != 0xFFFF) {
                         cs->slots[slot].type = T_STRUCT;
                         cs->slots[slot].struct_idx = (int16_t)sidx;
+                        cs->slots[slot].is_array = (uint8_t)is_array;
+                        cs->slots[slot].ndims = (uint8_t)arr_ndim;
                     }
                 }
                 while (*walk && *walk != ',' && *walk != '\n') walk++;

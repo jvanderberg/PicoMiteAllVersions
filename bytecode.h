@@ -159,6 +159,17 @@ typedef enum {
     OP_STORE_STRUCT_FIELD_F = 0x97,  /* slot:16, offset:16 — pop float, store */
     OP_STORE_STRUCT_FIELD_S = 0x98,  /* slot:16, offset:16, size:16 — pop string, store */
 
+    /* Struct-array element field access — pops ndim indices off the stack, uses
+     * vm->arrays[slot].dims[] for multi-dim linear index calc, then addresses
+     * base + linear_index * elem_size + offset.  elem_size is baked in at compile
+     * time from g_structtbl[struct_idx]->total_size. */
+    OP_LOAD_STRUCT_ELEM_I   = 0x99,  /* slot:16, offset:16, elem_size:16, ndim:8 */
+    OP_LOAD_STRUCT_ELEM_F   = 0x9A,  /* same layout as above */
+    OP_LOAD_STRUCT_ELEM_S   = 0x9B,
+    OP_STORE_STRUCT_ELEM_I  = 0x9C,  /* slot:16, offset:16, elem_size:16, ndim:8 */
+    OP_STORE_STRUCT_ELEM_F  = 0x9D,
+    OP_STORE_STRUCT_ELEM_S  = 0x9E,  /* slot:16, offset:16, elem_size:16, ndim:8, maxstrlen:16 */
+
     /* Native string functions (compiled arguments) */
     OP_STR_LEN      = 0xA0,  /* pop str, push int len */
     OP_STR_LEFT     = 0xA1,  /* pop int n, pop str, push str LEFT$(s,n) */
