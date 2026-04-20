@@ -645,6 +645,63 @@ void fun_atan2(void) {
     targ = T_NBR;
 }
 
+// TRIM$(source$ [, mask$ [, "L"|"R"|"B"]])
+// Ported from UKTailwind/PicoMiteAllVersions Functions.c @ 04f81d0 (upstream fun_trim / trim / is_in_mask).
+// Removes leading/trailing characters that appear in `mask` (default " "). where = "L" (default), "R", or "B".
+static int trim_is_in_mask(char c, const char *mask) {
+    while (*mask) {
+        if (*mask == c) return 1;
+        mask++;
+    }
+    return 0;
+}
+
+static char *trim_string(char *source, char *mask, char where) {
+    char *result = GetTempMemory(STRINGSIZE);
+    if (!source || !mask || !result) {
+        if (result) result[0] = '\0';
+        return result;
+    }
+    int len = strlen(source);
+    int start = 0;
+    int end = len - 1;
+    if (where == 'L' || where == 'B') {
+        while (start <= end && trim_is_in_mask(source[start], mask)) start++;
+    }
+    if (where == 'R' || where == 'B') {
+        while (end >= start && trim_is_in_mask(source[end], mask)) end--;
+    }
+    int result_len = end - start + 1;
+    if (result_len > 0 && result_len < STRINGSIZE) {
+        strncpy(result, source + start, result_len);
+        result[result_len] = '\0';
+    } else {
+        result[0] = '\0';
+    }
+    return result;
+}
+
+void fun_trim(void) {
+    char defaultmask[2] = " ";
+    char *mask = NULL;
+    char where = 'L';
+    getargs(&ep, 5, (unsigned char *)",");
+    char *instring = (char *)getCstring(argv[0]);
+    if (argc >= 3 && *argv[2]) mask = (char *)getCstring(argv[2]);
+    else mask = defaultmask;
+    if (argc == 5) {
+        if (checkstring(argv[4], (unsigned char *)"L")) where = 'L';
+        else if (checkstring(argv[4], (unsigned char *)"R")) where = 'R';
+        else if (checkstring(argv[4], (unsigned char *)"B")) where = 'B';
+        else {
+            where = (char)*getCstring(argv[4]);
+            if (!(where == 'L' || where == 'R' || where == 'B')) error("Syntax");
+        }
+    }
+    targ = T_STR;
+    sret = CtoM((unsigned char *)trim_string(instring, mask, where));
+}
+
 // convert a number into a one character string
 // s$ = CHR$(nbr)
 void fun_chr(void) {

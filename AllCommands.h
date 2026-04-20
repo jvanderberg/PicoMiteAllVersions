@@ -288,6 +288,7 @@ void fun_str(void);
 void fun_string(void);
 void fun_tab(void);
 void fun_tan(void);
+void fun_trim(void);
 void fun_ucase(void);
 void fun_val(void);
 void fun_eval(void);
@@ -643,6 +644,7 @@ void fun_map(void);
 	{ (unsigned char *)"String$(",           T_FUN  | T_STR,			0, fun_string           },
 	{ (unsigned char *)"Tab(",		T_FUN  | T_STR,                 0, fun_tab,		},
 	{ (unsigned char *)"Tan(",		T_FUN  | T_NBR,			0, fun_tan		},
+	{ (unsigned char *)"Trim$(",		T_FUN  | T_STR,			0, fun_trim		},
 	{ (unsigned char *)"UCase$(",            T_FUN  | T_STR,			0, fun_ucase            },
 	{ (unsigned char *)"Val(",		T_FUN  | T_NBR | T_INT,		0, fun_val		},
 	{ (unsigned char *)"Eval(",		T_FUN  | T_NBR | T_INT | T_STR,	0, fun_eval		},
