@@ -256,6 +256,15 @@ extern void blitmerge (int x0, int y0, int w, int h, uint8_t colour);
 extern bool mergerunning;
 extern uint32_t mergetimer;
 extern int RGB121map[16];
+
+/* RGB121 blit primitives — see RGB121.c for the destination-format note. */
+extern int HResD, VResD, HResS, VResS;
+void blit121(uint8_t *source, uint8_t *destination,
+             int xsource, int ysource, int width, int height,
+             int xdestination, int ydestination, int missingcolour);
+void blit121_self(uint8_t *framebuffer, int xsource, int ysource,
+                  int width, int height,
+                  int xdestination, int ydestination);
 #endif
 #endif
 /*  @endcond */
