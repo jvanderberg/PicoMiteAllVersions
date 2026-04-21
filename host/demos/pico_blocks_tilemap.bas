@@ -207,62 +207,56 @@ SUB CreateAtlas()
           ENDIF
         ENDIF
       ELSE
-        ' Frame 0..5. Cheap pseudo-noise per pixel (integer hash) so
-        ' the boundary between colour bands is ragged. The wobble is
-        ' deterministic per (dx,dy), giving each frame a stable but
-        ' irregular shape — explosions don't shimmer between frames.
+        ' Frames cycle yellow -> orange -> red with bold colour bands
+        ' that fill most of the tile. Tiny white hotspot only on frame 0
+        ' — anything more and the white dominates perception at 50 FPS.
+        ' wobble adds deterministic per-pixel noise so band boundaries
+        ' are ragged instead of clean disks.
         frame = tile - 1
         wobble = ((dx*7 + dy*11 + frame*5) AND 7) - 3   ' -3..+4
         r2 = d2 + wobble
         SELECT CASE frame
           CASE 0
-            ' Ignition: bright white core, thin yellow halo.
-            IF d2 <= 4 THEN
-              bb = &HFF : gg = &HFF : rr = &HFF
-            ELSE IF r2 <= 9 THEN
-              bb = 0 : gg = &HFF : rr = &HFF
-            ENDIF
-          CASE 1
-            ' Expanding fireball: white -> yellow -> orange.
-            IF r2 <= 4 THEN
-              bb = &HFF : gg = &HFF : rr = &HFF
-            ELSE IF r2 <= 16 THEN
-              bb = 0 : gg = &HFF : rr = &HFF
-            ELSE IF r2 <= 25 THEN
-              bb = 0 : gg = &H40 : rr = &HFF
-            ENDIF
-          CASE 2
-            ' Peak: thin white core, big yellow body, orange edge,
-            ' red rim — the most "explosion-y" frame.
-            IF r2 <= 4 THEN
+            ' Ignition: white hotspot core, yellow body.
+            IF d2 <= 1 THEN
               bb = &HFF : gg = &HFF : rr = &HFF
             ELSE IF r2 <= 25 THEN
-              bb = 0 : gg = &HFF : rr = &HFF
-            ELSE IF r2 <= 49 THEN
-              bb = 0 : gg = &H40 : rr = &HFF
-            ELSE IF r2 <= 64 THEN
-              bb = 0 : gg = 0 : rr = &HFF
-            ENDIF
-          CASE 3
-            ' Cooling: yellow core, orange band, ragged red shell.
-            IF r2 <= 9 THEN
               bb = 0 : gg = &HFF : rr = &HFF
             ELSE IF r2 <= 36 THEN
               bb = 0 : gg = &H40 : rr = &HFF
+            ENDIF
+          CASE 1
+            ' Growing: yellow body, orange edge.
+            IF r2 <= 36 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
             ELSE IF r2 <= 64 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ENDIF
+          CASE 2
+            ' Peak: yellow center, big orange body, red shell.
+            IF r2 <= 16 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 49 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ELSE IF r2 <= 81 THEN
+              bb = 0 : gg = 0 : rr = &HFF
+            ENDIF
+          CASE 3
+            ' Cooling: orange center, red body.
+            IF r2 <= 25 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ELSE IF r2 <= 81 THEN
               bb = 0 : gg = 0 : rr = &HFF
             ENDIF
           CASE 4
-            ' Fading: only orange + red, hollowed-out centre.
-            IF r2 > 4 AND r2 <= 25 THEN
-              bb = 0 : gg = &H40 : rr = &HFF
-            ELSE IF r2 > 25 AND r2 <= 64 THEN
+            ' Fading: red ring, hollow centre.
+            IF r2 > 9 AND r2 <= 64 THEN
               bb = 0 : gg = 0 : rr = &HFF
             ENDIF
           CASE 5
             ' Sparks: scattered red pixels, no body.
             n = (dx*13 + dy*23) AND 31
-            IF n < 3 AND d2 <= 64 THEN
+            IF n < 4 AND d2 <= 64 THEN
               bb = 0 : gg = 0 : rr = &HFF
             ENDIF
         END SELECT
@@ -593,7 +587,7 @@ CreateAtlas
 CreatePaddleAtlas
 FLASH LOAD IMAGE 1, "atlas.bmp", O
 FLASH LOAD IMAGE 2, "paddle.bmp", O
-TILEMAP CREATE tm_dummymap, 1, 1, 16, 16, 4, 1, 1
+TILEMAP CREATE tm_dummymap, 1, 1, 16, 16, 7, 1, 1
 TILEMAP CREATE tm_dummymap, 2, 2, pw%, ph%, 1, 1, 1
 TILEMAP SPRITE CREATE TM_BALL_SPRITE%, 1, TM_BALL_TILE%, 0, 0
 TILEMAP SPRITE CREATE TM_PAD_SPRITE%, 2, 1, INT(px!), INT(py!)
