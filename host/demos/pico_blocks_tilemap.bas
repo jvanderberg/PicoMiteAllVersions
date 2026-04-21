@@ -137,35 +137,42 @@ DIM INTEGER prevExpX%, prevExpY%, prevExpSize%, expCleanup%
 
 ' ---- TILEMAP SPRITE atlases ----
 ' Atlas A (atlas.bmp -> flash slot 1, tilemap 1):
-'   64x16 BMP, four 16x16 tiles laid out left-to-right.
+'   112x16 BMP, seven 16x16 tiles laid out left-to-right.
 '     tile 1 = ball (red disk + white highlight)
-'     tile 2 = explosion frame 0 (small star)
-'     tile 3 = explosion frame 1 (medium star)
-'     tile 4 = explosion frame 2 (large star)
+'     tiles 2..7 = explosion frames 0..5 — white core + yellow flash
+'                  -> orange burst -> red fade -> sparse red sparks.
+'                  Each frame uses a per-pixel hash wobble for ragged,
+'                  irregular borders rather than a clean disk.
 ' Atlas B (paddle.bmp -> flash slot 2, tilemap 2):
 '   pw% x ph% BMP, one tile = solid green paddle with white
 '   top + left highlight stroke baked in (matches the original
 '   Draw3DHighlight look).
 '
 ' Sprites:
-'   1 = ball     (tilemap 1, tile 1)
-'   2 = paddle   (tilemap 2, tile 1)
-'   3 = explosion (tilemap 1, tile 2/3/4 cycled per frame)
+'   1 = ball      (tilemap 1, tile 1)
+'   2 = paddle    (tilemap 2, tile 1)
+'   3 = explosion (tilemap 1, tile 2..7 cycled per frame)
 CONST TM_BALL_TILE% = 1
-CONST TM_EXP_S_TILE% = 2
-CONST TM_EXP_M_TILE% = 3
-CONST TM_EXP_L_TILE% = 4
+CONST TM_EXP_FIRST_TILE% = 2
+CONST TM_EXP_FRAMES% = 6
 CONST TM_BALL_SPRITE% = 1
 CONST TM_PAD_SPRITE% = 2
 CONST TM_EXP_SPRITE% = 3
 
 SUB CreateAtlas()
-  ' 64x16 atlas — write a BMP header for those dimensions, then walk
-  ' the 16-row x 64-col pixel grid (BMP rows are bottom-up).
+  ' 112x16 atlas: tile 1 = ball, tiles 2..7 = 6 explosion frames.
+  ' BMP rows are bottom-up; BMP pixels are BGR. Each per-pixel cell
+  ' picks a colour from {transparent / red / orange / yellow / white}
+  ' based on a frame-specific radius band, perturbed by a cheap
+  ' integer hash wobble that makes the border ragged instead of a
+  ' clean disk. Last two frames switch to sparse spark patterns so
+  ' the explosion fades out instead of fully overlapping the next
+  ' game frame.
   LOCAL INTEGER fnbr = 1
-  LOCAL INTEGER atlas_w = 64
+  LOCAL INTEGER atlas_w = 112
   LOCAL INTEGER atlas_h = 16
-  LOCAL INTEGER fy, x, tile, tx, dx, dy, d2, bb, gg, rr, frame, esz, eoff
+  LOCAL INTEGER fy, x, tile, tx, dx, dy, d2
+  LOCAL INTEGER bb, gg, rr, frame, wobble, n, r2
   OPEN "atlas.bmp" FOR OUTPUT AS #fnbr
   PRINT #fnbr, "BM";
   PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
@@ -184,7 +191,7 @@ SUB CreateAtlas()
   PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
   FOR fy = atlas_h - 1 TO 0 STEP -1
     FOR x = 0 TO atlas_w - 1
-      tile = x \ 16        ' 0=ball, 1/2/3 = explosion frames
+      tile = x \ 16        ' 0=ball, 1..6 = explosion frames
       tx = x AND 15
       dx = tx - 8
       dy = fy - 8
@@ -200,30 +207,65 @@ SUB CreateAtlas()
           ENDIF
         ENDIF
       ELSE
-        ' Explosion: orange star pattern, growing per frame
-        frame = tile - 1                ' 0..2
-        esz = (frame + 1) * 2 + 2       ' radius 4 / 6 / 8
-        eoff = esz * 0.7
-        ' 1) Filled disk
-        IF d2 <= esz*esz THEN
-          bb = 0 : gg = &H80 : rr = &HFF
-        ENDIF
-        ' 2) Cross arms (always)
-        IF dy = 0 AND dx >= -esz AND dx <= esz THEN
-          bb = 0 : gg = &H80 : rr = &HFF
-        ENDIF
-        IF dx = 0 AND dy >= -esz AND dy <= esz THEN
-          bb = 0 : gg = &H80 : rr = &HFF
-        ENDIF
-        ' 3) Diagonals on frames > 0
-        IF frame > 0 THEN
-          IF dx = dy AND dx >= -eoff AND dx <= eoff THEN
-            bb = 0 : gg = &HFF : rr = &HFF
-          ENDIF
-          IF dx = -dy AND dx >= -eoff AND dx <= eoff THEN
-            bb = 0 : gg = &HFF : rr = &HFF
-          ENDIF
-        ENDIF
+        ' Frame 0..5. Cheap pseudo-noise per pixel (integer hash) so
+        ' the boundary between colour bands is ragged. The wobble is
+        ' deterministic per (dx,dy), giving each frame a stable but
+        ' irregular shape — explosions don't shimmer between frames.
+        frame = tile - 1
+        wobble = ((dx*7 + dy*11 + frame*5) AND 7) - 3   ' -3..+4
+        r2 = d2 + wobble
+        SELECT CASE frame
+          CASE 0
+            ' Ignition: bright white core, thin yellow halo.
+            IF d2 <= 4 THEN
+              bb = &HFF : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 9 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
+            ENDIF
+          CASE 1
+            ' Expanding fireball: white -> yellow -> orange.
+            IF r2 <= 4 THEN
+              bb = &HFF : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 16 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 25 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ENDIF
+          CASE 2
+            ' Peak: thin white core, big yellow body, orange edge,
+            ' red rim — the most "explosion-y" frame.
+            IF r2 <= 4 THEN
+              bb = &HFF : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 25 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 49 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ELSE IF r2 <= 64 THEN
+              bb = 0 : gg = 0 : rr = &HFF
+            ENDIF
+          CASE 3
+            ' Cooling: yellow core, orange band, ragged red shell.
+            IF r2 <= 9 THEN
+              bb = 0 : gg = &HFF : rr = &HFF
+            ELSE IF r2 <= 36 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ELSE IF r2 <= 64 THEN
+              bb = 0 : gg = 0 : rr = &HFF
+            ENDIF
+          CASE 4
+            ' Fading: only orange + red, hollowed-out centre.
+            IF r2 > 4 AND r2 <= 25 THEN
+              bb = 0 : gg = &H40 : rr = &HFF
+            ELSE IF r2 > 25 AND r2 <= 64 THEN
+              bb = 0 : gg = 0 : rr = &HFF
+            ENDIF
+          CASE 5
+            ' Sparks: scattered red pixels, no body.
+            n = (dx*13 + dy*23) AND 31
+            IF n < 3 AND d2 <= 64 THEN
+              bb = 0 : gg = 0 : rr = &HFF
+            ENDIF
+        END SELECT
       ENDIF
       PRINT #fnbr, CHR$(bb);CHR$(gg);CHR$(rr);
     NEXT
@@ -366,21 +408,17 @@ SUB TriggerExplosion(x%, y%, w%, h%, blockColor%)
   explosionY% = y% + h%/2
   explosionFrame% = 0
   explosionColor% = blockColor%
-  TILEMAP SPRITE CREATE TM_EXP_SPRITE%, 1, TM_EXP_S_TILE%, explosionX% - 8, explosionY% - 8
+  TILEMAP SPRITE CREATE TM_EXP_SPRITE%, 1, TM_EXP_FIRST_TILE%, explosionX% - 8, explosionY% - 8
 END SUB
 
 SUB DrawExplosion()
-  ' Cycle the sprite's tile through the three explosion frames; once
-  ' past the last frame, destroy the sprite so SPRITE DRAW stops
-  ' painting it.
+  ' Cycle the sprite's tile through TM_EXP_FRAMES% explosion frames,
+  ' then destroy the sprite. The atlas's last frame is sparse-spark
+  ' only so the trailing frame fades out instead of cutting hard.
   IF explosionActive% = 0 THEN EXIT SUB
-  SELECT CASE explosionFrame%
-    CASE 0: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_S_TILE%
-    CASE 1: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_M_TILE%
-    CASE 2: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_L_TILE%
-  END SELECT
+  TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_FIRST_TILE% + explosionFrame%
   explosionFrame% = explosionFrame% + 1
-  IF explosionFrame% > 2 THEN
+  IF explosionFrame% >= TM_EXP_FRAMES% THEN
     TILEMAP SPRITE DESTROY TM_EXP_SPRITE%
     explosionActive% = 0
     expCleanup% = 2
