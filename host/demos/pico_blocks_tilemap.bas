@@ -2,9 +2,13 @@
 ' PicoCalc Blocks Game (FASTGFX + TILEMAP SPRITE version)
 ' - Double-buffered with automatic scanline diffing
 ' - DMA transfers to SPI display on core1
-' - Ball rendered as a TILEMAP SPRITE from a baked atlas
-'   (atlas authored on first boot into B:/atlas.bmp, then
-'    loaded via FLASH LOAD IMAGE into flash slot 1).
+' - Ball, explosion, and paddle rendered as TILEMAP SPRITEs
+'   from two baked atlases:
+'     atlas.bmp   -> 64x16 (4 tiles), flash slot 1, tilemap 1
+'                    tile 1 = ball, 2/3/4 = explosion frames
+'     paddle.bmp  -> pw% x ph% (1 tile), flash slot 2, tilemap 2
+'   Both atlases authored at boot from BASIC; one TILEMAP SPRITE
+'   DRAW per frame paints all three sprites (ball, paddle, explosion).
 ' ==========================================
 OPTION EXPLICIT
 
@@ -131,55 +135,146 @@ DIM INTEGER prevPadX%
 DIM INTEGER prevBallLaunched%
 DIM INTEGER prevExpX%, prevExpY%, prevExpSize%, expCleanup%
 
-' ---- TILEMAP SPRITE atlas ----
-' Atlas layout: 1 row × 1 tile × 16×16 px. Tile 1 is a red disk with
-' a one-pixel white highlight near the upper-left, transparent corners
-' (BLACK/RGB121-nibble 0). Authored by CreateAtlas() on first boot,
-' then FLASH LOAD IMAGE 1 baked into flash slot 1 and TILEMAP CREATE 1
-' references it.
+' ---- TILEMAP SPRITE atlases ----
+' Atlas A (atlas.bmp -> flash slot 1, tilemap 1):
+'   64x16 BMP, four 16x16 tiles laid out left-to-right.
+'     tile 1 = ball (red disk + white highlight)
+'     tile 2 = explosion frame 0 (small star)
+'     tile 3 = explosion frame 1 (medium star)
+'     tile 4 = explosion frame 2 (large star)
+' Atlas B (paddle.bmp -> flash slot 2, tilemap 2):
+'   pw% x ph% BMP, one tile = solid green paddle with white
+'   top + left highlight stroke baked in (matches the original
+'   Draw3DHighlight look).
+'
+' Sprites:
+'   1 = ball     (tilemap 1, tile 1)
+'   2 = paddle   (tilemap 2, tile 1)
+'   3 = explosion (tilemap 1, tile 2/3/4 cycled per frame)
 CONST TM_BALL_TILE% = 1
+CONST TM_EXP_S_TILE% = 2
+CONST TM_EXP_M_TILE% = 3
+CONST TM_EXP_L_TILE% = 4
 CONST TM_BALL_SPRITE% = 1
+CONST TM_PAD_SPRITE% = 2
+CONST TM_EXP_SPRITE% = 3
 
 SUB CreateAtlas()
+  ' 64x16 atlas — write a BMP header for those dimensions, then walk
+  ' the 16-row x 64-col pixel grid (BMP rows are bottom-up).
   LOCAL INTEGER fnbr = 1
-  LOCAL INTEGER atlas_w = 16
+  LOCAL INTEGER atlas_w = 64
   LOCAL INTEGER atlas_h = 16
-  LOCAL INTEGER fy, x, dx, dy, d2, bb, gg, rr
+  LOCAL INTEGER fy, x, tile, tx, dx, dy, d2, bb, gg, rr, frame, esz, eoff
   OPEN "atlas.bmp" FOR OUTPUT AS #fnbr
-  ' --- 14-byte BITMAPFILEHEADER ---
   PRINT #fnbr, "BM";
-  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);   ' bfSize (ignored)
-  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);   ' bfReserved
-  PRINT #fnbr, CHR$(54);CHR$(0);CHR$(0);CHR$(0);  ' bfOffBits = 54
-  ' --- 40-byte BITMAPINFOHEADER ---
-  PRINT #fnbr, CHR$(40);CHR$(0);CHR$(0);CHR$(0);  ' biSize
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(54);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(40);CHR$(0);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(atlas_w);CHR$(0);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(atlas_h);CHR$(0);CHR$(0);CHR$(0);
-  PRINT #fnbr, CHR$(1);CHR$(0);                   ' planes
-  PRINT #fnbr, CHR$(24);CHR$(0);                  ' bpp
-  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);   ' compression
-  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);   ' biSizeImage (ignored)
+  PRINT #fnbr, CHR$(1);CHR$(0);
+  PRINT #fnbr, CHR$(24);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(&H13);CHR$(&H0B);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(&H13);CHR$(&H0B);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
   PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
-  ' --- Pixel data (BMP rows are bottom-up) ---
-  ' Disk centred at (8,8) with radius 7. Highlight at (6,6).
   FOR fy = atlas_h - 1 TO 0 STEP -1
     FOR x = 0 TO atlas_w - 1
-      dx = x - 8
+      tile = x \ 16        ' 0=ball, 1/2/3 = explosion frames
+      tx = x AND 15
+      dx = tx - 8
       dy = fy - 8
       d2 = dx*dx + dy*dy
-      IF d2 <= 49 THEN
-        IF dx = -2 AND dy = -2 THEN
-          bb = &HFF : gg = &HFF : rr = &HFF      ' Highlight (white)
-        ELSE
-          bb = 0    : gg = 0    : rr = &HFF      ' Ball (red)
+      bb = 0 : gg = 0 : rr = 0
+      IF tile = 0 THEN
+        ' Ball: red disk r=7 + 1px white highlight at (6,6)
+        IF d2 <= 49 THEN
+          IF dx = -2 AND dy = -2 THEN
+            bb = &HFF : gg = &HFF : rr = &HFF
+          ELSE
+            bb = 0    : gg = 0    : rr = &HFF
+          ENDIF
         ENDIF
       ELSE
-        bb = 0 : gg = 0 : rr = 0                 ' Transparent (black/0)
+        ' Explosion: orange star pattern, growing per frame
+        frame = tile - 1                ' 0..2
+        esz = (frame + 1) * 2 + 2       ' radius 4 / 6 / 8
+        eoff = esz * 0.7
+        ' 1) Filled disk
+        IF d2 <= esz*esz THEN
+          bb = 0 : gg = &H80 : rr = &HFF
+        ENDIF
+        ' 2) Cross arms (always)
+        IF dy = 0 AND dx >= -esz AND dx <= esz THEN
+          bb = 0 : gg = &H80 : rr = &HFF
+        ENDIF
+        IF dx = 0 AND dy >= -esz AND dy <= esz THEN
+          bb = 0 : gg = &H80 : rr = &HFF
+        ENDIF
+        ' 3) Diagonals on frames > 0
+        IF frame > 0 THEN
+          IF dx = dy AND dx >= -eoff AND dx <= eoff THEN
+            bb = 0 : gg = &HFF : rr = &HFF
+          ENDIF
+          IF dx = -dy AND dx >= -eoff AND dx <= eoff THEN
+            bb = 0 : gg = &HFF : rr = &HFF
+          ENDIF
+        ENDIF
       ENDIF
       PRINT #fnbr, CHR$(bb);CHR$(gg);CHR$(rr);
+    NEXT
+  NEXT
+  CLOSE #fnbr
+END SUB
+
+SUB CreatePaddleAtlas()
+  ' Single tile of pw% x ph%. Solid green with a one-pixel white
+  ' highlight on the top edge and left edge — same look as the old
+  ' Draw3DHighlight call. Outer rim is opaque (no transparency
+  ' boundary), so the demo doesn't need transparent=0 on the paddle
+  ' draw (a 0 nibble would otherwise punch holes in the green).
+  LOCAL INTEGER fnbr = 1
+  LOCAL INTEGER fy, x
+  LOCAL INTEGER row_pad
+  LOCAL INTEGER bb, gg, rr
+  OPEN "paddle.bmp" FOR OUTPUT AS #fnbr
+  PRINT #fnbr, "BM";
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(54);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(40);CHR$(0);CHR$(0);CHR$(0);
+  ' pw% might exceed 255 in theory; on this demo it's ~53. Keep the
+  ' simple single-byte width path and assert.
+  IF pw% > 255 OR ph% > 255 THEN ERROR "Paddle too wide for single-byte BMP author"
+  PRINT #fnbr, CHR$(pw%);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(ph%);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(1);CHR$(0);
+  PRINT #fnbr, CHR$(24);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(&H13);CHR$(&H0B);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(&H13);CHR$(&H0B);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);
+  ' BMP rows: bottom-up. Image y=0 is the visual top.
+  ' Highlight: top row + left col = white.
+  ' Padding bytes per row to align width*3 to 4 bytes.
+  row_pad = (4 - ((pw% * 3) AND 3)) AND 3
+  FOR fy = ph% - 1 TO 0 STEP -1
+    FOR x = 0 TO pw% - 1
+      IF fy = 0 OR x = 0 THEN
+        bb = &HFF : gg = &HFF : rr = &HFF      ' White highlight
+      ELSE
+        bb = 0 : gg = &HFF : rr = 0            ' Solid green
+      ENDIF
+      PRINT #fnbr, CHR$(bb);CHR$(gg);CHR$(rr);
+    NEXT
+    FOR x = 1 TO row_pad
+      PRINT #fnbr, CHR$(0);
     NEXT
   NEXT
   CLOSE #fnbr
@@ -218,19 +313,17 @@ SUB DrawHUD()
 END SUB
 
 SUB DrawPaddleAt(x%, y%)
-  BOX x%, y%, pw%, ph%, 0, , COL_PAD%
-  Draw3DHighlight x%, y%, pw%, ph%
+  ' Paddle sprite tile is exactly pw% x ph%, so (x,y) IS the upper-
+  ' left corner — no centring offset. SPRITE DRAW happens once at the
+  ' end of the frame after every Move call.
+  TILEMAP SPRITE MOVE TM_PAD_SPRITE%, x%, y%
 END SUB
 
 SUB DrawBallAt(x%, y%)
   ' Tile sprite is 16x16 with the disk centred at (8,8). The sprite's
   ' own (x,y) is the upper-left corner, so subtract the centring
   ' offset to keep the visual centre identical to the old CIRCLE call.
-  LOCAL INTEGER sx, sy
-  sx = x% + br% - 8
-  sy = y% + br% - 8
-  TILEMAP SPRITE MOVE TM_BALL_SPRITE%, sx, sy
-  TILEMAP SPRITE DRAW F, 0
+  TILEMAP SPRITE MOVE TM_BALL_SPRITE%, x% + br% - 8, y% + br% - 8
 END SUB
 
 SUB DrawSingleBlock(r%, c%)
@@ -265,30 +358,30 @@ SUB RedrawBlocksInRegion(rx%, ry%, rw%, rh%)
 END SUB
 
 SUB TriggerExplosion(x%, y%, w%, h%, blockColor%)
+  ' Spawn a fresh explosion sprite centred on the destroyed block.
+  ' explosionColor% is no longer used (the atlas tile bakes the colour
+  ' in) but kept for source compatibility with the original demo.
   explosionActive% = 1
   explosionX% = x% + w%/2
   explosionY% = y% + h%/2
   explosionFrame% = 0
   explosionColor% = blockColor%
-  prevExpSize% = 0
+  TILEMAP SPRITE CREATE TM_EXP_SPRITE%, 1, TM_EXP_S_TILE%, explosionX% - 8, explosionY% - 8
 END SUB
 
 SUB DrawExplosion()
-  LOCAL size%
+  ' Cycle the sprite's tile through the three explosion frames; once
+  ' past the last frame, destroy the sprite so SPRITE DRAW stops
+  ' painting it.
   IF explosionActive% = 0 THEN EXIT SUB
-  size% = (explosionFrame% + 1) * 4
-  CIRCLE explosionX%, explosionY%, size%, 0, 1.0, , explosionColor%
-  LINE explosionX%-size%, explosionY%, explosionX%+size%, explosionY%, , explosionColor%
-  LINE explosionX%, explosionY%-size%, explosionX%, explosionY%+size%, , explosionColor%
-  IF explosionFrame% > 0 THEN
-    LOCAL offset%
-    offset% = size% * 0.7
-    LINE explosionX%-offset%, explosionY%-offset%, explosionX%+offset%, explosionY%+offset%, , explosionColor%
-    LINE explosionX%-offset%, explosionY%+offset%, explosionX%+offset%, explosionY%-offset%, , explosionColor%
-  END IF
-  IF size% > prevExpSize% THEN prevExpSize% = size%
+  SELECT CASE explosionFrame%
+    CASE 0: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_S_TILE%
+    CASE 1: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_M_TILE%
+    CASE 2: TILEMAP SPRITE SET TM_EXP_SPRITE%, TM_EXP_L_TILE%
+  END SELECT
   explosionFrame% = explosionFrame% + 1
   IF explosionFrame% > 2 THEN
+    TILEMAP SPRITE DESTROY TM_EXP_SPRITE%
     explosionActive% = 0
     expCleanup% = 2
   END IF
@@ -451,16 +544,23 @@ prevExpSize% = 0 : expCleanup% = 0
 
 InitBlocks
 
-' ---- Setup TILEMAP SPRITE atlas ----
-' Bake atlas BMP, push into flash slot 1, register a 1x1 tilemap that
-' references it, and create sprite #1 for the ball. Tilemap data label
-' is `tm_ballmap` below — single tile of value 1.
+' ---- Setup TILEMAP SPRITE atlases ----
+' Two flash slots, two tilemaps (mixed tile sizes can't share one):
+'   slot 1 / tilemap 1 = 64x16 atlas of 16x16 tiles (ball + 3 explosion frames)
+'   slot 2 / tilemap 2 = pw% x ph% paddle.
+' Map data is a single dummy tile per tilemap; we never call TILEMAP DRAW
+' (background tiles), only SPRITE DRAW. The map cell is required by
+' TILEMAP CREATE for bookkeeping but doesn't get rendered here.
 CreateAtlas
+CreatePaddleAtlas
 FLASH LOAD IMAGE 1, "atlas.bmp", O
-TILEMAP CREATE tm_ballmap, 1, 1, 16, 16, 1, 1, 1
+FLASH LOAD IMAGE 2, "paddle.bmp", O
+TILEMAP CREATE tm_dummymap, 1, 1, 16, 16, 4, 1, 1
+TILEMAP CREATE tm_dummymap, 2, 2, pw%, ph%, 1, 1, 1
 TILEMAP SPRITE CREATE TM_BALL_SPRITE%, 1, TM_BALL_TILE%, 0, 0
+TILEMAP SPRITE CREATE TM_PAD_SPRITE%, 2, 1, INT(px!), INT(py!)
 GOTO tm_skip_data
-tm_ballmap:
+tm_dummymap:
 DATA 1
 tm_skip_data:
 
@@ -472,6 +572,7 @@ DrawBlocks
 DrawHUD
 DrawPaddleAt INT(px!), INT(py!)
 DrawBallAt INT(bx!), INT(by!)
+TILEMAP SPRITE DRAW F, 0
 TEXT W%\2, H%\2, "Hit SPACE to start", "CT", , , COL_TXT%, COL_BG%
 FASTGFX SWAP
 FASTGFX SYNC
@@ -503,15 +604,14 @@ DO
     RedrawBlocksInRegion prevBallX%-1, prevBallY%-1, br%*2+4, br%*2+4
   END IF
   BOX prevPadX%-1, INT(py!)-1, pw%+2, ph%+2, 0, , COL_BG%
+  ' Sprite explosion is always 16x16 centred on (prevExpX, prevExpY).
+  ' Erase that exact tile-sized region; expCleanup% gates the trailing
+  ' frame after the sprite is destroyed so the last paint doesn't leave
+  ' pixels behind.
   IF explosionActive% OR expCleanup% > 0 THEN
-    IF prevExpSize% > 0 THEN
-      BOX prevExpX%-prevExpSize%-2, prevExpY%-prevExpSize%-2, prevExpSize%*2+4, prevExpSize%*2+4, 0, , COL_BG%
-      RedrawBlocksInRegion prevExpX%-prevExpSize%-2, prevExpY%-prevExpSize%-2, prevExpSize%*2+4, prevExpSize%*2+4
-    END IF
-    IF explosionActive% = 0 THEN
-      expCleanup% = expCleanup% - 1
-      IF expCleanup% <= 0 THEN prevExpSize% = 0
-    END IF
+    BOX prevExpX% - 8, prevExpY% - 8, 16, 16, 0, , COL_BG%
+    RedrawBlocksInRegion prevExpX% - 8, prevExpY% - 8, 16, 16
+    IF explosionActive% = 0 THEN expCleanup% = expCleanup% - 1
   END IF
   IF prevBallLaunched% = 0 THEN
     BOX 0, H%\2 - 10, W%, 20, 0, , COL_BG%
@@ -624,6 +724,8 @@ DO
   END IF
 
   ' ---- Draw new positions ----
+  ' Each DrawXxxAt sets sprite position only; one TILEMAP SPRITE DRAW
+  ' below paints all active sprites in one pass.
   DrawPaddleAt INT(px!), INT(py!)
   DrawBallAt INT(bx!), INT(by!)
   IF explosionActive% THEN
@@ -631,6 +733,7 @@ DO
     expCleanup% = 2
   END IF
   DrawExplosion
+  TILEMAP SPRITE DRAW F, 0
   IF ballLaunched% = 0 THEN
     TEXT W%\2, H%\2, "Hit SPACE to start", "CT", , , COL_TXT%, COL_BG%
   END IF
