@@ -282,6 +282,8 @@ void fun_GPS(void) {}
 void fun_info(void) {
     extern short gui_font_width, gui_font_height;
     extern int gui_fcolour, gui_bcolour;
+    extern const uint8_t *flash_target_contents;
+    unsigned char *tp;
     if (checkstring(ep, (unsigned char *)"HRES")) {
         iret = HRes; targ = T_INT; return;
     }
@@ -305,6 +307,14 @@ void fun_info(void) {
         checkstring(ep, (unsigned char *)"BCOLOR")) {
         iret = gui_bcolour; targ = T_INT; return;
     }
+    if ((tp = checkstring(ep, (unsigned char *)"FLASH ADDRESS"))) {
+        /* uintptr_t round-trip — `(unsigned int)` would truncate the
+         * pointer on 64-bit hosts and silently zero the upper bits. */
+        iret = (int64_t)(uintptr_t)(flash_target_contents +
+                                    (getint(tp, 1, MAXFLASHSLOTS) - 1) * MAX_PROG_SIZE);
+        targ = T_INT;
+        return;
+    }
     iret = 0;
     targ = T_INT;
 }
@@ -315,7 +325,53 @@ void fun_keydown(void) {
     targ = T_INT;
 }
 
-void fun_peek(void) {}
+/* Minimal PEEK on host — enough to support flash-slot inspection from
+ * test programs (PEEK(BYTE addr) / PEEK(INT8 addr) / WORD / SHORT /
+ * INTEGER / FLOAT). On device the full PEEK lives in MM_Misc.c with
+ * peripheral-bus subkeys (PIO, ADC, etc.); none of those are reachable
+ * on host, so we keep this surface narrow. */
+void fun_peek(void) {
+    unsigned char *p;
+    getargs(&ep, 3, (unsigned char *)",");
+    if ((p = checkstring(argv[0], (unsigned char *)"INT8")) ||
+        (p = checkstring(argv[0], (unsigned char *)"BYTE"))) {
+        if (argc != 1) error("Syntax");
+        iret = *(unsigned char *)(uintptr_t)getinteger(p);
+        targ = T_INT;
+        return;
+    }
+    if ((p = checkstring(argv[0], (unsigned char *)"WORD"))) {
+        if (argc != 1) error("Syntax");
+        iret = *(uint32_t *)((uintptr_t)getinteger(p) & ~(uintptr_t)3);
+        targ = T_INT;
+        return;
+    }
+    if ((p = checkstring(argv[0], (unsigned char *)"SHORT"))) {
+        if (argc != 1) error("Syntax");
+        iret = *(uint16_t *)((uintptr_t)getinteger(p) & ~(uintptr_t)1);
+        targ = T_INT;
+        return;
+    }
+    if ((p = checkstring(argv[0], (unsigned char *)"INTEGER"))) {
+        if (argc != 1) error("Syntax");
+        iret = *(uint64_t *)((uintptr_t)getinteger(p) & ~(uintptr_t)7);
+        targ = T_INT;
+        return;
+    }
+    if ((p = checkstring(argv[0], (unsigned char *)"FLOAT"))) {
+        if (argc != 1) error("Syntax");
+        fret = *(MMFLOAT *)((uintptr_t)getinteger(p) & ~(uintptr_t)7);
+        targ = T_NBR;
+        return;
+    }
+    /* PEEK(addr) shorthand → byte read */
+    if (argc == 1) {
+        iret = *(unsigned char *)(uintptr_t)getinteger(argv[0]);
+        targ = T_INT;
+        return;
+    }
+    error("Syntax");
+}
 
 void fun_pin(void) {
     int pin;

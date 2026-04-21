@@ -234,7 +234,25 @@ extern "C" {
 #define FLASH_ERASE_SIZE 4096
 #define MAXFLASHSLOTS 3
 #define MAXRAMSLOTS 5
-#define MAXVARHASH				MAXVARS/2 
+#define MAXVARHASH				MAXVARS/2
+
+/* WASM cap on the flash slot region.
+ *
+ * MAX_PROG_SIZE is also used to size each FLASH slot (cmd_flash, FLASH
+ * LOAD IMAGE, FLASH DISK LOAD), the in-memory ProgMemory buffer, and the
+ * RAM mirror in host_fs_shims.c. On wasm, HEAP_MEMORY_SIZE is bumped to
+ * 8 MB so user programs can use lots of variables — but that would
+ * balloon the flash slot mirror to MAXFLASHSLOTS × 8 MB = 24 MB, beyond
+ * wasm's 32 MB initial-memory budget. Cap MAX_PROG_SIZE at 256 KB on
+ * wasm; flash_prog_buf in host_wasm_main.c is already that size, so
+ * programs >256 KB couldn't be saved through flash_range_program
+ * regardless. AllMemory[] still gets the full HEAP_MEMORY_SIZE so
+ * runtime variables aren't constrained. */
+#ifdef MMBASIC_WASM
+#undef MAX_PROG_SIZE
+#define MAX_PROG_SIZE (256 * 1024)
+#endif
+
 
 // more static memory allocations (less important)
 #define MAXFORLOOPS         20                      // each entry uses 17 bytes

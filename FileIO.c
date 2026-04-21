@@ -839,6 +839,132 @@ void MIPS16 cmd_flash(void)
         FileClose(fnbr);
         FlashWriteClose();
     }
+    else if ((p = checkstring(cmdline, (unsigned char *)"LOAD IMAGE")))
+    {
+        /* FLASH LOAD IMAGE slot, file$ [,O/OVERWRITE]
+         *
+         * Decodes a 24-bit BMP from SD into the named flash slot, packed as
+         * RGB121 nibbles (2 pixels per byte) preceded by an 8-byte header
+         * [width:uint32 LE][height:uint32 LE]. This is the storage layout
+         * the TILEMAP / TILEMAP SPRITE renderer (blit121) expects.
+         *
+         * Only 24-bit uncompressed BMPs are accepted — that's the default
+         * export format from GIMP / Aseprite / Photoshop "BMP 24bpp".
+         *
+         * Ported (paraphrased) from upstream FileIO.c:947 + the
+         * flashpackline / writetoflashcallback helpers from upstream.
+         * Self-contained reader avoids pulling in upstream's decodeBMP /
+         * linecallback machinery, which differs structurally from our
+         * BMP_bDecode (per-pixel DrawPixel) decoder.
+         */
+        getargs(&p, 5, (unsigned char *)",");
+        bool overwrite = false;
+        if (!(argc == 3 || argc == 5))
+            error("Syntax");
+        int slot = getint(argv[0], 1, MAXFLASHSLOTS);
+        if (argc == 5) {
+            if (checkstring(argv[4], (unsigned char *)"O") ||
+                checkstring(argv[4], (unsigned char *)"OVERWRITE"))
+                overwrite = true;
+            else
+                error("Syntax");
+        }
+        if (Option.LIBRARY_FLASH_SIZE == MAX_PROG_SIZE && slot == MAXFLASHSLOTS)
+            error("Library is using Slot % ", MAXFLASHSLOTS);
+        uint32_t *slot_base = (uint32_t *)(flash_target_contents + (slot - 1) * MAX_PROG_SIZE);
+        if (*slot_base != 0xFFFFFFFF && !overwrite)
+            error("Already programmed");
+
+        if (!InitSDCard()) return;
+        char *fname = (char *)getFstring(argv[2]);
+        if (strchr(fname, '.') == NULL) strcat(fname, ".bmp");
+
+        int fnbr = FindFreeFileNbr();
+        if (!BasicFileOpen(fname, fnbr, FA_READ)) return;
+
+        /* --- Read & validate BMP header --- */
+        unsigned char hdr[54];
+        for (int i = 0; i < 54; i++) hdr[i] = (unsigned char)FileGetChar(fnbr);
+        if (hdr[0] != 'B' || hdr[1] != 'M') {
+            FileClose(fnbr);
+            error("Not a BMP file");
+        }
+        uint32_t bfOffBits = (uint32_t)hdr[10] | ((uint32_t)hdr[11] << 8) |
+                             ((uint32_t)hdr[12] << 16) | ((uint32_t)hdr[13] << 24);
+        int32_t width = (int32_t)((uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) |
+                                  ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24));
+        int32_t height = (int32_t)((uint32_t)hdr[22] | ((uint32_t)hdr[23] << 8) |
+                                   ((uint32_t)hdr[24] << 16) | ((uint32_t)hdr[25] << 24));
+        uint16_t bitsPerPixel = (uint16_t)((uint16_t)hdr[28] | ((uint16_t)hdr[29] << 8));
+        uint32_t compression = (uint32_t)hdr[30] | ((uint32_t)hdr[31] << 8) |
+                               ((uint32_t)hdr[32] << 16) | ((uint32_t)hdr[33] << 24);
+        bool topDown = (height < 0);
+        if (topDown) height = -height;
+        if (bitsPerPixel != 24 || compression != 0) {
+            FileClose(fnbr);
+            error("Only 24-bit uncompressed BMPs are supported");
+        }
+        if (width < 1 || width > 3840 || height < 1 || height > 2160) {
+            FileClose(fnbr);
+            error("Invalid BMP dimensions");
+        }
+        /* Image must fit: 8-byte header + ceil(w/2)*h packed bytes */
+        int packed_row_bytes = (width + 1) / 2;
+        if ((int64_t)8 + (int64_t)packed_row_bytes * height > MAX_PROG_SIZE) {
+            FileClose(fnbr);
+            error("Image too large for flash slot");
+        }
+
+        if (!CurrentLinePtr) {
+            MMPrintString("Saving "); MMPrintString(fname);
+            MMPrintString(" to flash slot "); PInt(slot); PRet();
+            MMPrintString("Image is "); PInt(width); MMPrintString(" by ");
+            PInt(height); MMPrintString(" RGB121 pixels\r\n");
+        }
+
+        /* --- Erase + open flash slot for writing --- */
+        FlashWriteInit(slot);
+        flash_range_erase(realflashpointer, MAX_PROG_SIZE);
+        int erase_check = MAX_PROG_SIZE / 4;
+        int *erase_p = (int *)(flash_target_contents + (slot - 1) * MAX_PROG_SIZE);
+        while (erase_check--) {
+            if (*erase_p++ != (int)0xFFFFFFFF) {
+                enable_interrupts_pico();
+                FileClose(fnbr);
+                error("Flash erase problem");
+            }
+        }
+
+        /* --- Write 8-byte header [width][height] LE --- */
+        FlashWriteWord((uint32_t)width);
+        FlashWriteWord((uint32_t)height);
+
+        /* --- Walk rows in top-down output order, packing nibbles --- */
+        int file_row_stride = ((width * 3 + 3) & ~3); /* 4-byte aligned */
+        for (int out_row = 0; out_row < height; out_row++) {
+            int file_row = topDown ? out_row : (height - 1 - out_row);
+            positionfile(fnbr, (int)bfOffBits + file_row * file_row_stride);
+            uint8_t low_nibble = 0;
+            for (int col = 0; col < width; col++) {
+                uint8_t b = (uint8_t)FileGetChar(fnbr);
+                uint8_t g = (uint8_t)FileGetChar(fnbr);
+                uint8_t r = (uint8_t)FileGetChar(fnbr);
+                uint32_t rgb888 = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+                uint8_t nibble = RGB121(rgb888);
+                if ((col & 1) == 0) {
+                    low_nibble = nibble;
+                    if (col == width - 1) {
+                        /* Odd width: emit final byte with high nibble = 0 */
+                        FlashWriteByte(low_nibble);
+                    }
+                } else {
+                    FlashWriteByte(low_nibble | (nibble << 4));
+                }
+            }
+        }
+        FileClose(fnbr);
+        FlashWriteClose();
+    }
     else if ((p = checkstring(cmdline, (unsigned char *)"SAVE")))
     {
         if (CurrentLinePtr)

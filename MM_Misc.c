@@ -4046,7 +4046,10 @@ void MIPS16 fun_info(void){
             targ=T_INT;
             return;
         } else if((tp=checkstring(ep, (unsigned char *)"FLASH ADDRESS"))){
-            iret=(int64_t)(unsigned int)(flash_target_contents + (getint(tp,1,MAXFLASHSLOTS) - 1) * MAX_PROG_SIZE);
+            /* uintptr_t round-trip — `(unsigned int)` truncates pointers
+             * on 64-bit hosts (macOS / wasm64) and silently zeroes the
+             * upper bits, returning 0 to BASIC. */
+            iret=(int64_t)(uintptr_t)(flash_target_contents + (getint(tp,1,MAXFLASHSLOTS) - 1) * MAX_PROG_SIZE);
             targ=T_INT;
             return;
         } else if((tp=checkstring(ep, (unsigned char *)"FILESIZE"))){

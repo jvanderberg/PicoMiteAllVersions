@@ -346,16 +346,53 @@ int ExistsDir(char *p, char *q, int *filesystem) {
 /* =========================================================================
  * Simulated flash operations.
  *
- * On the device these hit XIP flash; on host they write through to
- * flash_prog_buf (allocated in host_main.c, 128 KB). Layout: first
- * 64 KB is program area, second 64 KB is the CFunction area
- * (erased = 0xFF).
+ * On the device these hit XIP flash; on host they write through to two
+ * RAM-backed regions:
+ *
+ *   1. flash_prog_buf  (host_main.c, 256 KB) — program flash mirror at
+ *      offset 0..256 KB.  This is what flash_progmemory points at and
+ *      what cmd_new / cmd_run / SaveProgramToFlash exercise.
+ *
+ *   2. host_flash_target_buf (this file) — the user-program flash slot
+ *      region (FLASH ERASE / DISK LOAD / LOAD IMAGE / SAVE / OVERWRITE).
+ *      On device this is a contiguous chunk in XIP flash starting at
+ *      `FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE`
+ *      and running for `MAXFLASHSLOTS * MAX_PROG_SIZE` bytes; the
+ *      pointer `flash_target_contents` is the XIP-mapped view of
+ *      offset 0 within it.  On host we mirror the same layout: a single
+ *      RAM buffer, indexed by the *device* flash offset so the existing
+ *      `realflashpointer` arithmetic in cmd_flash works unchanged.
+ *
+ * flash_range_erase / flash_range_program route writes to whichever of
+ * the two regions the offset lands in.  The program-flash region is
+ * written by host_main.c's startup path (zeroed for program area,
+ * 0xFF for the CFunction area); the slot region starts 0xFF-filled
+ * (matching erased flash) via the constructor below.
  * ======================================================================= */
 extern uint8_t flash_prog_buf[];
 #define HOST_FLASH_SIZE        (256 * 1024)
 #define HOST_FLASH_PROG_SIZE   (HOST_FLASH_SIZE / 2)
 
+/* Device address range of the user flash slot region. MAX_PROG_SIZE is
+ * the per-slot stride; on wasm it's already capped to 256 KB by the
+ * configuration.h override. Native host uses MAX_PROG_SIZE =
+ * HEAP_MEMORY_SIZE = 184 KB → 552 KB slot mirror. */
+#define HOST_SLOT_REGION_BASE  ((uint32_t)(FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE))
+#define HOST_SLOT_REGION_SIZE  ((uint32_t)(MAXFLASHSLOTS * MAX_PROG_SIZE))
+
+/* Forward declaration so flash_range_* can find the slot mirror. */
+extern uint8_t host_flash_target_buf[HOST_SLOT_REGION_SIZE];
+
+static inline bool host_off_in_slot_region(uint32_t off, uint32_t count) {
+    return (off >= HOST_SLOT_REGION_BASE) &&
+           (off + count <= HOST_SLOT_REGION_BASE + HOST_SLOT_REGION_SIZE);
+}
+
 void flash_range_erase(uint32_t off, uint32_t count) {
+    if (host_off_in_slot_region(off, count)) {
+        memset(host_flash_target_buf + (off - HOST_SLOT_REGION_BASE), 0xFF, count);
+        return;
+    }
     if (off >= HOST_FLASH_SIZE) return;
     if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
     /* Device erase fills with 0xFF. The program region additionally gets
@@ -365,6 +402,10 @@ void flash_range_erase(uint32_t off, uint32_t count) {
 }
 
 void flash_range_program(uint32_t off, const uint8_t *data, uint32_t count) {
+    if (host_off_in_slot_region(off, count)) {
+        memcpy(host_flash_target_buf + (off - HOST_SLOT_REGION_BASE), data, count);
+        return;
+    }
     if (off >= HOST_FLASH_SIZE) return;
     if (off + count > HOST_FLASH_SIZE) count = HOST_FLASH_SIZE - off;
     memcpy(flash_prog_buf + off, data, count);
@@ -443,7 +484,10 @@ lfs_soff_t lfs_file_size(lfs_t *lfs, lfs_file_t *fp) { (void)lfs; (void)fp; retu
  * for the CFunction terminator, and 0xFF is correct "erased" semantics.
  * ======================================================================= */
 static uint8_t host_flash_option_buf[sizeof(struct option_s)];
-static uint8_t host_flash_target_buf[4096];
+/* Sized to mirror the device's full flash slot region (see header above).
+ * Non-static because flash_range_* in this same translation unit forward-
+ * declares it; defining it here keeps initialization in one place. */
+uint8_t host_flash_target_buf[HOST_SLOT_REGION_SIZE];
 const uint8_t *flash_option_contents = host_flash_option_buf;
 const uint8_t *flash_target_contents = host_flash_target_buf;
 __attribute__((constructor))
