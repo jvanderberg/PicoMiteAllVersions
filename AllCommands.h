@@ -154,6 +154,8 @@ void cmd_ctrlval(void);
 void cmd_GUIpage(unsigned char *p);
 void cmd_gamepad(void);
 void cmd_sprite(void);
+void cmd_tilemap(void);
+void tilemap_closeall(void);
 void cmd_comment(void);
 void cmd_endcomment(void);
 void cmd_blitmemory(void);
@@ -243,6 +245,7 @@ void fun_pixel(void);
 void fun_getscanline(void);
 void fun_3D(void);
 void fun_sprite(void);
+void fun_tilemap(void);
 void fun_eof(void);
 void fun_loc(void);
 void fun_lof(void);
@@ -446,6 +449,7 @@ void fun_map(void);
   	{ (unsigned char *)"FRAMEBUFFER",     T_CMD,                     0, cmd_framebuffer   },
   	{ (unsigned char *)"FASTGFX",         T_CMD,                     0, cmd_fastgfx       },
 	{ (unsigned char *)"Sprite",           T_CMD,                      0, cmd_sprite	},
+	{ (unsigned char *)"Tilemap",          T_CMD,                      0, cmd_tilemap	},
 	{ (unsigned char *)"Blit",           T_CMD,                      0, cmd_blit	},
     { (unsigned char *)"Edit File",   T_CMD,              0, cmd_editfile     },
     { (unsigned char *)"Edit",   T_CMD,              0, cmd_edit     },
@@ -703,6 +707,7 @@ void fun_map(void);
 	{ (unsigned char *)"Peek(",		T_FUN  | T_INT | T_STR | T_NBR,			0, fun_peek		},
 	{ (unsigned char *)"Time$",	T_FNA | T_STR,		0, fun_time	},
 	{ (unsigned char *)"sprite(",	    T_FUN | T_INT | T_NBR,		0, fun_sprite },
+	{ (unsigned char *)"Tilemap(",	    T_FUN | T_INT,		0, fun_tilemap },
 	{ (unsigned char *)"Flag(",	T_FUN | T_INT,		0, fun_flag,	},
 	{ (unsigned char *)"Epoch(",		T_FUN  | T_INT,			0, fun_epoch		},
 	{ (unsigned char *)"DateTime$(",		T_FUN | T_STR,		0, fun_datetime		},

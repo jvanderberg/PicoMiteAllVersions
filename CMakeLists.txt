@@ -76,6 +76,7 @@ set(PICOMITE_LEGACY_CORE_SOURCES
 	FileIO.c
 	Draw.c
 	RGB121.c
+	Tilemap.c
 	Editor.c
 	XModem.c
 	MM_Misc.c

@@ -35,6 +35,18 @@ int VResD = 0;
 int HResS = 0;
 int VResS = 0;
 
+/* Standard 16-colour PicoMite palette, byte-identical to the table
+ * LoadOptions installs into the global RGB121map[]. Used directly here
+ * so blit121 doesn't depend on LoadOptions having already been called
+ * — on host the global RGB121map is zero until the first error fires
+ * LoadOptions, which used to leave TILEMAP DRAW painting black. */
+static const int rgb121_palette[16] = {
+    BLACK, BLUE,    MYRTLE,  COBALT,
+    MIDGREEN, CERULEAN, GREEN,  CYAN,
+    RED, MAGENTA, RUST,    FUCHSIA,
+    BROWN, LILAC,   YELLOW,  WHITE
+};
+
 void blit121(uint8_t *source, uint8_t *destination,
              int xsource, int ysource, int width, int height,
              int xdestination, int ydestination, int missingcolour)
@@ -64,7 +76,7 @@ void blit121(uint8_t *source, uint8_t *destination,
             uint8_t b = src_row[src_x >> 1];
             uint8_t pixel = (src_x & 1) ? ((b >> 4) & 0x0F) : (b & 0x0F);
             if (has_transparency && pixel == missingcolour) continue;
-            DrawPixel(xdestination + x, dst_y, RGB121map[pixel]);
+            DrawPixel(xdestination + x, dst_y, rgb121_palette[pixel]);
         }
     }
 }
