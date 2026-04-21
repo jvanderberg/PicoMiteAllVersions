@@ -402,6 +402,20 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
     jmp_buf saved_mark;
     memcpy(saved_mark, mark, sizeof(jmp_buf));
 
+    /* Point ProgMemory at the bridge's tokenised program buffer for the
+     * duration of the VM run. Bridged interpreter commands that scan
+     * the program — findlabel (TILEMAP CREATE / READ via label / RESTORE
+     * label / ON … GOTO label / …), findline, ListProgram via FLASH LIST
+     * — all walk ProgMemory by convention. Without this swap they see
+     * whatever ProgMemory pointed at before FRUN (REPL: empty), which is
+     * how `Cannot find label` surfaces in bridged TILEMAP CREATE under
+     * FRUN. Skip the swap in immediate mode (no source program). */
+    unsigned char *saved_prog_memory = ProgMemory;
+    if (!is_immediate) {
+        unsigned char *bridge_buf = bc_bridge_get_prog_buf();
+        if (bridge_buf) ProgMemory = bridge_buf;
+    }
+
     bc_crash_checkpoint(BC_CK_VM_EXECUTE, "bc_vm_execute");
     if (setjmp(mark) == 0) {
         bc_vm_execute(vm);
@@ -409,6 +423,7 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
     bc_crash_checkpoint(BC_CK_VM_CLEANUP, "vm_execute returned");
     VMRUN_DBG("VM: returned\r\n");
 
+    ProgMemory = saved_prog_memory;
     memcpy(mark, saved_mark, sizeof(jmp_buf));
 
     bc_vm_free(vm);

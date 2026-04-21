@@ -3044,30 +3044,58 @@ static void source_compile_print(BCSourceFrontend *fe, BCCompiler *cs, const cha
     *pp = p;
 }
 
+/* Helper for GOTO / GOSUB: parse either a numeric line number or a
+ * BASIC label name. Emits the jump opcode + a 4-byte absolute offset
+ * patched in place if the target is already known, otherwise queues a
+ * fixup resolved at end-of-compile. */
+static int source_emit_jump_to_target(BCCompiler *cs, const char **pp,
+                                      uint8_t opcode, const char *what) {
+    const char *p = *pp;
+    source_skip_space(&p);
+    if (isdigit((unsigned char)*p)) {
+        int lineno = source_parse_line_number(&p);
+        if (lineno < 0) {
+            bc_set_error(cs, "Expected line number after %s", what);
+            *pp = p;
+            return 0;
+        }
+        source_emit_abs_jump(cs, opcode, lineno);
+        *pp = p;
+        return 1;
+    }
+    if (isalpha((unsigned char)*p) || *p == '_') {
+        char name[BC_MAX_LABEL_NAME + 1];
+        int n = 0;
+        while ((isalnum((unsigned char)*p) || *p == '_' || *p == '.') &&
+               n < BC_MAX_LABEL_NAME) {
+            name[n++] = *p++;
+        }
+        name[n] = '\0';
+        bc_emit_byte(cs, opcode);
+        uint32_t patch = cs->code_len;
+        bc_emit_u32(cs, 0);
+        uint32_t target = bc_labelmap_lookup(cs, name);
+        if (target != 0xFFFFFFFF) {
+            bc_patch_u32(cs, patch, target);
+        } else {
+            bc_add_fixup_label(cs, patch, name, 4, 0);
+        }
+        *pp = p;
+        return 1;
+    }
+    bc_set_error(cs, "Expected line number or label after %s", what);
+    *pp = p;
+    return 0;
+}
+
 static void source_compile_goto(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     (void)fe;
-    const char *p = *pp;
-    int lineno = source_parse_line_number(&p);
-    if (lineno < 0) {
-        bc_set_error(cs, "Expected line number after GOTO");
-        *pp = p;
-        return;
-    }
-    source_emit_abs_jump(cs, OP_JMP_ABS, lineno);
-    *pp = p;
+    source_emit_jump_to_target(cs, pp, OP_JMP_ABS, "GOTO");
 }
 
 static void source_compile_gosub(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
     (void)fe;
-    const char *p = *pp;
-    int lineno = source_parse_line_number(&p);
-    if (lineno < 0) {
-        bc_set_error(cs, "Expected line number after GOSUB");
-        *pp = p;
-        return;
-    }
-    source_emit_abs_jump(cs, OP_GOSUB, lineno);
-    *pp = p;
+    source_emit_jump_to_target(cs, pp, OP_GOSUB, "GOSUB");
 }
 
 static void source_compile_const(BCSourceFrontend *fe, BCCompiler *cs, const char **pp) {
@@ -6966,9 +6994,81 @@ static int source_stmt_references_bridged_subfun(BCCompiler *cs, const char *stm
     return 0;
 }
 
+/* Detect a `name:` label definition at *pp, register it pointing at
+ * cs->code_len, advance *pp past the colon, and return 1. Otherwise
+ * leave *pp untouched and return 0.  Reserved-keyword check skips
+ * obvious statements that can't be labels.  Used both in the line
+ * scanner (before the `:` statement separator gets stripped) and in
+ * source_compile_statement (for the inline `: mylabel:` case after an
+ * earlier statement on the same line). */
+static int source_try_register_label(BCCompiler *cs, const char **pp) {
+    const char *p = *pp;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!(*p) || (!isalpha((unsigned char)*p) && *p != '_')) return 0;
+    const char *q = p;
+    while (isalnum((unsigned char)*q) || *q == '_' || *q == '.') q++;
+    int name_len = (int)(q - p);
+    const char *cs_q = q;
+    while (*cs_q == ' ' || *cs_q == '\t') cs_q++;
+    if (*cs_q != ':' || cs_q[1] == '=') return 0;
+    if (name_len <= 0 || name_len > BC_MAX_LABEL_NAME) return 0;
+
+    static const char *reserved[] = {
+        "IF", "FOR", "DO", "WHILE", "SUB", "FUNCTION",
+        "SELECT", "END", "EXIT", "NEXT", "LOOP", "RETURN",
+        "GOTO", "GOSUB", "DIM", "LOCAL", "STATIC", "CONST",
+        "PRINT", "INPUT", "OPEN", "CLOSE", "DATA", "READ",
+        "RESTORE", "REM", "OPTION", "ON", "ELSE", "ELSEIF",
+        "THEN", "TO", "STEP", "AS", "CASE", "DEFAULT",
+        NULL
+    };
+    for (int i = 0; reserved[i]; i++) {
+        size_t rl = strlen(reserved[i]);
+        if ((size_t)name_len == rl && strncasecmp(p, reserved[i], rl) == 0)
+            return 0;
+    }
+
+    char buf[BC_MAX_LABEL_NAME + 1];
+    memcpy(buf, p, name_len);
+    buf[name_len] = '\0';
+
+    /* Resolve forward refs (label was used by GOTO before it was
+     * defined): patch the placeholder entry in-place instead of
+     * adding a duplicate. */
+    int hit = -1;
+    for (uint16_t i = 0; i < cs->labelmap_count; i++) {
+        if (strcasecmp(cs->labelmap[i].name, buf) == 0) {
+            hit = (int)i; break;
+        }
+    }
+    if (hit >= 0) {
+        if (cs->labelmap[hit].offset != 0xFFFFFFFF) {
+            bc_set_error(cs, "Duplicate label '%s'", buf);
+            return 0;
+        }
+        cs->labelmap[hit].offset = cs->code_len;
+    } else {
+        bc_add_labelmap_entry(cs, buf, cs->code_len);
+    }
+    *pp = cs_q + 1;
+    return 1;
+}
+
 static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const char *stmt) {
     const char *p = stmt;
     source_skip_space(&p);
+
+    /* BASIC label definition (also handled in source_compile_line —
+     * this branch covers labels that appear after an inline `:`
+     * separator, e.g. `PRINT 1 : mylabel: PRINT 2`). The line-level
+     * scanner strips the trailing `:` before handing the statement
+     * here, so this looks for the *bare identifier* form when called
+     * from the line-level loop's reentry path. */
+    if (source_try_register_label(cs, &p)) {
+        if (*p == '\0' || *p == '\'') return;
+        source_skip_space(&p);
+        stmt = p;
+    }
 
     /* Phase 7 early-bridge: if the statement touches a user sub/fun with a
      * struct parameter or struct return, bridge the whole line.  Native
@@ -7806,6 +7906,13 @@ static void source_compile_line(BCSourceFrontend *fe, BCCompiler *cs, const char
         source_skip_space(&p);
         if (*p == '\0' || *p == '\'') break;
 
+        /* `name:` label definition before any statement. Register
+         * pointing at the current code address (right after OP_LINE)
+         * and continue. Multiple labels on one line are unusual but
+         * legal — the loop just runs again. Pure-label lines fall
+         * through and the outer `while` exits. */
+        if (source_try_register_label(cs, &p)) continue;
+
         const char *start = p;
         const char *kw_probe = p;
         int if_statement = source_keyword(&kw_probe, "IF");
@@ -8164,10 +8271,38 @@ static void source_predeclare_subfuns(BCCompiler *cs, const char *source) {
 
         int is_local  = (strncasecmp(lp, "LOCAL",  5) == 0 && !isnamechar((unsigned char)lp[5]));
         int is_static = (strncasecmp(lp, "STATIC", 6) == 0 && !isnamechar((unsigned char)lp[6]));
-        if (!is_local && !is_static) continue;
-        const char *decls = lp + (is_local ? 5 : 6);
-        if (source_local_line_has_struct_as(decls)) {
-            cs->subfuns[current_sf].bridged = 1;
+        if (is_local || is_static) {
+            const char *decls = lp + (is_local ? 5 : 6);
+            if (source_local_line_has_struct_as(decls)) {
+                cs->subfuns[current_sf].bridged = 1;
+                continue;
+            }
+        }
+
+        /* If the body uses `#<varname>` for any file op, the
+         * statement-level early bridge in source_compile_statement
+         * tokenises the line and hands it to the interpreter — but
+         * the interpreter looks variables up in g_vartbl and can't
+         * see VM-frame locals. Bridge the whole sub instead so the
+         * interp can run it natively against its own locals. Cheap
+         * substring scan; false positives just bridge a sub
+         * unnecessarily, doesn't affect correctness. */
+        {
+            const char *q = lp;
+            int in_str = 0;
+            while (*q && *q != '\n') {
+                if (*q == '"') in_str = !in_str;
+                if (!in_str && *q == '\'') break;
+                if (!in_str && *q == '#') {
+                    const char *r = q + 1;
+                    while (*r == ' ' || *r == '\t') r++;
+                    if (*r && !isdigit((unsigned char)*r)) {
+                        cs->subfuns[current_sf].bridged = 1;
+                        break;
+                    }
+                }
+                q++;
+            }
         }
     }
 }

@@ -614,6 +614,7 @@ typedef enum {
   #define BC_MAX_NEST       32
   #define BC_MAX_DATA_ITEMS 1024
 #else
+  /* Default device build (RP2040) */
   #define BC_MAX_CODE       (16 * 1024)
   #define BC_MAX_CONSTANTS  64
   #define BC_MAX_SLOTS      128
@@ -682,6 +683,24 @@ typedef struct {
     uint16_t lineno;
     uint32_t offset;
 } BCLineMap;
+
+/*
+ * Label name → bytecode offset mapping.  GOTO/GOSUB <name> resolve to
+ * an offset via this table at compile-end (bc_resolve_fixups).
+ */
+#ifndef BC_MAX_LABEL_NAME
+#define BC_MAX_LABEL_NAME 31
+#endif
+#ifndef BC_MAX_LABELS
+/* GOTO/GOSUB target labels. Real programs have a handful, not hundreds.
+ * Sized for typical use (32 × ~36 B = ~1 KB). Override per-build if a
+ * pathologically label-heavy program shows up. */
+#define BC_MAX_LABELS 32
+#endif
+typedef struct {
+    char     name[BC_MAX_LABEL_NAME + 1];
+    uint32_t offset;
+} BCLabelMap;
 
 /*
  * Control flow nesting stack (used during compilation)
@@ -780,6 +799,10 @@ typedef struct {
     /* Line map (allocated: BC_MAX_LINEMAP entries) */
     BCLineMap  *linemap;
     uint16_t   linemap_count;
+
+    /* Label map (allocated: BC_MAX_LABELS entries) */
+    BCLabelMap *labelmap;
+    uint16_t   labelmap_count;
 
     /* Control flow nesting stack (allocated: BC_MAX_NEST entries) */
     BCNestEntry *nest_stack;
@@ -987,6 +1010,12 @@ void bc_bridge_reset_sync(void);
  * Returns 0 on success, non-zero on OOM. */
 int  bc_bridge_prepare_subfun(const char *source);
 void bc_bridge_release_subfun_buffer(void);
+/* Returns the bridge prog buffer (tokenised program). NULL when no
+ * FRUN session is active. Used by bc_run_source_string_ex to point
+ * ProgMemory at the tokenised source so bridged interp commands that
+ * scan the program (findlabel, findline, RESTORE label, …) see it
+ * even though FRUN never wrote it through PrepareProgram. */
+unsigned char *bc_bridge_get_prog_buf(void);
 
 /* Helpers */
 uint16_t bc_find_slot(BCCompiler *cs, const char *name, int name_len);

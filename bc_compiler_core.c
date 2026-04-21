@@ -22,11 +22,12 @@ int bc_compiler_alloc(BCCompiler *cs) {
     cs->data_pool  = (BCDataItem *)BC_COMPILER_ALLOC(BC_MAX_DATA_ITEMS * sizeof(BCDataItem));
     cs->fixups     = (BCFixup *)BC_COMPILER_ALLOC(BC_MAX_FIXUPS * sizeof(BCFixup));
     cs->linemap    = (BCLineMap *)BC_COMPILER_ALLOC(BC_MAX_LINEMAP * sizeof(BCLineMap));
+    cs->labelmap   = (BCLabelMap *)BC_COMPILER_ALLOC(BC_MAX_LABELS * sizeof(BCLabelMap));
     cs->nest_stack = (BCNestEntry *)BC_COMPILER_ALLOC(BC_MAX_NEST * sizeof(BCNestEntry));
     cs->locals     = (BCLocalVar *)BC_COMPILER_ALLOC(BC_MAX_LOCALS * sizeof(BCLocalVar));
     if (!cs->code || !cs->constants || !cs->slots || !cs->subfuns ||
         !cs->subfun_locals_base ||
-        !cs->fixups || !cs->linemap || !cs->nest_stack || !cs->locals ||
+        !cs->fixups || !cs->linemap || !cs->labelmap || !cs->nest_stack || !cs->locals ||
         !cs->local_meta ||
         !cs->data_pool) {
         bc_compiler_free(cs);
@@ -44,6 +45,7 @@ void bc_compiler_free(BCCompiler *cs) {
     if (cs->subfun_locals_base) { if (bc_compile_owns(cs->subfun_locals_base)) BC_COMPILER_FREE(cs->subfun_locals_base); else BC_FREE(cs->subfun_locals_base); }
     if (cs->fixups)     { if (bc_compile_owns(cs->fixups)) BC_COMPILER_FREE(cs->fixups); else BC_FREE(cs->fixups); }
     if (cs->linemap)    { if (bc_compile_owns(cs->linemap)) BC_COMPILER_FREE(cs->linemap); else BC_FREE(cs->linemap); }
+    if (cs->labelmap)   { if (bc_compile_owns(cs->labelmap)) BC_COMPILER_FREE(cs->labelmap); else BC_FREE(cs->labelmap); }
     if (cs->nest_stack) { if (bc_compile_owns(cs->nest_stack)) BC_COMPILER_FREE(cs->nest_stack); else BC_FREE(cs->nest_stack); }
     if (cs->locals)     { if (bc_compile_owns(cs->locals)) BC_COMPILER_FREE(cs->locals); else BC_FREE(cs->locals); }
     if (cs->local_meta) { if (bc_compile_owns(cs->local_meta)) BC_COMPILER_FREE(cs->local_meta); else BC_FREE(cs->local_meta); }
@@ -64,6 +66,7 @@ int bc_compiler_compact(BCCompiler *cs) {
     /* 1. Free arrays only needed during compilation */
     if (cs->fixups)     { BC_COMPILER_FREE(cs->fixups);     cs->fixups = NULL; }
     if (cs->linemap)    { BC_COMPILER_FREE(cs->linemap);    cs->linemap = NULL; }
+    if (cs->labelmap)   { BC_COMPILER_FREE(cs->labelmap);   cs->labelmap = NULL; }
     if (cs->nest_stack) { BC_COMPILER_FREE(cs->nest_stack); cs->nest_stack = NULL; }
     if (cs->locals)     { BC_COMPILER_FREE(cs->locals);     cs->locals = NULL; }
 
@@ -112,6 +115,7 @@ void bc_compiler_init(BCCompiler *cs) {
     if (cs->subfun_locals_base) memset(cs->subfun_locals_base, 0, BC_MAX_SUBFUNS * sizeof(uint16_t));
     cs->fixup_count      = 0;
     cs->linemap_count    = 0;
+    cs->labelmap_count   = 0;
     cs->nest_depth       = 0;
     cs->current_subfun   = -1;
     cs->current_line     = 0;
@@ -364,6 +368,41 @@ uint32_t bc_linemap_lookup(BCCompiler *cs, uint16_t lineno) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Label map (BASIC labels: `name:` at line start, GOTO/GOSUB target)*/
+/* ------------------------------------------------------------------ */
+
+static int bc_labelmap_index(const BCCompiler *cs, const char *name) {
+    for (uint16_t i = 0; i < cs->labelmap_count; i++) {
+        if (strcasecmp(cs->labelmap[i].name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+int bc_add_labelmap_entry(BCCompiler *cs, const char *name, uint32_t offset) {
+    if (bc_labelmap_index(cs, name) >= 0) {
+        bc_set_error(cs, "Duplicate label '%s'", name);
+        return -1;
+    }
+    if (cs->labelmap_count >= BC_MAX_LABELS) {
+        bc_set_error(cs, "Too many labels (max %d)", BC_MAX_LABELS);
+        return -1;
+    }
+    BCLabelMap *L = &cs->labelmap[cs->labelmap_count];
+    size_t n = strlen(name);
+    if (n > BC_MAX_LABEL_NAME) n = BC_MAX_LABEL_NAME;
+    memcpy(L->name, name, n);
+    L->name[n] = '\0';
+    L->offset  = offset;
+    cs->labelmap_count++;
+    return 0;
+}
+
+uint32_t bc_labelmap_lookup(const BCCompiler *cs, const char *name) {
+    int i = bc_labelmap_index(cs, name);
+    return (i < 0) ? 0xFFFFFFFF : cs->labelmap[i].offset;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Nesting stack helpers                                             */
 /* ------------------------------------------------------------------ */
 
@@ -418,6 +457,37 @@ void bc_add_fixup_line(BCCompiler *cs, uint32_t patch_addr, int target_line,
     f->is_relative  = is_relative;
 }
 
+void bc_add_fixup_label(BCCompiler *cs, uint32_t patch_addr, const char *name,
+                        uint8_t size, uint8_t is_relative) {
+    if (cs->fixup_count >= BC_MAX_FIXUPS) {
+        bc_set_error(cs, "Too many fixups (max %d)", BC_MAX_FIXUPS);
+        return;
+    }
+    /* Stash the label name in the labelmap as a placeholder offset
+     * 0xFFFFFFFF if not yet defined; bc_resolve_fixups will use the
+     * label_idx to look up the resolved offset. */
+    int idx = bc_labelmap_index(cs, name);
+    if (idx < 0) {
+        if (cs->labelmap_count >= BC_MAX_LABELS) {
+            bc_set_error(cs, "Too many labels (max %d)", BC_MAX_LABELS);
+            return;
+        }
+        idx = cs->labelmap_count++;
+        BCLabelMap *L = &cs->labelmap[idx];
+        size_t n = strlen(name);
+        if (n > BC_MAX_LABEL_NAME) n = BC_MAX_LABEL_NAME;
+        memcpy(L->name, name, n);
+        L->name[n] = '\0';
+        L->offset  = 0xFFFFFFFF;  /* unresolved */
+    }
+    BCFixup *f = &cs->fixups[cs->fixup_count++];
+    f->patch_addr   = patch_addr;
+    f->target_line  = -1;
+    f->target_label = idx;
+    f->size         = size;
+    f->is_relative  = is_relative;
+}
+
 void bc_resolve_fixups(BCCompiler *cs) {
     for (uint16_t i = 0; i < cs->fixup_count; i++) {
         BCFixup *f = &cs->fixups[i];
@@ -429,8 +499,15 @@ void bc_resolve_fixups(BCCompiler *cs) {
                 bc_set_error(cs, "Undefined line number %d", f->target_line);
                 return;
             }
+        } else if (f->target_label >= 0 && f->target_label < cs->labelmap_count) {
+            target = cs->labelmap[f->target_label].offset;
+            if (target == 0xFFFFFFFF) {
+                bc_set_error(cs, "Undefined label '%s'",
+                             cs->labelmap[f->target_label].name);
+                return;
+            }
         } else {
-            bc_set_error(cs, "Label fixup not implemented");
+            bc_set_error(cs, "Bad fixup");
             return;
         }
 

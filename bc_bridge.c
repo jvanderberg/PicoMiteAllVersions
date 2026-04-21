@@ -718,6 +718,10 @@ cleanup:
 
 static unsigned char *g_bridge_prog_buf = NULL;
 
+unsigned char *bc_bridge_get_prog_buf(void) {
+    return g_bridge_prog_buf;
+}
+
 void bc_bridge_release_subfun_buffer(void) {
     if (g_bridge_prog_buf) {
         BC_FREE(g_bridge_prog_buf);
