@@ -875,11 +875,17 @@ void MIPS16 cmd_flash(void)
         if (*slot_base != 0xFFFFFFFF && !overwrite)
             error("Already programmed");
 
+        /* Match upstream's FLASH DISK LOAD ordering exactly: file slot
+         * lookup first, InitSDCard second, getFstring + BasicFileOpen
+         * third. The earlier ordering (InitSDCard, getFstring, then
+         * FindFreeFileNbr) tripped FR_INVALID_OBJECT on POSIX-routed
+         * fs (host --sd-root, wasm /sd) — likely getFstring's returned
+         * pointer aliasing inpbuf in a way FindFreeFileNbr's table
+         * scan disturbed. */
+        int fnbr = FindFreeFileNbr();
         if (!InitSDCard()) return;
         char *fname = (char *)getFstring(argv[2]);
         if (strchr(fname, '.') == NULL) strcat(fname, ".bmp");
-
-        int fnbr = FindFreeFileNbr();
         if (!BasicFileOpen(fname, fnbr, FA_READ)) return;
 
         /* --- Read & validate BMP header --- */
@@ -939,16 +945,32 @@ void MIPS16 cmd_flash(void)
         FlashWriteWord((uint32_t)width);
         FlashWriteWord((uint32_t)height);
 
-        /* --- Walk rows in top-down output order, packing nibbles --- */
+        /* --- Read entire pixel data sequentially into RAM ---
+         *
+         * positionfile() doesn't HAL through to the POSIX-routed file
+         * table our host (--sd-root) and wasm (/sd) builds use, so any
+         * f_lseek-based per-row seek trips FR_INVALID_OBJECT. Instead
+         * we read forward to bfOffBits + slurp the whole image (file
+         * order = bottom-up for positive height) into a heap buffer,
+         * then write top-down rows into flash without seeking. */
         int file_row_stride = ((width * 3 + 3) & ~3); /* 4-byte aligned */
+        for (uint32_t skip = 54; skip < bfOffBits; skip++) (void)FileGetChar(fnbr);
+
+        uint8_t *image = GetMemory((size_t)file_row_stride * (size_t)height);
+        for (int r = 0; r < height; r++) {
+            uint8_t *row = image + (size_t)r * (size_t)file_row_stride;
+            for (int b = 0; b < file_row_stride; b++) row[b] = (uint8_t)FileGetChar(fnbr);
+        }
+
+        /* --- Walk rows in top-down output order, packing nibbles --- */
         for (int out_row = 0; out_row < height; out_row++) {
             int file_row = topDown ? out_row : (height - 1 - out_row);
-            positionfile(fnbr, (int)bfOffBits + file_row * file_row_stride);
+            const uint8_t *row = image + (size_t)file_row * (size_t)file_row_stride;
             uint8_t low_nibble = 0;
             for (int col = 0; col < width; col++) {
-                uint8_t b = (uint8_t)FileGetChar(fnbr);
-                uint8_t g = (uint8_t)FileGetChar(fnbr);
-                uint8_t r = (uint8_t)FileGetChar(fnbr);
+                uint8_t b = row[col * 3 + 0];
+                uint8_t g = row[col * 3 + 1];
+                uint8_t r = row[col * 3 + 2];
                 uint32_t rgb888 = ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
                 uint8_t nibble = RGB121(rgb888);
                 if ((col & 1) == 0) {
@@ -962,6 +984,7 @@ void MIPS16 cmd_flash(void)
                 }
             }
         }
+        FreeMemory(image);
         FileClose(fnbr);
         FlashWriteClose();
     }

@@ -145,7 +145,7 @@ SUB CreateAtlas()
   LOCAL INTEGER atlas_w = 16
   LOCAL INTEGER atlas_h = 16
   LOCAL INTEGER fy, x, dx, dy, d2, bb, gg, rr
-  OPEN "B:/atlas.bmp" FOR OUTPUT AS #fnbr
+  OPEN "atlas.bmp" FOR OUTPUT AS #fnbr
   ' --- 14-byte BITMAPFILEHEADER ---
   PRINT #fnbr, "BM";
   PRINT #fnbr, CHR$(0);CHR$(0);CHR$(0);CHR$(0);   ' bfSize (ignored)
@@ -456,7 +456,7 @@ InitBlocks
 ' references it, and create sprite #1 for the ball. Tilemap data label
 ' is `tm_ballmap` below — single tile of value 1.
 CreateAtlas
-FLASH LOAD IMAGE 1, "B:/atlas.bmp", O
+FLASH LOAD IMAGE 1, "atlas.bmp", O
 TILEMAP CREATE tm_ballmap, 1, 1, 16, 16, 1, 1, 1
 TILEMAP SPRITE CREATE TM_BALL_SPRITE%, 1, TM_BALL_TILE%, 0, 0
 GOTO tm_skip_data
