@@ -3778,7 +3778,29 @@ static void source_compile_local(BCSourceFrontend *fe, BCCompiler *cs, const cha
         uint8_t as_type = source_parse_as_type_clause(&p);
         if (as_type != 0) vtype = as_type;
         if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
-        bc_add_local(cs, name, name_len, vtype, is_array);
+        int local_idx = bc_add_local(cs, name, name_len, vtype, is_array);
+
+        /* Optional `= expr` initialiser. The interpreter accepts
+         * `LOCAL INTEGER x = 5` so the VM compiler must too. Mirrors
+         * source_compile_dim's `=` handling but stores into the local
+         * slot just allocated, not a global. Arrays don't take an
+         * initialiser here (matches DIM). */
+        source_skip_space(&p);
+        if (!is_array && local_idx >= 0 && *p == '=') {
+            p++;
+            uint8_t etype = source_parse_expression(fe, cs, &p);
+            if ((vtype & T_STR) && !(etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign numeric expression to string variable");
+                *pp = p;
+                return;
+            }
+            if (!(vtype & T_STR) && (etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign string expression to numeric variable");
+                *pp = p;
+                return;
+            }
+            source_emit_store_converted(cs, (uint16_t)local_idx, vtype, etype, 1);
+        }
 
         source_skip_space(&p);
         if (*p != ',') break;
@@ -6993,6 +7015,49 @@ static void source_compile_statement(BCSourceFrontend *fe, BCCompiler *cs, const
             tmp[len] = 0;
             source_emit_bridge_for_stmt(cs, tmp);
             return;
+        }
+
+        /* Variable file numbers: source_parse_file_number() and the
+         * native PRINT/OPEN/CLOSE/SEEK syscalls all bake the file
+         * number into a compile-time aux byte. The interpreter accepts
+         * `#fnbr` where fnbr is a runtime variable, so any file
+         * statement we see with `#<non-digit>` gets bridged whole.
+         * Cheap to detect: scan the statement for an unquoted '#' and
+         * peek the next non-space char. Skip over string literals to
+         * avoid matching '#' inside text. */
+        {
+            int has_var_fnbr = 0;
+            const char *scan = stmt;
+            int in_str = 0;
+            while (*scan && *scan != '\n' && *scan != '\'') {
+                char c = *scan;
+                if (c == '"') { in_str = !in_str; scan++; continue; }
+                if (!in_str && c == '#') {
+                    const char *q = scan + 1;
+                    while (*q == ' ' || *q == '\t') q++;
+                    if (*q && !isdigit((unsigned char)*q)) {
+                        has_var_fnbr = 1;
+                        break;
+                    }
+                }
+                scan++;
+            }
+            if (has_var_fnbr) {
+                const char *line_end = stmt;
+                int s_in_str = 0;
+                while (*line_end && *line_end != '\n') {
+                    if (*line_end == '"') s_in_str = !s_in_str;
+                    if (!s_in_str && (*line_end == ':' || *line_end == '\'')) break;
+                    line_end++;
+                }
+                size_t len = (size_t)(line_end - stmt);
+                if (len >= STRINGSIZE) len = STRINGSIZE - 1;
+                char tmp[STRINGSIZE];
+                memcpy(tmp, stmt, len);
+                tmp[len] = 0;
+                source_emit_bridge_for_stmt(cs, tmp);
+                return;
+            }
         }
     }
 
