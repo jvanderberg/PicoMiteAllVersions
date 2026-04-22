@@ -30,7 +30,11 @@
 #include "Hardware_Includes.h"
 
 extern const uint8_t *flash_progmemory;
-uint8_t flash_prog_buf[256 * 1024];
+/* Sized to mirror the device program-flash region: MAX_PROG_SIZE +
+ * the CFunction trailing area. Pre-refactor this was a hardcoded
+ * 256 KB regardless of variant; now it tracks MAX_PROG_SIZE so wasm's
+ * MEMORY command shows the same numbers as device. */
+uint8_t flash_prog_buf[2 * MAX_PROG_SIZE];
 
 /* Shared between host_runtime.c (MMPrintString / putConsole) and
  * host_main.c's capture mode. In WASM there is nothing to capture to —
@@ -77,34 +81,30 @@ static int wasm_consume_break(void) {
 }
 
 /*
- * Runtime-selectable heap size. Clamped to [32 KB, HEAP_MEMORY_SIZE]
- * where the upper bound is the compile-time ceiling in configuration.h
- * (8 MB on WASM). Page-aligned down so the mmap machinery sees an
- * integer number of pages. Must be called BEFORE InitBasic/ClearRuntime
- * — wasm_boot's first steps — so the bitmap setup uses the selected
- * size.
- */
-extern uint32_t heap_memory_size;
-void bc_alloc_set_heap_capacity(size_t bytes);  /* in bc_alloc.c under MMBASIC_HOST */
-
-EMSCRIPTEN_KEEPALIVE
-void wasm_set_heap_size(int bytes) {
-    /* PAGESIZE is a macro in Memory.h (#define PAGESIZE 256). Use it
-     * directly rather than shadowing with a local. */
-    if (bytes < 32 * 1024) bytes = 32 * 1024;
-    if (bytes > (int)HEAP_MEMORY_SIZE) bytes = HEAP_MEMORY_SIZE;
-    bytes &= ~(PAGESIZE - 1);
-    heap_memory_size = (uint32_t)bytes;
-    bc_alloc_set_heap_capacity((size_t)bytes);
-}
-
-/*
  * Live-adjustable throttle. Mirrors the native --slowdown CLI flag:
  * host_runtime_check_timeout sleeps host_sim_slowdown_us microseconds
  * per statement/poll-tick, and bc_vm_poll_interrupts does the same on
  * every backward branch. Safe to call at any time — a plain int store
  * takes effect on the next poll.
  */
+/*
+ * Runtime-selectable memory-constraint simulation. Sets the runtime
+ * heap_memory_size (and therefore the TryGetMemory cap + MEMORY
+ * command output) to the dropdown-selected profile — 128 KB simulates
+ * RP2040, 300 KB simulates RP2350, 1/2/4/8 MB are larger "for fun"
+ * profiles. Clamped to the compile-time 8 MB ceiling. Must be called
+ * before InitBasic/ClearRuntime so the page bitmap is sized correctly.
+ */
+extern uint32_t heap_memory_size;
+
+EMSCRIPTEN_KEEPALIVE
+void wasm_set_heap_size(int bytes) {
+    if (bytes < 32 * 1024) bytes = 32 * 1024;
+    if (bytes > (int)HEAP_MEMORY_SIZE) bytes = HEAP_MEMORY_SIZE;
+    bytes &= ~(PAGESIZE - 1);
+    heap_memory_size = (uint32_t)bytes;
+}
+
 extern int host_sim_slowdown_us;
 
 EMSCRIPTEN_KEEPALIVE

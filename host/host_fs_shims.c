@@ -370,13 +370,12 @@ int ExistsDir(char *p, char *q, int *filesystem) {
  * (matching erased flash) via the constructor below.
  * ======================================================================= */
 extern uint8_t flash_prog_buf[];
-#define HOST_FLASH_SIZE        (256 * 1024)
+#define HOST_FLASH_SIZE        (2 * MAX_PROG_SIZE)
 #define HOST_FLASH_PROG_SIZE   (HOST_FLASH_SIZE / 2)
 
 /* Device address range of the user flash slot region. MAX_PROG_SIZE is
- * the per-slot stride; on wasm it's already capped to 256 KB by the
- * configuration.h override. Native host uses MAX_PROG_SIZE =
- * HEAP_MEMORY_SIZE = 184 KB → 552 KB slot mirror. */
+ * the per-slot stride and matches HEAP_MEMORY_SIZE for the variant
+ * (PicoCalc rp2040 PICOMITE = 128 KB → 384 KB slot mirror). */
 #define HOST_SLOT_REGION_BASE  ((uint32_t)(FLASH_TARGET_OFFSET + FLASH_ERASE_SIZE + SAVEDVARS_FLASH_SIZE))
 #define HOST_SLOT_REGION_SIZE  ((uint32_t)(MAXFLASHSLOTS * MAX_PROG_SIZE))
 

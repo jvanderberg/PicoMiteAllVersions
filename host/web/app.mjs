@@ -149,7 +149,13 @@ function reloadWithResolution(label) {
     window.location.href = url.toString();
 }
 
-const DEFAULT_MEM = 2097152;
+// Dropdown values are the MMBasic heap size (bytes) the simulator
+// should cap itself at — these map to the device hardcoded limits
+// (128 KB for RP2040, 300 KB for RP2350 per configuration.h). Labels
+// show the device's total SRAM to aid profile selection, but the
+// enforced cap is the MMBasic heap, matching what the real firmware
+// has available for BASIC.
+const DEFAULT_MEM = 307200;
 const MEM_KEY = 'picomite.mem';
 const MEM_MIN = 32 * 1024;
 const MEM_MAX = 8 * 1024 * 1024;
@@ -1033,9 +1039,15 @@ async function onWorkerReady() {
     // round-trip returning a short string array every 3 s.
     setInterval(() => { refreshFilesList().catch(() => {}); }, 3000);
 
-    const memLabel = memoryBytesCfg >= 1024 * 1024
-        ? `${(memoryBytesCfg / (1024 * 1024)).toFixed(memoryBytesCfg % (1024 * 1024) ? 1 : 0)} MB`
-        : `${Math.round(memoryBytesCfg / 1024)} KB`;
+    // Match the dropdown: RP2040/RP2350 labels show device total SRAM,
+    // fun profiles show raw heap size.
+    let memLabel;
+    if (memoryBytesCfg === 131072)      memLabel = '264 KB (RP2040)';
+    else if (memoryBytesCfg === 307200) memLabel = '520 KB (RP2350)';
+    else if (memoryBytesCfg >= 1024 * 1024)
+        memLabel = `${(memoryBytesCfg / (1024 * 1024)).toFixed(memoryBytesCfg % (1024 * 1024) ? 1 : 0)} MB`;
+    else
+        memLabel = `${Math.round(memoryBytesCfg / 1024)} KB`;
     const parts = [`${fbWidth}×${fbHeight}`, `${memLabel}`];
     if (slowdownUs > 0) parts.push(`slowdown ${slowdownUs} µs`);
     parts.push(`${demos.length} file${demos.length === 1 ? '' : 's'}`);

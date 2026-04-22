@@ -189,16 +189,19 @@
         <label class="config-row">
             <span class="config-label">Memory</span>
             <select id="memory">
-                <option value="131072">128 KB (RP2040)</option>
-                <option value="307200">300 KB (RP2350)</option>
-                <option value="524288">512 KB</option>
-                <option value="1048576">1 MB</option>
-                <option value="2097152">2 MB</option>
-                <option value="4194304">4 MB</option>
-                <option value="8388608">8 MB</option>
+                <!-- Label shows the device's total SRAM; value = the
+                     MMBasic heap size that device is hardcoded to
+                     (configuration.h PICOMITE branch). MEMORY output
+                     on the simulator then matches device MEMORY. -->
+                <option value="131072">264 KB — RP2040</option>
+                <option value="307200">520 KB — RP2350</option>
+                <option value="1048576">1 MB — for fun</option>
+                <option value="2097152">2 MB — for fun</option>
+                <option value="4194304">4 MB — for fun</option>
+                <option value="8388608">8 MB — for fun</option>
             </select>
         </label>
-        <p class="config-hint">Changing memory reloads the page.</p>
+        <p class="config-hint">RP2040/RP2350 labels show device total SRAM; the simulator caps the MMBasic heap to the same hard limit the real firmware uses. Changing memory reloads the page.</p>
 
         <label class="config-row">
             <span class="config-label">Slowdown (µs)</span>

@@ -605,10 +605,15 @@ void MIPS16 cmd_memory(void) {
         }
         pint += (*pint + 4) / sizeof(unsigned int);
     }
-    CFunctPercent = (CFunctSize * 100) /  (MAX_PROG_SIZE + SAVEDVARS_FLASH_SIZE);
+    /* Use runtime heap_memory_size instead of compile-time MAX_PROG_SIZE
+     * so WASM's memory-constraint simulator reports the dropdown-selected
+     * profile. On device the two are equal (MAX_PROG_SIZE =
+     * HEAP_MEMORY_SIZE, heap_memory_size = HEAP_MEMORY_SIZE at init), so
+     * device output is unchanged. */
+    CFunctPercent = (CFunctSize * 100) /  (heap_memory_size + SAVEDVARS_FLASH_SIZE);
     CFunctSizeK = (CFunctSize + 512) / 1024;
     if(CFunctNbr && CFunctSizeK == 0) CFunctPercent = CFunctSizeK = 1;              // adjust if it is zero and we have some functions
-    FontPercent = (FontSize * 100) /  (MAX_PROG_SIZE /*+ SAVEDVARS_FLASH_SIZE*/);
+    FontPercent = (FontSize * 100) /  (heap_memory_size /*+ SAVEDVARS_FLASH_SIZE*/);
     FontSizeK = (FontSize + 512) / 1024;
     if(FontNbr && FontSizeK == 0) FontPercent = FontSizeK = 1;                      // adjust if it is zero and we have some functions
 
@@ -628,7 +633,7 @@ void MIPS16 cmd_memory(void) {
 		while(*p) p++;												// look for the zero marking the start of an element
     }
     ProgramSize = ((p - ProgMemory) + 512)/1024;
-    ProgramPercent = ((p - ProgMemory) * 100)/(MAX_PROG_SIZE /*+ SAVEDVARS_FLASH_SIZE*/);
+    ProgramPercent = ((p - ProgMemory) * 100)/(heap_memory_size /*+ SAVEDVARS_FLASH_SIZE*/);
     if(ProgramPercent > 100) ProgramPercent = 100;
     if(i && ProgramSize == 0) ProgramPercent = ProgramSize = 1;                                        // adjust if it is zero and we have some lines
 
@@ -663,7 +668,7 @@ void MIPS16 cmd_memory(void) {
 
 
 
-    IntToStrPad((char *)inpbuf, ((MAX_PROG_SIZE/* + SAVEDVARS_FLASH_SIZE*/) + 512)/1024 - ProgramSize - CFunctSizeK - FontSizeK /*- SavedVarSizeK - LibrarySizeK*/, ' ', 4, 10); strcat((char *)inpbuf, "K (");
+    IntToStrPad((char *)inpbuf, ((heap_memory_size/* + SAVEDVARS_FLASH_SIZE*/) + 512)/1024 - ProgramSize - CFunctSizeK - FontSizeK /*- SavedVarSizeK - LibrarySizeK*/, ' ', 4, 10); strcat((char *)inpbuf, "K (");
     IntToStrPad((char *)inpbuf + strlen((char *)inpbuf), 100 - ProgramPercent - CFunctPercent - FontPercent /*- SavedVarPercent - LibraryPercent*/, ' ', 2, 10); strcat((char *)inpbuf, "%) Free\r\n");
 	MMPrintString((char *)inpbuf);
 

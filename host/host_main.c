@@ -49,7 +49,11 @@ int host_runtime_height(void);
  * flash_prog_buf is non-static so host_stubs_legacy.c's simulated flash
  * routines can write through to it. */
 extern const uint8_t *flash_progmemory;
-uint8_t flash_prog_buf[256 * 1024];
+/* Sized to mirror device program-flash region — MAX_PROG_SIZE for the
+ * program area + same for the CFunction tail. Tracks the variant
+ * config rather than the old fixed 256 KB so MEMORY output matches
+ * device exactly. */
+uint8_t flash_prog_buf[2 * MAX_PROG_SIZE];
 
 /* Output capture buffer */
 #define CAPTURE_SIZE (64 * 1024)

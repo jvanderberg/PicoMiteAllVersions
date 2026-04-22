@@ -26,6 +26,10 @@
 //                            to Web Audio)
 //   outbound 'fs-list-result', 'fs-read-result', 'fs-reset-result',
 //            'fs-syncfs-result' — responses carrying reqId
+//
+// Single WASM binary — cfg.heap picks which device memory profile to
+// simulate. _wasm_set_heap_size caps the runtime MMBasic heap so
+// TryGetMemory + MEMORY output reflect the simulated profile.
 
 import Module from './picomite.mjs';
 

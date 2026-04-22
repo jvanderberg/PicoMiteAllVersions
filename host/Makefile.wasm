@@ -9,12 +9,19 @@
 #
 # host_sim_server.c / vendor/mongoose.c are NOT linked — JS calls the
 # exported C functions directly via Module.ccall, no HTTP/WS layer.
+#
+# Single binary simulates every memory profile. configuration.h sets
+# HEAP_MEMORY_SIZE to an 8 MB ceiling under MMBASIC_WASM so AllMemory[]
+# and mmap[] are sized once; the JS bootstrap picks a profile at boot
+# via _wasm_set_heap_size, which clamps the runtime heap_memory_size —
+# TryGetMemory and MEMORY output then report the simulated profile.
 
 EMCC ?= emcc
 WEB_DIR := web
 
 # Match the native host's device memory simulation target (rp2040 by
-# default). Keeps VM array sizes and bc_alloc heap budgets identical.
+# default). Affects bc_alloc heap budget labelling only — not the
+# compile-time HEAP_MEMORY_SIZE, which is the WASM ceiling.
 DEVICE_SIM ?= rp2040
 ifeq ($(DEVICE_SIM),rp2040)
   SIM_FLAGS = -DBC_SIM_RP2040
@@ -45,9 +52,6 @@ CFLAGS = -O2 -std=gnu11 -funsigned-char \
 # multiple-definition asks wasm-ld to take the first symbol it sees and
 # ignore the rest — same effective behaviour as gcc's native merge.
 
-# ASYNCIFY stack: 64 KB is comfortable for the interpreter's deepest
-# recursion (setjmp/longjmp through MMBasic_RunPromptLoop). Bump if we
-# hit "asyncify stack overflow" in the browser console.
 LDFLAGS = -pthread -sPTHREAD_POOL_SIZE=1 \
           -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=268435456 \
           -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker \
@@ -120,6 +124,8 @@ wasm_obj/%.o: %.c
 clean:
 	rm -rf wasm_obj
 	rm -f $(WEB_DIR)/picomite.mjs $(WEB_DIR)/picomite.wasm $(WEB_DIR)/picomite.data
+	@# Transitional multi-profile artefacts from an earlier attempt:
+	rm -f $(WEB_DIR)/picomite-*.mjs $(WEB_DIR)/picomite-*.wasm $(WEB_DIR)/picomite-*.data
 
 -include $(DEPS)
 

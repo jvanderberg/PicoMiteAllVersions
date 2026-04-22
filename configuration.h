@@ -213,12 +213,13 @@ extern "C" {
     #endif
 #endif
 
-/* WASM build ceiling: override the device-sized compile-time heap with
- * a big buffer and let the runtime `heap_memory_size` variable (settable
- * via wasm_set_heap_size) pick any size ≤ this ceiling. The JS
- * dropdown defaults to 2 MB and offers RP2040/RP2350-faithful 128 KB /
- * 300 KB for testing device behaviour. AllMemory[] and mmap[] are both
- * sized by HEAP_MEMORY_SIZE at compile time, so this sets the max. */
+/* WASM build: single binary simulates multiple device memory profiles.
+ * Compile-time HEAP_MEMORY_SIZE is the ceiling (8 MB) that sizes
+ * AllMemory[] / mmap[] / flash_prog_buf once. At runtime,
+ * wasm_set_heap_size sets heap_memory_size (≤ ceiling) to the
+ * dropdown-selected profile — TryGetMemory and MEMORY both read that
+ * runtime variable, so the simulator reports the configured device's
+ * numbers regardless of the underlying buffer sizes. */
 #ifdef MMBASIC_WASM
 #undef HEAP_MEMORY_SIZE
 #define HEAP_MEMORY_SIZE (8 * 1024 * 1024)
@@ -236,21 +237,15 @@ extern "C" {
 #define MAXRAMSLOTS 5
 #define MAXVARHASH				MAXVARS/2
 
-/* WASM cap on the flash slot region.
- *
- * MAX_PROG_SIZE is also used to size each FLASH slot (cmd_flash, FLASH
- * LOAD IMAGE, FLASH DISK LOAD), the in-memory ProgMemory buffer, and the
- * RAM mirror in host_fs_shims.c. On wasm, HEAP_MEMORY_SIZE is bumped to
- * 8 MB so user programs can use lots of variables — but that would
- * balloon the flash slot mirror to MAXFLASHSLOTS × 8 MB = 24 MB, beyond
- * wasm's 32 MB initial-memory budget. Cap MAX_PROG_SIZE at 256 KB on
- * wasm; flash_prog_buf in host_wasm_main.c is already that size, so
- * programs >256 KB couldn't be saved through flash_range_program
- * regardless. AllMemory[] still gets the full HEAP_MEMORY_SIZE so
- * runtime variables aren't constrained. */
+/* WASM cap on the compile-time MAX_PROG_SIZE. Without this, MAX_PROG_SIZE
+ * tracks the 8 MB heap ceiling and flash_prog_buf + the flash slot mirror
+ * in host_fs_shims.c balloon to ~40 MB of static data. The MEMORY command
+ * and TryGetMemory don't read MAX_PROG_SIZE — they read heap_memory_size
+ * (runtime) — so this cap is purely a static-array budget. Programs
+ * larger than 512 KB aren't expected in practice. */
 #ifdef MMBASIC_WASM
 #undef MAX_PROG_SIZE
-#define MAX_PROG_SIZE (256 * 1024)
+#define MAX_PROG_SIZE (512 * 1024)
 #endif
 
 
