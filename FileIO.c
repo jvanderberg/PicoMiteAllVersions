@@ -3853,7 +3853,18 @@ int BasicFileOpen(char *fname, int fnbr, int mode)
     }
 }
 
+/* MAXFILES caps the flist[] buffer size in cmd_files (sizeof(s_flist)
+ * ≈ 76 bytes; on device that's 76 KB). On device the in-program path
+ * SaveContexts + InitHeaps before allocating, so 76 KB fits in the
+ * freshly-cleared MMHeap. The host path can't InitHeap mid-FRUN
+ * without wiping the live VMState on the shared bc_alloc heap — so
+ * the 76 KB alloc races against VM state and fragments out. 256 is
+ * ample for any test fixture and any plausible interactive use. */
+#ifdef MMBASIC_HOST
+#define MAXFILES 256
+#else
 #define MAXFILES 1000
+#endif
 typedef struct ss_flist
 {
     char fn[FF_MAX_LFN];

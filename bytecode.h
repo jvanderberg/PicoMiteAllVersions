@@ -900,10 +900,21 @@ typedef struct {
 #define VM_MAX_FOR       32
 #define VM_MAX_GOSUB     64
 
-#ifdef MMBASIC_HOST
-  #define VM_MAX_LOCALS   1024
-#else
+/* VM_MAX_LOCALS must track the device heap budget, not the host build.
+ * On WASM with an RP2040-sized dropdown (128 KB heap) the simulator
+ * needs device-sized locals or bc_vm_alloc burns ~57 KB just for
+ * vm->locals/local_types/local_arrays — eating the heap budget and
+ * letting programs that OOM on real RP2040 succeed in the simulator.
+ * Gate on BC_SIM_RP2040 / BC_SIM_RP2350 (the Makefile.wasm and
+ * host/Makefile set these to match the device being simulated). */
+#if defined(BC_SIM_RP2040)
   #define VM_MAX_LOCALS   256    /* supports ~4 recursion levels * 64 locals */
+#elif defined(BC_SIM_RP2350)
+  #define VM_MAX_LOCALS   512
+#elif defined(MMBASIC_HOST)
+  #define VM_MAX_LOCALS   1024   /* native host with no device sim — generous */
+#else
+  #define VM_MAX_LOCALS   256    /* default device build (RP2040) */
 #endif
 
 /*

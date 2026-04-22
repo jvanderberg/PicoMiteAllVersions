@@ -242,22 +242,15 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 
     bc_compiler_init(cs);
 
-    /* Populate subfun[] from the raw source so bridged interpreter paths
-     * (bc_bridge_call_cmd / bc_bridge_call_fun → expression eval →
-     * FindSubFun) can resolve user-defined SUB/FUNCTION names. The VM
-     * compiles straight from the source string without routing through
-     * PrepareProgram, so without this subfun[] stays empty and a bridged
-     * statement like `Sort a%(), , Flag%()` errors "Dimensions" when the
-     * interpreter misreads the user-fn call as an array reference.
-     *
-     * Uses a RAM side-buffer (no ProgMemory / flash writes on device).
-     * Paired release happens after VM execution completes below.
-     *
-     * Skip in immediate mode: single-line REPL entries can't define
-     * SUBs and we should leave any pre-existing subfun[] state alone. */
-    if (!is_immediate) {
-        bc_bridge_prepare_subfun(source);
-    }
+    /* bc_bridge_prepare_subfun is called AFTER compact (below), at the
+     * lowest-pressure moment in the FRUN pipeline — compile-only arrays
+     * have been freed, runtime arrays shrunk, and the peak 20 KB of
+     * compile metadata has dropped to ~5 KB. On a 128 KB heap this is
+     * the only ordering where the ~src_len bridge buffer reliably
+     * finds contiguous space. Deferring the sub table also means
+     * ExecuteProgram's label walker (called via findlabel during a
+     * bridged TILEMAP CREATE / RESTORE / GOTO) sees a fully tokenised
+     * buffer populated with all main-program labels. */
 
     bc_crash_checkpoint(BC_CK_VM_COMPILE, "bc_compile_source");
     err = bc_compile_source(cs, source, source_name);
@@ -299,21 +292,9 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_alloc_bytes_capacity());
 #endif
 
-    /* Source text is no longer needed after compile — free it before we
-     * allocate VM runtime tables + run the program.  On device the heap is
-     * unified so BC_FREE safely releases any pointer allocated via GetMemory
-     * or BC_ALLOC.  On host, honour the existing ownership-based free. */
-    if (bc_compile_owns(source)) {
-        source = NULL;
-    } else if (bc_alloc_owns(source)) {
-        BC_FREE((void *)source);
-        source = NULL;
-    }
-#ifndef MMBASIC_HOST
-    /* Device: unified MMHeap, BC_FREE == FreeMemory.  Caller must not free
-     * again after bc_run_source_string returns. */
-    if (source) { BC_FREE((void *)source); source = NULL; }
-#endif
+    /* Source kept alive through compact + bc_bridge_prepare_subfun
+     * below. Freed afterwards (device catch-all) so the bridge buffer
+     * alloc gets maximum contiguous headroom. */
 
     if (bc_compiler_compact(cs) != 0) {
         VMRUN_DBG("VM: compact failed\r\n");
@@ -329,6 +310,9 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
 #endif
         bc_compiler_free(cs);
         bc_compile_release_all();
+#ifndef MMBASIC_HOST
+        if (source) BC_FREE((void *)source);
+#endif
         BC_FREE(cs);
         BC_FREE(vm);
         if (!is_immediate) bc_bridge_release_subfun_buffer();
@@ -357,6 +341,29 @@ void bc_run_source_string_ex(const char *source, const char *source_name, int is
                               (unsigned)bc_compile_bytes_free(),
                               (unsigned)bc_runtime_bytes_limit(),
                               (unsigned)bc_alloc_bytes_capacity());
+#endif
+
+    /* Prepare the bridge subfun buffer NOW — compile-only arrays have
+     * been freed, runtime arrays shrunk, so the ~src_len buffer lands
+     * in the loosest heap state we can arrange. Skipped in immediate
+     * mode — single-line REPL entries can't define SUBs. */
+    if (!is_immediate) {
+        if (bc_bridge_prepare_subfun(source) < 0) {
+            bc_compiler_free(cs);
+            BC_FREE(cs);
+            BC_FREE(vm);
+#ifndef MMBASIC_HOST
+            if (source) BC_FREE((void *)source);
+#endif
+            error("FRUN: out of memory (bridge sub table)");
+            return;
+        }
+    }
+
+    /* Source no longer needed on device — free before VM runtime tables
+     * allocate. Host leaves source to the caller (existing contract). */
+#ifndef MMBASIC_HOST
+    if (source) { BC_FREE((void *)source); source = NULL; }
 #endif
 
     bc_crash_checkpoint(BC_CK_VM_ALLOC, "bc_vm_alloc");
@@ -547,8 +554,21 @@ void cmd_frun(void) {
                 if (need_sep) path[rl++] = '/';
                 strcpy(path + rl, fname_buf);
             }
-            source = read_basic_source_file(path);
-            if (!source) error("File not found");
+            /* Read through stdio but allocate through MMHeap so the
+             * source buffer counts against heap_memory_size — same as
+             * the device path. Otherwise the WASM rp2040 simulator has
+             * ~25 KB more headroom than the real RP2040 for the same
+             * program and FRUN succeeds where it should OOM. */
+            FILE *f = fopen(path, "r");
+            if (!f) error("File not found");
+            fseek(f, 0, SEEK_END);
+            long fsize = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            source = (char *)GetMemory((int)fsize + 1);
+            if (!source) { fclose(f); error("Not enough memory"); }
+            size_t got = fread(source, 1, (size_t)fsize, f);
+            fclose(f);
+            source[got] = '\0';
         } else {
             char path[FF_MAX_LFN + 1];
             FIL file;
@@ -563,12 +583,16 @@ void cmd_frun(void) {
             if (res != FR_OK) error("File not found");
 
             fsize = (int)f_size(&file);
-            source = (char *)malloc(fsize + 1);
+            /* GetMemory (not malloc) so the source buffer counts against
+             * the simulated MMHeap, matching device behaviour — otherwise
+             * the simulator has ~25 KB more headroom than the real device
+             * for the same program and FRUN succeeds where it would OOM. */
+            source = (char *)GetMemory(fsize + 1);
             if (!source) { f_close(&file); error("Not enough memory"); }
 
             res = f_read(&file, source, (UINT)fsize, &bytes_read);
             f_close(&file);
-            if (res != FR_OK) { free(source); error("File error"); }
+            if (res != FR_OK) { FreeMemory((unsigned char *)source); error("File error"); }
             source[bytes_read] = '\0';
         }
     }
@@ -612,10 +636,12 @@ void cmd_frun(void) {
     bc_run_source_string(source, fname_buf);
 
 #ifdef MMBASIC_HOST
-    free(source);
+    /* Source was allocated via GetMemory so it counts against
+     * heap_memory_size — release through FreeMemory, not free(). */
+    if (source) { FreeMemory((unsigned char *)source); source = NULL; }
 #else
-    /* On device, bc_run_source_string freed the source itself after compile
-     * to reclaim heap before the VM executed.  Nothing to free here. */
+    /* Device path freed source inside bc_run_source_string (via the
+     * `#ifndef MMBASIC_HOST` block after compile). Nothing to do here. */
     source = NULL;
 #endif
 }

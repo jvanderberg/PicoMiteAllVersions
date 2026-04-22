@@ -328,13 +328,19 @@ static void sync_mmbasic_to_vm(BCVMState *vm) {
                         (slot->type == T_NBR) ? (void *)v->val.fa :
                                                 (void *)v->val.s;
 
-        if (new_ptr == vm->arrays[i].data) continue;  /* unchanged — fast path */
-
         BCArray *arr = &vm->arrays[i];
-        arr->data = (BCValue *)new_ptr;
-        arr->data_external = 1;
 
-        /* Refresh dims and total_elements from the interpreter's view. */
+        /* Refresh dims and total_elements from the interpreter's view —
+         * always, not just on pointer change. REDIM can return the same
+         * pointer when the heap allocator reuses the freed slot (small
+         * programs hit this on nearly-empty heaps). Skipping the refresh
+         * on the pointer-unchanged fast path would leave stale dims and
+         * the bounds check rejects the newly-valid REDIM'd index. */
+        if (new_ptr != arr->data) {
+            arr->data = (BCValue *)new_ptr;
+            arr->data_external = 1;
+        }
+
         int ndims = 0;
         uint32_t total = 1;
         for (int d = 0; d < MAXDIM; d++) {
@@ -534,8 +540,18 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len) {
     int saved_cmdtoken = cmdtoken;
     unsigned char *saved_cmdline = cmdline;
     unsigned char *saved_nextstmt = nextstmt;
+    unsigned char *saved_current_line = CurrentLinePtr;
     int saved_local_index = g_LocalIndex;
     int local_map[VM_MAX_LOCALS];
+
+    /* Pretend we're inside a running program rather than at the REPL.
+     * Several interp commands (cmd_files, cmd_load, cmd_new, …) branch
+     * on `CurrentLinePtr == NULL` and call ClearRuntime / ClearVars
+     * which wipes the entire MMHeap. With shared bc_alloc + MMHeap
+     * (matching device), that wipe also frees the live VMState mid-
+     * dispatch and the next opcode segfaults. Setting a non-NULL
+     * sentinel here puts those commands on their program-driven path. */
+    if (!CurrentLinePtr) CurrentLinePtr = buf;
     int bridge_level = 0;
 
     /* Sync VM variables to MMBasic table */
@@ -595,6 +611,7 @@ void bc_bridge_call_cmd(BCVMState *vm, const uint8_t *tok, uint16_t len) {
     cmdtoken = saved_cmdtoken;
     cmdline = saved_cmdline;
     nextstmt = saved_nextstmt;
+    CurrentLinePtr = saved_current_line;
 
     ClearTempMemory();
 }
@@ -734,15 +751,31 @@ void bc_bridge_release_subfun_buffer(void) {
 }
 
 int bc_bridge_prepare_subfun(const char *source) {
-    bc_bridge_release_subfun_buffer();
-    if (!source || !*source) return 0;
+    if (!source || !*source) {
+        bc_bridge_release_subfun_buffer();
+        return 0;
+    }
 
     /* Tokenised form is typically <= source length. Add headroom for
-     * per-line terminators + 0xff end-of-program sentinel. */
+     * per-line terminators + 0xff end-of-program sentinel.
+     *
+     * Allocate FIRST, then release the old buffer + clobber subfun[].
+     * Releasing first would wipe the prior PrepareProgram state on device
+     * — and if the BC_ALLOC then fails (rp2040 with combined bc_alloc /
+     * MMHeap pressure) the bridged-call lookup would see an empty
+     * subfun[] instead of the still-correct prior table. Symptom on
+     * device was "Bridge: unknown SUB <name>" after RUN-then-FRUN.
+     *
+     * Filtering to SUB/FUNCTION/CSUB-only blocks would cut this in half
+     * but breaks findlabel (bc_runtime.c points ProgMemory at this
+     * buffer during bridged execution, and label refs like TILEMAP
+     * CREATE <label> / RESTORE <label> / GOTO <label> need the full
+     * program). Keep the whole program tokenised. */
     size_t src_len = strlen(source);
     size_t cap = src_len + 64;
     unsigned char *buf = (unsigned char *)BC_ALLOC(cap);
     if (!buf) return -1;
+    bc_bridge_release_subfun_buffer();
     /* 0xff fill so the tail acts as the end-of-program sentinel that
      * the standard MMBasic walker (and our scan below) look for. */
     memset(buf, 0xff, cap);
