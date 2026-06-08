@@ -133,23 +133,18 @@
 /* BCCrashInfo storage placement. ESP32 currently uses regular BSS. */
 #define BC_CRASH_INFO_ATTR
 
-/* Slab size reserved from ESP-IDF SPIRAM at boot for MMBasic PSRAM
- * ownership. The N16R8 (octal) module is 8 MB total; ESP-IDF retains the
- * remainder for its own buffers. This is the *heap* portion of the slab;
- * the physical slab acquired by hal_psram_esp32.c is larger, see below.
- *
- * Overridable per port (-D) so a sibling quad-PSRAM port can pass a
- * smaller value (an R2 module is 2 MB total) without forking this header. */
-#ifndef HAL_PORT_PSRAM_SLAB_BYTES
-#define HAL_PORT_PSRAM_SLAB_BYTES (6u * 1024u * 1024u)
-#endif
+/* Minimum SPIRAM held back from the MMBasic slab for ESP-IDF's own later
+ * use. hal_psram_esp32.c sizes the slab from the PSRAM actually detected at
+ * boot (largest free SPIRAM block minus max(avail/8, this floor)), so there
+ * is no per-board slab-size constant — the heap follows the chip, whatever
+ * its capacity or line mode. */
+#define HAL_PORT_PSRAM_RESERVE_MIN (128u * 1024u)
 
-/* Slot region size for `RAM SAVE` / `RAM LOAD` numbered slots. The
- * shared formula PSRAMblock = PSRAMbase + PSRAMsize + 0x60000 puts this
- * past the heap region, so hal_psram_esp32.c allocates a physical slab
- * of HAL_PORT_PSRAM_SLAB_BYTES + 0x60000 + HAL_PORT_PSRAM_BLOCK_SIZE
- * bytes and publishes only HAL_PORT_PSRAM_SLAB_BYTES as PSRAMsize so
- * Memory.c's bitmap allocator stays within the heap portion. */
+/* Slot region size for `RAM SAVE` / `RAM LOAD` numbered slots. The shared
+ * formula PSRAMblock = PSRAMbase + PSRAMsize + 0x60000 puts this past the
+ * heap region, so hal_psram_esp32.c allocates a physical slab of
+ * heap + 0x60000 + HAL_PORT_PSRAM_BLOCK_SIZE bytes and publishes only the
+ * heap portion as PSRAMsize so Memory.c's bitmap allocator stays within it. */
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
 /* Compiler-table sizes. */

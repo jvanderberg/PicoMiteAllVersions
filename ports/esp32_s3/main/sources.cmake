@@ -2,8 +2,8 @@
 #
 # Included by both ports/esp32_s3/main/CMakeLists.txt (octal PSRAM) and
 # ports/esp32_s3_quad/main/CMakeLists.txt (quad PSRAM). The two ports differ
-# ONLY in sdkconfig and the HAL_PORT_PSRAM_SLAB_BYTES -D override; the source
-# list, includes, demos, and build flags below are identical for both.
+# ONLY in the sdkconfig PSRAM line mode; the source list, includes, demos,
+# build flags, and the runtime-detected PSRAM slab below are identical for both.
 #
 # CMAKE_CURRENT_LIST_DIR resolves to THIS file's directory (esp32_s3/main)
 # regardless of which port includes it, so the bare port-local source and
@@ -354,17 +354,6 @@ target_compile_definitions(${COMPONENT_LIB} PUBLIC
     FF_MAX_LFN_LARGE
     BC_SIM_RP2040
 )
-
-# A sibling port (e.g. quad PSRAM) overrides the PSRAM heap slab by setting
-# HAL_PORT_PSRAM_SLAB_BYTES_OVERRIDE before include()'ing this file. Applied
-# here, after idf_component_register, so it is skipped during IDF's
-# requirements-scan pass (where target_* commands are unavailable). The octal
-# port leaves it unset and uses port_config.h's 6 MB default.
-if(DEFINED HAL_PORT_PSRAM_SLAB_BYTES_OVERRIDE)
-    target_compile_definitions(${COMPONENT_LIB} PRIVATE
-        HAL_PORT_PSRAM_SLAB_BYTES=${HAL_PORT_PSRAM_SLAB_BYTES_OVERRIDE}
-    )
-endif()
 
 # No --wrap and no --allow-multiple-definition here. Per-port hooks must
 # have exactly one strong definition in the ESP32 source list; duplicate

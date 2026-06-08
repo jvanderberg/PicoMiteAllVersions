@@ -40,31 +40,28 @@ The `MEMORY` "RAM" figure is the variable/general heap. On this port it is the
 
 - `HAL_PORT_HEAP_MEMORY_SIZE` (`port_config.h`) = **48 KB** — the internal
   MMHeap, always present, independent of PSRAM.
-- `HAL_PORT_PSRAM_SLAB_BYTES` — the PSRAM heap extension. Configured per port:
-  6 MB on octal, 1.25 MB on quad.
+- The PSRAM slab — the heap extension — is sized at boot from the PSRAM
+  actually detected (`hal_psram_esp32.c` takes the largest free SPIRAM block
+  minus a proportional reserve). It follows the chip's capacity; there is no
+  per-board size constant.
 - `GetSystemMemory` / `GetMemory` allocate from the internal MMHeap first and
   fall back to PSRAM (`Memory.c:975`), erroring only when both are exhausted —
   so PSRAM is an *extension*, not a hard requirement, and a board with no
   usable PSRAM still has the 48 KB internal heap.
 
-The only measured data point so far: an octal FREENOVE N16R8 reports `6220K` of
-"RAM" in `MEMORY` (the 6 MB slab plus the internal heap and variable table). The
-quad and no-PSRAM cases are **not yet measured** — the per-port slab sizes above
-are configured targets, and the delivered "RAM" on real R2 / no-PSRAM hardware
-is to be confirmed when such a board is tested. The program store and saved-vars
-region are separate buffers, unaffected by PSRAM.
+No per-board RAM total is asserted here: the slab follows the detected PSRAM, so
+the delivered `MEMORY` "RAM" depends on the chip and is confirmed on hardware.
+The program store and saved-vars region are separate internal buffers,
+unaffected by PSRAM.
 
 ## The octal/quad delta (it's tiny)
 
-After reading the tree, only two things differ:
-
-1. **`sdkconfig`**: `CONFIG_SPIRAM_MODE_OCT` → `CONFIG_SPIRAM_MODE_QUAD`, PSRAM
-   speed, and the WiFi-buffer settings.
-2. **`HAL_PORT_PSRAM_SLAB_BYTES`** (`port_config.h:142`): `6 MB` → ~`1.3 MB`
-   (2 MB total − the `0x60000` gap − the ~240 KB slot region).
-
-No source, driver, or GPIO differences (PSRAM is on dedicated MSPI pins). The
-quad port must therefore be a **thin directory that shares 100% of the code**.
+Exactly one thing differs between the two ports: the **PSRAM line mode** in
+`sdkconfig` — `CONFIG_SPIRAM_MODE_OCT` vs `CONFIG_SPIRAM_MODE_QUAD` (plus the
+matching speed). Everything else is identical: the source, the runtime-sized
+PSRAM slab, drivers, GPIO (PSRAM is on dedicated MSPI pins), and the WiFi
+config. The quad port is therefore a **thin directory that shares 100% of the
+code** and carries no PSRAM-size constant.
 
 ## 1. Quad port directory — `ports/esp32_s3_quad/`
 
@@ -74,14 +71,9 @@ quad port must therefore be a **thin directory that shares 100% of the code**.
   lifted verbatim from today's `main/CMakeLists.txt` so there is **one**
   source-of-truth file list both ports share).
 - `sdkconfig.defaults` — shared base + quad PSRAM fragment (§2).
-- **No forked `port_config.h`.** Make the slab size overridable:
-  ```c
-  #ifndef HAL_PORT_PSRAM_SLAB_BYTES
-  #define HAL_PORT_PSRAM_SLAB_BYTES (6u * 1024 * 1024)   /* octal default */
-  #endif
-  ```
-  and the quad project's own `CMakeLists.txt` passes
-  `-DHAL_PORT_PSRAM_SLAB_BYTES=...`. Zero header fork.
+- **Nothing PSRAM-size-specific** — the slab is sized at boot from the detected
+  chip (`hal_psram_esp32.c`), so neither port carries a slab constant or `-D`
+  override. `main/CMakeLists.txt` is just an `include()` of the shared sources.
 - **partitions.csv shared** — both are 4 MB-image layouts; the quad project
   points `CONFIG_PARTITION_TABLE_FILENAME` at the existing
   `../esp32_s3/partitions.csv`.
@@ -128,8 +120,8 @@ idf.py build
 `buildesp32.sh` is generalized to take the **port directory** as its argument —
 `./buildesp32.sh ports/esp32_s3_quad` — so the single wrapper (HAL purity gate +
 `idf.py build`) works for *any* ESP32 port, keyed on the directory, not on a
-"variant" flag. The quad port's only build-time specialization (the slab `-D`)
-lives in its own `CMakeLists.txt`, so the plain `idf.py build` produces the right
+"variant" flag. Each port's only distinguishing input is its `sdkconfig` PSRAM
+fragment, so the plain `idf.py build` in either directory produces the right
 image with no external flags. This convention is documented in the port README.
 
 ## 5. Release workflow (`esp32-s3.yml`) — publish only bins

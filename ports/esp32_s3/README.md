@@ -7,7 +7,7 @@
 
 Not sure which? Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A board with no PSRAM still boots on the quad image (using only the internal heap). Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
 
-ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a fixed slab reserved from ESP-IDF at boot; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
+ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a slab reserved from ESP-IDF at boot and sized from the chip actually detected; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 
 Plan: [docs/real-hal/esp32-s3-port.md](../../docs/real-hal/esp32-s3-port.md). Session log: [docs/real-hal/esp32-s3-port-log.md](../../docs/real-hal/esp32-s3-port-log.md).
 
@@ -27,11 +27,12 @@ Load the ESP-IDF environment before building:
 
 ## Build
 
-There are two ESP32-S3 ports, differing only in PSRAM line mode and heap slab
-size (they share `main/sources.cmake` verbatim):
+There are two ESP32-S3 ports, differing only in PSRAM line mode (they share
+`main/sources.cmake` verbatim, and the PSRAM heap slab is sized at boot from the
+detected chip):
 
-- `ports/esp32_s3` — octal PSRAM (R8). 6 MB heap slab.
-- `ports/esp32_s3_quad` — quad PSRAM (R2) / no-PSRAM. 1.25 MB heap slab.
+- `ports/esp32_s3` — octal PSRAM (R8).
+- `ports/esp32_s3_quad` — quad PSRAM (R2) / no-PSRAM.
 
 Each is a self-contained ESP-IDF project. Build either the standard way:
 
@@ -317,7 +318,7 @@ Working on hardware:
 - Default terminal colours survive errors and prompt recovery through shared MMBasic colour-state restoration.
 - `FLASH SAVE 1`, reset, `FLASH LOAD 1`, `RUN` works on the dedicated `mmslots` partition.
 - 48 KB WiFi-enabled MMBasic heap. ESP32 bytecode compiler scratch tables use ESP-IDF internal heap; VM runtime allocations still use the 48 KB MMBasic heap.
-- ESP-IDF detects the onboard Octal PSRAM. The port reserves a fixed slab via `heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` at boot and publishes it as `PSRAMbase` / `PSRAMsize`; `MM.INFO(PSRAM SIZE)` now returns the slab size and the shared `RAM` command (test / list / save / load / erase) works the same as on Pico variants. `RAM TEST NOCACHE` is Pico-only and errors on ESP32.
+- ESP-IDF detects the onboard PSRAM. The port reserves a slab sized from the detected chip via `heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` at boot and publishes it as `PSRAMbase` / `PSRAMsize`; `MM.INFO(PSRAM SIZE)` now returns the slab size and the shared `RAM` command (test / list / save / load / erase) works the same as on Pico variants. `RAM TEST NOCACHE` is Pico-only and errors on ESP32.
 - `WEB CONNECT`, `WEB SCAN`, TCP server, TCP client request/stream, UDP send/receive, NTP, and plain-TCP MQTT are hardware-smoked.
 - Bundled WEB demos seeded to A: include the small server demo and the multi-file website demo.
 - Browser web console over WiFi at `http://<device-ip>/__web_console/` (see [WiFi, Telnet, And Web Console](#wifi-telnet-and-web-console)).

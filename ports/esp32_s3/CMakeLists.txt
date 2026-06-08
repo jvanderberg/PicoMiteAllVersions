@@ -11,8 +11,9 @@
 
 cmake_minimum_required(VERSION 3.16)
 
-# Shared base config + this port's PSRAM line-mode fragment. The default
-# HAL_PORT_PSRAM_SLAB_BYTES (6 MB, octal) is used — no -D override needed.
+# Shared base config + this port's PSRAM line-mode fragment. The PSRAM heap
+# slab is sized at boot from the detected chip (hal_psram_esp32.c), so the
+# only thing that makes this the "octal" port is sdkconfig.psram.octal.
 set(SDKCONFIG_DEFAULTS "sdkconfig.common;sdkconfig.psram.octal")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

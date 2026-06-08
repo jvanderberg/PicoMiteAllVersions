@@ -5,11 +5,14 @@
  * hal_psram_init():
  *
  *   1. Calls esp_psram_init() to bring up the ESP-IDF SPIRAM driver.
- *   2. Reserves a fixed slab (HAL_PORT_PSRAM_SLAB_BYTES) via
+ *   2. Reserves a slab sized from the PSRAM actually detected (the largest
+ *      free SPIRAM block, less a proportional reserve) via
  *      heap_caps_aligned_alloc(PAGESIZE, slab, MALLOC_CAP_SPIRAM |
  *      MALLOC_CAP_8BIT). PAGESIZE alignment matches the bitmap allocator
- *      page granularity in drivers/psram_heap/psram_heap_real.c.
- *   3. Publishes the slab pointer and size to PSRAMbase / PSRAMsize so
+ *      page granularity in drivers/psram_heap/psram_heap_real.c. The slab
+ *      follows the chip's capacity, so a 2 MB or 8 MB part — octal or quad —
+ *      is handled by the same code with no per-board size constant.
+ *   3. Publishes the slab pointer and heap size to PSRAMbase / PSRAMsize so
  *      Memory.c routing, the `RAM` command, and the bitmap allocator
  *      all see the same region.
  *
@@ -71,19 +74,33 @@ void hal_psram_init(void) {
     }
 
     /*
-     * The shared formula PSRAMblock = PSRAMbase + PSRAMsize + 0x60000
-     * places the numbered-slot region 0x60000 bytes past the heap
-     * region's end. Allocate a physical slab that covers the heap, the
-     * 0x60000 gap, and PSRAMblocksize bytes for the slot region — but
-     * publish only HAL_PORT_PSRAM_SLAB_BYTES as PSRAMsize so the bitmap
-     * allocator in drivers/psram_heap/psram_heap_real.c and Memory.c's
-     * routing stay confined to the heap portion. The slot region lives
-     * in the slab tail and is addressed linearly by cmd_psram via
-     * PSRAMblock.
+     * Size the slab from the PSRAM that is actually present, not from a
+     * per-board constant. Octal vs quad is a bus-width choice, not a size
+     * (a board could pair either line mode with any capacity), so the heap
+     * must follow the chip esp_psram_init() detected. Take the largest
+     * contiguous SPIRAM block ESP-IDF leaves free, hold back a proportional
+     * reserve for any later IDF/SPIRAM use, and page-align it.
+     *
+     * The slab covers the heap, a 0x60000 gap, then PSRAMblocksize bytes for
+     * the numbered-slot region (shared formula PSRAMblock = PSRAMbase +
+     * PSRAMsize + 0x60000). Only the heap portion is published as PSRAMsize,
+     * so the bitmap allocator (drivers/psram_heap/psram_heap_real.c) and
+     * Memory.c routing stay confined to it; the slots live in the slab tail
+     * and are addressed linearly by cmd_psram.
      */
-    const size_t heap_bytes = (size_t)HAL_PORT_PSRAM_SLAB_BYTES;
-    const size_t slot_bytes = (size_t)HAL_PORT_PSRAM_BLOCK_SIZE;
-    const size_t slab_bytes = heap_bytes + 0x60000u + slot_bytes;
+    const size_t overhead = 0x60000u + (size_t)HAL_PORT_PSRAM_BLOCK_SIZE;
+    const size_t avail =
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t reserve = avail / 8u;
+    if (reserve < (size_t)HAL_PORT_PSRAM_RESERVE_MIN)
+        reserve = (size_t)HAL_PORT_PSRAM_RESERVE_MIN;
+    size_t slab_bytes = (avail > reserve) ? (avail - reserve) : 0u;
+    slab_bytes &= ~((size_t)PAGESIZE - 1u); /* page-align down */
+    if (slab_bytes <= overhead) {
+        printf("hal_psram_init: only %u B SPIRAM available; PSRAM disabled\n",
+               (unsigned)avail);
+        return;
+    }
     void * slab = heap_caps_aligned_alloc(PAGESIZE, slab_bytes,
                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!slab) {
@@ -93,14 +110,15 @@ void hal_psram_init(void) {
         return;
     }
 
+    const size_t heap_bytes = slab_bytes - overhead;
     s_psram_slab = slab;
     s_psram_slab_bytes = slab_bytes;
     PSRAMbase = (uintptr_t)slab;
     PSRAMsize = (uint32_t)heap_bytes;
-    printf("hal_psram_init: slab=%p slab_bytes=%u heap=%u slot=%u "
+    printf("hal_psram_init: spiram_free=%u slab_bytes=%u heap=%u "
            "PSRAMbase=0x%08lx PSRAMsize=%u\n",
-           slab, (unsigned)slab_bytes,
-           (unsigned)heap_bytes, (unsigned)slot_bytes,
+           (unsigned)avail, (unsigned)slab_bytes,
+           (unsigned)heap_bytes,
            (unsigned long)PSRAMbase, (unsigned)PSRAMsize);
 }
 
