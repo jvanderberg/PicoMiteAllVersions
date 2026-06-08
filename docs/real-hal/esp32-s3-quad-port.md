@@ -22,7 +22,7 @@ chip reads back nothing (`PSRAM ID read error: 0x00000000 ... wrong PSRAM line
 mode`). So octal and quad are a genuine compile-time fork; MicroPython and
 Arduino-ESP32 ship per-variant firmware for the same reason. Octal modules carry
 the `R8`/`R16` suffix, quad ones `R2`, but **size does not select the image —
-line mode does** (the slab is sized at boot to whatever capacity is present).
+line mode does** (the firmware sizes its PSRAM heap at boot to whatever capacity is present).
 The reliable way to know which image a board needs is empirical — flash one and
 check the boot log / `MM.INFO(PSRAM SIZE)`. If PSRAM fails to initialize, the
 line mode is wrong, so use the other image.
