@@ -5,7 +5,7 @@
 - `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — **8 MB octal** PSRAM (R8 modules: DevKitC-N8R8/N16R8, XIAO ESP32-S3, Freenove, most LilyGo).
 - `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — **2 MB quad** PSRAM (R2 modules) **or no PSRAM at all**.
 
-Not sure which? `8 MB → octal`, `2 MB → quad` (there is no 2 MB-octal or 8 MB-quad part). Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A no-PSRAM board runs on the quad image at the ~48 KB internal-heap floor. Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
+Not sure which? Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A board with no PSRAM still boots on the quad image (using only the internal heap). Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
 
 ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a fixed slab reserved from ESP-IDF at boot; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 

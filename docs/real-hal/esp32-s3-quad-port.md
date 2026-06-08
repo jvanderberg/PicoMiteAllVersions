@@ -19,9 +19,11 @@ and the compiled `esp_psram` driver — it is **not** runtime-switchable, and
 ESP-IDF builds the driver for exactly one mode. Sending OPI commands to a QPI
 chip reads back nothing (`PSRAM ID read error: 0x00000000 ... wrong PSRAM line
 mode`). So octal and quad are a genuine compile-time fork; MicroPython and
-Arduino-ESP32 ship per-variant firmware for the same reason. 2 MB is always
-quad, 8 MB is always octal — there is no 2 MB-octal or 8 MB-quad part — so
-"how much PSRAM" determines the image directly.
+Arduino-ESP32 ship per-variant firmware for the same reason. The common
+Espressif modules are R8 (8 MB, octal) and R2 (2 MB, quad); the reliable way to
+know which image a board needs is empirical — flash one and check the boot log /
+`MM.INFO(PSRAM SIZE)`. If PSRAM fails to initialize, the line mode is wrong, so
+use the other image.
 
 Field reports that motivated this (three boards, three different root causes):
 
@@ -31,30 +33,26 @@ Field reports that motivated this (three boards, three different root causes):
 | WaveShare S3-PICO (2 MB) | boots, no PSRAM, no WiFi | **quad** chip vs **octal** build | this plan — quad image |
 | CP2102 bridge boards | flashes, silent console | native-USB console vs UART-only board | dual-console (PR #33) |
 
-## Memory model — what each board actually gets
+## Memory model
 
-The "RAM" figure in `MEMORY` is the variable/general heap, which is
-**internal MMHeap + the PSRAM slab**:
+The `MEMORY` "RAM" figure is the variable/general heap. On this port it is the
+**internal MMHeap plus the PSRAM slab**:
 
-- `HAL_PORT_HEAP_MEMORY_SIZE = 48 KB` — the internal MMHeap (`Memory.c`),
-  always present, independent of PSRAM.
-- `HAL_PORT_PSRAM_SLAB_BYTES` — the PSRAM heap extension (`6 MB` on octal).
-- `GetSystemMemory` / `GetMemory` allocate from internal MMHeap first and
-  **fall back to PSRAM** (`Memory.c:975`); they only error when both are
-  exhausted. So PSRAM is an *extension*, not a hard requirement.
+- `HAL_PORT_HEAP_MEMORY_SIZE` (`port_config.h`) = **48 KB** — the internal
+  MMHeap, always present, independent of PSRAM.
+- `HAL_PORT_PSRAM_SLAB_BYTES` — the PSRAM heap extension. Configured per port:
+  6 MB on octal, 1.25 MB on quad.
+- `GetSystemMemory` / `GetMemory` allocate from the internal MMHeap first and
+  fall back to PSRAM (`Memory.c:975`), erroring only when both are exhausted —
+  so PSRAM is an *extension*, not a hard requirement, and a board with no
+  usable PSRAM still has the 48 KB internal heap.
 
-Resulting `MEMORY` "RAM" by board:
-
-| Board | PSRAM slab | "RAM" (variable heap) |
-|---|---|---|
-| octal R8 | ~6 MB | ~6.2 MB |
-| quad R2 | ~1.3 MB | ~1.3 MB |
-| **no PSRAM** | 0 | **~48 KB** (internal MMHeap only) |
-
-A no-PSRAM board is therefore **functional, not bricked** — it falls back to the
-classic ~48 KB small-MMBasic budget (fine for the REPL, small programs, and
-network control), just not roomy. The program store (separate 48 KB buffer) and
-saved-vars region are unaffected by PSRAM either way.
+The only measured data point so far: an octal FREENOVE N16R8 reports `6220K` of
+"RAM" in `MEMORY` (the 6 MB slab plus the internal heap and variable table). The
+quad and no-PSRAM cases are **not yet measured** — the per-port slab sizes above
+are configured targets, and the delivered "RAM" on real R2 / no-PSRAM hardware
+is to be confirmed when such a board is tested. The program store and saved-vars
+region are separate buffers, unaffected by PSRAM.
 
 ## The octal/quad delta (it's tiny)
 
@@ -155,27 +153,23 @@ image with no external flags. This convention is documented in the port README.
   "did I grab the wrong image?" check (uses the existing function; no new
   diagnostics added).
 
-## 7. Quad performance reality
+## 7. Quad performance
 
-Quad is ~half the memory bandwidth of octal (4 vs 8 data lines, similar clock),
-but:
-
-- **MMBasic itself barely notices** — the interpreter is CPU/dispatch-bound, not
-  memory-bandwidth-bound. Program execution, variables, and networking feel the
-  same.
-- **Where it shows**: bulk transfers — VGA/FASTGFX framebuffers in PSRAM, large
-  array/copy ops, file buffering. There the ~2× gap is real.
-- **Mitigation**: keep the framebuffer in internal RAM for the small modes where
-  it fits; accept slower large-buffer graphics.
-- **Perspective**: ~1.3 MB of quad heap still dwarfs the ~48 KB no-PSRAM floor —
-  a large win even at half octal's speed.
+Quad PSRAM uses 4 data lines vs octal's 8, so at the same clock it has roughly
+half the peak bus bandwidth — a property of the bus width, not a benchmark. The
+practical impact on MMBasic has **not** been measured; by reasoning it should
+matter most for bulk PSRAM transfers (framebuffers, large array/copy ops, file
+buffering) and least for interpreter-bound work. Where a framebuffer fits in
+internal RAM, keeping it there sidesteps the PSRAM path. Benchmark on real R2
+hardware before stating anything firmer.
 
 ## 8. Testing / rollout
 
 1. Build both; confirm octal is behaviour-identical to today on the FREENOVE
    (no regression).
 2. Flash the **quad** merged bin to the WaveShare tester → expect
-   `Found 2MB PSRAM`, ~1.3 MB `MEMORY` "RAM", and working WiFi.
+   `Found 2MB PSRAM`, PSRAM-backed `RAM` in `MEMORY`, and working WiFi.
+   (This is where the quad heap figure gets measured for the first time.)
 3. Confirm the octal image on the WaveShare still boots to a GENERIC prompt
    (fail-soft) with `MM.INFO(PSRAM SIZE) = 0`.
 
