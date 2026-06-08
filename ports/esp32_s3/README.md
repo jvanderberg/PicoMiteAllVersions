@@ -55,9 +55,9 @@ the opt-in helper runs the HAL purity gate first and then builds a port (or
 
 ### Flash a release build
 
-Download the merged image for your board (octal or quad — see [Download](#mmbasic-anywhere---esp32-s3)) from the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest) and flash with [`esptool`](https://github.com/espressif/esptool) (`pip install esptool`) — no ESP-IDF checkout needed. Replace the port with your device's `/dev/cu.usbmodem*` (macOS/Linux) or `COMx` (Windows), and substitute `quad` for `octal` in the filename if that's your board.
+Download the merged image for your board (octal or quad — see [Download](#mmbasic-anywhere---esp32-s3)) from the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest) and flash with [`esptool`](https://github.com/espressif/esptool) (`pip install esptool`) — no ESP-IDF checkout needed. Replace the port in every command below with your device's node: `/dev/cu.usbmodem*` on macOS/Linux, or `COMx` on Windows (find the number under **Device Manager → Ports (COM & LPT)**; a native USB Serial/JTAG board enumerates without an extra driver, but a board with a CP210x/CH34x USB-UART bridge needs that vendor driver first). Substitute `quad` for `octal` in the filename if that's your board.
 
-Erase first, then write the merged image at `0x0`:
+Erase first, then write the merged image at `0x0` — a bare reflash leaves the A: filesystem and `FLASH SAVE` slots untouched, so erasing guarantees a clean, deterministic state (see [Does skipping the erase matter?](#does-skipping-the-erase-matter)):
 
 ```sh
 esptool --chip esp32s3 -p /dev/cu.usbmodem* erase_flash
@@ -72,6 +72,17 @@ with the octal PSRAM lines.
 
 A clean flash boots the `GENERIC` profile over USB Serial/JTAG; see [Board Profiles](#board-profiles) to select your board. If the prompt never appears but PSRAM was detected, the board may route its USB-C only to a UART bridge rather than the chip's native USB — confirm you're on the native-USB connector.
 
+If the connect hangs (`Connecting...` on macOS/Linux, or a timeout on Windows), put the board into ROM USB Direct mode and retry: hold BOOT, press and release RESET, release BOOT, then re-run the command once the port re-enumerates. This is a USB CDC binding quirk, not a firmware build problem. After flashing, the port may re-enumerate under a new name (`COMx` number / `usbmodem*` suffix) as the board boots firmware rather than the ROM bootloader.
+
+### Does skipping the erase matter?
+
+It can. Flashing the merged (or split) image overwrites only the range it spans — bootloader, partition table, NVS, and the app (`0x0`–`~0x1e6000`). The two data partitions that live above the app are **not** touched:
+
+- `lfsdata` (the A: LittleFS drive) at `0x210000`
+- `mmslots` (`FLASH SAVE` / `VAR SAVE`) at `0x2f0000`
+
+Reflashing the *same* firmware lineage without erasing is usually fine — and even handy, since your A: files and saved slots survive. The hazard is **partition-table drift**: if you move to a build whose partition map differs, or come from foreign firmware (Arduino/MicroPython), the new partition table points A: and the slots at bytes laid out for the old map. LittleFS may fail to mount or look corrupt and `FLASH LOAD` can read garbage. `erase_flash` removes that ambiguity by blanking those regions so the firmware re-initializes them. When in doubt — version changes, switching firmware, or anything acting weird — erase first.
+
 ### Flash from source
 
 With ESP-IDF loaded and the port built ([Build](#build)):
@@ -80,14 +91,7 @@ With ESP-IDF loaded and the port built ([Build](#build)):
 idf.py -p /dev/cu.usbmodem* flash
 ```
 
-If macOS hangs at `Connecting...`, put the board into ROM USB Direct mode:
-
-1. Hold BOOT.
-2. Press and release RESET.
-3. Release BOOT.
-4. Re-run the flash command once `/dev/cu.usbmodem*` reappears.
-
-This is a USB CDC binding quirk, not a firmware build problem.
+If the connect hangs, use the same ROM USB Direct recovery as the release path above (hold BOOT, tap RESET, release BOOT, retry).
 
 ## Monitor And Probe
 
