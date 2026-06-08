@@ -156,9 +156,9 @@ def main() -> int:
     ap.add_argument("--kernel", required=True)
     ap.add_argument("--limine-conf", required=True)
     ap.add_argument("--limine-sys", required=True)
-    ap.add_argument("--hello", required=True)
-    ap.add_argument("--fizzbuzz", required=True)
-    ap.add_argument("--readme", required=True)
+    ap.add_argument("--hello")
+    ap.add_argument("--fizzbuzz")
+    ap.add_argument("--readme")
     ap.add_argument("out")
     ns = ap.parse_args()
 
@@ -166,9 +166,10 @@ def main() -> int:
     stage2 = open(ns.stage2, "rb").read()
     image = Fat12Image(boot_sector, stage2)
     image.add_boot_dir(ns.kernel, ns.limine_conf, ns.limine_sys)
-    image.add_root_file("HELLO.BAS", ns.hello)
-    image.add_root_file("FIZZBUZZ.BAS", ns.fizzbuzz)
-    image.add_root_file("README.TXT", ns.readme)
+    if ns.hello:
+        image.add_root_file("HELLO.BAS", ns.hello)
+    if ns.fizzbuzz:
+        image.add_root_file("FIZZBUZZ.BAS", ns.fizzbuzz)
     image.finish(ns.out)
     print(f"built bootable floppy {ns.out} ({IMAGE_BYTES} bytes)")
     return 0

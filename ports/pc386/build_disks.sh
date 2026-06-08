@@ -12,9 +12,8 @@
 # pc386-floppy.img = 1.44 MB FAT12 superfloppy. Runtime FDC support
 #      mounts it as A:. B: is reserved for a second floppy if attached.
 #
-# Both populated from the shared MMBasic demo set vendored under
-# ports/esp32_s3_metro/main/demos/ — same hello/fizzbuzz/mand/sieve
-# corpus as the ESP32 port.
+# Both populated from small pc386 boot samples plus the shared benchmark
+# demos under demos/bench/.
 #
 # Re-running refreshes the boot/helper images from scratch, but preserves an
 # existing C: data image by default. Set PC386_REBUILD_C=1 to recreate C:.
@@ -43,7 +42,9 @@ A_IMG="$DISK_DIR/a.img"
 C_IMG="$DISK_DIR/c.img"
 DIRECT_C_IMG="$DISK_DIR/c-direct.img"
 F_IMG="$DISK_DIR/pc386-floppy.img"
-DEMOS_DIR="$REPO_ROOT/ports/esp32_s3_metro/main/demos"
+HELLO_SRC="$PORT_DIR/demos/hello.bas"
+FIZZBUZZ_SRC="$PORT_DIR/demos/fizzbuzz.bas"
+SIEVE_SRC="$REPO_ROOT/demos/bench/sieve.bas"
 MAND_MENU_SRC="$REPO_ROOT/demos/bench/mand.bas"
 PICO_BLOCKS_PC386_SRC="$PORT_DIR/demos/pico_blocks_20fps.bas"
 PICO_VADERS_SRC="$REPO_ROOT/ports/host_wasm/demos/Picovaders.bas"
@@ -118,8 +119,8 @@ mcopy "$LIMINE_BIOS_SYS"      z:/BOOT/LIMINE-BIOS.SYS
 
 # Hello + FizzBuzz ride on the boot disk — they're tiny and form the
 # first thing the user runs after the prompt comes up.
-mcopy "$DEMOS_DIR/hello.bas"     z:/HELLO.BAS
-mcopy "$DEMOS_DIR/fizzbuzz.bas"  z:/FIZZBUZZ.BAS
+mcopy "$HELLO_SRC"               z:/HELLO.BAS
+mcopy "$FIZZBUZZ_SRC"            z:/FIZZBUZZ.BAS
 
 cat > "$DISK_DIR/README.TXT" <<'EOF'
 PicoMite PC386 legacy Limine helper image.
@@ -148,7 +149,7 @@ if [[ ! -f "$C_IMG" || "${PC386_REBUILD_C:-0}" == "1" ]]; then
     mmd   y:/PROGRAMS
     mcopy "$MAND_MENU_SRC"        y:/MAND.BAS
     mcopy "$MAND_MENU_SRC"        y:/PROGRAMS/MAND.BAS
-    mcopy "$DEMOS_DIR/sieve.bas"  y:/PROGRAMS/SIEVE.BAS
+    mcopy "$SIEVE_SRC"            y:/PROGRAMS/SIEVE.BAS
     if [[ -f "$PICO_BLOCKS_PC386_SRC" ]]; then
         mcopy "$PICO_BLOCKS_PC386_SRC" y:/PBLOCK20.BAS
     fi
@@ -193,7 +194,7 @@ mcopy "$LIMINE_BIOS_SYS"      w:/BOOT/LIMINE-BIOS.SYS
 mmd   w:/PROGRAMS
 mcopy "$MAND_MENU_SRC"        w:/MAND.BAS
 mcopy "$MAND_MENU_SRC"        w:/PROGRAMS/MAND.BAS
-mcopy "$DEMOS_DIR/sieve.bas"  w:/PROGRAMS/SIEVE.BAS
+mcopy "$SIEVE_SRC"            w:/PROGRAMS/SIEVE.BAS
 if [[ -f "$PICO_BLOCKS_PC386_SRC" ]]; then
     mcopy "$PICO_BLOCKS_PC386_SRC" w:/PBLOCK20.BAS
 fi
@@ -248,8 +249,6 @@ python3 "$PORT_DIR/tools/make_boot_floppy.py" \
     --kernel "$KERNEL_BOOT" \
     --limine-conf "$PORT_DIR/limine.conf" \
     --limine-sys "$LIMINE_BIOS_SYS" \
-    --hello "$DEMOS_DIR/hello.bas" \
-    --fizzbuzz "$DEMOS_DIR/fizzbuzz.bas" \
     --readme "$DISK_DIR/FLOPPY.TXT" \
     "$F_IMG"
 

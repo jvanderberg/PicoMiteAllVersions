@@ -174,6 +174,22 @@ bool option_command_handle_common(unsigned char * cmdline, bool clear_display_on
         return true;
     }
 
+    tp = checkstring(cmdline, (unsigned char *)"AUTOREFRESH");
+    if (tp) {
+        /* Shared display refresh policy for framebuffer/LCD-backed ports.
+         * Port code handles persistence; the core option parser only toggles
+         * the common Option.Refresh field used by drawing and console cleanup. */
+        if (checkstring(tp, (unsigned char *)"OFF")) {
+            Option.Refresh = 0;
+            return true;
+        }
+        if (checkstring(tp, (unsigned char *)"ON")) {
+            Option.Refresh = 1;
+            return true;
+        }
+        error("Syntax");
+    }
+
     tp = checkstring(cmdline, (unsigned char *)"F1");
     if (tp) {
         option_set_fkey(tp, Option.F1key, sizeof(Option.F1key), 64);

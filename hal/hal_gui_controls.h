@@ -96,6 +96,10 @@ void hal_gui_controls_timer_tick(void);
  * Stub no-op. */
 void hal_gui_controls_print_options(void);
 
+/* Runtime service predicate for ports that need GUI/touch polling. */
+int hal_gui_controls_has_active(void);
+int hal_gui_controls_service_needed(void);
+
 /* cmd_gui, cmd_ctrlval, fun_msgbox, fun_ctrlval are declared in
  * AllCommands.h. On GUICONTROLS=1 ports their bodies live in GUI.c;
  * on stub ports their bodies live in gui_controls_stub.c and error

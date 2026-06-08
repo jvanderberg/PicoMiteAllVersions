@@ -199,14 +199,19 @@ Implemented checks:
   strings, arrays, `SUB`/`FUNCTION`, `SELECT CASE`, `DATA`/`READ`/`RESTORE`,
   VM-side file I/O, and a Sieve of Eratosthenes benchmark that verifies 168
   primes up to 1000.
-- `gpio`: safe Metro checks on GP13 DOUT/DIN and GP1 ARAW, then verifies
-  current `SETPIN ..., PWM` and `SERVO` unsupported errors remain explicit.
+- `gpio`: probes a conservative board-safe GPIO candidate for DOUT/DIN/ARAW,
+  then verifies current `SETPIN ..., PWM` and `SERVO` unsupported errors remain explicit.
 - `flash`: opt-in flash-slot persistence using `FLASH ERASE`, `FLASH SAVE`,
   RTS reset/resync, `FLASH LOAD`, `RUN`, `FLASH RUN`, and slot cleanup.
   `VAR SAVE`/`VAR RESTORE` is additionally gated by `--var-save` because it
   leaves a persistent saved variable.
 - `ws2812`: GP46 onboard NeoPixel red/green/blue/off command sequence. The
   suite reports `SKIP` unless `--ws2812-visual` is passed.
+- `display-perf`: uploads and runs a generated `RUN`-mode LCD primitive
+  batching benchmark. It times full clears, filled boxes, menu text, dense and
+  sparse `PIXEL`, lines, and small boxes, then fails if the display path falls
+  below the Freenove ILI9341 thresholds. This is opt-in because it requires an
+  active local LCD profile.
 - `network`: reports `SKIP` unless `--run-network` is passed, then chains to
   `network_conformance.py` through this repo's `porttools/` path. It defaults
   to the full `all` conformance suite. Use `--network-suite`,
@@ -242,6 +247,14 @@ python3.11 porttools/esp32_fs_vm_smoke.py network \
   --run-network \
   --network-suite tcp-client \
   --port /dev/cu.usbmodem101
+```
+
+Run the Freenove display primitive performance gate:
+
+```sh
+python3.11 porttools/esp32_fs_vm_smoke.py display-perf \
+  --port /dev/cu.usbmodem2101 \
+  --long-timeout 180
 ```
 
 Useful options:
@@ -331,6 +344,55 @@ python3.11 porttools/esp32_sd_smoke.py \
   --expect-file readme.txt \
   --expect-text hello
 ```
+
+## ESP32-S3 GUI Control Smokes
+
+The ESP32-S3 GUI control smokes verify the shared PicoMite GUI control stack
+through the ESP32 display and touch adapters. They upload generated BASIC
+programs, run the automated cases through both `RUN` and `FRUN`, and leave
+manual touch programs on the selected drive unless `--cleanup` is passed.
+
+Run all GUI control suites in order:
+
+```sh
+python3.11 porttools/esp32_gui_controls_smoke.py \
+  --target /dev/cu.usbmodem2101
+```
+
+Print the commands without opening serial, telnet, or the device:
+
+```sh
+python3.11 porttools/esp32_gui_controls_smoke.py --dry-run
+```
+
+Individual suites:
+
+```sh
+python3.11 porttools/esp32_gui_basic_controls_smoke.py \
+  --port /dev/cu.usbmodem2101
+
+python3.11 porttools/esp32_gui_text_controls_smoke.py \
+  --target /dev/cu.usbmodem2101
+
+python3.11 porttools/esp32_gui_gauges_msgbox_smoke.py \
+  --target /dev/cu.usbmodem2101
+```
+
+The text and gauge suites also accept `--target telnet:<host>[:port]`. The
+basic controls suite currently uses the serial-only helper.
+
+Covered controls:
+
+- basic: `GUI BUTTON`, `SWITCH`, `CHECKBOX`, `RADIO`, `LED`, `FRAME`,
+  `CAPTION`, and `CTRLVAL`;
+- text/numeric: `GUI NUMBERBOX`, `TEXTBOX`, `FORMATBOX`, `SPINBOX`,
+  `DISPLAYBOX`, console edit input, and `CTRLVAL`;
+- gauges/dialogs: `GUI GAUGE`, `BARGAUGE`, `AREA`, redraw pixel checks, and a
+  manual `MSGBOX` touch target.
+
+See [docs/real-hal/esp32-s3-gui-controls.md](../docs/real-hal/esp32-s3-gui-controls.md)
+for ESP32-S3 GUI support status, Freenove touch behavior, and calibration
+notes.
 
 ## `pico_fs_vm_smoke.py`
 
@@ -531,6 +593,10 @@ After editing these tools:
 python3.11 -m py_compile \
   porttools/basic_serial.py \
   porttools/esp32_fs_vm_smoke.py \
+  porttools/esp32_gui_controls_smoke.py \
+  porttools/esp32_gui_basic_controls_smoke.py \
+  porttools/esp32_gui_text_controls_smoke.py \
+  porttools/esp32_gui_gauges_msgbox_smoke.py \
   porttools/esp32_tcp_smoke.py \
   porttools/network_conformance.py \
   porttools/host_network_conformance.py \

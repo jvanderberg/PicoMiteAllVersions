@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -136,6 +137,7 @@ class Esp32Smoke:
             join_drive(self.drive, f"{self.prefix}_bridge_dim.bas"),
             join_drive(self.drive, f"{self.prefix}_vm.bas"),
             join_drive(self.drive, f"{self.prefix}_sieve.bas"),
+            join_drive(self.drive, f"{self.prefix}_display_perf.bas"),
         ]
 
     def cleanup_generated_programs(self) -> None:
@@ -198,7 +200,7 @@ class Esp32Smoke:
         self.write_program(path, fs_program(self.drive, self.prefix))
         self.run_program(f'RUN "{path}"', "ESP32_FS_SMOKE_OK", timeout=self.long_timeout)
         self.pass_check(
-            "A: filesystem and BASIC file I/O",
+            f"{self.drive} filesystem and BASIC file I/O",
             "mkdir/chdir/open/read/write/append/copy/rename/dir/kill/rmdir/errors",
         )
 
@@ -294,33 +296,50 @@ class Esp32Smoke:
         self.basic.reset_app()
         self.basic.sync(timeout=self.long_timeout, boot_wait=max(self.boot_wait, 1.0))
 
+    def find_setpin_candidate(self, mode: str, candidates: Sequence[str], options: str = "") -> str:
+        suffix = f", {options}" if options else ""
+        last = ""
+        for pin in candidates:
+            self.command(f"SETPIN {pin}, OFF", check_error=False)
+            result = self.command(f"SETPIN {pin}, {mode}{suffix}", check_error=False)
+            last = result
+            if "Error :" not in result and "Error:" not in result:
+                return pin
+        detail = " ".join(line.strip() for line in last.splitlines() if line.strip())
+        raise RuntimeError(f"no usable GPIO candidate for SETPIN {mode}; last={detail}")
+
     def gpio_smoke(self) -> None:
         print("=== gpio ===", flush=True)
-        self.command("SETPIN GP13, DOUT")
-        self.command("PIN(GP13)=1")
-        high = self.command('PRINT "ESP32_GP13_HIGH=" + STR$(PIN(GP13))')
-        self.command("PIN(GP13)=0")
-        low = self.command('PRINT "ESP32_GP13_LOW=" + STR$(PIN(GP13))')
-        if marker_int(high, "ESP32_GP13_HIGH=") != 1 or marker_int(low, "ESP32_GP13_LOW=") != 0:
-            raise RuntimeError("GP13 DOUT latch readback failed")
-        self.command("SETPIN GP13, DIN, PULLUP")
-        din = self.command('PRINT "ESP32_GP13_DIN=" + STR$(PIN(GP13))')
-        if "ESP32_GP13_DIN=" not in din:
-            raise RuntimeError("GP13 DIN readback did not produce a marker")
-        self.command("SETPIN GP1, ARAW")
-        araw = self.command('PRINT "ESP32_GP1_ARAW=" + STR$(PIN(GP1))')
-        value = marker_int(araw, "ESP32_GP1_ARAW=")
+        safe_digital = ("GP2", "GP3", "GP9", "GP14", "GP21", "GP35", "GP36", "GP37")
+        safe_analog = ("GP2", "GP3", "GP9", "GP14")
+        dout_pin = self.find_setpin_candidate("DOUT", safe_digital)
+        self.command(f"PIN({dout_pin})=1")
+        high = self.command(f'PRINT "ESP32_DOUT_HIGH=" + STR$(PIN({dout_pin}))')
+        self.command(f"PIN({dout_pin})=0")
+        low = self.command(f'PRINT "ESP32_DOUT_LOW=" + STR$(PIN({dout_pin}))')
+        if marker_int(high, "ESP32_DOUT_HIGH=") != 1 or marker_int(low, "ESP32_DOUT_LOW=") != 0:
+            raise RuntimeError(f"{dout_pin} DOUT latch readback failed")
+        din_pin = self.find_setpin_candidate("DIN", safe_digital, "PULLUP")
+        din = self.command(f'PRINT "ESP32_DIN=" + STR$(PIN({din_pin}))')
+        if "ESP32_DIN=" not in din:
+            raise RuntimeError(f"{din_pin} DIN readback did not produce a marker")
+        araw_pin = self.find_setpin_candidate("ARAW", safe_analog)
+        araw = self.command(f'PRINT "ESP32_ARAW=" + STR$(PIN({araw_pin}))')
+        value = marker_int(araw, "ESP32_ARAW=")
         if value < 0 or value > 65535:
-            raise RuntimeError(f"GP1 ARAW read out of range: {value}")
-        pwm = self.command("SETPIN GP13, PWM", check_error=False)
+            raise RuntimeError(f"{araw_pin} ARAW read out of range: {value}")
+        self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
+        pwm = self.command(f"SETPIN {dout_pin}, PWM", check_error=False)
         if "PWM not supported on this port yet" not in pwm:
             raise RuntimeError("SETPIN PWM did not report the expected unsupported error")
         servo = self.command("SERVO 0, 50", check_error=False)
         if "Servo not supported on this port yet" not in servo:
             raise RuntimeError("SERVO did not report the expected unsupported error")
-        self.command("SETPIN GP13, OFF", check_error=False)
-        self.command("SETPIN GP1, OFF", check_error=False)
-        self.pass_check("GPIO DOUT/DIN/ARAW and unsupported PWM/SERVO", "GP13, GP1")
+        self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
+        self.command(f"SETPIN {din_pin}, OFF", check_error=False)
+        self.command(f"SETPIN {araw_pin}, OFF", check_error=False)
+        self.pass_check("GPIO DOUT/DIN/ARAW and unsupported PWM/SERVO",
+                        f"{dout_pin}, {din_pin}, {araw_pin}")
 
     def ws2812_smoke(self) -> None:
         print("=== ws2812 ===", flush=True)
@@ -356,12 +375,148 @@ class Esp32Smoke:
             f"PSRAM SIZE={psram_size} marched_mb={mb}",
         )
 
+    def display_perf_smoke(self) -> None:
+        print("=== display perf ===", flush=True)
+        self.select_drive()
+        path = join_drive(self.drive, f"{self.prefix}_display_perf.bas")
+        self.write_program(path, display_perf_program())
+        try:
+            output = self.run_program(
+                f'RUN "{path}"',
+                "GBENCH END",
+                timeout=max(self.long_timeout, 180),
+            )
+        finally:
+            self.command("OPTION AUTOREFRESH OFF", check_error=False)
+            self.command("OPTION CONSOLE BOTH", check_error=False)
+            self.command("CLS", check_error=False)
+            self.command('PRINT "DISPLAY_PERF_DONE"', check_error=False)
+            self.command("REFRESH", check_error=False)
+        metrics = parse_display_perf_metrics(output)
+        thresholds = {
+            "CLS_FULL": 800.0,
+            "BOX_BANDS": 800.0,
+            "MENU_BOX_TEXT": 850.0,
+            "PIXEL_DENSE": 10500.0,
+            "PIXEL_SPARSE": 3000.0,
+            "LINES_DIAG": 3000.0,
+            "BOX_SMALL": 2200.0,
+        }
+        missing = [name for name in thresholds if name not in metrics]
+        if missing:
+            raise RuntimeError(f"display perf smoke missing metric(s): {', '.join(missing)}")
+        slow = [
+            f"{name}={metrics[name]:.1f}ms>{limit:.1f}ms"
+            for name, limit in thresholds.items()
+            if metrics[name] > limit
+        ]
+        detail = ", ".join(f"{name}={metrics[name]:.1f}ms" for name in thresholds)
+        if slow:
+            raise RuntimeError("display perf regression: " + ", ".join(slow) + "\n" + detail)
+        self.pass_check("RUN display primitive batching benchmark", detail)
+
 
 def marker_int(text: str, marker: str) -> int:
     for line in text.splitlines():
         if line.startswith(marker):
             return int(float(line[len(marker) :].strip()))
     raise RuntimeError(f"missing integer marker {marker!r}")
+
+
+def parse_display_perf_metrics(text: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    pattern = re.compile(r"^(CLS_FULL|BOX_BANDS|MENU_BOX_TEXT|PIXEL_DENSE|PIXEL_SPARSE|LINES_DIAG|BOX_SMALL)\s*,\s*\d+\s*,\s*([0-9.]+)")
+    for line in text.splitlines():
+        match = pattern.search(line.strip())
+        if match:
+            metrics[match.group(1)] = float(match.group(2))
+    return metrics
+
+
+def display_perf_program() -> list[str]:
+    return [
+        "OPTION EXPLICIT",
+        "OPTION CONSOLE SERIAL",
+        "OPTION AUTOREFRESH OFF",
+        "DIM INTEGER I%, X%, Y%, N%",
+        "DIM FLOAT T0, DT",
+        'PRINT "GBENCH START "; MM.HRES; "x"; MM.VRES',
+        "CLS RGB(BLACK)",
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "' CLS full-screen clear",
+        "N% = 10",
+        "T0 = TIMER",
+        "FOR I% = 1 TO N%",
+        "  CLS RGB(BLACK)",
+        "NEXT I%",
+        "DT = TIMER - T0",
+        'PRINT "CLS_FULL,"; N%; ","; DT',
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "' Filled horizontal bands",
+        "N% = 50",
+        "T0 = TIMER",
+        "FOR I% = 1 TO N%",
+        "  Y% = (I% * 7) MOD 224",
+        "  BOX 0,Y%,320,16,0,RGB(0,0,80),RGB(0,0,80)",
+        "NEXT I%",
+        "DT = TIMER - T0",
+        'PRINT "BOX_BANDS,"; N%; ","; DT',
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "' Menu-style box plus text",
+        "N% = 50",
+        "T0 = TIMER",
+        "FOR I% = 1 TO N%",
+        "  BOX 0,0,320,16,0,RGB(0,0,80),RGB(0,0,80)",
+        '  TEXT 6,2,"Z)oom O)ut R)eset P)alette Esc","LT",1,1,RGB(255,255,255),RGB(0,0,80)',
+        "NEXT I%",
+        "DT = TIMER - T0",
+        'PRINT "MENU_BOX_TEXT,"; N%; ","; DT',
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "' Dense pixel writes followed by one flush trigger",
+        "N% = 25",
+        "T0 = TIMER",
+        "FOR Y% = 0 TO N% - 1",
+        "  FOR X% = 0 TO 319",
+        "    PIXEL X%,Y%,RGB(255,255,0)",
+        "  NEXT X%",
+        "NEXT Y%",
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "DT = TIMER - T0",
+        'PRINT "PIXEL_DENSE,"; N% * 320; ","; DT',
+        "' Sparse pixel writes followed by one flush trigger",
+        "N% = 1000",
+        "T0 = TIMER",
+        "FOR I% = 1 TO N%",
+        "  X% = (I% * 37) MOD 320",
+        "  Y% = (I% * 53) MOD 240",
+        "  PIXEL X%,Y%,RGB(0,255,255)",
+        "NEXT I%",
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "DT = TIMER - T0",
+        'PRINT "PIXEL_SPARSE,"; N%; ","; DT',
+        "' Diagonal line primitives",
+        "N% = 150",
+        "T0 = TIMER",
+        "FOR I% = 0 TO N% - 1",
+        "  LINE 0,I% MOD 240,319,(I% * 7) MOD 240,1,RGB(255,0,255)",
+        "NEXT I%",
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        "DT = TIMER - T0",
+        'PRINT "LINES_DIAG,"; N%; ","; DT',
+        "' Small filled boxes",
+        "N% = 500",
+        "T0 = TIMER",
+        "FOR I% = 1 TO N%",
+        "  X% = (I% * 17) MOD 310",
+        "  Y% = (I% * 11) MOD 230",
+        "  BOX X%,Y%,10,10,0,RGB(0,180,0),RGB(0,180,0)",
+        "NEXT I%",
+        "DT = TIMER - T0",
+        'PRINT "BOX_SMALL,"; N%; ","; DT',
+        "BOX 0,239,1,1,0,RGB(BLACK),RGB(BLACK)",
+        'PRINT "GBENCH END"',
+        "OPTION CONSOLE BOTH",
+    ]
 
 
 def fs_program(drive: str, prefix: str) -> list[str]:
@@ -619,7 +774,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "suites",
         nargs="*",
         default=[],
-        metavar="{all,info,fs,program,vm,flash,gpio,ws2812,psram,network}",
+        metavar="{all,info,fs,program,vm,flash,gpio,ws2812,psram,display-perf,network}",
         help="suite(s) to run; default: all",
     )
     parser.add_argument("--port", default=default_port(), help="serial device path")
@@ -656,7 +811,19 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def expand_suites(suites: Sequence[str]) -> list[str]:
-    allowed = {"all", "info", "fs", "program", "vm", "flash", "gpio", "ws2812", "psram", "network"}
+    allowed = {
+        "all",
+        "info",
+        "fs",
+        "program",
+        "vm",
+        "flash",
+        "gpio",
+        "ws2812",
+        "psram",
+        "display-perf",
+        "network",
+    }
     unknown = [suite for suite in suites if suite not in allowed]
     if unknown:
         raise ValueError(f"unknown suite(s): {', '.join(unknown)}")
@@ -756,6 +923,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "gpio": smoke.gpio_smoke,
                     "ws2812": smoke.ws2812_smoke,
                     "psram": smoke.psram_smoke,
+                    "display-perf": smoke.display_perf_smoke,
                 }
                 for suite in serial_suites:
                     runners[suite]()
@@ -777,6 +945,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except Exception as exc:
         if smoke is not None:
+            try:
+                smoke.cleanup_generated_programs()
+            except Exception:
+                pass
             all_checks.extend(smoke.checks)
         all_checks.append(Check("esp32 smoke", "FAIL", str(exc)))
         print_summary(all_checks)

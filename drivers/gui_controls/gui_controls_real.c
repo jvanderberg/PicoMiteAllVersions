@@ -14,19 +14,51 @@
 #include "shared/gfx/gfx_console_shared.h"
 #include "hal/hal_gui_controls.h"
 
+#ifndef HAL_PORT_GUI_MAX_CONTROLS
+#define HAL_PORT_GUI_MAX_CONTROLS MAXCONTROLS
+#endif
+
 extern int InvokingCtrl;
 
-static struct s_ctrl CTRLS[MAXCONTROLS];
+static struct s_ctrl CTRLS[HAL_PORT_GUI_MAX_CONTROLS];
 struct s_ctrl * Ctrl = CTRLS;
 
 void hal_gui_controls_alloc_array(void) {}
 
-void hal_gui_controls_clear_for_program(void) {
-    for (int i = 1; i < Option.MaxCtrls; i++) {
-        memset(&Ctrl[i], 0, sizeof(struct s_ctrl));
-        Ctrl[i].state = Ctrl[i].type = 0;
-        Ctrl[i].s = NULL;
+static int gui_controls_limit(void) {
+    int limit = Option.MaxCtrls;
+    if (limit > HAL_PORT_GUI_MAX_CONTROLS) limit = HAL_PORT_GUI_MAX_CONTROLS;
+    return limit;
+}
+
+static int gui_controls_any_active(void) {
+    int limit = gui_controls_limit();
+    if (Ctrl == NULL || limit <= 1) return 0;
+    for (int i = 1; i < limit; i++) {
+        if (Ctrl[i].type != 0) return 1;
     }
+    return 0;
+}
+
+int hal_gui_controls_has_active(void) {
+    return gui_controls_any_active();
+}
+
+int hal_gui_controls_service_needed(void) {
+    return hal_gui_controls_has_active() || CheckGuiFlag || ClickTimer;
+}
+
+void hal_gui_controls_clear_for_program(void) {
+    int limit = gui_controls_limit();
+    for (int i = 1; i < limit; i++) {
+        /* ClearRuntime() has just reinitialised the MMBasic heap, so any
+         * old control-owned allocations have already been reclaimed.  Null
+         * the pointers before ResetGUI() so it can restore GUI globals
+         * without trying to free stale heap addresses. */
+        Ctrl[i].s = NULL;
+        Ctrl[i].fmt = NULL;
+    }
+    ResetGUI();
 }
 
 void hal_gui_controls_post_irq_redraw(void) {
@@ -45,7 +77,7 @@ int hal_gui_controls_option_set(unsigned char * cmdline) {
     if (!tp) return 0;
     getargs(&tp, 1, (unsigned char *)",");
     if (CurrentLinePtr) error("Invalid in a program");
-    Option.MaxCtrls = getint(argv[0], 0, MAXCONTROLS - 1);
+    Option.MaxCtrls = getint(argv[0], 0, HAL_PORT_GUI_MAX_CONTROLS - 1);
     if (Option.MaxCtrls) Option.MaxCtrls++;
     SaveOptions();
     _excep_code = RESET_COMMAND;
@@ -68,7 +100,8 @@ char * hal_gui_controls_pending_interrupt(void) {
 
 void hal_gui_controls_periodic(void) {
     if (Ctrl == NULL) return;
-    if (!(DelayedDrawKeyboard || DelayedDrawFmtBox || calibrate)) ProcessTouch();
+    int active = hal_gui_controls_has_active();
+    if (active && !(DelayedDrawKeyboard || DelayedDrawFmtBox || calibrate)) ProcessTouch();
     if (CheckGuiFlag) CheckGui();
 }
 
@@ -124,14 +157,19 @@ void hal_gui_controls_set_beep_timer(int ms) {
 }
 
 void hal_gui_controls_routine_check_touch(void) {
-    if (Ctrl && TOUCH_GETIRQTRIS && !calibrate) ProcessTouch();
+    if (Ctrl && TOUCH_GETIRQTRIS && gui_controls_limit() > 1 && !calibrate &&
+        hal_gui_controls_has_active())
+        ProcessTouch();
 }
 
 void hal_gui_controls_timer_tick(void) {
+    int active = hal_gui_controls_has_active();
+    if (!active && !CheckGuiFlag && !ClickTimer) return;
+
     TouchTimer++;
     if (CheckGuiFlag) CheckGuiTimeouts();
 
-    if (TOUCH_GETIRQTRIS) {
+    if (active && TOUCH_GETIRQTRIS) {
         if (TOUCH_DOWN) {
             if (!TouchState) {
                 TouchState = TouchDown = true;
@@ -151,8 +189,11 @@ void hal_gui_controls_timer_tick(void) {
     }
 }
 
-extern void PO2Int(char * s1, int n);
-
 void hal_gui_controls_print_options(void) {
-    if (Option.MaxCtrls) PO2Int("GUI CONTROLS", Option.MaxCtrls - 1);
+    if (Option.MaxCtrls) {
+        char line[40];
+        snprintf(line, sizeof(line), "OPTION GUI CONTROLS %d\r\n",
+                 Option.MaxCtrls - 1);
+        MMPrintString(line);
+    }
 }
