@@ -1,0 +1,14 @@
+# Octal (OPI) PSRAM — ESP32-S3R8 / N#R8 modules (8 MB in-package).
+#
+# Combined with sdkconfig.common via SDKCONFIG_DEFAULTS in CMakeLists.txt.
+# This mode CANNOT drive a quad (R2) part — use ports/esp32_s3_quad for those.
+# IGNORE_NOTFOUND keeps boot alive (GENERIC, no PSRAM) on a mismatched board.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# CONFIG_SPIRAM_USE_MALLOC is not set
+CONFIG_SPIRAM_MEMTEST=y

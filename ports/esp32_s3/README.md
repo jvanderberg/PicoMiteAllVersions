@@ -1,6 +1,11 @@
 # MMBasic Anywhere - ESP32-S3
 
-**Download:** prebuilt ESP32-S3 firmware is published on the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest). Flash the single merged image `MMBasic-Anywhere-esp32-s3-merged.bin` to `0x0`, or the three split images (`-bootloader.bin`, `-partition-table.bin`, `-app.bin`); see [Flash](#flash). Building from source is only needed for development.
+**Download:** prebuilt ESP32-S3 firmware is published on the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest). **Two images are published — pick by your board's PSRAM line mode**, which is a compile-time choice (one image cannot serve both):
+
+- `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — **8 MB octal** PSRAM (R8 modules: DevKitC-N8R8/N16R8, XIAO ESP32-S3, Freenove, most LilyGo).
+- `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — **2 MB quad** PSRAM (R2 modules) **or no PSRAM at all**.
+
+Not sure which? `8 MB → octal`, `2 MB → quad` (there is no 2 MB-octal or 8 MB-quad part). Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A no-PSRAM board runs on the quad image at the ~48 KB internal-heap floor. Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
 
 ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a fixed slab reserved from ESP-IDF at boot; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 
@@ -22,43 +27,50 @@ Load the ESP-IDF environment before building:
 
 ## Build
 
-From this directory:
+There are two ESP32-S3 ports, differing only in PSRAM line mode and heap slab
+size (they share `main/sources.cmake` verbatim):
+
+- `ports/esp32_s3` — octal PSRAM (R8). 6 MB heap slab.
+- `ports/esp32_s3_quad` — quad PSRAM (R2) / no-PSRAM. 1.25 MB heap slab.
+
+Each is a self-contained ESP-IDF project. Build either the standard way:
 
 ```sh
+cd ports/esp32_s3        # or ports/esp32_s3_quad
 idf.py set-target esp32s3   # one-time, or after idf.py fullclean
 idf.py build
 ```
 
-The firmware image is written under `build/`.
-
-From the repo root, the opt-in helper runs the HAL purity gate first and then builds this port:
+The firmware image is written under that port's `build/`. From the repo root,
+the opt-in helper runs the HAL purity gate first and then builds a port (or
+`all` for both):
 
 ```sh
-./buildesp32.sh
+./buildesp32.sh esp32_s3          # octal
+./buildesp32.sh esp32_s3_quad     # quad
+./buildesp32.sh all               # both
 ```
 
 ## Flash
 
 ### Flash a release build
 
-Download the binaries from the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest) and flash with [`esptool`](https://github.com/espressif/esptool) (`pip install esptool`) — no ESP-IDF checkout needed. Replace the port with your device's `/dev/cu.usbmodem*` (macOS/Linux) or `COMx` (Windows).
+Download the merged image for your board (octal or quad — see [Download](#mmbasic-anywhere---esp32-s3)) from the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest) and flash with [`esptool`](https://github.com/espressif/esptool) (`pip install esptool`) — no ESP-IDF checkout needed. Replace the port with your device's `/dev/cu.usbmodem*` (macOS/Linux) or `COMx` (Windows), and substitute `quad` for `octal` in the filename if that's your board.
 
-Single merged image (simplest):
-
-```sh
-esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash 0x0 MMBasic-Anywhere-esp32-s3-merged.bin
-```
-
-Or the three split images at their offsets:
+Erase first, then write the merged image at `0x0`:
 
 ```sh
-esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash \
-    0x0     MMBasic-Anywhere-esp32-s3-bootloader.bin \
-    0x8000  MMBasic-Anywhere-esp32-s3-partition-table.bin \
-    0x10000 MMBasic-Anywhere-esp32-s3-app.bin
+esptool --chip esp32s3 -p /dev/cu.usbmodem* erase_flash
+esptool --chip esp32s3 -p /dev/cu.usbmodem* write_flash 0x0 MMBasic-Anywhere-esp32-s3-octal-merged.bin
 ```
 
-The same commands are in `MMBasic-Anywhere-esp32-s3-flash.txt` in the release. A clean flash boots the `GENERIC` profile over USB Serial/JTAG; see [Board Profiles](#board-profiles) to select your board.
+**Flash in DIO mode.** The merged image already carries a DIO header, so the
+command above is correct. If you flash with the Espressif **Flash Download
+Tool** GUI instead, set **SPI MODE = DIO** — its default of QIO will boot-loop
+an octal-PSRAM (R8) board (`TG0WDT` / `ets_loader.c`), because QIO conflicts
+with the octal PSRAM lines.
+
+A clean flash boots the `GENERIC` profile over USB Serial/JTAG; see [Board Profiles](#board-profiles) to select your board. If the prompt never appears but PSRAM was detected, the board may route its USB-C only to a UART bridge rather than the chip's native USB — confirm you're on the native-USB connector.
 
 ### Flash from source
 

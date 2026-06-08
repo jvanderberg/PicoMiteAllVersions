@@ -134,12 +134,15 @@
 #define BC_CRASH_INFO_ATTR
 
 /* Slab size reserved from ESP-IDF SPIRAM at boot for MMBasic PSRAM
- * ownership. The Metro N16R8 module is 8 MB total; ESP-IDF retains the
- * remainder for its own WiFi RX / SmartConfig buffers. Tunable in the
- * 4–7 MB range — start conservative and bump after measuring free
- * SPIRAM after WiFi join. This is the *heap* portion of the slab; the
- * physical slab acquired by hal_psram_esp32.c is larger, see below. */
+ * ownership. The N16R8 (octal) module is 8 MB total; ESP-IDF retains the
+ * remainder for its own buffers. This is the *heap* portion of the slab;
+ * the physical slab acquired by hal_psram_esp32.c is larger, see below.
+ *
+ * Overridable per port (-D) so a sibling quad-PSRAM port can pass a
+ * smaller value (an R2 module is 2 MB total) without forking this header. */
+#ifndef HAL_PORT_PSRAM_SLAB_BYTES
 #define HAL_PORT_PSRAM_SLAB_BYTES (6u * 1024u * 1024u)
+#endif
 
 /* Slot region size for `RAM SAVE` / `RAM LOAD` numbered slots. The
  * shared formula PSRAMblock = PSRAMbase + PSRAMsize + 0x60000 puts this
