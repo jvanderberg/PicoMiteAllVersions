@@ -249,8 +249,6 @@ python3 "$PORT_DIR/tools/make_boot_floppy.py" \
     --kernel "$KERNEL_BOOT" \
     --limine-conf "$PORT_DIR/limine.conf" \
     --limine-sys "$LIMINE_BIOS_SYS" \
-    --hello "$HELLO_SRC" \
-    --fizzbuzz "$FIZZBUZZ_SRC" \
     --readme "$DISK_DIR/FLOPPY.TXT" \
     "$F_IMG"
 
