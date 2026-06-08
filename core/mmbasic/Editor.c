@@ -134,9 +134,6 @@ static inline char nothingchar(char dummy, int flush) {
 __attribute__((weak)) int port_editor_vt100_enabled(void) {
     return 1;
 }
-__attribute__((weak)) int port_editor_display_scroll_supported(void) {
-    return 0;
-}
 int OriginalFC, OriginalBC; // the original fore/background colours used by MMBasic
 static void (*PrintString)(char * buff) = SSPrintString;
 static char (*SSputchar)(char buff, int flush) = SerialConsolePutC;
@@ -152,13 +149,10 @@ static char (*SSputchar)(char buff, int flush) = SerialConsolePutC;
  * SPIREAD is false for SCREENMODE1-5, so the SPIREAD branch never
  * triggers on VGA — the ScrollLCD(n) call below is the right path
  * unconditionally. ScrollLCDMEM332/ScrollLCDSPISCR are unconditionally
- * declared and have stubs on ports without that backend. Ports with their
- * own readable LCD shadow backend can opt in via port_editor_display_scroll_supported(). */
+ * declared and have stubs on ports without that backend. */
 #define MX470Scroll(n)                                                                                       \
     if (Option.DISPLAY_CONSOLE) {                                                                            \
-        if (!((SPIREAD && ScrollLCD != ScrollLCDSPISCR && ScrollLCD != ScrollLCDMEM332 &&                  \
-               !port_editor_display_scroll_supported()) ||                                                   \
-              Option.NoScroll))                                                                              \
+        if (!((SPIREAD && ScrollLCD != ScrollLCDSPISCR && ScrollLCD != ScrollLCDMEM332) || Option.NoScroll)) \
             ScrollLCD(n);                                                                                    \
         else {                                                                                               \
             PrintString = printnothing;                                                                      \

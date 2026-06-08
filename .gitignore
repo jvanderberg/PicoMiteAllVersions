@@ -14,4 +14,9 @@ ports/esp32_s3_metro/sdkconfig
 ports/esp32_s3_metro/sdkconfig.old
 ports/esp32_s3_metro/managed_components/
 ports/esp32_s3_metro/dependencies.lock
+ports/esp32_s3/build/
+ports/esp32_s3/sdkconfig
+ports/esp32_s3/sdkconfig.old
+ports/esp32_s3/managed_components/
+ports/esp32_s3/dependencies.lock
 options.ini

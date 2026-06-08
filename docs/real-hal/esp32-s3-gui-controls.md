@@ -87,7 +87,7 @@ remove generated files after the automated checks.
 
 ## Example
 
-`examples/freenove_touch_gui_controls.bas` is a short Freenove touch drawing
+`ports/esp32_s3/examples/freenove_touch_gui_controls.bas` is a short Freenove touch drawing
 program using `GUI BUTTON`, `GUI SWITCH`, `GUI LED`, `GUI AREA`, direct
 `TOUCH()`, and `TOUCH(REF)`.
 

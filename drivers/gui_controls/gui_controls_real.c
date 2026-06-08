@@ -22,24 +22,26 @@ extern int InvokingCtrl;
 
 static struct s_ctrl CTRLS[HAL_PORT_GUI_MAX_CONTROLS];
 struct s_ctrl * Ctrl = CTRLS;
-static int active_controls;
 
 void hal_gui_controls_alloc_array(void) {}
 
-void hal_gui_controls_note_create(void) {
-    active_controls++;
+static int gui_controls_limit(void) {
+    int limit = Option.MaxCtrls;
+    if (limit > HAL_PORT_GUI_MAX_CONTROLS) limit = HAL_PORT_GUI_MAX_CONTROLS;
+    return limit;
 }
 
-void hal_gui_controls_note_delete(void) {
-    if (active_controls > 0) active_controls--;
-}
-
-void hal_gui_controls_note_reset(void) {
-    active_controls = 0;
+static int gui_controls_any_active(void) {
+    int limit = gui_controls_limit();
+    if (Ctrl == NULL || limit <= 1) return 0;
+    for (int i = 1; i < limit; i++) {
+        if (Ctrl[i].type != 0) return 1;
+    }
+    return 0;
 }
 
 int hal_gui_controls_has_active(void) {
-    return Ctrl != NULL && active_controls > 0;
+    return gui_controls_any_active();
 }
 
 int hal_gui_controls_service_needed(void) {
@@ -47,7 +49,8 @@ int hal_gui_controls_service_needed(void) {
 }
 
 void hal_gui_controls_clear_for_program(void) {
-    for (int i = 1; i < Option.MaxCtrls; i++) {
+    int limit = gui_controls_limit();
+    for (int i = 1; i < limit; i++) {
         /* ClearRuntime() has just reinitialised the MMBasic heap, so any
          * old control-owned allocations have already been reclaimed.  Null
          * the pointers before ResetGUI() so it can restore GUI globals
@@ -154,7 +157,7 @@ void hal_gui_controls_set_beep_timer(int ms) {
 }
 
 void hal_gui_controls_routine_check_touch(void) {
-    if (Ctrl && TOUCH_GETIRQTRIS && Option.MaxCtrls > 1 && !calibrate &&
+    if (Ctrl && TOUCH_GETIRQTRIS && gui_controls_limit() > 1 && !calibrate &&
         hal_gui_controls_has_active())
         ProcessTouch();
 }

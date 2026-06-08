@@ -487,10 +487,6 @@ int esp32_ili9341_lcd_restore_panel(void) {
     return 1;
 }
 
-int port_editor_display_scroll_supported(void) {
-    return esp32_ili9341_lcd_ready() && ScrollLCD == esp32_lcd_scroll;
-}
-
 void esp32_ili9341_lcd_snapshot_rgb121(uint8_t * out) {
     if (!out || !esp32_ili9341_lcd_ready()) return;
     int index = 0;

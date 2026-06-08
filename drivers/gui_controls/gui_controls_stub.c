@@ -52,9 +52,6 @@ void hal_gui_controls_set_beep_timer(int ms) {
 void hal_gui_controls_routine_check_touch(void) {}
 void hal_gui_controls_timer_tick(void) {}
 void hal_gui_controls_print_options(void) {}
-void hal_gui_controls_note_create(void) {}
-void hal_gui_controls_note_delete(void) {}
-void hal_gui_controls_note_reset(void) {}
 int hal_gui_controls_has_active(void) { return 0; }
 int hal_gui_controls_service_needed(void) { return 0; }
 
