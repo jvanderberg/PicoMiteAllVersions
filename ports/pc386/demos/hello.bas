@@ -1,0 +1,10 @@
+PRINT
+PRINT "Hello from MMBasic Anywhere on pc386!"
+PRINT "Version: ", MM.VER
+PRINT
+PRINT "Try:"
+PRINT "  RUN ""FIZZBUZZ.BAS"""
+PRINT "  RUN ""C:/PROGRAMS/SIEVE.BAS"""
+PRINT "  FILES"
+PRINT
+END

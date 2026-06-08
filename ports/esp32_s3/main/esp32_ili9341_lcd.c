@@ -69,7 +69,7 @@ static uint16_t rgb565(int c) {
                       ((v & 0x000000f8u) >> 3));
 }
 
-static void esp32_lcd_scroll(int lines);
+void esp32_ili9341_lcd_scroll(int lines);
 void esp32_ili9341_lcd_flush_pending(void);
 
 static void put565(uint8_t * p, int c) {
@@ -523,7 +523,7 @@ static void esp32_ili9341_lcd_bind_panel(void) {
     ReadBuffer = esp32_lcd_read_buffer;
     ReadBLITBuffer = esp32_lcd_read_buffer;
     ReadBufferFast = esp32_lcd_read_buffer_fast;
-    ScrollLCD = esp32_lcd_scroll;
+    ScrollLCD = ScrollLCDSPISCR;
 }
 
 int esp32_ili9341_lcd_restore_panel(void) {
@@ -649,7 +649,7 @@ void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src,
     }
 }
 
-static void esp32_lcd_scroll(int lines) {
+void esp32_ili9341_lcd_scroll(int lines) {
     if (!s_shadow || lines == 0) return;
     ScrollStart = 0;
     uint32_t bg = (uint32_t)gui_bcolour & 0x00ffffffu;

@@ -17,6 +17,8 @@
 #include "hal/usb_serial_jtag_ll.h"
 #include "esp32_option_ext.h"
 
+extern void esp32_console_jtag_uninstall(void);
+
 static int s_effective_role = USB_ROLE_SERIAL;
 static int s_forced_serial;
 
@@ -93,9 +95,7 @@ int esp32_usb_role_forced_serial(void) {
 }
 
 void esp32_usb_role_prepare_keyboard_host(void) {
-    if (usb_serial_jtag_is_driver_installed()) {
-        usb_serial_jtag_driver_uninstall();
-    }
+    esp32_console_jtag_uninstall();
 }
 
 void esp32_usb_role_prepare_serial_device(void) {

@@ -40,6 +40,7 @@ extern uint32_t mergetimer;
 extern int esp32_ili9341_lcd_restore_panel(void);
 extern int esp32_ili9341_lcd_ready(void);
 extern void esp32_ili9341_lcd_flush_pending(void);
+extern void esp32_ili9341_lcd_scroll(int lines);
 extern int esp32_fastgfx_active(void);
 extern void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src,
                                                   int xstart, int xend,
@@ -584,7 +585,7 @@ void Display_Refresh(void) {
 /* Display-related globals + functions referenced by core code. */
 volatile int DISPLAY_TYPE = 0;
 void ScrollLCDSPISCR(int lines) {
-    (void)lines;
+    if (esp32_ili9341_lcd_ready()) esp32_ili9341_lcd_scroll(lines);
 }
 void setterminal(int height, int width) {
     if (height > 0) Option.Height = height;

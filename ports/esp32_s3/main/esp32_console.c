@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include "driver/usb_serial_jtag.h"
@@ -19,17 +20,31 @@
 
 extern int esp32_usb_role_is_serial(void);
 
+/* Tracks whether this port installed the USB Serial/JTAG driver. We own the
+ * state ourselves rather than querying the IDF, since the
+ * usb_serial_jtag_is_driver_installed() query is unavailable on IDF v5.3. */
+static bool s_jtag_driver_installed = false;
+
+void esp32_console_jtag_uninstall(void) {
+    if (s_jtag_driver_installed) {
+        usb_serial_jtag_driver_uninstall();
+        s_jtag_driver_installed = false;
+    }
+}
+
 void esp32_console_init(void) {
     static int done = 0;
     if (done) return;
     done = 1;
 
-    if (!usb_serial_jtag_is_driver_installed()) {
+    if (!s_jtag_driver_installed) {
         usb_serial_jtag_driver_config_t cfg = {
             .tx_buffer_size = 256,
             .rx_buffer_size = 256,
         };
-        usb_serial_jtag_driver_install(&cfg);
+        if (usb_serial_jtag_driver_install(&cfg) == ESP_OK) {
+            s_jtag_driver_installed = true;
+        }
     }
     usb_serial_jtag_vfs_use_driver();
 
