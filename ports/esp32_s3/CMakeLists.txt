@@ -1,4 +1,4 @@
-# MMBasic Anywhere - ESP32-S3 port (octal PSRAM, R8 modules).
+# MMBasic Anywhere - ESP32-S3 port (octal/OPI PSRAM, R8 / R16 modules).
 #
 # Standard ESP-IDF project. Build it the documented way:
 #   . ~/esp/esp-idf/export.sh

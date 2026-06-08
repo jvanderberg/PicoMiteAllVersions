@@ -1,4 +1,4 @@
-# Octal (OPI) PSRAM — ESP32-S3R8 / N#R8 modules (8 MB in-package).
+# Octal-PSRAM build — for R8 / R16 (octal) modules, any size.
 #
 # Combined with sdkconfig.common via SDKCONFIG_DEFAULTS in CMakeLists.txt.
 # This mode CANNOT drive a quad (R2) part — use ports/esp32_s3_quad for those.

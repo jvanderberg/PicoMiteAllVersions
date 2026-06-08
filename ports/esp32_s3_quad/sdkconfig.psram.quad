@@ -1,5 +1,5 @@
-# Quad (QPI) PSRAM — ESP32-S3R2 / N#R2 modules (2 MB in-package), and a safe
-# boot on no-PSRAM boards (IGNORE_NOTFOUND -> GENERIC, internal-heap only).
+# Quad-PSRAM build — for R2 (quad) modules, and a safe boot on no-PSRAM
+# boards (IGNORE_NOTFOUND -> GENERIC, internal-heap only).
 #
 # Combined with ../esp32_s3/sdkconfig.common via SDKCONFIG_DEFAULTS in
 # CMakeLists.txt. This mode CANNOT drive an octal (R8) part — use
