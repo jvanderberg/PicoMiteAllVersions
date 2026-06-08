@@ -39,6 +39,31 @@ From the repo root, the opt-in helper runs the HAL purity gate first and then bu
 
 ## Flash
 
+### Flash a release build
+
+Download the binaries from the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest) and flash with [`esptool`](https://github.com/espressif/esptool) (`pip install esptool`) — no ESP-IDF checkout needed. Replace the port with your device's `/dev/cu.usbmodem*` (macOS/Linux) or `COMx` (Windows).
+
+Single merged image (simplest):
+
+```sh
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash 0x0 MMBasic-Anywhere-esp32-s3-merged.bin
+```
+
+Or the three split images at their offsets:
+
+```sh
+esptool.py --chip esp32s3 -p /dev/cu.usbmodem* write_flash \
+    0x0     MMBasic-Anywhere-esp32-s3-bootloader.bin \
+    0x8000  MMBasic-Anywhere-esp32-s3-partition-table.bin \
+    0x10000 MMBasic-Anywhere-esp32-s3-app.bin
+```
+
+The same commands are in `MMBasic-Anywhere-esp32-s3-flash.txt` in the release. A clean flash boots the `GENERIC` profile over USB Serial/JTAG; see [Board Profiles](#board-profiles) to select your board.
+
+### Flash from source
+
+With ESP-IDF loaded and the port built ([Build](#build)):
+
 ```sh
 idf.py -p /dev/cu.usbmodem* flash
 ```
