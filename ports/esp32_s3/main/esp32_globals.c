@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 
+#include "esp_system.h" /* esp_restart */
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 
@@ -32,11 +33,12 @@ unsigned char * SecondLayer = NULL;
  * BASIC interrupts wired; nothing to clear. */
 void ClearExternalIO(void) {}
 
-/* SoftReset — called from cmd_cpu RESTART on some ports. ESP32 uses
- * esp_restart() directly from esp32_system.c::cmd_cpu, so this is
- * never reached; the symbol exists only because Commands.c references
- * it from non-ESP32 paths. */
-void SoftReset(void) {}
+/* SoftReset — MMBasic's "reboot the device" primitive, used by OPTION RESET,
+ * CONFIGURE, the OPTION PIN lock, and other paths that must restart for changes
+ * to take effect. On ESP32 that is a full chip restart. */
+void SoftReset(void) {
+    esp_restart();
+}
 
 /* Interrupt-source address resolver. This is used by WEB TCP INTERRUPT
  * and the generic MMBasic interrupt machinery to resolve a line number,

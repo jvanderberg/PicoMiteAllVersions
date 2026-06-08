@@ -1,5 +1,7 @@
 # MMBasic Anywhere - ESP32-S3
 
+**Download:** prebuilt ESP32-S3 firmware is published on the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest). Flash the single merged image `MMBasic-Anywhere-esp32-s3-merged.bin` to `0x0`, or the three split images (`-bootloader.bin`, `-partition-table.bin`, `-app.bin`); see [Flash](#flash). Building from source is only needed for development.
+
 ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a fixed slab reserved from ESP-IDF at boot; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 
 Plan: [docs/real-hal/esp32-s3-port.md](../../docs/real-hal/esp32-s3-port.md). Session log: [docs/real-hal/esp32-s3-port-log.md](../../docs/real-hal/esp32-s3-port-log.md).
@@ -130,6 +132,45 @@ OPTION USB KEYBOARD
 In keyboard mode, connect a USB keyboard to the Metro USB-C port through a suitable host cable or adapter. Local VGA remains the display console. Key repeat uses the standard MMBasic default timing: 600 ms before repeat starts, then 150 ms between repeated keys.
 
 Holding BOOT during reset forces USB Serial/JTAG for that boot without changing the saved USB role.
+
+## Board Profiles
+
+One firmware image serves every supported board. A board profile carries the default wiring for that board's LCD, SD card, touch, and audio. The active profile is saved and reapplied on every boot. Select one with the standard `CONFIGURE` command (an alias for `OPTION RESET`); it resets options to that board's defaults, saves, and reboots:
+
+```basic
+CONFIGURE LIST       ' GENERIC / METRO / FREENOVE ILI9341
+CONFIGURE FREENOVE   ' apply Freenove ILI9341 defaults and restart
+CONFIGURE GENERIC    ' conservative defaults, no board peripherals
+```
+
+`MM.INFO$(DEVICE)` reports the active board (e.g. `MMBasic ESP32-S3 Freenove ILI9341`). `OPTION PLATFORM` is unrelated to board selection — it sets a free-text label returned by `MM.INFO$(PLATFORM)`, exactly as on the PicoMite.
+
+### Supported platforms
+
+| Profile | Hardware | What the profile wires up |
+|---|---|---|
+| `GENERIC` | Any ESP32-S3 dev board | USB Serial/JTAG console, `A:` (LittleFS), WiFi, PSRAM. No display, SD, touch, or audio assumed. |
+| `METRO` | Adafruit Metro ESP32-S3 (#5500) N16R8 | SPI microSD, I2S audio DAC (BCLK GP5 / WS GP6 / DOUT GP7), WS2812. The board used for VGA bring-up. |
+| `FREENOVE ILI9341` | Freenove FNK0104A/B 2.8" | ILI9341 SPI LCD (SCLK 38 / MOSI 40 / MISO 39 / CS 47, etc.), FT6336U capacitive touch, ES8311 audio codec, microSD socket. |
+
+### Generic bring-up
+
+`GENERIC` is the safe default on a clean flash and the starting point for any board. It brings up only what every ESP32-S3 has — the USB Serial/JTAG REPL, the `A:` LittleFS filesystem, WiFi/network, and PSRAM if present — and reserves **no** GPIO for a display, SD bus, or audio, so it runs on any board without pin conflicts. Bring a new board up on `GENERIC` first, confirm the REPL and `A:` work, then layer on peripherals.
+
+### Configuring an unsupported board
+
+For a board that has no profile, run on `GENERIC` and configure peripherals by hand. SD card, audio, and VGA are all `OPTION`-driven and work on any board, exactly as on the other PicoMite ports — a board profile only supplies these as defaults:
+
+```basic
+OPTION SDCARD GP47,GP38,GP40,GP39        ' dedicated-SPI SD: cs, clk, mosi, miso
+OPTION AUDIO I2S GP5,GP6,GP7             ' external I2S DAC — see Audio below
+OPTION VGA 3BIT GP8,GP9,GP10,GP11,GP12   ' resistor-DAC VGA — see VGA below
+CPU RESTART
+```
+
+`OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket pins for you.)
+
+The LCD and touch panels remain profile-driven: a board with a different display still needs a board-profile entry rather than a runtime option.
 
 ## VGA
 

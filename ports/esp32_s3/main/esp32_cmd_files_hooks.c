@@ -30,11 +30,11 @@ extern volatile BYTE SDCardStat;
 extern hal_fs_fd_t hal_fds[];
 extern void ErrorThrow(int e, int type);
 
-/* Drive availability. A: is LittleFS on internal flash. B: is FatFs only
- * when the selected board profile supplies an onboard SD socket. */
+/* Drive availability. A: is LittleFS on internal flash. B: is FatFs whenever an
+ * SD card is configured (OPTION SDCARD, or seeded from a board profile). */
 void port_drive_check(char drive) {
     if (drive == 'A') return;
-    if (drive == 'B' && esp32_board_profile_current()->has_sd) return;
+    if (drive == 'B' && Option.SD_CS) return;
     error("Invalid disk");
 }
 
@@ -44,7 +44,7 @@ void port_drive_check(char drive) {
 
 int port_mount_sd_drive(void) {
     ErrorThrow(0, NONEFILE); /* reset mm.errno */
-    if (!esp32_board_profile_current()->has_sd) {
+    if (!Option.SD_CS) {
         ErrorThrow(FR_NOT_ENABLED, FATFSFILE);
         return 0;
     }
@@ -68,9 +68,6 @@ void port_apply_load_overrides(void) {
         esp32_board_profile_by_id(esp32_board_profile_current_id());
     if (!profile) profile = esp32_board_profile_by_id(ESP32_BOARD_PROFILE_ID_GENERIC);
     esp32_board_profile_set(profile->id);
-    strncpy((char *)Option.platform, profile->platform_name,
-            sizeof(Option.platform) - 1);
-    Option.platform[sizeof(Option.platform) - 1] = '\0';
     if (ESP32_OPTION_AUDIO_KIND > ESP32_AUDIO_KIND_PROFILE)
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
     if (Option.AUDIO_L && Option.AUDIO_R) {

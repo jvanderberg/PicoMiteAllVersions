@@ -55,41 +55,31 @@ static int sd_gpio_is_set(int gpio) {
     return gpio != ESP32_BOARD_PROFILE_NO_PIN;
 }
 
-static void enable_sd_pullup(const esp32_board_profile_t * profile,
-                             const char * signal,
-                             int gpio) {
+static void enable_sd_pullup(const char * signal, int gpio) {
     if (!sd_gpio_is_set(gpio)) return;
 
     esp_err_t err = gpio_set_pull_mode((gpio_num_t)gpio, GPIO_PULLUP_ONLY);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "%s SD %s pull-up on GPIO%d failed: %s",
-                 profile->platform_name, signal, gpio, esp_err_to_name(err));
+        ESP_LOGW(TAG, "SD %s pull-up on GPIO%d failed: %s",
+                 signal, gpio, esp_err_to_name(err));
     }
 }
 
-static void enable_profile_sd_pullups(const esp32_board_profile_t * profile) {
+static void enable_sd_pullups(int cs, int mosi, int miso) {
     /*
      * SD cards require pull-ups on CMD and DAT lines. In SDSPI mode those are
-     * MOSI/CMD, MISO/D0, CS/D3; D1/D2 remain idle but are still card contacts
-     * on boards that expose them in the profile.
+     * MOSI/CMD, MISO/D0, CS/D3. Boards that expose the otherwise-idle SDIO data
+     * lines (D1/D2) on the socket also need them pulled up to keep the card in
+     * SPI mode; those come from the active board profile.
      */
-    enable_sd_pullup(profile, "CMD/MOSI", profile->sd.mosi);
-    enable_sd_pullup(profile, "D0/MISO", profile->sd.miso);
-    enable_sd_pullup(profile, "D3/CS", profile->sd.cs);
-    enable_sd_pullup(profile, "D1", profile->sd.d1);
-    enable_sd_pullup(profile, "D2", profile->sd.d2);
-}
-
-static esp_err_t validate_profile_sd_config(const esp32_board_profile_t * profile) {
-    if (!sd_gpio_is_set(profile->sd.sclk) ||
-        !sd_gpio_is_set(profile->sd.mosi) ||
-        !sd_gpio_is_set(profile->sd.miso) ||
-        !sd_gpio_is_set(profile->sd.cs) ||
-        profile->sd.spi_freq_khz <= 0) {
-        ESP_LOGE(TAG, "%s SD profile is incomplete", profile->platform_name);
-        return ESP_ERR_INVALID_ARG;
+    enable_sd_pullup("CMD/MOSI", mosi);
+    enable_sd_pullup("D0/MISO", miso);
+    enable_sd_pullup("D3/CS", cs);
+    const esp32_board_profile_t * profile = esp32_board_profile_current();
+    if (profile->has_sd) {
+        enable_sd_pullup("D1", profile->sd.d1);
+        enable_sd_pullup("D2", profile->sd.d2);
     }
-    return ESP_OK;
 }
 
 static void deinit_sdspi_card(sdmmc_host_t * host,
@@ -110,27 +100,31 @@ static void deinit_sdspi_card(sdmmc_host_t * host,
 }
 
 static esp_err_t init_sdspi_card(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_sd) {
-        ESP_LOGW(TAG, "selected board profile has no SD socket");
+    int cs = 0, sclk = 0, mosi = 0, miso = 0;
+    if (!esp32_sd_option_gpios(&cs, &sclk, &mosi, &miso)) {
+        ESP_LOGW(TAG, "no SD card configured (OPTION SDCARD)");
         return ESP_ERR_NOT_SUPPORTED;
     }
+    if (!sd_gpio_is_set(sclk) || !sd_gpio_is_set(mosi) ||
+        !sd_gpio_is_set(miso) || !sd_gpio_is_set(cs)) {
+        ESP_LOGE(TAG, "SD card needs CS, CLK, MOSI, MISO pins");
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    esp_err_t err = validate_profile_sd_config(profile);
-    if (err != ESP_OK) return err;
-    enable_profile_sd_pullups(profile);
+    enable_sd_pullups(cs, mosi, miso);
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.max_freq_khz = profile->sd.spi_freq_khz;
+    host.max_freq_khz = ESP32_BOARD_PROFILE_SD_SPI_FREQ_KHZ;
     spi_host_device_t host_id = host.slot;
     int bus_inited = 0;
     int host_inited = 0;
     int device_inited = 0;
+    esp_err_t err;
 
     spi_bus_config_t bus_cfg = {
-        .mosi_io_num = profile->sd.mosi,
-        .miso_io_num = profile->sd.miso,
-        .sclk_io_num = profile->sd.sclk,
+        .mosi_io_num = mosi,
+        .miso_io_num = miso,
+        .sclk_io_num = sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = 4000,
@@ -153,7 +147,7 @@ static esp_err_t init_sdspi_card(void) {
 
     sdspi_device_config_t dev_cfg = SDSPI_DEVICE_CONFIG_DEFAULT();
     dev_cfg.host_id = host.slot;
-    dev_cfg.gpio_cs = profile->sd.cs;
+    dev_cfg.gpio_cs = cs;
 
     sdspi_dev_handle_t handle = -1;
     err = sdspi_host_init_device(&dev_cfg, &handle);

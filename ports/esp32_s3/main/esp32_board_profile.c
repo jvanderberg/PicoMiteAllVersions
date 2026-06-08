@@ -137,6 +137,19 @@ uint8_t esp32_board_profile_current_id(void) {
     return esp32_board_profile_current()->id;
 }
 
+/* Resolve the active SD card pins into raw GPIO numbers for the SDSPI driver.
+ * The pins come from Option.SD_* (set by OPTION SDCARD, or seeded from a board
+ * profile's defaults), so SD configuration works like the other PicoMite ports.
+ * Returns 0 when no SD card is configured. */
+int esp32_sd_option_gpios(int * cs, int * sclk, int * mosi, int * miso) {
+    if (!Option.SD_CS) return 0;
+    *cs = PinDef[Option.SD_CS].GPno;
+    *sclk = Option.SD_CLK_PIN ? PinDef[Option.SD_CLK_PIN].GPno : ESP32_BOARD_PROFILE_NO_PIN;
+    *mosi = Option.SD_MOSI_PIN ? PinDef[Option.SD_MOSI_PIN].GPno : ESP32_BOARD_PROFILE_NO_PIN;
+    *miso = Option.SD_MISO_PIN ? PinDef[Option.SD_MISO_PIN].GPno : ESP32_BOARD_PROFILE_NO_PIN;
+    return 1;
+}
+
 void esp32_board_profile_set(uint8_t id) {
     if (!esp32_board_profile_by_id(id)) id = ESP32_BOARD_PROFILE_ID_GENERIC;
     ESP32_OPTION_BOARD_PROFILE = id;
@@ -148,6 +161,12 @@ static int profile_pin(int gpio) {
 
 static int profile_pin_invalid(int pin) {
     return pin <= 0 || pin > NBRPINS || (PinDef[pin].mode & UNUSED);
+}
+
+/* Reserve a pin given its codemap'd index (as stored in Option.SD_*), versus
+ * reserve_profile_gpio() which takes a raw GPIO from the profile table. */
+static void reserve_pin_index(int pin) {
+    if (!profile_pin_invalid(pin)) ExtCurrentConfig[pin] = EXT_BOOT_RESERVED;
 }
 
 static void reserve_profile_gpio(int gpio) {
@@ -184,15 +203,9 @@ static int current_profile_shared_i2c_pin(int pin) {
            profile_pin_matches_gpio(pin, profile->touch.scl);
 }
 
-static void set_platform_name(const esp32_board_profile_t * profile) {
-    strncpy((char *)Option.platform, profile->platform_name, sizeof(Option.platform) - 1);
-    Option.platform[sizeof(Option.platform) - 1] = '\0';
-}
-
 void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     if (!profile) profile = &s_profiles[0];
     esp32_board_profile_set(profile->id);
-    set_platform_name(profile);
 
     Option.SD_CS = 0;
     Option.SD_CLK_PIN = 0;
@@ -261,45 +274,20 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     }
 }
 
-int esp32_board_profile_option_setter(unsigned char * cmdline) {
-    unsigned char * tp = checkstring(cmdline, (unsigned char *)"PLATFORM");
-    if (!tp) return 0;
-    if (CurrentLinePtr) error("Invalid in a program");
-
-    const esp32_board_profile_t * profile = NULL;
-    skipspace(tp);
-    if (checkstring(tp, (unsigned char *)"LIST")) {
-        for (size_t i = 0; i < s_profile_count; i++) {
-            MMPrintString((char *)s_profiles[i].configure_name);
-            MMPrintString("\r\n");
-        }
-        return 1;
-    }
-    if (*tp == '"') {
-        char text[STRINGSIZE];
-        strcpy(text, (char *)getCstring(tp));
-        profile = esp32_board_profile_by_name((unsigned char *)text);
-    } else {
-        profile = esp32_board_profile_by_name(tp);
-    }
-    if (!profile) error("Invalid platform");
-
-    esp32_board_profile_apply_defaults(profile);
-    SaveOptions();
-    MMPrintString("Restarting\r\n");
-    esp_restart();
-    return 1;
-}
-
 void esp32_board_profile_reserve_pins(void) {
     const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (profile->has_sd) {
-        reserve_profile_gpio(profile->sd.sclk);
-        reserve_profile_gpio(profile->sd.mosi);
-        reserve_profile_gpio(profile->sd.miso);
-        reserve_profile_gpio(profile->sd.cs);
-        reserve_profile_gpio(profile->sd.d1);
-        reserve_profile_gpio(profile->sd.d2);
+    if (Option.SD_CS) {
+        /* SD pins come from Option.SD_* (OPTION SDCARD, or seeded from the
+         * profile). D1/D2 are extra SDIO-socket lines that only a profile
+         * carries, so reserve those from the profile when it has an SD. */
+        reserve_pin_index(Option.SD_CS);
+        reserve_pin_index(Option.SD_CLK_PIN);
+        reserve_pin_index(Option.SD_MOSI_PIN);
+        reserve_pin_index(Option.SD_MISO_PIN);
+        if (profile->has_sd) {
+            reserve_profile_gpio(profile->sd.d1);
+            reserve_profile_gpio(profile->sd.d2);
+        }
         s_sd_pins_reserved = 1;
     }
     if (profile->has_ws2812) {
@@ -385,10 +373,8 @@ const char * port_pin_reserved_label(int pin) {
 
     const esp32_board_profile_t * profile = esp32_board_profile_current();
     if (s_sd_pins_reserved &&
-        (profile_pin_matches_gpio(pin, profile->sd.sclk) ||
-         profile_pin_matches_gpio(pin, profile->sd.mosi) ||
-         profile_pin_matches_gpio(pin, profile->sd.miso) ||
-         profile_pin_matches_gpio(pin, profile->sd.cs) ||
+        (pin == Option.SD_CS || pin == Option.SD_CLK_PIN ||
+         pin == Option.SD_MOSI_PIN || pin == Option.SD_MISO_PIN ||
          profile_pin_matches_gpio(pin, profile->sd.d1) ||
          profile_pin_matches_gpio(pin, profile->sd.d2)))
         return "Boot Reserved : SD";
@@ -424,7 +410,11 @@ const char * port_pin_reserved_label(int pin) {
 }
 
 void esp32_board_profile_print_option(void) {
-    MMPrintString("OPTION PLATFORM ");
-    MMPrintString((char *)esp32_board_profile_current()->platform_name);
-    MMPrintString("\r\n");
+    /* Standard PicoMite OPTION PLATFORM dump: the user-set label, only when
+     * one is set. Board identity is reported separately via MM.INFO$(DEVICE). */
+    if (*Option.platform && (unsigned char)Option.platform[0] != 0xFF) {
+        MMPrintString("OPTION PLATFORM ");
+        MMPrintString((char *)Option.platform);
+        MMPrintString("\r\n");
+    }
 }

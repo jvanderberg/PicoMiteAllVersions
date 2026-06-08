@@ -143,6 +143,19 @@ void printoptions(void) {
     esp32_vga_print_options();
     esp32_touch_calibrate_print_option();
     hal_gui_controls_print_options();
+    if (Option.SD_CS) {
+        MMPrintString("OPTION SDCARD ");
+        MMPrintString((char *)PinDef[Option.SD_CS].pinname);
+        if (Option.SD_CLK_PIN) {
+            MMPrintString(", ");
+            MMPrintString((char *)PinDef[Option.SD_CLK_PIN].pinname);
+            MMPrintString(", ");
+            MMPrintString((char *)PinDef[Option.SD_MOSI_PIN].pinname);
+            MMPrintString(", ");
+            MMPrintString((char *)PinDef[Option.SD_MISO_PIN].pinname);
+        }
+        MMPrintString("\r\n");
+    }
     /* PSRAM presence: the slab is set up by hal_psram_init() at boot
      * from heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM). PSRAM_CS_PIN
      * is the rp2350 channel and stays at 0 on ESP32, so emit a
@@ -350,6 +363,51 @@ void cmd_Nunchuck(void) {}
 
 void cmd_onewire(void) {}
 
+/* OPTION SDCARD cs, clk, mosi, miso — configure a dedicated-SPI SD card on any
+ * board, the same as the other PicoMite ports. Board profiles seed these pins
+ * as defaults; this lets an unsupported board wire its own SD socket.
+ * OPTION SDCARD DISABLE clears it. Like the Pico setter, this validates the
+ * pins, then saves and reboots so the new wiring is reserved at boot. */
+int esp32_sdcard_option_setter(unsigned char * cmdline) {
+    unsigned char * tp = checkstring(cmdline, (unsigned char *)"SDCARD");
+    if (!tp) return 0;
+    if (CurrentLinePtr) error("Invalid in a program");
+    if (checkstring(tp, (unsigned char *)"DISABLE")) {
+        Option.SD_CS = 0;
+        Option.SD_CLK_PIN = 0;
+        Option.SD_MOSI_PIN = 0;
+        Option.SD_MISO_PIN = 0;
+        SaveOptions();
+        _excep_code = RESET_COMMAND;
+        SoftReset();
+        return 1;
+    }
+    if (Option.SD_CS) error("SDcard already configured");
+    getargs(&tp, 7, (unsigned char *)",");
+    if (argc != 7) error("OPTION SDCARD cs, clk, mosi, miso");
+    int pins[4];
+    pins[0] = esp32_parse_pin_arg(argv[0]); /* CS */
+    pins[1] = esp32_parse_pin_arg(argv[2]); /* CLK */
+    pins[2] = esp32_parse_pin_arg(argv[4]); /* MOSI */
+    pins[3] = esp32_parse_pin_arg(argv[6]); /* MISO */
+    for (int i = 0; i < 4; i++) {
+        if (pins[i] < 1 || pins[i] > NBRPINS || (PinDef[pins[i]].mode & UNUSED))
+            error("Invalid pin");
+        if (ExtCurrentConfig[pins[i]] != EXT_NOT_CONFIG)
+            error("Pin %/| is in use", pins[i], pins[i]);
+        for (int j = i + 1; j < 4; j++)
+            if (pins[i] == pins[j]) error("Pin %/| is in use", pins[i], pins[i]);
+    }
+    Option.SD_CS = pins[0];
+    Option.SD_CLK_PIN = pins[1];
+    Option.SD_MOSI_PIN = pins[2];
+    Option.SD_MISO_PIN = pins[3];
+    SaveOptions();
+    _excep_code = RESET_COMMAND;
+    SoftReset();
+    return 1;
+}
+
 void cmd_option(void) {
     extern int esp32_wifi_option_setter(unsigned char * cmdline);
     extern int esp32_vga_option_setter(unsigned char * cmdline);
@@ -366,11 +424,11 @@ void cmd_option(void) {
         return;
     }
     if (esp32_usb_role_option_setter(cmdline)) return;
-    if (esp32_board_profile_option_setter(cmdline)) return;
     if (esp32_audio_option_setter(cmdline)) return;
     if (esp32_vga_option_setter(cmdline)) return;
     if (esp32_touch_calibrate_option_setter(cmdline)) return;
     if (hal_gui_controls_option_set(cmdline)) return;
+    if (esp32_sdcard_option_setter(cmdline)) return;
     if (option_command_handle_common(cmdline, false)) return;
     if (esp32_wifi_option_setter(cmdline)) return;
     error("Option not supported on this port");
@@ -607,9 +665,8 @@ void fun_info(void) {
         targ = T_STR;
         return;
     }
-    if (checkstring(ep, (unsigned char *)"PLATFORM") ||
-        checkstring(ep, (unsigned char *)"PROFILE")) {
-        strcpy((char *)sret, esp32_board_profile_current()->platform_name);
+    if (checkstring(ep, (unsigned char *)"PLATFORM")) {
+        strcpy((char *)sret, (char *)Option.platform);
         CtoM(sret);
         targ = T_STR;
         return;
