@@ -4,9 +4,10 @@
 
 Ship **two** ESP32-S3 images that between them cover every S3 board:
 
-- **octal** — R8 modules (8 MB OPI PSRAM). The current `ports/esp32_s3`.
-- **quad** — R2 modules (2 MB QPI PSRAM) **and** no-PSRAM boards. A new
-  `ports/esp32_s3_quad`.
+- **octal** — boards with octal (OPI) PSRAM, any capacity (R8 / R16 modules).
+  The current `ports/esp32_s3`.
+- **quad** — boards with quad (QPI) PSRAM (R2 modules); also boots no-PSRAM
+  boards. A new `ports/esp32_s3_quad`.
 
 WiFi must work in all three cases (octal / quad / none). The release publishes
 only the flashable bins. Each port is built the standard, documented way — no
@@ -19,11 +20,12 @@ and the compiled `esp_psram` driver — it is **not** runtime-switchable, and
 ESP-IDF builds the driver for exactly one mode. Sending OPI commands to a QPI
 chip reads back nothing (`PSRAM ID read error: 0x00000000 ... wrong PSRAM line
 mode`). So octal and quad are a genuine compile-time fork; MicroPython and
-Arduino-ESP32 ship per-variant firmware for the same reason. The common
-Espressif modules are R8 (8 MB, octal) and R2 (2 MB, quad); the reliable way to
-know which image a board needs is empirical — flash one and check the boot log /
-`MM.INFO(PSRAM SIZE)`. If PSRAM fails to initialize, the line mode is wrong, so
-use the other image.
+Arduino-ESP32 ship per-variant firmware for the same reason. Octal modules carry
+the `R8`/`R16` suffix, quad ones `R2`, but **size does not select the image —
+line mode does** (the slab is sized at boot to whatever capacity is present).
+The reliable way to know which image a board needs is empirical — flash one and
+check the boot log / `MM.INFO(PSRAM SIZE)`. If PSRAM fails to initialize, the
+line mode is wrong, so use the other image.
 
 Field reports that motivated this (three boards, three different root causes):
 
@@ -135,8 +137,9 @@ image with no external flags. This convention is documented in the port README.
 
 ## 6. README
 
-- **Two downloads**, with a one-line chooser: *8 MB PSRAM → octal; 2 MB or
-  unsure → quad (it also runs PSRAM-less boards at the ~48 KB floor).*
+- **Two downloads**, chosen by PSRAM line mode (not size): *octal-PSRAM board →
+  octal image; quad-PSRAM or unsure → quad image (it also boots PSRAM-less
+  boards). Flash one and check `MM.INFO(PSRAM SIZE)`; if 0, use the other.*
 - **Flashing** (moved from `flash.txt`): `erase_flash` then
   `write_flash 0x0 …-merged.bin`, with the **DIO** note front-and-centre (the
   N16R8 boot-loop fix). Cross-platform port-node note (`/dev/cu.usbmodem*` /

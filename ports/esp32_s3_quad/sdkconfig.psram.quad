@@ -1,4 +1,4 @@
-# Quad (QPI) PSRAM — ESP32-S3R2 / N#R2 modules (2 MB in-package), and a safe
+# Quad (QPI) PSRAM — R2 modules (the slab sizes to the chip), and a safe
 # boot on no-PSRAM boards (IGNORE_NOTFOUND -> GENERIC, internal-heap only).
 #
 # Combined with ../esp32_s3/sdkconfig.common via SDKCONFIG_DEFAULTS in

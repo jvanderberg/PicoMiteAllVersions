@@ -2,8 +2,8 @@
 
 **Download:** prebuilt ESP32-S3 firmware is published on the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest). **Two images are published — pick by your board's PSRAM line mode**, which is a compile-time choice (one image cannot serve both):
 
-- `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — **8 MB octal** PSRAM (R8 modules: DevKitC-N8R8/N16R8, XIAO ESP32-S3, Freenove, most LilyGo).
-- `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — **2 MB quad** PSRAM (R2 modules) **or no PSRAM at all**.
+- `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — boards with **octal (OPI) PSRAM**, any capacity (the `R8`/`R16` modules, e.g. N16R8, N32R16V). The heap sizes to the chip.
+- `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — boards with **quad (QPI) PSRAM** (the `R2` modules). A board with no PSRAM at all boots on either image.
 
 Not sure which? Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A board with no PSRAM still boots on the quad image (using only the internal heap). Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
 
