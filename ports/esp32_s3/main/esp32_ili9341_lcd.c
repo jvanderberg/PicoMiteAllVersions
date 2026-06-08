@@ -29,21 +29,21 @@
 #define LCD_DIRTY_ROWS ((LCD_H + LCD_DIRTY_TILE - 1) / LCD_DIRTY_TILE)
 
 #define LCD_SWRESET 0x01
-#define LCD_SLPOUT  0x11
-#define LCD_NORON   0x13
-#define LCD_INVON   0x21
-#define LCD_DISPON  0x29
-#define LCD_CASET   0x2A
-#define LCD_PASET   0x2B
-#define LCD_RAMWR   0x2C
-#define LCD_MADCTL  0x36
-#define LCD_PIXFMT  0x3A
+#define LCD_SLPOUT 0x11
+#define LCD_NORON 0x13
+#define LCD_INVON 0x21
+#define LCD_DISPON 0x29
+#define LCD_CASET 0x2A
+#define LCD_PASET 0x2B
+#define LCD_RAMWR 0x2C
+#define LCD_MADCTL 0x36
+#define LCD_PIXFMT 0x3A
 #define LCD_FRMCTR1 0xB1
 #define LCD_DISCTRL 0xB6
-#define LCD_PWCTR1  0xC0
-#define LCD_PWCTR2  0xC1
-#define LCD_VMCTR1  0xC5
-#define LCD_VMCTR2  0xC7
+#define LCD_PWCTR1 0xC0
+#define LCD_PWCTR2 0xC1
+#define LCD_VMCTR1 0xC5
+#define LCD_VMCTR2 0xC7
 
 static const char * TAG = "ili9341";
 static spi_device_handle_t s_lcd;
@@ -121,11 +121,15 @@ static void lcd_cmd_data(uint8_t cmd, const uint8_t * data, size_t len) {
 
 static void lcd_addr_window(int x1, int y1, int x2, int y2) {
     uint8_t b[4];
-    b[0] = (uint8_t)(x1 >> 8); b[1] = (uint8_t)x1;
-    b[2] = (uint8_t)(x2 >> 8); b[3] = (uint8_t)x2;
+    b[0] = (uint8_t)(x1 >> 8);
+    b[1] = (uint8_t)x1;
+    b[2] = (uint8_t)(x2 >> 8);
+    b[3] = (uint8_t)x2;
     lcd_cmd_data(LCD_CASET, b, sizeof(b));
-    b[0] = (uint8_t)(y1 >> 8); b[1] = (uint8_t)y1;
-    b[2] = (uint8_t)(y2 >> 8); b[3] = (uint8_t)y2;
+    b[0] = (uint8_t)(y1 >> 8);
+    b[1] = (uint8_t)y1;
+    b[2] = (uint8_t)(y2 >> 8);
+    b[3] = (uint8_t)y2;
     lcd_cmd_data(LCD_PASET, b, sizeof(b));
     lcd_cmd(LCD_RAMWR);
 }
@@ -162,8 +166,16 @@ static uint8_t * lcd_batch_buffer_for_area(int w, int h, int * rows_per_batch) {
 }
 
 static int clip_rect(int * x1, int * y1, int * x2, int * y2) {
-    if (*x1 > *x2) { int t = *x1; *x1 = *x2; *x2 = t; }
-    if (*y1 > *y2) { int t = *y1; *y1 = *y2; *y2 = t; }
+    if (*x1 > *x2) {
+        int t = *x1;
+        *x1 = *x2;
+        *x2 = t;
+    }
+    if (*y1 > *y2) {
+        int t = *y1;
+        *y1 = *y2;
+        *y2 = t;
+    }
     if (*x1 < 0) *x1 = 0;
     if (*y1 < 0) *y1 = 0;
     if (*x2 >= LCD_W) *x2 = LCD_W - 1;
@@ -294,8 +306,16 @@ static void esp32_lcd_draw_buffer(int x1, int y1, int x2, int y2,
                                   unsigned char * bgr) {
     if (!bgr) return;
     esp32_ili9341_lcd_flush_pending();
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int src_w = x2 - x1 + 1;
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
@@ -311,7 +331,8 @@ static void esp32_lcd_draw_buffer(int x1, int y1, int x2, int y2,
         for (int ry = 0; ry < rows; ry++) {
             int y = cy1 + yoff + ry;
             unsigned char * src = bgr + ((size_t)(y - y1) * (size_t)src_w +
-                                         (size_t)(cx1 - x1)) * 3u;
+                                         (size_t)(cx1 - x1)) *
+                                            3u;
             uint8_t * out = tx + (size_t)ry * w * 2u;
             for (int x = cx1; x <= cx2; x++) {
                 int c = ((int)src[2] << 16) | ((int)src[1] << 8) | src[0];
@@ -329,8 +350,16 @@ static void esp32_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2,
                                        int blank, unsigned char * p) {
     if (!p) return;
     esp32_ili9341_lcd_flush_pending();
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int src_w = x2 - x1 + 1;
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
@@ -366,8 +395,16 @@ static void esp32_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2,
 static void esp32_lcd_read_buffer(int x1, int y1, int x2, int y2,
                                   unsigned char * bgr) {
     if (!bgr) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     for (int y = y1; y <= y2; y++) {
         for (int x = x1; x <= x2; x++) {
             uint32_t c = 0;
@@ -383,8 +420,16 @@ static void esp32_lcd_read_buffer(int x1, int y1, int x2, int y2,
 static void esp32_lcd_read_buffer_fast(int x1, int y1, int x2, int y2,
                                        unsigned char * p) {
     if (!p) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int index = 0;
     for (int y = y1; y <= y2; y++) {
         for (int x = x1; x <= x2; x++) {

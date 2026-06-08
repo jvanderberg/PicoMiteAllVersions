@@ -112,8 +112,16 @@ static void web_packed_rgb121_set(uint8_t * p, int index, uint8_t v) {
 static void esp32_web_draw_buffer_fast(int x1, int y1, int x2, int y2,
                                        int blank, unsigned char * p) {
     if (!p) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int src_w = x2 - x1 + 1;
     for (int y = y1; y <= y2; y++) {
         for (int x = x1; x <= x2; x++) {
@@ -133,8 +141,16 @@ static void esp32_web_read_buffer(int x1, int y1, int x2, int y2,
 static void esp32_web_read_buffer_fast(int x1, int y1, int x2, int y2,
                                        unsigned char * p) {
     if (!p) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int index = 0;
     for (int y = y1; y <= y2; y++) {
         for (int x = x1; x <= x2; x++) {

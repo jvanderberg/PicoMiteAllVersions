@@ -50,11 +50,16 @@ static int esp32_parse_pin_arg(unsigned char * arg) {
 
 static const char * esp32_pin_state_label(int cfg) {
     switch (cfg) {
-    case EXT_NOT_CONFIG: return "OFF";
-    case EXT_DIG_IN: return "DIN";
-    case EXT_DIG_OUT: return "DOUT";
-    case EXT_ADCRAW: return "ARAW";
-    default: return "Reserved";
+    case EXT_NOT_CONFIG:
+        return "OFF";
+    case EXT_DIG_IN:
+        return "DIN";
+    case EXT_DIG_OUT:
+        return "DOUT";
+    case EXT_ADCRAW:
+        return "ARAW";
+    default:
+        return "Reserved";
     }
 }
 

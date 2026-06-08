@@ -60,9 +60,12 @@ static int fb_mode_from_arg(unsigned char * p) {
     char * q = (char *)getCstring(p);
     if (q[0] != 0 && q[1] == 0) {
         switch (toupper((unsigned char)q[0])) {
-        case 'B': return 1;
-        case 'R': return 2;
-        case 'A': return 3;
+        case 'B':
+            return 1;
+        case 'R':
+            return 2;
+        case 'A':
+            return 3;
         }
     }
     error("Syntax");

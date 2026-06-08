@@ -370,8 +370,7 @@ int esp32_audio_mminfo(unsigned char * ep, unsigned char * out_sret, int * out_t
     else if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE) {
         const esp32_audio_profile_t * profile = esp32_audio_selected_profile();
         strcpy((char *)out_sret, profile ? profile->option_name : "UNKNOWN");
-    }
-    else if (Option.audio_i2s_bclk)
+    } else if (Option.audio_i2s_bclk)
         strcpy((char *)out_sret, "I2S");
     else
         strcpy((char *)out_sret, "OFF");
