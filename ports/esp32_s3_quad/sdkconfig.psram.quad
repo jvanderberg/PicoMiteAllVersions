@@ -1,0 +1,16 @@
+# Quad (QPI) PSRAM — ESP32-S3R2 / N#R2 modules (2 MB in-package), and a safe
+# boot on no-PSRAM boards (IGNORE_NOTFOUND -> GENERIC, internal-heap only).
+#
+# Combined with ../esp32_s3/sdkconfig.common via SDKCONFIG_DEFAULTS in
+# CMakeLists.txt. This mode CANNOT drive an octal (R8) part — use
+# ports/esp32_s3 for those. Quad is ~half the bandwidth of octal (4 vs 8 data
+# lines); fine for the interpreter, slower for bulk framebuffer/array transfers.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+# CONFIG_SPIRAM_USE_MALLOC is not set
+CONFIG_SPIRAM_MEMTEST=y
