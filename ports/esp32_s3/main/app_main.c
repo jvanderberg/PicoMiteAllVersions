@@ -143,10 +143,10 @@ void app_main(void) {
     LoadOptions();
     const char * options_reason = NULL;
     if (deep_safe_mode) {
-        /* Repeated crashes: a saved peripheral config (VGA/audio/LCD pins)
-         * is a prime suspect, so drop to GENERIC defaults regardless of
-         * whether the options pass validation. ResetOptions(true) persists
-         * the reset, permanently breaking the loop. */
+        /* Repeated crashes: a saved peripheral config (SD/display/audio
+         * pins) is the prime suspect, so drop to GENERIC defaults regardless
+         * of whether the options validate. ResetOptions(true) PERSISTS the
+         * reset, permanently breaking the loop. */
         ESP_LOGE(TAG, "repeated crash reboots (%u); resetting options to GENERIC defaults",
                  (unsigned)s_crash_boot_count);
         ResetOptions(true);
@@ -154,6 +154,16 @@ void app_main(void) {
         ESP_LOGE(TAG, "saved options rejected at boot: %s; resetting to board defaults",
                  options_reason ? options_reason : "invalid");
         ResetOptions(true);
+    } else if (safe_mode) {
+        /* Single crash: boot as GENERIC for this boot only. Applying the
+         * GENERIC defaults in RAM clears the SD / display / touch / audio
+         * Option fields, so every profile-gated init below no-ops — skipping
+         * the external-peripheral bring-up that is the likely crash source on
+         * unknown hardware. This does NOT save: the configured profile stays
+         * on flash and a clean reboot restores it. */
+        ESP_LOGW(TAG, "safe boot: applying GENERIC profile in RAM (saved config preserved)");
+        esp32_board_profile_apply_defaults(
+            esp32_board_profile_by_id(ESP32_BOARD_PROFILE_ID_GENERIC));
     }
 
     esp32_usb_role_resolve_boot();
@@ -244,11 +254,13 @@ void app_main(void) {
     MMPrintString((char *)esp32_board_profile_current()->platform_name);
     MMPrintString("\r\n");
     if (safe_mode) {
-        MMPrintString("Safe mode: recovered from an unexpected reset; "
-                      "Wi-Fi auto-connect skipped this boot.\r\n");
         if (deep_safe_mode)
-            MMPrintString("Repeated resets detected; options reset to "
+            MMPrintString("Safe mode: repeated resets — options reset to "
                           "GENERIC defaults.\r\n");
+        else
+            MMPrintString("Safe mode: recovered from an unexpected reset; "
+                          "booted as GENERIC (display/SD/audio/Wi-Fi skipped). "
+                          "Reboot to restore your saved configuration.\r\n");
     }
     MMPrintString("\r\n");
 
