@@ -45,6 +45,13 @@ else
     ports=("$port")
 fi
 
+# Guard the empty case explicitly: iterating an empty array under `set -u`
+# aborts with "unbound variable" on older bash (e.g. macOS's 3.2).
+if [ "${#ports[@]}" -eq 0 ]; then
+    echo "No ESP32 ports found under ports/esp32_s3*." >&2
+    exit 2
+fi
+
 if [ "${SKIP_HAL_PURITY:-0}" != "1" ]; then
     printf '=== HAL purity gate ===\n'
     "$root/tools/check_hal_purity.sh"
