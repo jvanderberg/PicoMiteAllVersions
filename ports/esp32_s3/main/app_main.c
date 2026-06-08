@@ -14,6 +14,7 @@
 #include <setjmp.h>
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -41,6 +42,24 @@ extern void esp32_usb_keyboard_start_host(void);
 extern int esp32_usb_keyboard_has_keyboard(void);
 
 static const char * TAG = "app_main";
+
+/* Consecutive crash-induced reboots. Lives in RTC slow memory, so it
+ * survives a panic/watchdog/brownout reset (which is a soft reset) but is
+ * cleared by a true power-cycle. Boot uses it to shed risky init and, on
+ * repeats, drop to GENERIC defaults — breaking a crash loop so the user
+ * always reaches a prompt. Cleared once boot completes (just before the
+ * banner). RTC_NOINIT memory is indeterminate on cold power-on, so only a
+ * crash-reset path is allowed to carry it forward (see app_main). */
+RTC_NOINIT_ATTR static uint32_t s_crash_boot_count;
+
+/* A crash-class reset is one the firmware did not ask for: a CPU panic, a
+ * watchdog timeout, or a brownout. Clean reboots (power-on, EN button,
+ * esp_restart from CPU RESTART / OPTION changes) are not crashes. */
+static int reset_reason_is_crash(esp_reset_reason_t reason) {
+    return reason == ESP_RST_PANIC || reason == ESP_RST_TASK_WDT ||
+           reason == ESP_RST_INT_WDT || reason == ESP_RST_WDT ||
+           reason == ESP_RST_BROWNOUT;
+}
 
 static int esp32_saved_options_valid(const char ** reason) {
     if (Option.Magic != MagicKey) {
@@ -88,6 +107,24 @@ static void esp32_keyboard_mode_recovery(void) {
 void app_main(void) {
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
+    /* Crash-recovery boot. A crash-class reset carries the counter
+     * forward; any clean reset (or an out-of-range value left by RTC RAM
+     * that did not survive a deep brownout) resets it to zero. */
+    const esp_reset_reason_t reset_reason = esp_reset_reason();
+    const int crash_reset = reset_reason_is_crash(reset_reason);
+    if (!crash_reset || s_crash_boot_count > 32) s_crash_boot_count = 0;
+    if (crash_reset) s_crash_boot_count++;
+    /* Any crash sheds Wi-Fi (lighter, lower-current boot). Only a repeated
+     * software crash drops to defaults: a brownout loop is a power problem,
+     * not a bad saved config, so it must never wipe the user's options. */
+    const int safe_mode = s_crash_boot_count >= 1;
+    const int deep_safe_mode =
+        s_crash_boot_count >= 2 && reset_reason != ESP_RST_BROWNOUT;
+    if (safe_mode) {
+        ESP_LOGW(TAG, "crash-recovery boot (count=%u, deep=%d)",
+                 (unsigned)s_crash_boot_count, deep_safe_mode);
+    }
+
     /* Acquire the PSRAM slab and publish PSRAMbase / PSRAMsize before
      * any code reads them. mmbasic_runtime_init_common's heap init does
      * not depend on PSRAM, but the shared boot banner (and any later
@@ -105,10 +142,28 @@ void app_main(void) {
 
     LoadOptions();
     const char * options_reason = NULL;
-    if (!esp32_saved_options_valid(&options_reason)) {
+    if (deep_safe_mode) {
+        /* Repeated crashes: a saved peripheral config (SD/display/audio
+         * pins) is the prime suspect, so drop to GENERIC defaults regardless
+         * of whether the options validate. ResetOptions(true) PERSISTS the
+         * reset, permanently breaking the loop. */
+        ESP_LOGE(TAG, "repeated crash reboots (%u); resetting options to GENERIC defaults",
+                 (unsigned)s_crash_boot_count);
+        ResetOptions(true);
+    } else if (!esp32_saved_options_valid(&options_reason)) {
         ESP_LOGE(TAG, "saved options rejected at boot: %s; resetting to board defaults",
                  options_reason ? options_reason : "invalid");
         ResetOptions(true);
+    } else if (safe_mode) {
+        /* Single crash: boot as GENERIC for this boot only. Applying the
+         * GENERIC defaults in RAM clears the SD / display / touch / audio
+         * Option fields, so every profile-gated init below no-ops — skipping
+         * the external-peripheral bring-up that is the likely crash source on
+         * unknown hardware. This does NOT save: the configured profile stays
+         * on flash and a clean reboot restores it. */
+        ESP_LOGW(TAG, "safe boot: applying GENERIC profile in RAM (saved config preserved)");
+        esp32_board_profile_apply_defaults(
+            esp32_board_profile_by_id(ESP32_BOARD_PROFILE_ID_GENERIC));
     }
 
     esp32_usb_role_resolve_boot();
@@ -173,11 +228,15 @@ void app_main(void) {
         esp32_keyboard_mode_recovery();
     }
 
-    /* Mirror the Pico pattern: always call WebConnect at boot. In keyboard
+    /* Bring up Wi-Fi at boot only when an SSID is configured, and never on
+     * a crash-recovery boot. The Wi-Fi stack is the largest and most
+     * memory-hungry piece of pre-prompt work, so an unconfigured (e.g.
+     * GENERIC) or recovering board reaches the prompt without it. OPTION
+     * WIFI / WEB / WEB SCAN still bring Wi-Fi up on demand. In keyboard
      * mode USB host starts first because Wi-Fi consumes scarce internal RAM
      * needed by the USB host controller and transfer tasks. */
     extern void WebConnect(void);
-    WebConnect();
+    if (!safe_mode && *Option.SSID) WebConnect();
 
     /* Mount LittleFS for A: drive eagerly so cmd_files / cmd_save /
      * cmd_load can call lfs_*_open directly without going through
@@ -186,10 +245,24 @@ void app_main(void) {
     extern int esp32_lfs_mount(void);
     esp32_lfs_mount();
 
+    /* Survived every init path — clear the crash-loop counter so the next
+     * boot starts fresh. */
+    s_crash_boot_count = 0;
+
     MMBasic_PrintBanner();
     MMPrintString("Profile: ");
     MMPrintString((char *)esp32_board_profile_current()->platform_name);
-    MMPrintString("\r\n\r\n");
+    MMPrintString("\r\n");
+    if (safe_mode) {
+        if (deep_safe_mode)
+            MMPrintString("Safe mode: repeated resets — options reset to "
+                          "GENERIC defaults.\r\n");
+        else
+            MMPrintString("Safe mode: recovered from an unexpected reset; "
+                          "booted as GENERIC (display/SD/audio/Wi-Fi skipped). "
+                          "Reboot to restore your saved configuration.\r\n");
+    }
+    MMPrintString("\r\n");
 
     /* MMBasic_RunPromptLoop is its own setjmp loop — it longjmps back
      * to its own `mark` on error / Ctrl-C / END / NEW. We don't return. */
