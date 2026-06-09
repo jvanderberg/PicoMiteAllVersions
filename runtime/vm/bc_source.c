@@ -996,6 +996,22 @@ static int source_try_begin_struct_field_store(BCSourceFrontend * fe, BCCompiler
     return 2;
 }
 
+/* True if `name` is a built-in command keyword. At statement start a command
+ * word is always the command (the interpreter tokenises it as such), even if a
+ * variable or sub of the same name exists — so the VM must hand such a statement
+ * to the interpreter rather than treat it as an assignment or user-sub call.
+ * (PicoMite User Manual: a variable/label name must not be the same as a
+ * command or function.) */
+static int source_name_is_command(const char * name, int name_len) {
+    if (name_len <= 0) return 0;
+    for (int i = 0; i < CommandTableSize - 1; i++) {
+        const char * n = (const char *)commandtbl[i].name;
+        if ((int)strlen(n) == name_len && strncasecmp(n, name, (size_t)name_len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 static uint16_t source_resolve_global(BCCompiler * cs, const char * name, int name_len,
                                       uint8_t type, int create) {
     uint16_t slot = bc_find_slot(cs, name, name_len);
@@ -9201,7 +9217,12 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         char name[MAXVARLEN + 1];
         int name_len = 0;
         uint8_t type = 0;
-        if (source_parse_varname(&probe, name, &name_len, &type)) {
+        /* A statement that begins with a built-in command keyword is that
+         * command, even if a same-named variable or sub exists — let it bridge
+         * to the interpreter rather than be parsed as an assignment/call. The
+         * bare name (suffix excluded) is what the command table holds. */
+        if (source_parse_varname(&probe, name, &name_len, &type) &&
+            !source_name_is_command(name, type ? name_len - 1 : name_len)) {
             source_skip_space(&probe);
             if (*probe == '=') {
                 source_compile_assignment(fe, cs, &p);
