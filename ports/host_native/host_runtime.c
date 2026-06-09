@@ -103,7 +103,6 @@ int InterruptUsed = 0;
 int last_adc = 0;
 lfs_t lfs;
 int MMCharPos = 0;
-int mmI2Cvalue = 0;
 int mmOWvalue = 0;
 bool mouse0 = 0;
 unsigned char * OnKeyGOSUB = NULL;

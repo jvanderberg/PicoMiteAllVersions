@@ -298,7 +298,6 @@ void DrawPixelMEM(int x1, int y1, int c) {
 
 void cmd_cfunction(void) {}
 
-
 static void esp32_configure(unsigned char * p) {
     if (!*p) {
         ResetOptions(false);
@@ -354,8 +353,6 @@ void cmd_files_restore_program_context(void) {}
 
 void cmd_files_save_program_context(void) {}
 
-
-
 void cmd_in(void) {}
 
 void cmd_ir(void) {}
@@ -399,7 +396,6 @@ void cmd_mouse(void) {}
 void cmd_mov(void) {}
 
 void cmd_nop(void) {}
-
 
 void cmd_onewire(void) {}
 
@@ -502,7 +498,6 @@ void cmd_pull(void) {}
 void cmd_pulse(void) {}
 
 void cmd_push(void) {}
-
 
 void cmd_set(void) {}
 

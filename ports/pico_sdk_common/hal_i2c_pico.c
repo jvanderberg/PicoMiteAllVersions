@@ -37,7 +37,7 @@ extern volatile unsigned int I2C2_Status;
  * multi-byte slave receive drain. */
 extern volatile unsigned int I2CTimer;
 
-static i2c_inst_t *hal_i2c_inst(int bus) {
+static i2c_inst_t * hal_i2c_inst(int bus) {
     if (bus == 0) return i2c0;
     if (bus == 1) return i2c1;
     return NULL;
@@ -48,7 +48,7 @@ int hal_i2c_init(void) {
 }
 
 int hal_i2c_master_init(int bus, int sda_gpio, int scl_gpio, uint32_t baud) {
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) return -1;
     i2c_init(inst, baud);
     gpio_pull_up(sda_gpio);
@@ -57,14 +57,14 @@ int hal_i2c_master_init(int bus, int sda_gpio, int scl_gpio, uint32_t baud) {
 }
 
 void hal_i2c_master_deinit(int bus) {
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) return;
     i2c_deinit(inst);
 }
 
-int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
+int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t * buf, size_t len,
                          int nostop, uint32_t timeout_us) {
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) return -1;
     int ret = i2c_write_timeout_us(inst, addr, (uint8_t *)buf, len,
                                    nostop ? true : false, timeout_us);
@@ -73,9 +73,9 @@ int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
     return ret;
 }
 
-int hal_i2c_master_read(int bus, uint8_t addr, uint8_t *buf, size_t len,
+int hal_i2c_master_read(int bus, uint8_t addr, uint8_t * buf, size_t len,
                         int nostop, uint32_t timeout_us) {
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) return -1;
     int ret = i2c_read_timeout_us(inst, addr, buf, len,
                                   nostop ? true : false, timeout_us);
@@ -140,9 +140,9 @@ int hal_i2c_slave_enable(int bus, uint8_t addr) {
     return -1;
 }
 
-int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
+int hal_i2c_slave_poll(int bus, uint8_t * buf, size_t cap, size_t * len) {
     int count = 1;
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) {
         if (len) *len = 0;
         return -1;
@@ -159,8 +159,8 @@ int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
     return 0;
 }
 
-int hal_i2c_slave_send(int bus, const uint8_t *buf, size_t len) {
-    i2c_inst_t *inst = hal_i2c_inst(bus);
+int hal_i2c_slave_send(int bus, const uint8_t * buf, size_t len) {
+    i2c_inst_t * inst = hal_i2c_inst(bus);
     if (inst == NULL) return -1;
     i2c_write_raw_blocking(inst, (uint8_t *)buf, len);
     return 0;

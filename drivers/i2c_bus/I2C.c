@@ -1537,4 +1537,3 @@ void classicproc(void) {
                      << 3;
     nunstruct[0].x0 = ((nunbuff[4] >> 1) | (nunbuff[5] << 7)) ^ 0b111111111111111;
 }
-

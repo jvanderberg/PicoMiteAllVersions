@@ -135,7 +135,7 @@ typedef struct {
 } hal_i2c_esp32_master_port_t;
 
 typedef struct {
-    int system_holds;  /* held by the BASIC system/user bus (this file). */
+    int system_holds; /* held by the BASIC system/user bus (this file). */
     uint32_t hz;
     /* Held no-stop write awaiting the combined read. */
     int pending_len;
@@ -146,7 +146,7 @@ typedef struct {
     int slave;
     int sda;
     int scl;
-    i2c_dev_t *hw;
+    i2c_dev_t * hw;
     intr_handle_t intr;
     volatile uint8_t ring[HAL_I2C_ESP32_SLAVE_RING];
     volatile size_t ring_head;
@@ -178,7 +178,7 @@ static int hal_i2c_port(int bus) {
 /* Resolve the slave bus's SDA/SCL GPIO numbers from the shared pin
  * assignments. i2cSlave()/i2c2Slave() set I2C0SDApin / I2C1SDApin and call
  * ExtCfg() on them before hal_i2c_slave_enable, so PinDef[] holds the GPIO. */
-static int hal_i2c_slave_pins(int bus, int *sda_gpio, int *scl_gpio) {
+static int hal_i2c_slave_pins(int bus, int * sda_gpio, int * scl_gpio) {
     uint8_t sda_pin, scl_pin;
     if (bus == 0) {
         sda_pin = I2C0SDApin;
@@ -208,7 +208,7 @@ static int hal_i2c_slave_pins(int bus, int *sda_gpio, int *scl_gpio) {
 i2c_master_bus_handle_t esp32_i2c_master_bus(int port, int sda_gpio,
                                              int scl_gpio) {
     if (port < 0 || port >= HAL_I2C_ESP32_PORTS) return NULL;
-    hal_i2c_esp32_master_port_t *m = &s_master[port];
+    hal_i2c_esp32_master_port_t * m = &s_master[port];
     if (m->bus == NULL) {
         i2c_master_bus_config_t cfg = {
             .i2c_port = port,
@@ -233,7 +233,7 @@ i2c_master_bus_handle_t esp32_i2c_master_bus(int port, int sda_gpio,
  * released the device cache is torn down and the bus is deleted. */
 void esp32_i2c_master_bus_release(int port) {
     if (port < 0 || port >= HAL_I2C_ESP32_PORTS) return;
-    hal_i2c_esp32_master_port_t *m = &s_master[port];
+    hal_i2c_esp32_master_port_t * m = &s_master[port];
     if (m->bus == NULL || m->refcount == 0) return;
     if (--m->refcount > 0) return;
     for (int i = 0; i < HAL_I2C_ESP32_MAX_DEVICES; i++) {
@@ -257,7 +257,7 @@ void esp32_i2c_master_bus_release(int port) {
 i2c_master_dev_handle_t esp32_i2c_master_device(int port, uint8_t addr,
                                                 uint32_t hz) {
     if (port < 0 || port >= HAL_I2C_ESP32_PORTS) return NULL;
-    hal_i2c_esp32_master_port_t *m = &s_master[port];
+    hal_i2c_esp32_master_port_t * m = &s_master[port];
     if (m->bus == NULL) return NULL;
     if (hz == 0) hz = 400000;
 
@@ -323,7 +323,7 @@ int hal_i2c_init(void) {
 int hal_i2c_master_init(int bus, int sda_gpio, int scl_gpio, uint32_t baud) {
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     uint32_t hz = baud ? baud : 400000;
 
     if (b->slave) {
@@ -343,7 +343,7 @@ int hal_i2c_master_init(int bus, int sda_gpio, int scl_gpio, uint32_t baud) {
 void hal_i2c_master_deinit(int bus) {
     int port = hal_i2c_port(bus);
     if (port < 0) return;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     if (!b->system_holds) return;
     b->system_holds = 0;
     b->hz = 0;
@@ -353,11 +353,11 @@ void hal_i2c_master_deinit(int bus) {
     esp32_i2c_master_bus_release(port);
 }
 
-int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
+int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t * buf, size_t len,
                          int nostop, uint32_t timeout_us) {
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
 
     if (nostop) {
         /* Hold the write for the following combined read. */
@@ -382,11 +382,11 @@ int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
     return (int)len;
 }
 
-int hal_i2c_master_read(int bus, uint8_t addr, uint8_t *buf, size_t len,
+int hal_i2c_master_read(int bus, uint8_t addr, uint8_t * buf, size_t len,
                         int nostop, uint32_t timeout_us) {
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     (void)nostop;
     i2c_master_dev_handle_t dev = esp32_i2c_master_device(port, addr, b->hz);
     if (dev == NULL) return -2;
@@ -416,10 +416,10 @@ int hal_i2c_master_read(int bus, uint8_t addr, uint8_t *buf, size_t len,
  * clamped to both the hardware count and the 32-byte FIFO depth, and every
  * ring/TX index is range-checked against its buffer, so no master write
  * length can overrun a buffer here. */
-static void IRAM_ATTR hal_i2c_slave_isr(void *arg) {
+static void IRAM_ATTR hal_i2c_slave_isr(void * arg) {
     int bus = (int)(intptr_t)arg;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
-    i2c_dev_t *hw = b->hw;
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
+    i2c_dev_t * hw = b->hw;
     uint32_t status = 0;
 
     i2c_ll_get_intr_mask(hw, &status);
@@ -512,7 +512,7 @@ static esp_err_t hal_i2c_slave_route_pin(int port, int gpio, int is_scl) {
 int hal_i2c_slave_enable(int bus, uint8_t addr) {
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
 
     int sda_gpio = -1, scl_gpio = -1;
     if (hal_i2c_slave_pins(bus, &sda_gpio, &scl_gpio) != 0) return -EINVAL;
@@ -547,7 +547,7 @@ int hal_i2c_slave_enable(int bus, uint8_t addr) {
     }
 
     int rc = -EIO;
-    i2c_dev_t *hw = I2C_LL_GET_HW(port);
+    i2c_dev_t * hw = I2C_LL_GET_HW(port);
 
     /* Module clock on + register reset, then route the pads. */
     PERIPH_RCC_ATOMIC() {
@@ -565,9 +565,13 @@ int hal_i2c_slave_enable(int bus, uint8_t addr) {
      * IDF slave driver uses (7-bit address, FIFO mode, MSB-first, watermarks
      * at half FIFO, TX auto-start). */
     i2c_ll_clear_intr_mask(hw, UINT32_MAX);
-    i2c_ll_set_mode(hw, I2C_BUS_MODE_SLAVE);
-    i2c_ll_enable_pins_open_drain(hw, true);
-    i2c_ll_enable_arbitration(hw, false);
+    /* Direct ctr-register writes: slave mode, open-drain pads, arbitration
+       off. These mirror the i2c_ll_set_mode / i2c_ll_enable_pins_open_drain /
+       i2c_ll_enable_arbitration inlines, which not every IDF 5.3.x ships. */
+    hw->ctr.ms_mode = 0;
+    hw->ctr.sda_force_out = 1;
+    hw->ctr.scl_force_out = 1;
+    hw->ctr.arbitration_en = 0;
     i2c_ll_set_data_mode(hw, I2C_DATA_MODE_MSB_FIRST, I2C_DATA_MODE_MSB_FIRST);
     i2c_ll_slave_set_fifo_mode(hw, true);
     i2c_ll_enable_mem_access_nonfifo(hw, false);
@@ -621,11 +625,11 @@ fail_module_off:
     return rc;
 }
 
-int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
+int hal_i2c_slave_poll(int bus, uint8_t * buf, size_t cap, size_t * len) {
     if (len) *len = 0;
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     if (!b->slave) return -EIO;
 
     size_t got = 0;
@@ -639,13 +643,13 @@ int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
     return 0;
 }
 
-int hal_i2c_slave_send(int bus, const uint8_t *buf, size_t len) {
+int hal_i2c_slave_send(int bus, const uint8_t * buf, size_t len) {
     int port = hal_i2c_port(bus);
     if (port < 0) return -EINVAL;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     if (!b->slave) return -EIO;
     if (len > HAL_I2C_ESP32_SLAVE_TX) return -EINVAL;
-    i2c_dev_t *hw = b->hw;
+    i2c_dev_t * hw = b->hw;
 
     /* Stage the response for the master's next read, replacing anything
      * staged before. The S3 has no read-request event, so this is the only
@@ -672,9 +676,9 @@ int hal_i2c_slave_send(int bus, const uint8_t *buf, size_t len) {
 void hal_i2c_slave_disable(int bus) {
     int port = hal_i2c_port(bus);
     if (port < 0) return;
-    hal_i2c_esp32_bus_t *b = &s_bus[bus];
+    hal_i2c_esp32_bus_t * b = &s_bus[bus];
     if (!b->slave) return;
-    i2c_dev_t *hw = b->hw;
+    i2c_dev_t * hw = b->hw;
 
     i2c_ll_disable_intr_mask(hw, HAL_I2C_ESP32_SLAVE_ALL_INTS);
     i2c_ll_clear_intr_mask(hw, UINT32_MAX);

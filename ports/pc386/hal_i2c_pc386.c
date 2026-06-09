@@ -26,7 +26,7 @@ void hal_i2c_master_deinit(int bus) {
     (void)bus;
 }
 
-int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
+int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t * buf, size_t len,
                          int nostop, uint32_t timeout_us) {
     (void)bus;
     (void)addr;
@@ -37,7 +37,7 @@ int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
     return -ENOSYS;
 }
 
-int hal_i2c_master_read(int bus, uint8_t addr, uint8_t *buf, size_t len,
+int hal_i2c_master_read(int bus, uint8_t addr, uint8_t * buf, size_t len,
                         int nostop, uint32_t timeout_us) {
     (void)bus;
     (void)addr;
@@ -54,7 +54,7 @@ int hal_i2c_slave_enable(int bus, uint8_t addr) {
     return -ENOSYS;
 }
 
-int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
+int hal_i2c_slave_poll(int bus, uint8_t * buf, size_t cap, size_t * len) {
     (void)bus;
     (void)buf;
     (void)cap;
@@ -62,7 +62,7 @@ int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len) {
     return -ENOSYS;
 }
 
-int hal_i2c_slave_send(int bus, const uint8_t *buf, size_t len) {
+int hal_i2c_slave_send(int bus, const uint8_t * buf, size_t len) {
     (void)bus;
     (void)buf;
     (void)len;

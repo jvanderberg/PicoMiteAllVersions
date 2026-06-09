@@ -50,7 +50,7 @@ void hal_i2c_master_deinit(int bus);
  * Returns the number of bytes written (>= 0) on success, or a negative
  * errno on failure (e.g. -ETIMEDOUT, -EIO for a NACK). The caller owns
  * `buf`. */
-int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
+int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t * buf, size_t len,
                          int nostop, uint32_t timeout_us);
 
 /* Read `len` bytes from the 7-bit slave `addr` on `bus` into `buf`.
@@ -58,7 +58,7 @@ int hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
  * whole transfer. Returns the number of bytes read (>= 0) on success, or
  * a negative errno on failure. The caller owns `buf` and guarantees it
  * holds at least `len` bytes. */
-int hal_i2c_master_read(int bus, uint8_t addr, uint8_t *buf, size_t len,
+int hal_i2c_master_read(int bus, uint8_t addr, uint8_t * buf, size_t len,
                         int nostop, uint32_t timeout_us);
 
 /* -----------------------------------------------------------------------
@@ -78,12 +78,12 @@ int hal_i2c_slave_enable(int bus, uint8_t addr);
  * copied into `buf` and the actual count is stored in `*len`. Returns 0
  * on success (including the no-data case, where `*len` is 0), or a
  * negative errno on failure. The caller owns `buf` and `len`. */
-int hal_i2c_slave_poll(int bus, uint8_t *buf, size_t cap, size_t *len);
+int hal_i2c_slave_poll(int bus, uint8_t * buf, size_t cap, size_t * len);
 
 /* Queue `len` bytes from `buf` to send to the master on the next read
  * transaction on `bus`. Returns 0 on success, negative errno on failure.
  * The caller owns `buf`. */
-int hal_i2c_slave_send(int bus, const uint8_t *buf, size_t len);
+int hal_i2c_slave_send(int bus, const uint8_t * buf, size_t len);
 
 /* Stop acting as a slave on `bus` and release the pads. Safe to call on a
  * bus that is not enabled as a slave (no-op). */
