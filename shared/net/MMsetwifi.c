@@ -292,4 +292,3 @@ void cmd_web(void) {
     };
     mm_net_web_dispatch(cmdline, &dispatch);
 }
-
