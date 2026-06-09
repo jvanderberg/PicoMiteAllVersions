@@ -316,7 +316,9 @@ lifecycle; the differences that remain:
 - `OPTION SYSTEM SPI` stores to `Option.LCD_*` on ESP32 (dedicated bus)
   vs `Option.SYSTEM_*` on Pico (shared bus) — invisible at the command
   level, by design.
-- Touch: converged. ESP32 uses Pico's exact shape and the same Option
+- Touch: converged and hardware-validated on the Freenove board (panel
+  init, OPTION LIST in PicoMite form, and live tap coordinates through the
+  converged fields). ESP32 uses Pico's exact shape and the same Option
   fields: `OPTION SYSTEM I2C sda, scl [,SLOW]` declares the bus
   (Option.SYSTEM_I2C_*), `OPTION TOUCH FT6336, irq, reset [,click]
   [,threshold]` attaches the controller (Option.TOUCH_IRQ / TOUCH_CS /
