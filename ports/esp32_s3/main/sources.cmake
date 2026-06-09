@@ -120,6 +120,7 @@ set(DEVICE_FACING_SRCS
 set(DRIVER_STUBS
     ${REPO_ROOT}/drivers/audio_mp3/audio_mp3_real.c
     ${REPO_ROOT}/third_party/hxcmod/hxcmod.c
+    ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_panels.c
     ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_mem332_stub.c
     ${REPO_ROOT}/drivers/display_merge/display_merge_stub.c
     ${REPO_ROOT}/drivers/vga_pio/vga_ops_stub.c

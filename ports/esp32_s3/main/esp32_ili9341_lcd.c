@@ -32,22 +32,9 @@
 #define LCD_DIRTY_COLS ((LCD_W + LCD_DIRTY_TILE - 1) / LCD_DIRTY_TILE)
 #define LCD_DIRTY_ROWS ((LCD_H + LCD_DIRTY_TILE - 1) / LCD_DIRTY_TILE)
 
-#define LCD_SWRESET 0x01
-#define LCD_SLPOUT 0x11
-#define LCD_NORON 0x13
-#define LCD_INVON 0x21
-#define LCD_DISPON 0x29
 #define LCD_CASET 0x2A
 #define LCD_PASET 0x2B
 #define LCD_RAMWR 0x2C
-#define LCD_MADCTL 0x36
-#define LCD_PIXFMT 0x3A
-#define LCD_FRMCTR1 0xB1
-#define LCD_DISCTRL 0xB6
-#define LCD_PWCTR1 0xC0
-#define LCD_PWCTR2 0xC1
-#define LCD_VMCTR1 0xC5
-#define LCD_VMCTR2 0xC7
 
 static const char * TAG = "ili9341";
 static spi_device_handle_t s_lcd;
@@ -706,34 +693,17 @@ void esp32_ili9341_lcd_scroll(int lines) {
 }
 
 static void lcd_init_controller(void) {
-    lcd_cmd(LCD_SWRESET);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    const uint8_t pw1[] = {0x23};
-    const uint8_t pw2[] = {0x10};
-    const uint8_t vm1[] = {0x2b, 0x2b};
-    const uint8_t vm2[] = {0xc0};
-    const uint8_t pix[] = {0x55};
-    const uint8_t frm[] = {0x00, 0x1b};
-    const uint8_t dis[] = {0x0a, 0x82, 0x27};
-    const uint8_t mad[] = {0x28}; /* landscape, BGR */
-    lcd_cmd_data(LCD_PWCTR1, pw1, sizeof(pw1));
-    lcd_cmd_data(LCD_PWCTR2, pw2, sizeof(pw2));
-    lcd_cmd_data(LCD_VMCTR1, vm1, sizeof(vm1));
-    lcd_cmd_data(LCD_VMCTR2, vm2, sizeof(vm2));
-    lcd_cmd_data(LCD_PIXFMT, pix, sizeof(pix));
-    lcd_cmd_data(LCD_FRMCTR1, frm, sizeof(frm));
-    lcd_cmd_data(LCD_DISCTRL, dis, sizeof(dis));
-    lcd_cmd(LCD_SLPOUT);
-    vTaskDelay(pdMS_TO_TICKS(120));
-    lcd_cmd(LCD_NORON);
-    /* Freenove's ILI9341 panel uses the inverted colour polarity; without
-     * this red presents as cyan and the whole palette is complemented. */
-    lcd_cmd(LCD_INVON);
-    lcd_cmd_data(LCD_MADCTL, mad, sizeof(mad));
+    /* Run the shared SPI LCD controller init (drivers/spi_lcd/
+     * spi_lcd_panels.c) through this file's hal_spi_lcd_bus entry points.
+     * The panel core keys on Option.DISPLAY_TYPE; the configured pins gate
+     * entry to this driver, so bind the type before initialising. The
+     * Freenove panel's inverted colour polarity comes from Option.BGR=1
+     * (seeded by the profile), which selects INVON in the shared ILI9341
+     * sequence. */
+    Option.DISPLAY_TYPE = ILI9341;
+    DISPLAY_TYPE = ILI9341;
+    (void)spi_lcd_panel_init();
     ScrollStart = 0;
-    lcd_cmd(LCD_DISPON);
-    vTaskDelay(pdMS_TO_TICKS(20));
 }
 
 /* Display pins live in Option.LCD_* / Option.DISPLAY_BL as pin indices —

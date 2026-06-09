@@ -221,6 +221,7 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.DISPLAY_BL = 0;
     Option.DISPLAY_TYPE = 0;
     Option.DISPLAY_CONSOLE = 0;
+    Option.BGR = 0;
 
     ESP32_OPTION_TOUCH_SDA = 0;
     ESP32_OPTION_TOUCH_SCL = 0;
@@ -253,6 +254,9 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.DISPLAY_BL = profile_pin(profile->lcd.backlight);
         Option.DISPLAY_TYPE = ILI9341;
         Option.DISPLAY_ORIENTATION = LANDSCAPE;
+        /* The Freenove panel wants the inverted colour polarity; in the
+         * shared ILI9341 init sequence BGR=1 selects INVON. */
+        Option.BGR = 1;
         Option.DefaultFont = 0x01;
         Option.DefaultFC = WHITE;
         Option.DefaultBC = BLACK;

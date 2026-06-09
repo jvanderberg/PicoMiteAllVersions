@@ -1,8 +1,11 @@
 # SPI LCD Generalization Plan
 
-**Status:** Track A complete (A1–A3, hardware-validated on the Freenove
-board) and B0+B1+B2 landed on `jv/spi-lcd-track-a`; next is B3 (ESP32
-adopts the controller core). PicoMite hardware smoke of B2 is owed when a
+**Status:** Track A (A1–A3) and Track B0–B3 complete on
+`jv/spi-lcd-track-a`. A and B3 are hardware-validated on the Freenove
+board: the shared PicoMite ILI9341 init sequence drives the panel through
+the bus contract. Remaining: B4 (presentation/engine unification, its own
+campaign), per-panel widening of the ESP32 controller-name table as
+hardware becomes available, and a PicoMite hardware smoke of B2 when a
 Pico board is next on the bench (compile + host + purity gates all hold).
 
 Two tracks, separable and sequenced:
@@ -251,7 +254,7 @@ int  hal_spi_lcd_bus_read(uint8_t * buf, size_t len); /* 0 = unsupported */
   `buildall.sh` all variants; host suite; byte-identical init traffic is the
   review bar for the transplant.
 
-### B3 — ESP32 adopts the controller core
+### B3 — ESP32 adopts the controller core ✅ (init sequences; window/presentation kept port-local)
 
 - `esp32_ili9341_lcd.c` sheds its command/init/window code and calls
   `spi_lcd_panels` entry points through the ESP32 bus adapter; it keeps the
