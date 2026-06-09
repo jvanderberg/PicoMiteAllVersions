@@ -328,16 +328,13 @@ lifecycle; the differences that remain:
 
 ## Known gaps (not in any step's scope yet)
 
-- **`OPTION AUDIO FREENOVE` names a board, not hardware.** The same
-  profile-coupling this plan removed from display and touch: kind=PROFILE
-  + profile id select the ES8311 codec with wiring taken from the board
-  profile struct (8 parameters: BCLK/WS/DOUT/DIN/MCLK, amp enable +
-  polarity, I2C address). Converged form: `OPTION AUDIO ES8311 bclk, ws,
-  dout [,din] [,mclk] [,ampen]` with the control bus from OPTION SYSTEM
-  I2C (the shared-I2C ownership logic already models the codec holding
-  the touch bus), and the Freenove profile demoted to seeding those
-  fields. Same treatment as touch, roughly twice the parameters; needs
-  audible hardware validation on the Freenove speaker.
+- ~~`OPTION AUDIO FREENOVE`~~ **converged**: `OPTION AUDIO ES8311 bclk,
+  ws, dout [,mclk [,ampen [,AMPLOW]]]` with the control bus from OPTION
+  SYSTEM I2C; the codec register recipe is MCU-neutral in
+  `drivers/es8311/` behind a 3-function bus struct; the Freenove profile
+  seeds the fields. Hardware-validated (codec probe id=0x83, audible tone
+  through the amp via the AMPLOW polarity slot). No board names remain
+  anywhere in the persisted option surface.
 
 - **ESP32 SPI fast path.** The dominant per-transaction cost in spi_master
   is bus arbitration around every polling transmit. Two bypass rungs, both
