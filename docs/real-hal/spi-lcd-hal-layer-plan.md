@@ -3,10 +3,11 @@
 **Status:** Track A (A1–A3) and Track B0–B3 complete on
 `jv/spi-lcd-track-a`. A and B3 are hardware-validated on the Freenove
 board: the shared PicoMite ILI9341 init sequence drives the panel through
-the bus contract. Remaining: B4 (presentation/engine unification, its own
-campaign), per-panel widening of the ESP32 controller-name table as
-hardware becomes available, and a PicoMite hardware smoke of B2 when a
-Pico board is next on the bench (compile + host + purity gates all hold).
+the bus contract. B2 is hardware-validated on a PicoCalc RP2350B (ST7796SP panel:
+boot to console, draw, and physical-panel PIXEL readback through the moved
+DefineRegionSPI path all correct). Remaining: B4 (presentation/engine
+unification, its own campaign) and per-panel widening of the ESP32
+controller-name table as hardware becomes available.
 
 Two tracks, separable and sequenced:
 
@@ -312,7 +313,7 @@ pipelines.
 | A3 ✅ | OPTION TOUCH pins | touch on generic wiring |
 | B0 ✅ | symbol inventory | doc updated, no code change |
 | B1 ✅ | bus contract + pico/esp32 adapters | buildall + esp32 builds + host suite; purity gate |
-| B2 ✅ | controller core extraction | PicoMite hardware regression owed; transplant verified mechanically (cases byte-identical, five 1:1 primitive renames) |
+| B2 ✅ | controller core extraction | hardware-validated on PicoCalc RP2350B (ST7796SP init + panel readback); transplant mechanically byte-identical |
 | B3 | ESP32 adopts core | Freenove regression + one new panel |
 | B4 | presentation/engine unification | separate campaign, own plan refresh |
 
