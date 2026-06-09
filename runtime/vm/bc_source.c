@@ -7672,17 +7672,45 @@ static void source_compile_statement_list(BCSourceFrontend * fe, BCCompiler * cs
     }
 }
 
+/* Compile a single-line IF then/else clause. A clause consisting of a bare
+ * line number is an implicit GOTO to that line (e.g. `IF c THEN 100`), matching
+ * the interpreter's cmd_if behaviour. */
+static void source_compile_if_clause(BCSourceFrontend * fe, BCCompiler * cs, const char * clause) {
+    const char * c = clause;
+    source_skip_space(&c);
+    if (isdigit((unsigned char)*c)) {
+        char buf[STRINGSIZE + 1];
+        snprintf(buf, sizeof(buf), "GOTO %s", c);
+        source_compile_statement_list(fe, cs, buf);
+        return;
+    }
+    source_compile_statement_list(fe, cs, clause);
+}
+
 static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     const char * p = *pp;
+    /* `IF cond GOTO target` is shorthand for `IF cond THEN GOTO target`. When
+     * THEN is absent the GOTO keyword separates condition from the then-clause
+     * and is retained as the body of that clause. */
     const char * then_kw = source_find_keyword_outside_string(p, "THEN");
-    if (!then_kw) {
-        bc_set_error(cs, "IF without THEN");
-        *pp = p;
-        return;
+    const char * cond_end;
+    const char * then_start;
+    if (then_kw) {
+        cond_end = then_kw;
+        then_start = then_kw + 4;
+    } else {
+        const char * goto_kw = source_find_keyword_outside_string(p, "GOTO");
+        if (!goto_kw) {
+            bc_set_error(cs, "IF without THEN");
+            *pp = p;
+            return;
+        }
+        cond_end = goto_kw;
+        then_start = goto_kw;
     }
 
     char cond[STRINGSIZE + 1];
-    size_t cond_len = (size_t)(then_kw - p);
+    size_t cond_len = (size_t)(cond_end - p);
     if (cond_len > STRINGSIZE) cond_len = STRINGSIZE;
     memcpy(cond, p, cond_len);
     cond[cond_len] = '\0';
@@ -7709,7 +7737,6 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
 
     uint32_t false_patch = source_emit_jmp_placeholder(cs, OP_JZ);
 
-    const char * then_start = then_kw + 4;
     if (source_line_empty_or_comment(then_start)) {
         bc_nest_push(cs, NEST_IF);
         BCNestEntry * ne = bc_nest_top(cs);
@@ -7727,7 +7754,7 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
     if (then_len > STRINGSIZE) then_len = STRINGSIZE;
     memcpy(then_stmt, then_start, then_len);
     then_stmt[then_len] = '\0';
-    source_compile_statement_list(fe, cs, then_stmt);
+    source_compile_if_clause(fe, cs, then_stmt);
     if (cs->has_error) {
         *pp = then_start;
         return;
@@ -7736,7 +7763,7 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
     if (else_kw) {
         uint32_t end_patch = source_emit_jmp_placeholder(cs, OP_JMP);
         source_patch_jmp_here(cs, false_patch);
-        source_compile_statement_list(fe, cs, else_kw + 4);
+        source_compile_if_clause(fe, cs, else_kw + 4);
         source_patch_jmp_here(cs, end_patch);
         *pp = else_kw + strlen(else_kw);
         return;
