@@ -44,7 +44,9 @@ static void lcd_option_save_and_reset(void) {
 static int lcd_system_spi_setter(unsigned char * tp) {
     if (CurrentLinePtr) error("Invalid in a program");
     if (checkstring(tp, (unsigned char *)"DISABLE")) {
-        if (Option.DISPLAY_TYPE) error("Disable the LCD panel first");
+        /* The configured control pins are the panel selection (DISPLAY_TYPE
+         * is bound state the web console rewrites). */
+        if (Option.LCD_CD && Option.LCD_CS) error("Disable the LCD panel first");
         Option.LCD_CLK = 0;
         Option.LCD_MOSI = 0;
         Option.LCD_MISO = 0;
@@ -76,24 +78,38 @@ static int lcd_panel_setter(unsigned char * tp) {
         Option.DISPLAY_BL = 0;
         Option.DISPLAY_TYPE = 0;
         Option.DISPLAY_CONSOLE = 0;
+        Option.BGR = 0;
         lcd_option_save_and_reset();
         return 1;
     }
-    if (Option.DISPLAY_TYPE) error("Display already configured");
+    if (Option.LCD_CD && Option.LCD_CS) error("Display already configured");
     if (!Option.LCD_CLK) error("Set OPTION SYSTEM SPI first");
-    getargs(&tp, 11, (unsigned char *)",");
-    if (argc != 9 && argc != 11)
-        error("OPTION LCDPANEL ILI9341, orientation, DC, RST, CS [,BL]");
+    getargs(&tp, 13, (unsigned char *)",");
+    if (argc != 9 && argc != 11 && argc != 13)
+        error("OPTION LCDPANEL ILI9341, orientation, DC, RST, CS [,BL] [,INVERT]");
     if (!checkstring(argv[0], (unsigned char *)"ILI9341"))
         error("Display type not supported");
     if (!(checkstring(argv[2], (unsigned char *)"LANDSCAPE") ||
           checkstring(argv[2], (unsigned char *)"L")))
         error("Orientation not supported");
 
+    /* INVERT (panel colour-polarity inversion, PicoMite's Option.BGR) may
+     * appear as the last argument, either in the BL slot or after it. */
+    int invert = 0;
+    int bl = 0;
+    if (argc == 13) {
+        if (!checkstring(argv[12], (unsigned char *)"INVERT")) error("Syntax");
+        invert = 1;
+        bl = esp32_parse_pin_arg(argv[10]);
+    } else if (argc == 11) {
+        if (checkstring(argv[10], (unsigned char *)"INVERT"))
+            invert = 1;
+        else
+            bl = esp32_parse_pin_arg(argv[10]);
+    }
     int dc = esp32_parse_pin_arg(argv[4]);
     int rst = esp32_parse_pin_arg(argv[6]); /* 0 = no reset line */
     int cs = esp32_parse_pin_arg(argv[8]);
-    int bl = (argc == 11) ? esp32_parse_pin_arg(argv[10]) : 0;
     lcd_option_validate_pin(dc);
     lcd_option_validate_pin(cs);
     if (rst) lcd_option_validate_pin(rst);
@@ -108,6 +124,7 @@ static int lcd_panel_setter(unsigned char * tp) {
     Option.DISPLAY_BL = bl;
     Option.DISPLAY_TYPE = ILI9341;
     Option.DISPLAY_ORIENTATION = LANDSCAPE;
+    Option.BGR = invert;
     lcd_option_save_and_reset();
     return 1;
 }
@@ -144,10 +161,11 @@ void esp32_lcd_print_options(void) {
         lcd_print_pin(Option.LCD_Reset);
         MMPrintString(", ");
         lcd_print_pin(Option.LCD_CS);
-        if (Option.DISPLAY_BL) {
+        if (Option.DISPLAY_BL || Option.BGR) {
             MMPrintString(", ");
             lcd_print_pin(Option.DISPLAY_BL);
         }
+        if (Option.BGR) MMPrintString(", INVERT");
         MMPrintString("\r\n");
     }
 }

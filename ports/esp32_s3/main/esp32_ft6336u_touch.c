@@ -255,7 +255,11 @@ int esp32_touch_option_setter(unsigned char * cmdline) {
         if (i >= 2 && pins[i] == 0) continue;
         if (pins[i] < 1 || pins[i] > NBRPINS || (PinDef[pins[i]].mode & UNUSED))
             error("Invalid pin");
-        if (ExtCurrentConfig[pins[i]] != EXT_NOT_CONFIG)
+        /* SDA/SCL may legitimately be the bus the ES8311 audio profile
+         * already holds — claiming the shared bus for touch is the normal
+         * Freenove arrangement, not a conflict. */
+        if (ExtCurrentConfig[pins[i]] != EXT_NOT_CONFIG &&
+            !(i < 2 && esp32_board_profile_pin_owned_by_shared_i2c(pins[i])))
             error("Pin %/| is in use", pins[i], pins[i]);
         for (int j = i + 1; j < 4; j++)
             if (pins[j] && pins[i] == pins[j])

@@ -292,6 +292,34 @@ pipelines.
   PicoMite via `Option.DISPLAY_TYPE` runtime dispatch; the extraction keeps
   that dispatch, so no new dispatcher is needed.
 
+## Goal conformance (final review, 2026-06-09)
+
+Verdict on "a single core LCD driver stack, configured on ESP32-S3 the
+same way as on Pico": the **single core stack is real** — an adversarial
+re-derivation confirmed the B2 transplant byte-identical, and a sweep
+found zero controller-knowledge duplication outside `spi_lcd_panels.c`
+(everything remaining per-port is bus transport, presentation, or the
+documented ST7920 carve-out). **Configuration parity is syntactic but not
+yet total.** Same commands, same argument shapes, same persistence
+lifecycle; the differences that remain:
+
+- Controller names: ESP32 accepts `ILI9341` only — by design, each panel
+  is enabled when validated on hardware (the shared core already carries
+  all of them).
+- Orientation: ESP32 accepts `LANDSCAPE` only. The shared init already
+  keys MADCTL on `DISPLAY_ORIENTATION`; the gap is the ESP32 presentation
+  layer's compile-time 320×240 geometry. Widening = runtime W/H there.
+- `INVERT` argument: supported on both (ESP32 added in the final-review
+  fix pass; sets `Option.BGR` exactly like Pico).
+- Reset pin: ESP32 accepts `0` = no reset line (a superset; Pico requires
+  a pin).
+- `OPTION SYSTEM SPI` stores to `Option.LCD_*` on ESP32 (dedicated bus)
+  vs `Option.SYSTEM_*` on Pico (shared bus) — invisible at the command
+  level, by design.
+- Touch: ESP32 is capacitive-FT6336U-only (hardware class); Pico's
+  capacitive form spells it `OPTION TOUCH FT6336, sda, scl`. Aligning the
+  spelling is a future nicety.
+
 ## Known gaps (not in any step's scope yet)
 
 - **ESP32 SPI fast path.** The dominant per-transaction cost in spi_master

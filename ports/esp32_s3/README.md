@@ -205,8 +205,8 @@ For a board that has no profile, run on `GENERIC` and configure peripherals by h
 
 ```basic
 OPTION SYSTEM SPI GP12,GP11,GP13         ' LCD SPI bus: clk, mosi, miso
-OPTION LCDPANEL ILI9341, LANDSCAPE, GP46, 0, GP10, GP45
-                                         ' controller, orientation, DC, RST (0 = none), CS [, BL]
+OPTION LCDPANEL ILI9341, LANDSCAPE, GP46, 0, GP10, GP45, INVERT
+                                         ' controller, orientation, DC, RST (0 = none), CS [, BL] [, INVERT]
 OPTION TOUCH GP16,GP15,GP17,GP18         ' FT6336U I2C: sda, scl [, int [, rst]]
 OPTION SDCARD GP47,GP38,GP40,GP39        ' dedicated-SPI SD: cs, clk, mosi, miso
 OPTION AUDIO I2S GP5,GP6,GP7             ' external I2S DAC — see Audio below

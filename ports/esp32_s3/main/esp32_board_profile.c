@@ -195,10 +195,31 @@ static int current_shared_i2c_enabled(void) {
     return esp32_ft6336u_touch_is_ready() || current_audio_profile_uses_shared_i2c();
 }
 
+/* Resolve the pin indices of the shared touch/audio I2C bus: the OPTION
+ * TOUCH wiring when configured, else the Freenove audio profile's bus pins.
+ * The fallback keys on the profile id, not on the live audio state, so the
+ * pins still resolve (and can be released) after OPTION AUDIO DISABLE has
+ * cleared the audio fields. */
+static void shared_i2c_bus_pins(int * sda, int * scl) {
+    *sda = ESP32_OPTION_TOUCH_SDA;
+    *scl = ESP32_OPTION_TOUCH_SCL;
+    if (*sda && *scl) return;
+    const esp32_board_profile_t * profile = esp32_board_profile_current();
+    if (profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
+        *sda = 0;
+        *scl = 0;
+        return;
+    }
+    *sda = profile_pin(profile->audio.i2c_sda);
+    *scl = profile_pin(profile->audio.i2c_scl);
+}
+
 static int current_profile_shared_i2c_pin(int pin) {
     if (profile_pin_invalid(pin)) return 0;
-    if (!ESP32_OPTION_TOUCH_SDA || !ESP32_OPTION_TOUCH_SCL) return 0;
-    return pin == ESP32_OPTION_TOUCH_SDA || pin == ESP32_OPTION_TOUCH_SCL;
+    int sda, scl;
+    shared_i2c_bus_pins(&sda, &scl);
+    if (!sda || !scl) return 0;
+    return pin == sda || pin == scl;
 }
 
 void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
@@ -337,17 +358,9 @@ void esp32_board_profile_reserve_touch_pins(void) {
 }
 
 void esp32_board_profile_update_shared_i2c_pins(void) {
-    int sda = ESP32_OPTION_TOUCH_SDA;
-    int scl = ESP32_OPTION_TOUCH_SCL;
-    if (!sda || !scl) {
-        /* Touch unconfigured: the ES8311 audio profile still owns the bus
-         * on its profile pins. */
-        if (!current_audio_profile_uses_shared_i2c()) return;
-        const esp32_board_profile_t * profile = esp32_board_profile_current();
-        sda = profile_pin(profile->audio.i2c_sda);
-        scl = profile_pin(profile->audio.i2c_scl);
-        if (!sda || !scl) return;
-    }
+    int sda, scl;
+    shared_i2c_bus_pins(&sda, &scl);
+    if (!sda || !scl) return;
     if (current_shared_i2c_enabled()) {
         reserve_pin_index(sda);
         reserve_pin_index(scl);

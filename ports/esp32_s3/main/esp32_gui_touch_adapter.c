@@ -37,9 +37,10 @@ static int clamp_axis(int v, int limit) {
 }
 
 static int pin_to_gpio(int pin) {
-    if (pin <= 0) return -1;
-    int gpio = pin;
-    if (pin <= NBRPINS) gpio = codemap(pin);
+    /* pin is a PinDef[] index; GPno holds its raw GPIO. (codemap() maps the
+     * other direction, GPIO -> pin index.) */
+    if (pin <= 0 || pin > NBRPINS) return -1;
+    int gpio = PinDef[pin].GPno;
     if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) return -1;
     return gpio;
 }
