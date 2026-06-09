@@ -199,6 +199,7 @@ set(PORT_LOCAL_SRCS
     hal_time_esp32.c
     hal_random_esp32.c
     hal_net_esp32.c                         # ESP-IDF socket transport HAL
+    esp32_mbedtls_mem.c                     # TLS allocator: PSRAM-first, internal fallback
     ${REPO_ROOT}/hal/generic/hal_watchdog_noop.c
     hal_flash_esp32.c                         # NVS-backed Options plus mmslots-backed program/slot persistence
     hal_storage_esp32_stub.c

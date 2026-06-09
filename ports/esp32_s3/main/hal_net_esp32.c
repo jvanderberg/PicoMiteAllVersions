@@ -282,8 +282,12 @@ static void esp32_net_wifi_event_handler(void * arg, esp_event_base_t event_base
     }
 }
 
+void esp32_mbedtls_mem_install(void);
+
 static int esp32_net_wifi_ensure_ready(void) {
     if (wifi_ready) return HAL_NET_OK;
+
+    esp32_mbedtls_mem_install();
 
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("wifi_init", ESP_LOG_WARN);

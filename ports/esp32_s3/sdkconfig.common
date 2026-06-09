@@ -72,6 +72,13 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
+# TLS sessions allocate from PSRAM with internal-RAM fallback
+# (esp32_mbedtls_mem.c). Internal RAM is the scarce resource here — WiFi
+# buffers, the MMBasic heap, and the esp-mqtt client task coexist with
+# mbedTLS, and a TLS handshake needs more contiguous internal space than
+# is reliably left (handshakes fail with mbedTLS *_ALLOC_FAILED errors).
+CONFIG_MBEDTLS_CUSTOM_MEM_ALLOC=y
+
 CONFIG_LWIP_MAX_SOCKETS=6
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
 # CONFIG_LWIP_IPV6 is not set
