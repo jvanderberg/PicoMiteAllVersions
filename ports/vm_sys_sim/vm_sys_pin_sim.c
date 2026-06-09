@@ -15,19 +15,17 @@
 
 #include "MMBasic_Includes.h"
 #include "vm_sys_pin_internal.h"
+#include "vm_sys_pwm.h"
+#include "i2c_config.h"
+#include "uart_config.h"
+#include "spi_config.h"
 
 static int vm_pwm_pin_a[VM_PWM_SLICE_COUNT];
 static int vm_pwm_pin_b[VM_PWM_SLICE_COUNT];
-static unsigned char vm_pwm_started[VM_PWM_SLICE_COUNT];
 
 static int host_pin_mode[NBRPINS + 1];
 static int host_pin_value[NBRPINS + 1];
 static int host_pin_option[NBRPINS + 1];
-static MMFLOAT host_pwm_frequency[VM_PWM_SLICE_COUNT];
-static MMFLOAT host_pwm_duty_a[VM_PWM_SLICE_COUNT];
-static MMFLOAT host_pwm_duty_b[VM_PWM_SLICE_COUNT];
-static unsigned char host_pwm_enabled[VM_PWM_SLICE_COUNT];
-static unsigned char host_pwm_phase_correct[VM_PWM_SLICE_COUNT];
 
 static int vm_pin_resolve_host(int64_t pin) {
     if (pin < 0)
@@ -51,6 +49,36 @@ void vm_sys_pin_setpin(int64_t pin, int mode, int option) {
     if (mode == VM_PIN_MODE_PWM_AUTO)
         mode = VM_PIN_MODE_PWM0A;
 
+    if (i2c_config_mode_is_i2c(mode)) {
+        if (option != VM_PIN_OPT_NONE)
+            error("Unsupported SETPIN option");
+        i2c_config_setpin(resolved, mode);
+        vm_host_pwm_detach_pin(resolved);
+        host_pin_mode[resolved] = mode;
+        host_pin_option[resolved] = VM_PIN_OPT_NONE;
+        return;
+    }
+
+    if (uart_config_mode_is_uart(mode)) {
+        if (option != VM_PIN_OPT_NONE)
+            error("Unsupported SETPIN option");
+        uart_config_setpin(resolved, mode);
+        vm_host_pwm_detach_pin(resolved);
+        host_pin_mode[resolved] = mode;
+        host_pin_option[resolved] = VM_PIN_OPT_NONE;
+        return;
+    }
+
+    if (spi_config_mode_is_spi(mode)) {
+        if (option != VM_PIN_OPT_NONE)
+            error("Unsupported SETPIN option");
+        spi_config_setpin(resolved, mode);
+        vm_host_pwm_detach_pin(resolved);
+        host_pin_mode[resolved] = mode;
+        host_pin_option[resolved] = VM_PIN_OPT_NONE;
+        return;
+    }
+
     if (mode != VM_PIN_MODE_OFF &&
         mode != VM_PIN_MODE_DIN &&
         mode != VM_PIN_MODE_DOUT &&
@@ -71,6 +99,9 @@ void vm_sys_pin_setpin(int64_t pin, int mode, int option) {
 
     if (mode == VM_PIN_MODE_OFF) {
         vm_host_pwm_detach_pin(resolved);
+        uart_config_clear_pin(resolved);
+        spi_config_clear_pin(resolved);
+        i2c_config_clear_pin(resolved);
         host_pin_mode[resolved] = VM_PIN_MODE_OFF;
         host_pin_value[resolved] = 0;
         host_pin_option[resolved] = VM_PIN_OPT_NONE;
@@ -139,60 +170,18 @@ void vm_sys_pin_write(int64_t pin, int64_t value) {
     host_pin_value[resolved] = 0;
 }
 
-void vm_sys_pwm_configure(int slice, MMFLOAT frequency,
-                          int has_duty1, MMFLOAT duty1,
-                          int has_duty2, MMFLOAT duty2,
-                          int phase_correct, int delaystart) {
-    if (slice < 0 || slice > vm_pwm_max_slice())
-        error("Number out of bounds");
-    if (frequency <= 0) error("Invalid frequency");
-    if (has_duty1 && (duty1 < -100.0 || duty1 > 100.0)) error("Syntax");
-    if (has_duty2 && (duty2 < -100.0 || duty2 > 100.0)) error("Syntax");
-    if (has_duty1 && vm_pwm_pin_a[slice] == 0) error("Pin not set for PWM");
-    if (has_duty2 && vm_pwm_pin_b[slice] == 0) error("Pin not set for PWM");
-    host_pwm_frequency[slice] = frequency;
-    host_pwm_duty_a[slice] = has_duty1 ? duty1 : -1.0;
-    host_pwm_duty_b[slice] = has_duty2 ? duty2 : -1.0;
-    host_pwm_phase_correct[slice] = phase_correct ? 1 : 0;
-    vm_pwm_started[slice] = 1;
-    if (!delaystart) host_pwm_enabled[slice] = 1;
+int vm_pin_pwm_assigned_pin(int channel, int which) {
+    if (channel < 0 || channel >= VM_PWM_SLICE_COUNT) return 0;
+    return which ? vm_pwm_pin_b[channel] : vm_pwm_pin_a[channel];
 }
 
-void vm_sys_pwm_sync(uint16_t present_mask, const MMFLOAT * counts) {
-    for (int slice = 0; slice < VM_PWM_SLICE_COUNT; slice++) {
-        if (!(present_mask & (1u << slice)))
-            continue;
-        if (counts[slice] != -1.0 && (counts[slice] < 0.0 || counts[slice] > 100.0))
-            error("Syntax");
-        if (vm_pwm_started[slice])
-            host_pwm_enabled[slice] = 1;
-    }
+void vm_pin_pwm_mark_reserved(int channel, int which) {
+    (void)channel;
+    (void)which;
 }
 
-void vm_sys_pwm_off(int slice) {
-    if (slice < 0 || slice > vm_pwm_max_slice())
-        error("Number out of bounds");
-    host_pwm_frequency[slice] = 0;
-    host_pwm_duty_a[slice] = -1.0;
-    host_pwm_duty_b[slice] = -1.0;
-    host_pwm_phase_correct[slice] = 0;
-    host_pwm_enabled[slice] = 0;
-    vm_pwm_started[slice] = 0;
-}
-
-void vm_sys_servo_configure(int slice,
-                            int has_pos1, MMFLOAT pos1,
-                            int has_pos2, MMFLOAT pos2) {
-    MMFLOAT duty1 = 0, duty2 = 0;
-    if (has_pos1) {
-        if (pos1 < -20.0 || pos1 > 120.0) error("Syntax");
-        duty1 = 5.0 + pos1 * 0.05;
-    }
-    if (has_pos2) {
-        if (pos2 < -20.0 || pos2 > 120.0) error("Syntax");
-        duty2 = 5.0 + pos2 * 0.05;
-    }
-    vm_sys_pwm_configure(slice, 50.0, has_pos1, duty1, has_pos2, duty2, 0, 0);
+void vm_pin_pwm_release(int channel) {
+    (void)channel;
 }
 
 void vm_sys_pin_reset(void) {
@@ -201,12 +190,4 @@ void vm_sys_pin_reset(void) {
     memset(host_pin_option, 0, sizeof(host_pin_option));
     memset(vm_pwm_pin_a, 0, sizeof(vm_pwm_pin_a));
     memset(vm_pwm_pin_b, 0, sizeof(vm_pwm_pin_b));
-    memset(vm_pwm_started, 0, sizeof(vm_pwm_started));
-    memset(host_pwm_enabled, 0, sizeof(host_pwm_enabled));
-    memset(host_pwm_phase_correct, 0, sizeof(host_pwm_phase_correct));
-    for (int i = 0; i < VM_PWM_SLICE_COUNT; i++) {
-        host_pwm_frequency[i] = 0;
-        host_pwm_duty_a[i] = -1.0;
-        host_pwm_duty_b[i] = -1.0;
-    }
 }

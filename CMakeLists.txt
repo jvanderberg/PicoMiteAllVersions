@@ -137,10 +137,15 @@ set(PICOMITE_LEGACY_CORE_SOURCES
 	drivers/fs_lfs_fatfs/fs_lfs_fatfs_helpers.c
 	core/mmbasic/OptionCommands.c
 	shared/cmd_ws2812_shared.c
+	shared/peripheral/pwm_cmd.c
+	shared/peripheral/i2c_config.c
+	shared/peripheral/uart_config.c
+	shared/peripheral/spi_config.c
 	core/mmbasic/External.c
 	core/mmbasic/MATHS.c
 	drivers/onewire/Onewire.c
 	drivers/i2c_bus/I2C.c
+	drivers/camera_ov7670/camera_ov7670.c
 	drivers/spi_bus/SPI.c
 	drivers/serial/Serial.c
 	drivers/spi_lcd/spi_lcd.c
@@ -188,6 +193,7 @@ set(PICOMITE_VM_SUPPORT_SOURCES
 	runtime/vm/vm_sys_graphics.c
 	runtime/vm/vm_sys_time.c
 	runtime/vm/vm_sys_pin.c
+	runtime/vm/vm_sys_pwm.c
 	runtime/vm/vm_sys_file.c
 	${PICOMITE_VM_SHARED_GFX_SOURCES}
 )
@@ -213,6 +219,8 @@ set(PICOMITE_PICO_SDK_HAL_SOURCES
 	ports/pico_sdk_common/hal_random_pico.c
 	ports/pico_sdk_common/hal_watchdog_pico.c
 	ports/pico_sdk_common/hal_pin_pico.c
+	ports/pico_sdk_common/hal_pwm_pico.c
+	ports/pico_sdk_common/hal_i2c_pico.c
 	ports/pico_sdk_common/hal_ws2812_pico.c
 	ports/pico_sdk_common/pico_gpio_irq.c
 	ports/pico_sdk_common/hal_storage_pico.c
@@ -277,6 +285,7 @@ target_include_directories(PicoMite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(PicoMite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/mmbasic)
 target_include_directories(PicoMite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/runtime/vm)
 target_include_directories(PicoMite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shared/gfx)
+target_include_directories(PicoMite PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/shared/peripheral)
 target_include_directories(PicoMite PRIVATE
 	${CMAKE_CURRENT_SOURCE_DIR}/shared/audio
 	${CMAKE_CURRENT_SOURCE_DIR}/shared/mmbasic

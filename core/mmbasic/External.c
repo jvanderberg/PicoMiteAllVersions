@@ -42,6 +42,10 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_display_oled_spi.h"
 #include "hal/hal_heartbeat.h"
 #include "hal/hal_i2c_keypad.h"
+#include "vm_sys_pwm.h"
+#include "i2c_config.h"
+#include "uart_config.h"
+#include "spi_config.h"
 
 /* SetBacklightSSD1963 has the real impl in SSD1963.c on SPI-LCD ports
  * and a no-op stub in vga_qvga_modes.c / hdmi_scanout.c so the linker
@@ -176,20 +180,6 @@ uint8_t PWM8Bpin = 99;
 uint8_t PWM9Bpin = 99;
 uint8_t PWM10Bpin = 99;
 uint8_t PWM11Bpin = 99;
-uint8_t UART1RXpin = 99;
-uint8_t UART1TXpin = 99;
-uint8_t UART0TXpin = 99;
-uint8_t UART0RXpin = 99;
-uint8_t SPI1TXpin = 99;
-uint8_t SPI1RXpin = 99;
-uint8_t SPI1SCKpin = 99;
-uint8_t SPI0TXpin = 99;
-uint8_t SPI0RXpin = 99;
-uint8_t SPI0SCKpin = 99;
-uint8_t I2C1SDApin = 99;
-uint8_t I2C1SCLpin = 99;
-uint8_t I2C0SDApin = 99;
-uint8_t I2C0SCLpin = 99;
 uint8_t slice0 = 0, slice1 = 0, slice2 = 0, slice3 = 0, slice4 = 0, slice5 = 0, slice6 = 0, slice7 = 0;
 uint8_t slice8 = 0, slice9 = 0, slice10 = 0, slice11 = 0;
 bool fast_timer_active = false;
@@ -432,20 +422,9 @@ void ClearPin(int pin) {
     if (pin == PWM9Bpin) PWM9Bpin = 99;
     if (pin == PWM10Bpin) PWM10Bpin = 99;
     if (pin == PWM11Bpin) PWM11Bpin = 99;
-    if (pin == UART0TXpin) UART0TXpin = 99;
-    if (pin == UART0RXpin) UART0RXpin = 99;
-    if (pin == UART1RXpin) UART1RXpin = 99;
-    if (pin == UART1TXpin) UART1TXpin = 99;
-    if (pin == SPI1TXpin) SPI1TXpin = 99;
-    if (pin == SPI1RXpin) SPI1RXpin = 99;
-    if (pin == SPI1SCKpin) SPI1SCKpin = 99;
-    if (pin == SPI0TXpin) SPI0TXpin = 99;
-    if (pin == SPI0RXpin) SPI0RXpin = 99;
-    if (pin == SPI0SCKpin) SPI0SCKpin = 99;
-    if (pin == I2C1SDApin) I2C1SDApin = 99;
-    if (pin == I2C1SCLpin) I2C1SCLpin = 99;
-    if (pin == I2C0SDApin) I2C0SDApin = 99;
-    if (pin == I2C0SCLpin) I2C0SCLpin = 99;
+    uart_config_clear_pin(pin);
+    spi_config_clear_pin(pin);
+    i2c_config_clear_pin(pin);
 }
 /****************************************************************************************************************************
 Configure an I/O pin
@@ -759,60 +738,18 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
         ana = 1;
         break;
     case EXT_UART0TX:
-        if (!(PinDef[pin].mode & UART0TX)) error("Invalid configuration");
-        if ((UART0TXpin != 99)) error("Already Set to pin %", UART0TXpin);
-        UART0TXpin = pin;
-        break;
     case EXT_UART0RX:
-        if (!(PinDef[pin].mode & UART0RX)) error("Invalid configuration");
-        if ((UART0RXpin != 99)) error("Already Set to pin %", UART0RXpin);
-        UART0RXpin = pin;
-        break;
     case EXT_UART1TX:
-        if (!(PinDef[pin].mode & UART1TX)) error("Invalid configuration");
-        if ((UART1TXpin != 99)) error("Already Set to pin %", UART1TXpin);
-        UART1TXpin = pin;
-        break;
     case EXT_UART1RX:
-        if (!(PinDef[pin].mode & UART1RX)) error("Invalid configuration");
-        if ((UART1RXpin != 99)) error("Already Set to pin %", UART1RXpin);
-        UART1RXpin = pin;
+        uart_config_setpin(pin, cfg);
         break;
     case EXT_SPI0TX:
-        if (!(PinDef[pin].mode & SPI0TX)) error("Invalid configuration");
-        if (SPI0locked) error("SPI in use for SYSTEM SPI");
-        if ((SPI0TXpin != 99 && SPI0TXpin != pin)) error("Already Set to pin %", SPI0TXpin);
-        SPI0TXpin = pin;
-        break;
     case EXT_SPI0RX:
-        if (!(PinDef[pin].mode & SPI0RX)) error("Invalid configuration");
-        if (SPI0locked) error("SPI in use for SYSTEM SPI");
-        if ((SPI0RXpin != 99 && SPI0RXpin != pin)) error("Already Set to pin %", SPI0RXpin);
-        SPI0RXpin = pin;
-        break;
     case EXT_SPI0SCK:
-        if (!(PinDef[pin].mode & SPI0SCK)) error("Invalid configuration");
-        if (SPI0locked) error("SPI in use for SYSTEM SPI");
-        if ((SPI0SCKpin != 99 && SPI0SCKpin != pin)) error("Already Set to pin %", SPI0SCKpin);
-        SPI0SCKpin = pin;
-        break;
     case EXT_SPI1TX:
-        if (!(PinDef[pin].mode & SPI1TX)) error("Invalid configuration");
-        if (SPI1locked) error("SPI2 in use for SYSTEM SPI");
-        if ((SPI1TXpin != 99 && SPI1TXpin != pin)) error("Already Set to pin %", SPI1TXpin);
-        SPI1TXpin = pin;
-        break;
     case EXT_SPI1RX:
-        if (!(PinDef[pin].mode & SPI1RX)) error("Invalid configuration");
-        if (SPI1locked) error("SPI2 in use for SYSTEM SPI");
-        if ((SPI1RXpin != 99 && SPI1RXpin != pin)) error("Already Set to pin %", SPI1RXpin);
-        SPI1RXpin = pin;
-        break;
     case EXT_SPI1SCK:
-        if (!(PinDef[pin].mode & SPI1SCK)) error("Invalid configuration");
-        if (SPI1locked) error("SPI2 in use for SYSTEM SPI");
-        if ((SPI1SCKpin != 99 && SPI1SCKpin != pin)) error("Already Set to pin %", SPI1SCKpin);
-        SPI1SCKpin = pin;
+        spi_config_setpin(pin, cfg);
         break;
     case EXT_IR:
         if ((IRpin != 99)) error("Already Set to pin %", IRpin);
@@ -954,28 +891,10 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
         hal_fast_timer_configure(49999, on_pwm_wrap_1);
         break;
     case EXT_I2C0SDA:
-        if (!(PinDef[pin].mode & I2C0SDA)) error("Invalid configuration");
-        if (I2C0locked) error("I2C in use for SYSTEM I2C");
-        if ((I2C0SDApin != 99 && I2C0SDApin != pin)) error("Already Set to pin %", I2C0SDApin);
-        I2C0SDApin = pin;
-        break;
     case EXT_I2C0SCL:
-        if (!(PinDef[pin].mode & I2C0SCL)) error("Invalid configuration");
-        if (I2C0locked) error("I2C in use for SYSTEM I2C");
-        if ((I2C0SCLpin != 99 && I2C0SCLpin != pin)) error("Already Set to pin %", I2C0SCLpin);
-        I2C0SCLpin = pin;
-        break;
     case EXT_I2C1SDA:
-        if (!(PinDef[pin].mode & I2C1SDA)) error("Invalid configuration");
-        if (I2C1locked) error("I2C2 in use for SYSTEM I2C");
-        if ((I2C1SDApin != 99) && I2C1SDApin != pin) error("Already Set to pin %", I2C1SDApin);
-        I2C1SDApin = pin;
-        break;
     case EXT_I2C1SCL:
-        if (!(PinDef[pin].mode & I2C1SCL)) error("Invalid configuration");
-        if (I2C1locked) error("I2C2 in use for SYSTEM I2C");
-        if ((I2C1SCLpin != 99 && I2C1SCLpin != pin)) error("Already Set to pin %", I2C1SCLpin);
-        I2C1SCLpin = pin;
+        i2c_config_setpin(pin, cfg);
         break;
     default:
         error("Invalid configuration");
@@ -991,13 +910,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
         pinmask &= (~(1 << PinDef[pin].GPno));
         if (cfg == EXT_NOT_CONFIG) ExtSet(pin, 0); // set the default output to low
         if (ana == 0) PinSetBit(pin, ANSELSET);
-    } else if (cfg >= EXT_UART0TX && cfg <= EXT_UART1RX) {
-        hal_pin_set_function(PinDef[pin].GPno, HAL_PIN_FUNC_UART);
-        if (cfg == EXT_UART0RX || cfg == EXT_UART1RX) hal_pin_set_pulls(PinDef[pin].GPno, HAL_PIN_PULL_UP);
-    } else if (cfg >= EXT_I2C0SDA && cfg <= EXT_I2C1SCL)
-        hal_pin_set_function(PinDef[pin].GPno, HAL_PIN_FUNC_I2C);
-    else if (cfg >= EXT_SPI0RX && cfg <= EXT_SPI1SCK)
-        hal_pin_set_function(PinDef[pin].GPno, HAL_PIN_FUNC_SPI);
+    }
     /* rp2350a is true on RP2040 (30-pin, no PWM8..11) and on RP2350A;
      * false only on the 48-pin RP2350B. The ternary collapses both the
      * RP2040 bound (EXT_PWM7B) and the RP2350A bound (EXT_PWM7B) into a
@@ -1439,6 +1352,7 @@ process:
 
     CheckPin(pin, CP_IGNORE_INUSE);
     ExtCfg(pin, value, option);
+    vm_pin_pwm_register_setpin(pin, value);
 
     if (value2) {
         CheckPin(pin2, CP_IGNORE_INUSE);
@@ -2247,295 +2161,6 @@ void MIPS16 cmd_backlight(void) {
         }
     }
     setBacklight(level, frequency);
-}
-void MIPS16 cmd_Servo(void) {
-    unsigned char * tp;
-    int div = 1, high1 = 0, high2 = 0;
-    MMFLOAT duty1 = -1.0, duty2 = -1.0;
-    getargs(&cmdline, 5, (unsigned char *)",");
-    if (!(argc >= 3)) error("Syntax");
-    int CPU_Speed = Option.CPU_Speed;
-    int slice = getint(argv[0], 0, rp2350a ? 7 : 11);
-    if (slice == 0 && ExtCurrentConfig[FAST_TIMER_PIN] == EXT_FAST_TIMER) error("Channel in use for fast frequency");
-    if (slice == BacklightSlice) error("Channel in use for backlight");
-    if (slice == Option.AUDIO_SLICE) error("Channel in use for Audio");
-    if (slice == CameraSlice) error("Channel in use for Camera");
-    if ((tp = checkstring(argv[2], (unsigned char *)"OFF"))) {
-        PWMoff(slice);
-        if (slice == 0) slice0 = 0;
-        if (slice == 1) slice1 = 0;
-        if (slice == 2) slice2 = 0;
-        if (slice == 3) slice3 = 0;
-        if (slice == 4) slice4 = 0;
-        if (slice == 5) slice5 = 0;
-        if (slice == 6) slice6 = 0;
-        if (slice == 7) slice7 = 0;
-        if (slice == 8) slice8 = 0;
-        if (slice == 9) slice9 = 0;
-        if (slice == 10) slice10 = 0;
-        if (slice == 11) slice11 = 0;
-        return;
-    }
-    MMFLOAT frequency = 50.0;
-    if (*argv[2]) {
-        duty1 = getnumber(argv[2]);
-        if (duty1 > 120.0 || duty1 < -20.0) error("Syntax");
-        duty1 = 5.0 + duty1 * 0.05;
-    }
-    if (argc >= 5 && *argv[4]) {
-        duty2 = getnumber(argv[4]);
-        if (duty2 > 120.0 || duty2 < -20.0) error("Syntax");
-        duty2 = 5.0 + duty2 * 0.05;
-    }
-    int wrap = (CPU_Speed * 1000) / frequency;
-    if (duty1 >= 0.0) high1 = (int)((MMFLOAT)CPU_Speed / frequency * duty1 * 10.0);
-    if (duty2 >= 0.0) high2 = (int)((MMFLOAT)CPU_Speed / frequency * duty2 * 10.0);
-    while (wrap > 65535) {
-        wrap >>= 1;
-        if (duty1 >= 0.0) high1 >>= 1;
-        if (duty2 >= 0.0) high2 >>= 1;
-        div <<= 1;
-    }
-    if (div > 256) error("Invalid frequency");
-    wrap--;
-    if (high1) high1--;
-    if (high2) high2--;
-    pwm_set_clkdiv(slice, (float)div);
-    pwm_set_wrap(slice, wrap);
-    pwm_set_output_polarity(slice, false, false);
-    pwm_set_phase_correct(slice, false);
-    set_PWM(slice, duty1, duty2, high1, high2, 0);
-}
-void MIPS16 cmd_pwm(void) {
-    unsigned char * tp;
-    if ((tp = checkstring(cmdline, (unsigned char *)"SYNC"))) {
-        MMFLOAT count0 = -1.0, count1 = -1.0, count2 = -1.0, count3 = -1.0, count4 = -1.0, count5 = -1.0, count6 = -1.0, count7 = -1.0;
-        MMFLOAT count8 = -1.0, count9 = -1.0, count10 = -1.0, count11 = -1.0;
-        getargs(&tp, 23, (unsigned char *)",");
-        if (argc >= 1) {
-            count0 = getnumber(argv[0]);
-            if ((count0 < 0.0 || count0 > 100.0) && count0 != -1.0) error("Syntax");
-        }
-        if (argc >= 3 && *argv[2]) {
-            count1 = getnumber(argv[2]);
-            if ((count1 < 0.0 || count1 > 100.0) && count1 != -1.0) error("Syntax");
-        }
-        if (argc >= 5 && *argv[4]) {
-            count2 = getnumber(argv[4]);
-            if ((count2 < 0.0 || count2 > 100.0) && count2 != -1.0) error("Syntax");
-        }
-        if (argc >= 7 && *argv[6]) {
-            count3 = getnumber(argv[6]);
-            if ((count3 < 0.0 || count3 > 100.0) && count3 != -1.0) error("Syntax");
-        }
-        if (argc >= 9 && *argv[8]) {
-            count4 = getnumber(argv[8]);
-            if ((count4 < 0.0 || count4 > 100.0) && count4 != -1.0) error("Syntax");
-        }
-        if (argc >= 11 && *argv[10]) {
-            count5 = getnumber(argv[10]);
-            if ((count5 < 0.0 || count5 > 100.0) && count5 != -1.0) error("Syntax");
-        }
-        if (argc >= 13 && *argv[12]) {
-            count6 = getnumber(argv[12]);
-            if ((count6 < 0.0 || count6 > 100.0) && count6 != -1.0) error("Syntax");
-        }
-        if (argc >= 15 && *argv[14]) {
-            count7 = getnumber(argv[14]);
-            if ((count7 < 0.0 || count7 > 100.0) && count7 != -1.0) error("Syntax");
-        }
-        if (argc >= 17 && *argv[16]) {
-            count8 = getnumber(argv[16]);
-            if ((count8 < 0.0 || count8 > 100.0) && count8 != -1.0) error("Syntax");
-        }
-        if (argc >= 19 && *argv[18]) {
-            count9 = getnumber(argv[18]);
-            if ((count9 < 0.0 || count9 > 100.0) && count9 != -1.0) error("Syntax");
-        }
-        if (argc >= 21 && *argv[20]) {
-            count10 = getnumber(argv[20]);
-            if ((count10 < 0.0 || count10 > 100.0) && count10 != -1.0) error("Syntax");
-        }
-        if (argc == 23 && *argv[22]) {
-            count11 = getnumber(argv[22]);
-            if ((count11 < 0.0 || count11 > 100.0) && count11 != -1.0) error("Syntax");
-        }
-
-        int enabled = 0;
-        if (slice0 || Option.AUDIO_SLICE == 0 || BacklightSlice == 0 || CameraSlice == 0 || KeyboardlightSlice == 0) {
-            enabled |= 1;
-            if (!(Option.AUDIO_SLICE == 0 || BacklightSlice == 0 || CameraSlice == 0 || count0 < 0.0 || KeyboardlightSlice == 0)) {
-                pwm_set_enabled(0, false);
-                count0 = (MMFLOAT)pwm_hw->slice[0].top * (100.0 - count0) / 100.0;
-                pwm_set_counter(0, (int)count0);
-            }
-        }
-        if (slice1 || Option.AUDIO_SLICE == 1 || BacklightSlice == 1 || CameraSlice == 1 || KeyboardlightSlice == 1) {
-            enabled |= 2;
-            if (!(Option.AUDIO_SLICE == 1 || BacklightSlice == 1 || CameraSlice == 1 || count1 < 0.0 || KeyboardlightSlice == 1)) {
-                pwm_set_enabled(1, false);
-                count1 = (MMFLOAT)pwm_hw->slice[1].top * (100.0 - count1) / 100.0;
-                pwm_set_counter(1, count1);
-            }
-        }
-        if (slice2 || Option.AUDIO_SLICE == 2 || BacklightSlice == 2 || CameraSlice == 2 || KeyboardlightSlice == 2) {
-            enabled |= 4;
-            if (!(Option.AUDIO_SLICE == 2 || BacklightSlice == 2 || CameraSlice == 2 || count2 < 0.0 || KeyboardlightSlice == 2)) {
-                pwm_set_enabled(2, false);
-                count2 = (MMFLOAT)pwm_hw->slice[2].top * (100.0 - count2) / 100.0;
-                pwm_set_counter(2, count2);
-            }
-        }
-        if (slice3 || Option.AUDIO_SLICE == 3 || BacklightSlice == 3 || CameraSlice == 3 || KeyboardlightSlice == 3) {
-            enabled |= 8;
-            if (!(Option.AUDIO_SLICE == 3 || BacklightSlice == 3 || CameraSlice == 3 || count3 < 0.0 || KeyboardlightSlice == 3)) {
-                pwm_set_enabled(3, false);
-                count3 = (MMFLOAT)pwm_hw->slice[3].top * (100.0 - count3) / 100.0;
-                pwm_set_counter(3, count3);
-            }
-        }
-        if (slice4 || Option.AUDIO_SLICE == 4 || BacklightSlice == 4 || CameraSlice == 4 || KeyboardlightSlice == 4) {
-            enabled |= 16;
-            if (!(Option.AUDIO_SLICE == 4 || BacklightSlice == 4 || CameraSlice == 4 || count4 < 0.0 || KeyboardlightSlice == 4)) {
-                pwm_set_enabled(4, false);
-                count4 = (MMFLOAT)pwm_hw->slice[4].top * (100.0 - count4) / 100.0;
-                pwm_set_counter(4, count4);
-            }
-        }
-        if (slice5 || Option.AUDIO_SLICE == 5 || BacklightSlice == 5 || CameraSlice == 5 || KeyboardlightSlice == 5) {
-            enabled |= 32;
-            if (!(Option.AUDIO_SLICE == 5 || BacklightSlice == 5 || CameraSlice == 5 || count5 < 0.0 || KeyboardlightSlice == 5)) {
-                pwm_set_enabled(5, false);
-                count5 = (MMFLOAT)pwm_hw->slice[5].top * (100.0 - count5) / 100.0;
-                pwm_set_counter(5, count5);
-            }
-        }
-        if (slice6 || Option.AUDIO_SLICE == 6 || BacklightSlice == 6 || CameraSlice == 6 || KeyboardlightSlice == 6) {
-            enabled |= 64;
-            if (!(Option.AUDIO_SLICE == 6 || BacklightSlice == 6 || CameraSlice == 6 || count6 < 0.0 || KeyboardlightSlice == 6)) {
-                pwm_set_enabled(6, false);
-                count6 = (MMFLOAT)pwm_hw->slice[6].top * (100.0 - count6) / 100.0;
-                pwm_set_counter(6, count6);
-            }
-        }
-        if (slice7 || Option.AUDIO_SLICE == 7 || BacklightSlice == 7 || CameraSlice == 7 || KeyboardlightSlice == 7) {
-            enabled |= 128;
-            if (!(Option.AUDIO_SLICE == 7 || BacklightSlice == 7 || CameraSlice == 7 || count7 < 0.0 || KeyboardlightSlice == 7)) {
-                pwm_set_enabled(7, false);
-                count7 = (MMFLOAT)pwm_hw->slice[7].top * (100.0 - count7) / 100.0;
-                pwm_set_counter(7, count7);
-            }
-        }
-        /* Slices 8..11 only exist on RP2350; the guard-and-configure shape
-         * mirrors slices 0..7. On RP2040 none of the OR-chain conditions
-         * ever become true (no code path sets slice8..11 globals or
-         * BacklightSlice/AUDIO_SLICE to 8..11 there), so the body never
-         * runs. pwm_hw->slice[8..11] is out-of-bounds on RP2040 but
-         * unreachable at runtime; -Warray-bounds warning is acceptable
-         * in dead code. */
-        if (slice8 || Option.AUDIO_SLICE == 8 || BacklightSlice == 8 || CameraSlice == 8 || KeyboardlightSlice == 8) {
-            enabled |= 256;
-            if (!(Option.AUDIO_SLICE == 8 || BacklightSlice == 8 || CameraSlice == 8 || KeyboardlightSlice == 8 || count8 < 0.0)) {
-                pwm_set_enabled(8, false);
-                count8 = (MMFLOAT)pwm_hw->slice[8].top * (100.0 - count8) / 100.0;
-                pwm_set_counter(8, count8);
-            }
-        }
-        if (slice9 || Option.AUDIO_SLICE == 9 || BacklightSlice == 9 || CameraSlice == 9 || KeyboardlightSlice == 9) {
-            enabled |= 512;
-            if (!(Option.AUDIO_SLICE == 9 || BacklightSlice == 9 || CameraSlice == 9 || KeyboardlightSlice == 9 || count9 < 0.0)) {
-                pwm_set_enabled(9, false);
-                count9 = (MMFLOAT)pwm_hw->slice[9].top * (100.0 - count9) / 100.0;
-                pwm_set_counter(9, count9);
-            }
-        }
-        if (slice10 || Option.AUDIO_SLICE == 10 || BacklightSlice == 10 || CameraSlice == 10 || KeyboardlightSlice == 10) {
-            enabled |= 1024;
-            if (!(Option.AUDIO_SLICE == 10 || BacklightSlice == 10 || CameraSlice == 10 || KeyboardlightSlice == 10 || count10 < 0.0)) {
-                pwm_set_enabled(10, false);
-                count10 = (MMFLOAT)pwm_hw->slice[10].top * (100.0 - count10) / 100.0;
-                pwm_set_counter(10, count10);
-            }
-        }
-        if (slice11 || Option.AUDIO_SLICE == 11 || BacklightSlice == 11 || CameraSlice == 11 || KeyboardlightSlice == 11) {
-            enabled |= 2048;
-            if (!(Option.AUDIO_SLICE == 11 || BacklightSlice == 11 || CameraSlice == 11 || KeyboardlightSlice == 11 || count11 < 0.0)) {
-                pwm_set_enabled(11, false);
-                count11 = (MMFLOAT)pwm_hw->slice[11].top * (100.0 - count11) / 100.0;
-                pwm_set_counter(11, count11);
-            }
-        }
-        pwm_hw->en = enabled;
-        return;
-    }
-    int div = 1, high1 = 0, high2 = 0;
-    int phase1 = 0, phase2 = 0;
-    MMFLOAT duty1 = -1.0, duty2 = -1.0;
-    getargs(&cmdline, 11, (unsigned char *)",");
-    if (!(argc >= 3)) error("Syntax");
-    int CPU_Speed = Option.CPU_Speed;
-    int slice = getint(argv[0], 0, rp2350a ? 7 : 11);
-    if (slice == 0 && ExtCurrentConfig[FAST_TIMER_PIN] == EXT_FAST_TIMER) error("Channel in use for fast frequency");
-    if (slice == BacklightSlice) error("Channel in use for backlight");
-    if (slice == Option.AUDIO_SLICE) error("Channel in use for Audio");
-    if (slice == CameraSlice) error("Channel in use for Camera");
-    if ((tp = checkstring(argv[2], (unsigned char *)"OFF"))) {
-        PWMoff(slice);
-        if (slice == 0) slice0 = 0;
-        if (slice == 1) slice1 = 0;
-        if (slice == 2) slice2 = 0;
-        if (slice == 3) slice3 = 0;
-        if (slice == 4) slice4 = 0;
-        if (slice == 5) slice5 = 0;
-        if (slice == 6) slice6 = 0;
-        if (slice == 7) slice7 = 0;
-        if (slice == 8) slice8 = 0;
-        if (slice == 9) slice9 = 0;
-        if (slice == 10) slice10 = 0;
-        if (slice == 11) slice11 = 0;
-        return;
-    }
-    if (!(argc >= 5)) error("Syntax");
-    int delaystart = 0;
-    int phase = 1;
-    if (argc >= 9 && *argv[8]) phase += getint(argv[8], 0, 1);
-    if (argc == 11) delaystart = getint(argv[10], 0, 1);
-    MMFLOAT frequency = getnumber(argv[2]) * phase;
-    if (frequency > (MMFLOAT)(CPU_Speed >> 2) * 1000.0) error("Invalid frequency");
-    if (*argv[4]) {
-        duty1 = getnumber(argv[4]);
-        if (duty1 > 100.0 || duty1 < -100.0) error("Syntax");
-        if (duty1 < 0) {
-            duty1 = -duty1;
-            phase1 = 1;
-        }
-    }
-    if (argc >= 7 && *argv[6]) {
-        duty2 = getnumber(argv[6]);
-        if (duty2 > 100.0 || duty2 < -100.0) error("Syntax");
-        if (duty2 < 0) {
-            duty2 = -duty2;
-            phase2 = 1;
-        }
-    }
-    int wrap = (CPU_Speed * 1000) / frequency;
-    if (duty1 >= 0.0) high1 = (int)((MMFLOAT)CPU_Speed / frequency * duty1 * 10.0);
-    if (duty2 >= 0.0) high2 = (int)((MMFLOAT)CPU_Speed / frequency * duty2 * 10.0);
-    while (wrap > 65535) {
-        wrap >>= 1;
-        if (duty1 >= 0.0) high1 >>= 1;
-        if (duty2 >= 0.0) high2 >>= 1;
-        div <<= 1;
-    }
-    if (div > 256) error("Invalid frequency");
-    wrap--;
-    if (high1) high1--;
-    if (high2) high2--;
-    pwm_set_clkdiv(slice, (float)div);
-    pwm_set_wrap(slice, wrap);
-    pwm_set_output_polarity(slice, phase1, phase2);
-    pwm_set_phase_correct(slice, (phase == 2 ? true : false));
-    set_PWM(slice, duty1, duty2, high1, high2, delaystart);
 }
 
 /****************************************************************************************************************************

@@ -10,6 +10,10 @@
 #include "Hardware_Includes.h"
 #include "hal/hal_pin.h"
 #include "vm_sys_pin.h"
+#include "vm_sys_pwm.h"
+#include "i2c_config.h"
+#include "uart_config.h"
+#include "spi_config.h"
 
 static int pin_mode[NBRPINS + 1];
 
@@ -23,9 +27,33 @@ void vm_sys_pin_setpin(int64_t pin, int mode, int option) {
     int p = resolve_pin(pin);
     if (option != VM_PIN_OPT_NONE) error("Unsupported SETPIN option");
 
+    if (i2c_config_mode_is_i2c(mode)) {
+        i2c_config_setpin(p, mode);
+        pin_mode[p] = mode;
+        ExtCurrentConfig[p] = mode;
+        return;
+    }
+
+    if (uart_config_mode_is_uart(mode)) {
+        uart_config_setpin(p, mode);
+        pin_mode[p] = mode;
+        ExtCurrentConfig[p] = mode;
+        return;
+    }
+
+    if (spi_config_mode_is_spi(mode)) {
+        spi_config_setpin(p, mode);
+        pin_mode[p] = mode;
+        ExtCurrentConfig[p] = mode;
+        return;
+    }
+
     switch (mode) {
     case VM_PIN_MODE_OFF:
         hal_pin_set_mode((uint32_t)p, HAL_PIN_MODE_DISABLED);
+        uart_config_clear_pin(p);
+        spi_config_clear_pin(p);
+        i2c_config_clear_pin(p);
         pin_mode[p] = VM_PIN_MODE_OFF;
         ExtCurrentConfig[p] = EXT_NOT_CONFIG;
         break;
@@ -62,40 +90,19 @@ void vm_sys_pin_write(int64_t pin, int64_t value) {
     hal_pin_write((uint32_t)p, value != 0);
 }
 
-void vm_sys_pwm_configure(int slice, MMFLOAT frequency,
-                          int has_duty1, MMFLOAT duty1,
-                          int has_duty2, MMFLOAT duty2,
-                          int phase_correct, int delaystart) {
-    (void)slice;
-    (void)frequency;
-    (void)has_duty1;
-    (void)duty1;
-    (void)has_duty2;
-    (void)duty2;
-    (void)phase_correct;
-    (void)delaystart;
-    error("PWM not available on PC386 LPT1");
+int vm_pin_pwm_assigned_pin(int channel, int which) {
+    (void)channel;
+    (void)which;
+    return 0;
 }
 
-void vm_sys_pwm_sync(uint16_t present_mask, const MMFLOAT * counts) {
-    (void)present_mask;
-    (void)counts;
-    error("PWM not available on PC386 LPT1");
+void vm_pin_pwm_mark_reserved(int channel, int which) {
+    (void)channel;
+    (void)which;
 }
 
-void vm_sys_pwm_off(int slice) {
-    (void)slice;
-}
-
-void vm_sys_servo_configure(int slice,
-                            int has_pos1, MMFLOAT pos1,
-                            int has_pos2, MMFLOAT pos2) {
-    (void)slice;
-    (void)has_pos1;
-    (void)pos1;
-    (void)has_pos2;
-    (void)pos2;
-    error("Servo not available on PC386 LPT1");
+void vm_pin_pwm_release(int channel) {
+    (void)channel;
 }
 
 void vm_sys_pin_reset(void) {

@@ -10,6 +10,29 @@ enum {
     VM_PIN_MODE_OFF = 0,
     VM_PIN_MODE_DIN = 2,
     VM_PIN_MODE_DOUT = 8,
+    /* UART TX/RX SETPIN modes. These share their numeric codes with the
+     * interpreter's EXT_UART0TX .. EXT_UART1RX so the shared uart_config
+     * handler can switch on either enumeration. */
+    VM_PIN_MODE_UART0TX = 11,
+    VM_PIN_MODE_UART0RX = 12,
+    VM_PIN_MODE_UART1TX = 13,
+    VM_PIN_MODE_UART1RX = 14,
+    /* I²C SDA/SCL SETPIN modes. These share their numeric codes with the
+     * interpreter's EXT_I2C0SDA .. EXT_I2C1SCL so the shared i2c_config
+     * handler can switch on either enumeration. */
+    VM_PIN_MODE_I2C0SDA = 15,
+    VM_PIN_MODE_I2C0SCL = 16,
+    VM_PIN_MODE_I2C1SDA = 17,
+    VM_PIN_MODE_I2C1SCL = 18,
+    /* SPI RX/TX/SCK SETPIN modes. These share their numeric codes with the
+     * interpreter's EXT_SPI0RX .. EXT_SPI1SCK so the shared spi_config
+     * handler can switch on either enumeration. */
+    VM_PIN_MODE_SPI0RX = 19,
+    VM_PIN_MODE_SPI0TX = 20,
+    VM_PIN_MODE_SPI0SCK = 21,
+    VM_PIN_MODE_SPI1RX = 22,
+    VM_PIN_MODE_SPI1TX = 23,
+    VM_PIN_MODE_SPI1SCK = 24,
     VM_PIN_MODE_PWM0A = 30,
     VM_PIN_MODE_PWM0B = 31,
     VM_PIN_MODE_PWM1A = 32,
@@ -50,15 +73,6 @@ enum {
 void vm_sys_pin_setpin(int64_t pin, int mode, int option);
 int64_t vm_sys_pin_read(int64_t pin);
 void vm_sys_pin_write(int64_t pin, int64_t value);
-void vm_sys_pwm_configure(int slice, MMFLOAT frequency,
-                          int has_duty1, MMFLOAT duty1,
-                          int has_duty2, MMFLOAT duty2,
-                          int phase_correct, int delaystart);
-void vm_sys_pwm_sync(uint16_t present_mask, const MMFLOAT * counts);
-void vm_sys_pwm_off(int slice);
-void vm_sys_servo_configure(int slice,
-                            int has_pos1, MMFLOAT pos1,
-                            int has_pos2, MMFLOAT pos2);
 void vm_sys_pin_reset(void);
 
 #endif

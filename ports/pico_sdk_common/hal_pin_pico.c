@@ -128,6 +128,18 @@ void hal_pin_adc_select(uint32_t adc_channel) {
     adc_select_input(adc_channel);
 }
 
+/* rp2350 package check: rp2350a has ADC on pins > 44 only.
+ * rp2350a is unconditionally true on rp2040, so on rp2040 the first
+ * branch short-circuits false and the second is unreachable
+ * (NBRPINS = 44). */
+extern bool rp2350a;
+
+int hal_pin_adc_validate(int pin) {
+    if (pin <= 44 && rp2350a == 0) return -1;
+    if (pin > 44 && rp2350a) return -1;
+    return 0;
+}
+
 void hal_pin_adc_init(void) {
     adc_init();
 }

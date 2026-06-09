@@ -64,6 +64,11 @@ static void backlight_init_pwm(int pin, int frequency) {
     s_pin = pin;
     s_frequency = frequency;
     s_ready = 1;
+
+    /* The backlight owns LEDC timer 0, which the PWM HAL exposes as abstract
+     * PWM channel 0. Claim that channel so the BASIC PWM command refuses to
+     * reprogram the backlight's timer. */
+    BacklightSlice = 0;
 }
 
 void esp32_backlight_set(int level, int frequency) {

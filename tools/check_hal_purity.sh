@@ -118,6 +118,34 @@ STRICT_FILES=(
   runtime/vm/bc_bridge.c # Phase 11 step 13 close: zero target-macro, zero
               # port-config ifdefs. rp2350 funtbl[] subfun-hash rebuild
               # moved to port_bc_bridge_{clear,rehash}_subfun hooks.
+  runtime/vm/vm_sys_pin.c # GPIO unification close: one shared body for RP +
+              # ESP32 calling only hal_pin_*. Zero target-macro, zero
+              # port-config ifdefs; the RP gpio_*/ADC package specifics
+              # live in ports/pico_sdk_common/hal_pin_pico.c and the ESP32
+              # driver/gpio specifics in ports/esp32_s3/main/hal_pin_esp32.c.
+  shared/peripheral/i2c_config.c # I²C SETPIN pin-config + SDA/SCL globals.
+              # One shared body — the four mode cases (capability + SYSTEM-I2C
+              # lock + "Already Set" guards), the hal_pin_set_function I2C
+              # tail, and the pin-OFF reset — reached by RP External.c, the
+              # device VM (vm_sys_pin.c), and the simulator (vm_sys_pin_sim.c).
+              # Zero target-macro, zero port-config ifdefs.
+  shared/peripheral/uart_config.c # UART SETPIN pin-config + TX/RX globals.
+              # One shared body — the four mode cases (capability + "Already
+              # Set" guards), the hal_pin_set_function UART tail with RX
+              # pull-up, and the pin-OFF reset — reached by RP External.c, the
+              # device VM (vm_sys_pin.c), and the simulator (vm_sys_pin_sim.c).
+              # Zero target-macro, zero port-config ifdefs.
+  shared/peripheral/spi_config.c # SPI SETPIN pin-config + TX/RX/SCK globals.
+              # One shared body — the six mode cases (capability + SYSTEM-SPI
+              # lock + "Already Set" guards), the hal_pin_set_function SPI
+              # tail, and the pin-OFF reset — reached by RP External.c, the
+              # device VM (vm_sys_pin.c), and the simulator (vm_sys_pin_sim.c).
+              # Zero target-macro, zero port-config ifdefs.
+  drivers/i2c_bus/I2C.c # I²C unification close: one shared cmd_i2c/cmd_i2c2 +
+              # master/slave engine calling only hal_i2c_*. Zero target-macro,
+              # zero port-config ifdefs; the RP SDK master + IRQ slave live in
+              # ports/pico_sdk_common/hal_i2c_pico.c, the ESP-IDF master in
+              # ports/esp32_s3/main/hal_i2c_esp32.c.
   runtime/vm/vm_sys_graphics.c # Phase 11 step 14 close: zero target-macro, zero
               # port-config ifdefs. Host's DrawCircle-delegating fork
               # deleted — the 170-line VM-local draw_circle impl works
@@ -179,6 +207,9 @@ INFO_FILES=(
   runtime/vm/vm_sys_time.c
   runtime/vm/vm_sys_input.c
   core/state/display_state.c
+  shared/peripheral/i2c_config.c
+  shared/peripheral/uart_config.c
+  shared/peripheral/spi_config.c
 )
 
 fail=0

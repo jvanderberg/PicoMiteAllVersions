@@ -99,6 +99,11 @@ void xregfree(void * preg) {
  * runtime detect); false everywhere else, including ESP32. */
 bool rp2350a = false;
 
+/* Tracks BASIC pins that PIN(...)= drove high while still unconfigured,
+ * so a subsequent SETPIN DOUT restores that level. Mirrors the device
+ * definition in core/mmbasic/External.c, which this port does not link. */
+uint32_t pinmask = 0;
+
 /* MMBasic interpreter cursor / column accounting — incremented by
  * MMputchar on visible glyphs, reset on \r/\n. Used by PRINT to know
  * how many spaces to emit for tab alignment. */
@@ -116,6 +121,14 @@ bool optionlogging = 0;
 volatile unsigned int AHRSTimer = 0;
 int64_t * ds18b20Timers = NULL;
 int last_adc = 0;
+/* PWM slice-claim flags read by the shared PWM syscall's feature-slice
+ * conflict checks. ESP32 drives PWM through LEDC, not the rp slice model,
+ * so these stay at the "unclaimed" sentinel. fast_timer_active is the
+ * rp2350-only fast-timer flag, false here. */
+int BacklightSlice = -1, BacklightChannel = 0;
+int CameraSlice = -1, CameraChannel = 0;
+int KeyboardlightSlice = -1;
+bool fast_timer_active = false;
 volatile int day_of_week = 0;
 volatile unsigned int diskchecktimer = 0;
 volatile unsigned int SecondsTimer = 0;

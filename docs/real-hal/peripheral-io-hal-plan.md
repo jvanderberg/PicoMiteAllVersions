@@ -151,3 +151,76 @@ RP2350, ESP32-S3, host, pc386), in a single PR. Smoke on the Freenove:
 3. **ESP32 I²C slave** — full ESP-IDF i2c-slave in this PR, or a functional
    stub with the slave *architecture* unified now and the ESP32 backend filled
    next. (The architecture is unified either way.)
+
+## Phase 2 — finish the centralization (config front-end extraction)
+
+Phase 1 unified the *driver* (`cmd_i2c`/`I2C.c`) and the *syscall* layers, but
+the **configuration front-end** for I²C stayed in two RP-centric core files that
+**no non-RP port compiles** — `core/mmbasic/External.c` (the `SETPIN …,I2C0SDA/
+SCL/I2C1SDA/SCL` mode dispatch, the `I2C0SDApin/I2C0SCLpin/I2C1SDApin/I2C1SCLpin`
+globals, and their `ClearPin` reset) and `core/mmbasic/MM_Misc.c` (the
+`OPTION SYSTEM I2C …` set/print/disable). ESP32 only papers over this with stub
+globals (`esp32_peripheral_stubs.c`) seeded by the board profile at boot.
+
+Consequence: **a generic ESP32 board cannot configure an I²C bus at runtime** —
+`SETPIN gp,I2C0SDA` and `OPTION SYSTEM I2C` are unreachable there. That breaks the
+non-negotiable principle ("pins are runtime configuration via SETPIN/OPTION,
+shared by all ports"). Phase 2 pulls the remaining Pico-resident config/command
+logic into shared units every port compiles, mirroring the
+`shared/peripheral/pwm_cmd.c` + `shared/mmbasic/mm_misc_shared.c` precedent.
+
+Same gates as Phase 1 (`run_tests.sh`, purity, all-port builds), plus: a generic
+ESP32 must bring up I²C purely via `SETPIN`+`OPTION` with no board profile and no
+code change.
+
+**Step 8 — Centralize I²C pin config (SETPIN modes + globals).** Move the four
+`EXT_I2C0SDA/SCL/I2C1SDA/SCL` SETPIN case bodies (External.c:957-980, verbatim:
+mode-bit check, `I2Cnlocked` guard, "Already Set" guard, pin assignment, the
+`hal_pin_set_function(...I2C)` tail), the pin globals (External.c:190-193), and the
+`ClearPin` reset-to-99 (External.c:446-449) into a shared unit
+(`shared/peripheral/i2c_config.c` or the shared `vm_sys_pin.c`). Route the shared
+`vm_sys_pin.c::vm_sys_pin_setpin` I²C-mode path through it so RP, ESP32, host, and
+pc386 hit identical logic. Delete the ESP32 stub globals
+(`esp32_peripheral_stubs.c`). Verbatim transplant — no re-derivation.
+
+**Step 9 — Centralize `OPTION SYSTEM I2C`.** Move the parse/validate/SLOW/DISABLE
+logic (MM_Misc.c:1510-1560), the `OPTION LIST` print (MM_Misc.c:734-735), and
+`disable_systemi2c()` (MM_Misc.c:968-975) into a shared option handler wired into
+`core/mmbasic/OptionCommands.c::option_command_handle_common()` (already linked by
+every port, incl. ESP32). After this, `OPTION SYSTEM I2C sda,scl[,SLOW|FAST]` and
+its `DISABLE`/reset work identically on every port. Keep the soft-reset/SaveOptions
+behavior intact.
+
+**Step 10 — Migrate all ESP32 I²C off ESP-IDF's deprecated legacy driver to the
+new master+slave driver, and wire receive interrupts.** ESP-IDF ships two I²C
+driver generations; the legacy `driver/i2c.h` API is deprecated and must not be
+used. Today two ESP32 files include it: `ports/esp32_s3/main/hal_i2c_esp32.c`
+(master + the slave) and `ports/esp32_s3/main/esp32_freenove_i2c.c` (touch/keypad
+bring-up). Move BOTH to the new framework — master via `driver/i2c_master.h`
+(`i2c_new_master_bus` / `i2c_master_transmit` / `i2c_master_receive` /
+`i2c_master_transmit_receive`), slave via `driver/i2c_slave.h`
+(`i2c_new_slave_device`). No `#include "driver/i2c.h"` may remain anywhere in the
+ESP32 port. The `hal_i2c.h` contract is unchanged; this is purely the backend
+implementation. Wire the slave's `on_recv_done` ISR callback to raise
+`I2C_Status_Slave_Receive_Rdy` so a BASIC `I2C SLAVE OPEN`'s **receive** interrupt
+subroutine fires on ESP32, matching the RP backend. **Silicon limit (document, do
+not paper over):** ESP32-S3 lacks `SOC_I2C_SLAVE_CAN_GET_STRETCH_CAUSE`, so there
+is no ISR for a master read-request — the **send** interrupt subroutine cannot
+fire on S3; transmit data is pre-loaded via `i2c_slave_transmit`. RP backend
+unchanged. Not hardware-validated here (build + purity + RP/host regression only),
+including the Freenove touch path which this step rewrites.
+
+**Step 11 — Audit & extract remaining Pico-resident peripheral/option logic.**
+Sweep `External.c` and `MM_Misc.c` for other peripheral-config and `OPTION`/`SETPIN`
+handling that is still RP-only but architecturally belongs to all ports (other
+special-function SETPIN modes, peripheral `OPTION` setters, pin-reservation
+bookkeeping). Extract each into the shared layer compiled by every port, verbatim,
+so "config is shared, hardware is in `hal_*`" holds with no RP-shaped command logic
+left stranded in core files that non-RP ports don't compile. Land incrementally;
+gate each extraction on the full build matrix + purity.
+
+**Step 12 — Phase 2 validation.** Full `tools/validate_all.sh` green (incl.
+mmbasic_stdio + mmbasic_ansi), `buildesp32.sh all`, pc386, purity. Add a generic-
+ESP32 reachability check: with the GENERIC profile (no seeded pins), `SETPIN
+gp,I2C0SDA` + `SETPIN gp,I2C0SCL` + `I2C OPEN` must configure and open a bus with
+no code change.

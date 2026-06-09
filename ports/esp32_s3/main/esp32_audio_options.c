@@ -177,7 +177,7 @@ static void esp32_audio_reserve_i2s(int bclk_pin, int ws_pin, int data_pin,
     Option.audio_i2s_data = data_pin;
     Option.AUDIO_L = 0;
     Option.AUDIO_R = 0;
-    Option.AUDIO_SLICE = 0;
+    Option.AUDIO_SLICE = 99;
     ESP32_OPTION_AUDIO_KIND = kind;
     ESP32_OPTION_AUDIO_PROFILE = profile_id;
     ESP32_OPTION_AUDIO_I2S_WS = ws_pin;
@@ -191,7 +191,7 @@ static void esp32_audio_reserve_i2s(int bclk_pin, int ws_pin, int data_pin,
 static void esp32_audio_reserve_pdm(int left_pin, int right_pin) {
     Option.AUDIO_L = left_pin;
     Option.AUDIO_R = right_pin;
-    Option.AUDIO_SLICE = 0;
+    Option.AUDIO_SLICE = 99;
     Option.audio_i2s_bclk = 0;
     Option.audio_i2s_data = 0;
     ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_PDM;

@@ -235,12 +235,6 @@ uint8_t PWM5Apin = 0, PWM5Bpin = 0;
 uint8_t PWM6Apin = 0, PWM6Bpin = 0;
 uint8_t PWM7Apin = 0, PWM7Bpin = 0;
 
-uint8_t UART1RXpin = 0, UART1TXpin = 0;
-uint8_t UART0TXpin = 0, UART0RXpin = 0;
-uint8_t SPI1TXpin = 0, SPI1RXpin = 0, SPI1SCKpin = 0;
-uint8_t SPI0TXpin = 0, SPI0RXpin = 0, SPI0SCKpin = 0;
-uint8_t I2C1SDApin = 0, I2C1SCLpin = 0;
-uint8_t I2C0SDApin = 0, I2C0SCLpin = 0;
 uint8_t slice0 = 0, slice1 = 0, slice2 = 0, slice3 = 0;
 uint8_t slice4 = 0, slice5 = 0, slice6 = 0, slice7 = 0;
 uint8_t SPI0locked = 0, SPI1locked = 0;
@@ -265,12 +259,18 @@ unsigned int CFuncInt1 = 0, CFuncInt2 = 0, CFuncInt3 = 0, CFuncInt4 = 0;
 
 int p100interrupts[NBRPINS + 1] = {0};
 
-int BacklightSlice = 0, BacklightChannel = 0;
+/* -1 = no PWM slice claimed; pc386 has no PWM hardware, so these
+ * sentinels keep the shared PWM syscall's feature-slice conflict checks
+ * dormant. fast_timer_active is the rp2350-only fast-timer flag, false
+ * everywhere else. */
+int BacklightSlice = -1, BacklightChannel = 0;
+int KeyboardlightSlice = -1;
+bool fast_timer_active = false;
 
 /* QVGA / display */
 int QVGA_CLKDIV = 0;
 volatile int X_TILE = 0, Y_TILE = 0;
-int CameraSlice = 0, CameraChannel = 0;
+int CameraSlice = -1, CameraChannel = 0;
 char id_out[256] = {0};
 uint8_t * buff320 = NULL;
 uint16_t SD_CLK_PIN = 0, SD_MOSI_PIN = 0, SD_MISO_PIN = 0, SD_CS_PIN = 0;
