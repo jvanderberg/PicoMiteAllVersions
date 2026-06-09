@@ -23,27 +23,33 @@ extern "C" {
 typedef enum {
     /* Stack / Value Operations */
     OP_NOP = 0x00,
-    OP_PUSH_INT = 0x01,    /* i64 (8 bytes) */
-    OP_PUSH_FLT = 0x02,    /* f64 (8 bytes) */
-    OP_PUSH_STR = 0x03,    /* idx:16 — string from constant pool */
-    OP_PUSH_ZERO = 0x04,   /* — push integer 0 */
-    OP_PUSH_ONE = 0x05,    /* — push integer 1 */
-    OP_LOAD_I = 0x06,      /* slot:16 — load integer global */
-    OP_LOAD_F = 0x07,      /* slot:16 — load float global */
-    OP_LOAD_S = 0x08,      /* slot:16 — load string global */
-    OP_STORE_I = 0x09,     /* slot:16 — pop → integer global */
-    OP_STORE_F = 0x0A,     /* slot:16 — pop → float global */
-    OP_STORE_S = 0x0B,     /* slot:16 — pop → string global */
-    OP_LOAD_ARR_I = 0x0C,  /* slot:16, ndim:8 — load int array elem */
-    OP_LOAD_ARR_F = 0x0D,  /* slot:16, ndim:8 — load float array elem */
-    OP_LOAD_ARR_S = 0x0E,  /* slot:16, ndim:8 — load string array elem */
-    OP_STORE_ARR_I = 0x0F, /* slot:16, ndim:8 — store int array elem */
-    OP_STORE_ARR_F = 0x10, /* slot:16, ndim:8 — store float array elem */
-    OP_STORE_ARR_S = 0x11, /* slot:16, ndim:8 — store string array elem */
-    OP_POP = 0x12,         /* — discard TOS */
-    OP_DUP = 0x13,         /* — duplicate TOS */
-    OP_CVT_I2F = 0x14,     /* — convert TOS int → float */
-    OP_CVT_F2I = 0x15,     /* — convert TOS float → int */
+    OP_PUSH_INT = 0x01,        /* i64 (8 bytes) */
+    OP_PUSH_FLT = 0x02,        /* f64 (8 bytes) */
+    OP_PUSH_STR = 0x03,        /* idx:16 — string from constant pool */
+    OP_PUSH_ZERO = 0x04,       /* — push integer 0 */
+    OP_PUSH_ONE = 0x05,        /* — push integer 1 */
+    OP_LOAD_I = 0x06,          /* slot:16 — load integer global */
+    OP_LOAD_F = 0x07,          /* slot:16 — load float global */
+    OP_LOAD_S = 0x08,          /* slot:16 — load string global */
+    OP_STORE_I = 0x09,         /* slot:16 — pop → integer global */
+    OP_STORE_F = 0x0A,         /* slot:16 — pop → float global */
+    OP_STORE_S = 0x0B,         /* slot:16 — pop → string global */
+    OP_LOAD_ARR_I = 0x0C,      /* slot:16, ndim:8 — load int array elem */
+    OP_LOAD_ARR_F = 0x0D,      /* slot:16, ndim:8 — load float array elem */
+    OP_LOAD_ARR_S = 0x0E,      /* slot:16, ndim:8 — load string array elem */
+    OP_STORE_ARR_I = 0x0F,     /* slot:16, ndim:8 — store int array elem */
+    OP_STORE_ARR_F = 0x10,     /* slot:16, ndim:8 — store float array elem */
+    OP_STORE_ARR_S = 0x11,     /* slot:16, ndim:8 — store string array elem */
+    OP_POP = 0x12,             /* — discard TOS */
+    OP_DUP = 0x13,             /* — duplicate TOS */
+    OP_CVT_I2F = 0x14,         /* — convert TOS int → float */
+    OP_CVT_F2I = 0x15,         /* — convert TOS float → int */
+    OP_PUSHREF_G = 0x1B,       /* slot:16, type:8 — push a by-reference handle to a global scalar */
+    OP_PUSHREF_L = 0x1C,       /* slot:16, type:8 — push a by-reference handle to a local scalar */
+    OP_PUSHREF_AELEM = 0x1D,   /* slot:16, is_local:8, ndim:8 — pop indices, push a ref to that array element */
+    OP_DIM_LOCAL_ARR_I = 0x25, /* slot:16, ndim:8 — allocate a local integer array (sizes on stack) */
+    OP_DIM_LOCAL_ARR_F = 0x26, /* slot:16, ndim:8 — allocate a local float array */
+    OP_DIM_LOCAL_ARR_S = 0x27, /* slot:16, ndim:8 — allocate a local string array */
 
     /* Integer Arithmetic (pop 2, push 1) */
     OP_ADD_I = 0x20,
@@ -590,6 +596,7 @@ typedef struct {
     uint8_t nparams;
     uint8_t param_types[BC_MAX_PARAMS];    /* T_INT, T_NBR, T_STR for each param */
     uint8_t param_is_array[BC_MAX_PARAMS]; /* 1 if param is array (passed by ref) */
+    uint8_t param_is_byval[BC_MAX_PARAMS]; /* 1 if param is BYVAL (force pass by value) */
     uint8_t return_type;                   /* 0 for SUB, T_INT/T_NBR/T_STR for FUNCTION */
     uint8_t bridged;                       /* 1 = owned by interpreter, call via OP_BRIDGE_CMD */
     uint16_t nlocals;                      /* total local slots (params + LOCAL vars) */
@@ -797,6 +804,14 @@ typedef union {
 #define BC_STK_LARR_I 0x83
 #define BC_STK_LARR_F 0x84
 #define BC_STK_LARR_S 0x85
+/* Scalar by-reference handles on the operand stack: stack value packs
+ * (declared_type << 16) | slot. Consumed only by OP_CALL_SUB/FUN to bind a
+ * callee parameter to the caller's storage. */
+#define BC_STK_SREF_G 0x86
+#define BC_STK_SREF_L 0x87
+/* Array-element by-reference handle: the resolved element BCValue* is stashed in
+ * the stack entry's pointer field. */
+#define BC_STK_SREF_AELEM 0x88
 
 /*
  * VM call stack frame
@@ -915,6 +930,14 @@ typedef struct {
     /* Local array storage (allocated: VM_MAX_LOCALS entries) */
     BCArray * local_arrays; /* parallel to locals[] */
     uint8_t local_array_is_alias[VM_MAX_LOCALS];
+
+    /* By-reference scalar parameters: when local_ref_val[slot] is non-NULL the
+     * slot is bound to caller storage (a global, a caller-frame local, or an
+     * array element) and all scalar access resolves through these pointers
+     * instead of locals[slot]. local_ref_typ points at the matching type cell
+     * (or a harmless scratch cell for array elements). */
+    BCValue * local_ref_val[VM_MAX_LOCALS];
+    uint8_t * local_ref_typ[VM_MAX_LOCALS];
 
     /* FOR loop stack (inline — small, fixed) */
     BCForEntry for_stack[VM_MAX_FOR];

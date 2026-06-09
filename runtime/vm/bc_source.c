@@ -110,7 +110,7 @@ static uint8_t source_parse_expression(BCSourceFrontend * fe, BCCompiler * cs, c
 static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, const char * stmt);
 static const char * source_find_keyword_outside_string(const char * p, const char * kw);
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
-                                    int require_parens);
+                                    int require_parens, int sf_idx);
 static int source_parse_array_indices(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp);
 static void source_emit_bridge_for_stmt(BCCompiler * cs, const char * stmt);
 static void source_emit_int_conversion(BCCompiler * cs, uint8_t type);
@@ -2122,7 +2122,7 @@ static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, cons
         if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0 &&
             !cs->subfuns[sf_idx].bridged && *after_name == '(') {
             p = after_name;
-            int nargs = source_compile_call_args(fe, cs, &p, 1);
+            int nargs = source_compile_call_args(fe, cs, &p, 1, sf_idx);
             if (cs->has_error) {
                 *pp = p;
                 return 0;
@@ -4364,16 +4364,14 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         }
         if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
 
-        /* Optional BYVAL / BYREF prefix. The VM call ABI passes scalars by
-         * value, which is exactly BYVAL semantics, so BYVAL is accepted. BYREF
-         * is an explicit request for by-reference, which the value-only ABI
-         * cannot honour — reject it rather than silently mutate a copy. */
+        /* Optional BYVAL / BYREF prefix. Default scalar passing is by reference
+         * (matching the interpreter); BYVAL forces by value. */
+        int is_byval = 0;
         if (source_keyword(&p, "BYVAL")) {
+            is_byval = 1;
             source_skip_space(&p);
         } else if (source_keyword(&p, "BYREF")) {
-            bc_set_error(cs, "BYREF not supported in FRUN (value-only call ABI)");
-            *pp = p;
-            return nparams;
+            source_skip_space(&p);
         }
 
         char name[MAXVARLEN + 1];
@@ -4404,6 +4402,7 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         if (nparams < BC_MAX_PARAMS) {
             cs->subfuns[sf_idx].param_types[nparams] = ptype;
             cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)is_array;
+            cs->subfuns[sf_idx].param_is_byval[nparams] = (uint8_t)is_byval;
         }
         nparams++;
 
@@ -4429,8 +4428,126 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
     return nparams;
 }
 
+/* Look up an already-known variable by name (no creation). Reports its slot,
+ * scope, scalar type, and whether it is an array. Returns 0 if unknown. */
+static int source_lookup_known_var(BCCompiler * cs, const char * name, int name_len,
+                                   uint16_t * slot_out, int * is_local_out,
+                                   uint8_t * type_out, int * is_array_out) {
+    if (cs->current_subfun >= 0) {
+        int loc = bc_find_local(cs, name, name_len);
+        if (loc >= 0) {
+            if (cs->locals[loc].is_static) {
+                /* STATIC names alias a persistent global slot. */
+                *slot_out = cs->locals[loc].static_slot;
+                *is_local_out = 0;
+                *type_out = cs->slots[cs->locals[loc].static_slot].type;
+                *is_array_out = cs->slots[cs->locals[loc].static_slot].is_array;
+                return 1;
+            }
+            *slot_out = (uint16_t)loc;
+            *is_local_out = 1;
+            *type_out = cs->locals[loc].type;
+            *is_array_out = cs->locals[loc].is_array;
+            return 1;
+        }
+    }
+    uint16_t s = bc_find_slot(cs, name, name_len);
+    if (s != 0xFFFF) {
+        /* CONSTs occupy slots but hold no runtime storage — never by-reference. */
+        if (cs->slots[s].is_const) return 0;
+        *slot_out = s;
+        *is_local_out = 0;
+        *type_out = cs->slots[s].type;
+        *is_array_out = cs->slots[s].is_array;
+        return 1;
+    }
+    return 0;
+}
+
+/* If the next argument is a simple scalar variable or a scalar array element
+ * whose type matches a non-BYVAL parameter, emit a by-reference handle so the
+ * callee's writes reach the caller's storage (matching the interpreter).
+ * Returns 1 (and advances *pp) when a reference was emitted; 0 to fall back to
+ * compiling the argument by value. */
+static int source_try_emit_ref_arg(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
+                                   int sf_idx, int argi) {
+    if (sf_idx < 0) return 0;
+    BCSubFun * sf = &cs->subfuns[sf_idx];
+    if (argi >= sf->nparams || argi >= BC_MAX_PARAMS) return 0;
+    if (sf->param_is_byval[argi] || sf->param_is_array[argi]) return 0;
+    uint8_t param_type = sf->param_types[argi];
+    if (param_type == 0 || param_type == T_STRUCT) return 0;
+
+    const char * p = *pp;
+    source_skip_space(&p);
+    if (!isnamestart((unsigned char)*p)) return 0;
+
+    char name[MAXVARLEN + 1];
+    int name_len = 0;
+    uint8_t suffix = 0;
+    const char * q = p;
+    if (!source_parse_varname(&q, name, &name_len, &suffix)) return 0;
+    if (suffix != 0 && suffix != param_type) return 0;
+    source_skip_space(&q);
+
+    if (*q == '(') {
+        /* Array element: arr(i, ...). Only a known scalar-typed array, where the
+         * element forms the whole argument, binds by reference. */
+        uint16_t slot;
+        int is_local, is_array;
+        uint8_t atype;
+        if (!source_lookup_known_var(cs, name, name_len, &slot, &is_local, &atype, &is_array))
+            return 0;
+        if (!is_array || atype != param_type) return 0;
+
+        /* Confirm the element is the entire argument (nothing like `arr(i)+1`
+         * or a struct `.field` follows) before emitting any index code. */
+        const char * scan = q;
+        int depth = 0;
+        do {
+            if (*scan == '(')
+                depth++;
+            else if (*scan == ')')
+                depth--;
+            else if (*scan == '\0')
+                return 0;
+            scan++;
+        } while (depth > 0);
+        source_skip_space(&scan);
+        if (!(*scan == ',' || *scan == ')' || *scan == '\0' || *scan == '\'')) return 0;
+
+        const char * ip = q;
+        int ndim = source_parse_array_indices(fe, cs, &ip);
+        if (cs->has_error || ndim == 0) return 0;
+        bc_emit_byte(cs, OP_PUSHREF_AELEM);
+        bc_emit_u16(cs, slot);
+        bc_emit_byte(cs, (uint8_t)(is_local ? 1 : 0));
+        bc_emit_byte(cs, (uint8_t)ndim);
+        *pp = ip;
+        return 1;
+    }
+
+    /* Simple scalar variable: must be the whole argument, and must already be a
+     * declared scalar of the parameter's type. Anything else — a CONST, an
+     * undeclared name, an array, a type mismatch — is compiled by value. */
+    if (!(*q == ',' || *q == ')' || *q == '\0' || *q == '\'')) return 0;
+
+    uint16_t slot;
+    int is_local, is_array;
+    uint8_t actual_type;
+    if (!source_lookup_known_var(cs, name, name_len, &slot, &is_local, &actual_type, &is_array))
+        return 0;
+    if (is_array || actual_type != param_type) return 0;
+
+    bc_emit_byte(cs, is_local ? OP_PUSHREF_L : OP_PUSHREF_G);
+    bc_emit_u16(cs, slot);
+    bc_emit_byte(cs, param_type);
+    *pp = q;
+    return 1;
+}
+
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
-                                    int require_parens) {
+                                    int require_parens, int sf_idx) {
     const char * p = *pp;
     int nargs = 0;
     source_skip_space(&p);
@@ -4455,8 +4572,10 @@ static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, cons
         }
         if (!has_parens && (*p == '\0' || *p == '\'')) break;
 
-        (void)source_parse_expression(fe, cs, &p);
-        if (cs->has_error) break;
+        if (!source_try_emit_ref_arg(fe, cs, &p, sf_idx, nargs)) {
+            (void)source_parse_expression(fe, cs, &p);
+            if (cs->has_error) break;
+        }
         nargs++;
 
         source_skip_space(&p);
@@ -4479,7 +4598,6 @@ static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, cons
 }
 
 static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
-    (void)fe;
     const char * p = *pp;
     if (cs->current_subfun < 0) {
         bc_set_error(cs, "LOCAL outside SUB/FUNCTION");
@@ -4511,13 +4629,33 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
         }
 
         int is_array = 0;
+        int arr_ndim = 0;
         source_skip_space(&p);
         if (*p == '(') {
-            const char * q = p + 1;
-            source_skip_space(&q);
-            if (*q == ')') {
+            p++;
+            source_skip_space(&p);
+            if (*p == ')') {
+                /* Empty () — an array received as a parameter, no allocation. */
                 is_array = 1;
-                p = q + 1;
+                p++;
+            } else {
+                /* Sized local array `b(n[,n...])` — emit the dimension
+                 * expressions now; the OP_DIM_LOCAL_ARR below pops them. */
+                is_array = 1;
+                while (!cs->has_error) {
+                    uint8_t dtype = source_parse_expression(fe, cs, &p);
+                    source_emit_int_conversion(cs, dtype);
+                    arr_ndim++;
+                    source_skip_space(&p);
+                    if (*p != ',') break;
+                    p++;
+                }
+                if (*p != ')') {
+                    bc_set_error(cs, "Expected ')' in LOCAL");
+                    *pp = p;
+                    return;
+                }
+                p++;
             }
         }
 
@@ -4525,6 +4663,15 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
         if (as_type != 0) vtype = as_type;
         if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
         int local_idx = bc_add_local(cs, name, name_len, vtype, is_array);
+
+        if (is_array && arr_ndim > 0 && local_idx >= 0) {
+            uint8_t dim_op = (vtype == T_INT)   ? OP_DIM_LOCAL_ARR_I
+                             : (vtype == T_STR) ? OP_DIM_LOCAL_ARR_S
+                                                : OP_DIM_LOCAL_ARR_F;
+            bc_emit_byte(cs, dim_op);
+            bc_emit_u16(cs, (uint16_t)local_idx);
+            bc_emit_byte(cs, (uint8_t)arr_ndim);
+        }
 
         /* Optional `= expr` initialiser. The interpreter accepts
          * `LOCAL INTEGER x = 5` so the VM compiler must too. Mirrors
@@ -9085,7 +9232,7 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
             if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type == 0 &&
                 !cs->subfuns[sf_idx].bridged) {
                 p = after_name;
-                int nargs = source_compile_call_args(fe, cs, &p, 0);
+                int nargs = source_compile_call_args(fe, cs, &p, 0, sf_idx);
                 if (!cs->has_error) {
                     bc_emit_byte(cs, OP_CALL_SUB);
                     bc_emit_u16(cs, (uint16_t)sf_idx);
