@@ -2888,25 +2888,12 @@ int checkdetailinterrupts(void) {
         goto GotAnInterrupt;
     }
 
-    if ((I2C_Status & I2C_Status_Slave_Receive_Rdy)) {
-        I2C_Status &= ~I2C_Status_Slave_Receive_Rdy; // clear completed flag
-        intaddr = I2C_Slave_Receive_IntLine;         // set the next stmt to the interrupt location
-        goto GotAnInterrupt;
-    }
-    if ((I2C_Status & I2C_Status_Slave_Send_Rdy)) {
-        I2C_Status &= ~I2C_Status_Slave_Send_Rdy; // clear completed flag
-        intaddr = I2C_Slave_Send_IntLine;         // set the next stmt to the interrupt location
-        goto GotAnInterrupt;
-    }
-    if ((I2C2_Status & I2C_Status_Slave_Receive_Rdy)) {
-        I2C2_Status &= ~I2C_Status_Slave_Receive_Rdy; // clear completed flag
-        intaddr = I2C2_Slave_Receive_IntLine;         // set the next stmt to the interrupt location
-        goto GotAnInterrupt;
-    }
-    if ((I2C2_Status & I2C_Status_Slave_Send_Rdy)) {
-        I2C2_Status &= ~I2C_Status_Slave_Send_Rdy; // clear completed flag
-        intaddr = I2C2_Slave_Send_IntLine;         // set the next stmt to the interrupt location
-        goto GotAnInterrupt;
+    {
+        unsigned char * i2cintaddr;
+        if (i2c_slave_interrupt_pending(&i2cintaddr)) {
+            intaddr = (char *)i2cintaddr; // set the next stmt to the interrupt location
+            goto GotAnInterrupt;
+        }
     }
     if (WAVInterrupt != NULL && WAVcomplete) {
         WAVcomplete = false;

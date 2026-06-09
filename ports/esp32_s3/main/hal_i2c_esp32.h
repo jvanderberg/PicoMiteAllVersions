@@ -32,8 +32,9 @@ i2c_master_bus_handle_t esp32_i2c_master_bus(int port, int sda_gpio,
 void esp32_i2c_master_bus_release(int port);
 
 /* Get (adding on first use) a master device handle for 7-bit `addr` on
- * `port`'s bus at `hz`. A cached entry at a different speed is re-added.
- * Returns NULL if the bus is absent, the cache is full, or the add fails. */
+ * `port`'s bus at `hz`. A cached entry at a different speed is re-added;
+ * when the cache is full the least-recently-used handle is evicted. Returns
+ * NULL if the bus is absent, no slot can be freed, or the add fails. */
 i2c_master_dev_handle_t esp32_i2c_master_device(int port, uint8_t addr,
                                                 uint32_t hz);
 

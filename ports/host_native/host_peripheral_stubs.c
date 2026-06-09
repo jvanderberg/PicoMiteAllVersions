@@ -604,7 +604,7 @@ void PinSetBit(int pin, unsigned int offset) {
     (void)pin;
     (void)offset;
 }
-volatile unsigned int GetPinStatus(int pin) {
+unsigned int GetPinStatus(int pin) {
     (void)pin;
     return 0;
 }

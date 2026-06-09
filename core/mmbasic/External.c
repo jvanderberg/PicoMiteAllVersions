@@ -43,6 +43,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_heartbeat.h"
 #include "hal/hal_i2c_keypad.h"
 #include "vm_sys_pwm.h"
+#include "vm_sys_pin.h"
 #include "i2c_config.h"
 #include "uart_config.h"
 #include "spi_config.h"
@@ -425,6 +426,7 @@ void ClearPin(int pin) {
     uart_config_clear_pin(pin);
     spi_config_clear_pin(pin);
     i2c_config_clear_pin(pin);
+    vm_pin_clear_pwm_assignment(pin);
 }
 /****************************************************************************************************************************
 Configure an I/O pin
@@ -3453,6 +3455,7 @@ void MIPS16 ClearExternalIO(void) {
     PWM9Bpin = 99;
     PWM10Bpin = 99;
     PWM11Bpin = 99;
+    vm_sys_pin_reset(); /* wipe the VM PWM channel↔pin registry with the legacy pin globals */
     UART1RXpin = 99;
     UART1TXpin = 99;
     UART0TXpin = 99;

@@ -99,6 +99,16 @@ void vm_sys_pwm_sync(uint16_t present_mask, const MMFLOAT * counts) {
 void vm_sys_pwm_off(int channel) {
     if (channel < 0 || channel >= hal_pwm_channels())
         error("Number out of bounds");
+    if (channel == 0 && fast_timer_active)
+        error("Channel 0 in use for fast timer");
+    if (channel == BacklightSlice)
+        error("Channel in use for backlight");
+    if (channel == Option.AUDIO_SLICE)
+        error("Channel in use for Audio");
+    if (channel == CameraSlice)
+        error("Channel in use for Camera");
+    if (channel == KeyboardlightSlice)
+        error("Channel in use for keyboard backlight");
     vm_pin_pwm_release(channel);
     hal_pwm_stop(channel);
 }

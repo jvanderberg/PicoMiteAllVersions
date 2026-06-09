@@ -184,7 +184,7 @@ set(PORT_LOCAL_SRCS
     hal_psram_esp32.c                       # PSRAM HAL: slab acquisition, cache sync, PSRAMbase/PSRAMsize publication
     hal_pin_esp32.c                         # real GPIO/ADC over driver/gpio.h + esp_adc
     hal_pwm_esp32.c                         # PWM/SERVO over LEDC (hal_pwm.h)
-    hal_i2c_esp32.c                         # I2C master+slave over driver/i2c_master.h + driver/i2c_slave.h (hal_i2c.h)
+    hal_i2c_esp32.c                         # I2C master over driver/i2c_master.h; register-level slave ISR (hal_i2c.h)
     esp32_pin_tables.c                      # ESP32-S3 GPIO map + GPn codemap
     hal_ws2812_esp32.c                      # WS2812/SK6812 over ESP32 RMT
     esp32_audio_options.c                   # OPTION AUDIO / MM.INFO$(AUDIO) surface

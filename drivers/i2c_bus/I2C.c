@@ -90,6 +90,35 @@ char * I2C2_Slave_Send_IntLine;      // pointer to the slave send interrupt line
 char * I2C2_Slave_Receive_IntLine;   // pointer to the slave receive interrupt line number
 static unsigned int I2C2_Slave_Addr; // slave address
 bool noRTC = false, noI2C = false;
+
+/* Consume one pending slave receive/send event. Returns 1 with *intaddr set
+ * to the interrupt target registered by I2C SLAVE OPEN. Both interrupt
+ * dispatchers call this — MM_Misc.c's checkdetailinterrupts on RP and
+ * mmbasic_runtime_check_interrupt on the shared runtime path — so every
+ * port fires the same BASIC slave interrupts. */
+int i2c_slave_interrupt_pending(unsigned char ** intaddr) {
+    if (I2C_Status & I2C_Status_Slave_Receive_Rdy) {
+        I2C_Status &= ~I2C_Status_Slave_Receive_Rdy;
+        *intaddr = (unsigned char *)I2C_Slave_Receive_IntLine;
+        return 1;
+    }
+    if (I2C_Status & I2C_Status_Slave_Send_Rdy) {
+        I2C_Status &= ~I2C_Status_Slave_Send_Rdy;
+        *intaddr = (unsigned char *)I2C_Slave_Send_IntLine;
+        return 1;
+    }
+    if (I2C2_Status & I2C_Status_Slave_Receive_Rdy) {
+        I2C2_Status &= ~I2C_Status_Slave_Receive_Rdy;
+        *intaddr = (unsigned char *)I2C2_Slave_Receive_IntLine;
+        return 1;
+    }
+    if (I2C2_Status & I2C_Status_Slave_Send_Rdy) {
+        I2C2_Status &= ~I2C_Status_Slave_Send_Rdy;
+        *intaddr = (unsigned char *)I2C2_Slave_Send_IntLine;
+        return 1;
+    }
+    return 0;
+}
 extern void SaveToBuffer(void);
 extern void CompareToBuffer(void);
 extern void DrawPixelMEM(int x1, int y1, int c);
@@ -355,7 +384,12 @@ void i2cSlave(unsigned char * p) {
     I2C_Slave_Receive_IntLine = (char *)GetIntAddress(argv[4]); // get the interrupt routine's location
     InterruptUsed = true;
     I2C_Status = I2C_Status_Slave;
-    hal_i2c_slave_enable(0, (uint8_t)I2C_Slave_Addr);
+    if (hal_i2c_slave_enable(0, (uint8_t)I2C_Slave_Addr) != 0) {
+        I2C_Status = 0;
+        ExtCfg(I2C0SDApin, EXT_NOT_CONFIG, 0);
+        ExtCfg(I2C0SCLpin, EXT_NOT_CONFIG, 0);
+        error("Failed to enable I2C slave");
+    }
 }
 void i2c2Slave(unsigned char * p) {
     int addr;
@@ -370,7 +404,12 @@ void i2c2Slave(unsigned char * p) {
     I2C2_Slave_Receive_IntLine = (char *)GetIntAddress(argv[4]); // get the interrupt routine's location
     InterruptUsed = true;
     I2C2_Status = I2C_Status_Slave;
-    hal_i2c_slave_enable(1, (uint8_t)I2C2_Slave_Addr);
+    if (hal_i2c_slave_enable(1, (uint8_t)I2C2_Slave_Addr) != 0) {
+        I2C2_Status = 0;
+        ExtCfg(I2C1SDApin, EXT_NOT_CONFIG, 0);
+        ExtCfg(I2C1SCLpin, EXT_NOT_CONFIG, 0);
+        error("Failed to enable I2C slave");
+    }
 }
 int DoRtcI2C(int addr, unsigned char * buff) {
     if (I2C0locked) {
@@ -855,6 +894,9 @@ void i2cSendSlave(unsigned char * p, int channel) {
         } else
             error("Invalid variable");
     }
+    /* Queues data for the master's next read. The RP backend's blocking
+     * raw write reports no per-transfer status, so the return is not mapped
+     * to MM.I2C; master-mode writes/reads keep that role. */
     hal_i2c_slave_send(channel, bbuff, sendlen);
 }
 // send data to an I2C slave - master mode

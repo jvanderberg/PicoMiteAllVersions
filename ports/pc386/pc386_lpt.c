@@ -147,7 +147,7 @@ int GetPinBit(int pin) {
     return (int)ExtInp(pin);
 }
 
-volatile unsigned int GetPinStatus(int pin) {
+unsigned int GetPinStatus(int pin) {
     if (IsInvalidPin(pin)) return 0;
     return (unsigned int)ExtCurrentConfig[pin];
 }

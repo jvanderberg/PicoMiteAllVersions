@@ -102,7 +102,7 @@ static int vm_pin_is_safe_config(int cfg) {
            vm_pin_mode_is_pwm(cfg);
 }
 
-static void vm_pin_clear_pwm_assignment(int pin) {
+void vm_pin_clear_pwm_assignment(int pin) {
     for (int slice = 0; slice < VM_PWM_SLICE_COUNT; slice++) {
         if (vm_pwm_pin_a[slice] == pin) vm_pwm_pin_a[slice] = 0;
         if (vm_pwm_pin_b[slice] == pin) vm_pwm_pin_b[slice] = 0;

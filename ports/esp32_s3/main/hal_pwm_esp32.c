@@ -11,6 +11,18 @@
  * abstract channels (0..3) — one per LEDC timer. The shared PWM syscall
  * supplies the validated frequency, duty, and GPIO; this file programs the
  * timer and its two channels.
+ *
+ * Clocking: every timer is pinned to the 80 MHz APB clock. The S3 has one
+ * global low-speed clock mux, so mixing sources across timers (the failure
+ * mode of LEDC_AUTO_CLK once one timer's frequency forces it onto RC_FAST)
+ * makes the second ledc_timer_config fail with a clock conflict; a single
+ * fixed source removes that. The duty resolution is derived per timer as
+ * the largest bit width (capped at the S3's 14-bit timers) whose APB
+ * divider 80 MHz / (freq * 2^R) still fits the divider's 10.8 fixed-point
+ * range [1, 1024). That covers the whole BASIC range on one source, e.g.:
+ *   50 Hz (SERVO): R = 14, divider = 80e6 / (50 * 16384)    ~= 97.66
+ *   10 kHz (PWM):  R = 12, divider = 80e6 / (10000 * 4096)  ~= 1.95
+ *   1 MHz:         R = 6,  divider = 80e6 / (1e6 * 64)      ~= 1.25
  */
 
 #include <stdint.h>
@@ -21,12 +33,23 @@
 #include "hal/hal_pwm.h"
 
 #define HAL_PWM_ESP32_CHANNELS LEDC_TIMER_MAX
-#define HAL_PWM_ESP32_DUTY_RES LEDC_TIMER_10_BIT
-#define HAL_PWM_ESP32_DUTY_MAX ((1 << 10) - 1)
+#define HAL_PWM_ESP32_APB_HZ 80000000u
+
+/* Duty resolution (bits) chosen for each timer at configure time; 0 means
+ * the timer has not been configured. */
+static uint8_t s_duty_res[HAL_PWM_ESP32_CHANNELS];
 
 /* Abstract channel s -> LEDC timer s; outputs A/B -> LEDC channels 2s / 2s+1. */
 static int esp32_pwm_ledc_channel(int channel, int which) {
     return channel * 2 + (which ? 1 : 0);
+}
+
+static uint32_t esp32_pwm_duty(int channel, float duty_pct) {
+    if (duty_pct <= 0.0f) return 0;
+    uint32_t max = (1u << s_duty_res[channel]) - 1u;
+    uint32_t duty = (uint32_t)(duty_pct * max / 100.0f + 0.5f);
+    if (duty > max) duty = max;
+    return duty;
 }
 
 int hal_pwm_init(void) {
@@ -38,22 +61,30 @@ int hal_pwm_channels(void) {
 }
 
 static int esp32_pwm_timer_config(int channel, float frequency) {
+    /* LEDC frequencies are integral Hz; sub-1 Hz truncates to 0, which the
+       IDF resolution lookup divides by. Reject it as out of range. */
+    uint32_t freq_hz = (uint32_t)frequency;
+    if (freq_hz == 0) return -1;
+    uint32_t res = ledc_find_suitable_duty_resolution(HAL_PWM_ESP32_APB_HZ,
+                                                      freq_hz);
+    if (res == 0) return -1;
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = HAL_PWM_ESP32_DUTY_RES,
+        .duty_resolution = (ledc_timer_bit_t)res,
         .timer_num = (ledc_timer_t)channel,
-        .freq_hz = (uint32_t)frequency,
-        .clk_cfg = LEDC_AUTO_CLK,
+        .freq_hz = freq_hz,
+        .clk_cfg = LEDC_USE_APB_CLK,
     };
-    return ledc_timer_config(&timer) == ESP_OK ? 0 : -1;
+    if (ledc_timer_config(&timer) != ESP_OK) return -1;
+    s_duty_res[channel] = (uint8_t)res;
+    return 0;
 }
 
 static int esp32_pwm_start(int channel, int which, int gpio, float duty_pct,
                            int invert) {
     if (gpio < 0) return -1;
 
-    uint32_t duty = (uint32_t)(duty_pct * HAL_PWM_ESP32_DUTY_MAX / 100.0f + 0.5f);
-    if (duty > HAL_PWM_ESP32_DUTY_MAX) duty = HAL_PWM_ESP32_DUTY_MAX;
+    uint32_t duty = esp32_pwm_duty(channel, duty_pct);
 
     ledc_channel_config_t cfg = {
         .gpio_num = gpio,
@@ -96,9 +127,9 @@ int hal_pwm_configure_pair(int channel, float frequency,
 
 int hal_pwm_set_duty(int channel, int which, float duty_pct) {
     if (channel < 0 || channel >= HAL_PWM_ESP32_CHANNELS) return -1;
+    if (s_duty_res[channel] == 0) return -1;
     ledc_channel_t target = (ledc_channel_t)esp32_pwm_ledc_channel(channel, which);
-    uint32_t duty = (uint32_t)(duty_pct * HAL_PWM_ESP32_DUTY_MAX / 100.0f + 0.5f);
-    if (duty > HAL_PWM_ESP32_DUTY_MAX) duty = HAL_PWM_ESP32_DUTY_MAX;
+    uint32_t duty = esp32_pwm_duty(channel, duty_pct);
     if (ledc_set_duty(LEDC_LOW_SPEED_MODE, target, duty) != ESP_OK)
         return -1;
     if (ledc_update_duty(LEDC_LOW_SPEED_MODE, target) != ESP_OK)

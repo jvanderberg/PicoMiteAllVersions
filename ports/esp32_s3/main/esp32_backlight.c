@@ -17,11 +17,17 @@
 #define BACKLIGHT_DEFAULT_FREQUENCY 50000
 #define BACKLIGHT_MIN_FREQUENCY 100
 #define BACKLIGHT_MAX_FREQUENCY 100000
-#define BACKLIGHT_DUTY_MAX 255
+
+/* The LEDC timers are all pinned to the 80 MHz APB clock: the S3 has one
+ * global low-speed clock mux shared with the PWM HAL (hal_pwm_esp32.c), so
+ * the backlight timer must use the same source. The duty resolution is
+ * derived from the frequency so low frequencies keep a valid divider. */
+#define BACKLIGHT_APB_HZ 80000000u
 
 static const char * TAG = "backlight";
 static int s_pin = ESP32_BOARD_PROFILE_NO_PIN;
 static int s_frequency = BACKLIGHT_DEFAULT_FREQUENCY;
+static uint32_t s_duty_max = 255;
 static int s_ready;
 
 static int backlight_pin(void) {
@@ -33,12 +39,18 @@ static int backlight_pin(void) {
 static void backlight_init_pwm(int pin, int frequency) {
     if (s_ready && s_pin == pin && s_frequency == frequency) return;
 
+    uint32_t res = ledc_find_suitable_duty_resolution(BACKLIGHT_APB_HZ,
+                                                      (uint32_t)frequency);
+    if (res == 0) {
+        ESP_LOGW(TAG, "no duty resolution for %d Hz", frequency);
+        return;
+    }
     ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
-        .duty_resolution = LEDC_TIMER_8_BIT,
+        .duty_resolution = (ledc_timer_bit_t)res,
         .timer_num = LEDC_TIMER_0,
         .freq_hz = (uint32_t)frequency,
-        .clk_cfg = LEDC_AUTO_CLK,
+        .clk_cfg = LEDC_USE_APB_CLK,
     };
     esp_err_t err = ledc_timer_config(&timer);
     if (err != ESP_OK) {
@@ -52,7 +64,7 @@ static void backlight_init_pwm(int pin, int frequency) {
         .channel = LEDC_CHANNEL_0,
         .intr_type = LEDC_INTR_DISABLE,
         .timer_sel = LEDC_TIMER_0,
-        .duty = BACKLIGHT_DUTY_MAX,
+        .duty = (1u << res) - 1u,
         .hpoint = 0,
     };
     err = ledc_channel_config(&channel);
@@ -63,6 +75,7 @@ static void backlight_init_pwm(int pin, int frequency) {
 
     s_pin = pin;
     s_frequency = frequency;
+    s_duty_max = (1u << res) - 1u;
     s_ready = 1;
 
     /* The backlight owns LEDC timer 0, which the PWM HAL exposes as abstract
@@ -81,7 +94,7 @@ void esp32_backlight_set(int level, int frequency) {
     backlight_init_pwm(pin, frequency);
     if (!s_ready) error("Backlight not set up");
 
-    uint32_t duty = (uint32_t)((level * BACKLIGHT_DUTY_MAX + 50) / 100);
+    uint32_t duty = (uint32_t)(((uint64_t)level * s_duty_max + 50) / 100);
     esp_err_t err = ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty);
     if (err == ESP_OK) err = ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
     if (err != ESP_OK) {

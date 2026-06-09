@@ -74,5 +74,9 @@ void vm_sys_pin_setpin(int64_t pin, int mode, int option);
 int64_t vm_sys_pin_read(int64_t pin);
 void vm_sys_pin_write(int64_t pin, int64_t value);
 void vm_sys_pin_reset(void);
+/* Drop any PWM channel↔pin assignment recorded for `pin` so it can no
+ * longer resolve as a PWM target. Pin-reconfiguration paths call this
+ * whenever a pin leaves its current mode. */
+void vm_pin_clear_pwm_assignment(int pin);
 
 #endif

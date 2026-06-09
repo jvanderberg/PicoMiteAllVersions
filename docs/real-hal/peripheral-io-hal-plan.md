@@ -98,6 +98,10 @@ void hal_pwm_stop(int channel);
 int  hal_pwm_channels(void);
 ```
 
+> Landed contract: the sketch above grew to `hal_pwm_configure_pair` plus
+> `hal_pwm_sync_channel`/`hal_pwm_sync_commit` to carry the RP A/B polarity,
+> phase-correct, and `PWM SYNC` semantics — `hal/hal_pwm.h` is authoritative.
+
 ## Per-peripheral unification
 
 **GPIO** — collapse `vm_sys_pin.c` + `vm_sys_pin_esp32.c` into one shared
@@ -120,8 +124,9 @@ channel caps (drop the blanket `ESP32_NO_PWM`).
 ## Channel / pin model
 
 - **PWM channels**: RP keeps its fixed slice↔pin mapping inside its backend;
-  ESP32 exposes LEDC's 8 channels (any pin, 4 shared timers). The shared layer
-  just sees abstract `channel` ids — each backend maps them to its hardware.
+  ESP32 exposes 4 abstract A/B-pair channels, one per LEDC timer (see
+  Decisions). The shared layer just sees abstract `channel` ids — each backend
+  maps them to its hardware.
 - **I²C pins**: always from `SETPIN`/`OPTION`; FREENOVE profile seeds
   `Option.SYSTEM_I2C_SDA=GP16`, `SYSTEM_I2C_SCL=GP15` (overridable). `GENERIC`
   seeds nothing.
@@ -135,22 +140,31 @@ RP2350, ESP32-S3, host, pc386), in a single PR. Smoke on the Freenove:
 
 ## Gates (behaviour preserved, code unified)
 
-- `run_tests.sh` stays **192/192**.
+- `run_tests.sh` all green — the suite has grown from the 192 baseline to
+  **257** host tests (t223 locks in shared SETPIN I²C/UART/SPI config
+  reachability on the host sim).
 - HAL purity gate green; **zero** Pico-SDK / ESP-IDF symbols in shared files.
 - Builds clean: ESP32-S3 (octal + quad) **and** at least one RP2040 and one
   RP2350 `.uf2` target, host, pc386.
-- RP PWM/I²C/GPIO still *function* identically (re-smoke a Pico target) — but the
-  code that drives them now lives in `hal_*_pico.c`, not the shared layer.
+- On-hardware smoke: **ESP32-S3 Freenove bench smoke** (`SETPIN`+`PIN`,
+  `I2C OPEN/WRITE/READ`, `PWM`, `SERVO`).
+- **Outstanding:** Pico re-smoke — RP PWM/I²C/GPIO must still *function*
+  identically on a Pico target; the code that drives them now lives in
+  `hal_*_pico.c`, not the shared layer.
 
-## Open decisions
+## Decisions (resolved)
 
-1. **PWM channel model** — LEDC 8 channels exposed as the `PWM` command's
-   channels on ESP32; RP keeps slice mapping in-backend. (Recommended.)
-2. **Pico backend placement** — `drivers/i2c_bus/hal_i2c_pico.c` +
-   `drivers/.../hal_pwm_pico.c` (shared by all RP2 ports) vs per-port dir.
-3. **ESP32 I²C slave** — full ESP-IDF i2c-slave in this PR, or a functional
-   stub with the slave *architecture* unified now and the ESP32 backend filled
-   next. (The architecture is unified either way.)
+1. **PWM channel model** — ESP32 exposes **4 abstract channels**, each an A/B
+   pair driven by one LEDC timer (timer *s* → LEDC channels 2*s*/2*s*+1), not
+   8 independent channels: LEDC's 4 timers give 4 independent frequencies, and
+   the shared PWM surface is pair-shaped. Pin→default-channel assignment is
+   deterministic by pin-table position. RP keeps its slice mapping in-backend.
+2. **Pico backend placement** — `ports/pico_sdk_common/hal_i2c_pico.c` +
+   `ports/pico_sdk_common/hal_pwm_pico.c`, shared by all RP2 ports.
+3. **ESP32 I²C slave** — full implementation: a register-level slave ISR in
+   the backend (the ESP-IDF v1 slave driver is unsafe for arbitrary-length
+   receive). Receive interrupts fire; send interrupts cannot fire on S3
+   silicon (no stretch-cause event — see Step 10).
 
 ## Phase 2 — finish the centralization (config front-end extraction)
 
@@ -218,6 +232,17 @@ bookkeeping). Extract each into the shared layer compiled by every port, verbati
 so "config is shared, hardware is in `hal_*`" holds with no RP-shaped command logic
 left stranded in core files that non-RP ports don't compile. Land incrementally;
 gate each extraction on the full build matrix + purity.
+
+*Outcome:* UART and SPI SETPIN config extracted into
+`shared/peripheral/uart_config.c` and `shared/peripheral/spi_config.c`
+(same shape as `i2c_config.c`). `OPTION SYSTEM SPI` stays in the per-port
+`port_system_lcd_spi_option_setter` hooks — it is display-coupled, with
+divergent per-display copies, so it is deliberately not shared.
+
+*Remaining (deferred):*
+- `OPTION COUNT` — still RP-resident; extract when a port needs it.
+- `OPTION AUDIO` — needs a checkslice hook abstraction in the audio layer
+  before its setter can move to the shared layer.
 
 **Step 12 — Phase 2 validation.** Full `tools/validate_all.sh` green (incl.
 mmbasic_stdio + mmbasic_ansi), `buildesp32.sh all`, pc386, purity. Add a generic-

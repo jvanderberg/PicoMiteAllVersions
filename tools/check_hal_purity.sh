@@ -141,6 +141,16 @@ STRICT_FILES=(
               # tail, and the pin-OFF reset — reached by RP External.c, the
               # device VM (vm_sys_pin.c), and the simulator (vm_sys_pin_sim.c).
               # Zero target-macro, zero port-config ifdefs.
+  runtime/vm/vm_sys_pwm.c # PWM unification close: one shared syscall body
+              # (freq/duty math, slice registry, SYNC) calling only
+              # hal_pwm_*. Zero target-macro, zero port-config ifdefs;
+              # the RP pwm_set_* specifics live in
+              # ports/pico_sdk_common/hal_pwm_pico.c and the ESP32 LEDC
+              # specifics in ports/esp32_s3/main/hal_pwm_esp32.c.
+  shared/peripheral/pwm_cmd.c # PWM command unification close: one shared
+              # cmd_pwm parser for every port, delegating to
+              # vm_sys_pwm_*. Zero target-macro, zero port-config
+              # ifdefs.
   drivers/i2c_bus/I2C.c # I²C unification close: one shared cmd_i2c/cmd_i2c2 +
               # master/slave engine calling only hal_i2c_*. Zero target-macro,
               # zero port-config ifdefs; the RP SDK master + IRQ slave live in
@@ -210,6 +220,8 @@ INFO_FILES=(
   shared/peripheral/i2c_config.c
   shared/peripheral/uart_config.c
   shared/peripheral/spi_config.c
+  shared/peripheral/pwm_cmd.c
+  runtime/vm/vm_sys_pwm.c
 )
 
 fail=0
