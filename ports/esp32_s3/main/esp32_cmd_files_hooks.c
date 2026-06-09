@@ -18,7 +18,6 @@
 #include "Hardware_Includes.h"
 
 #include "FileIO.h"
-#include "esp32_audio_profile.h"
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 #include "diskio.h"
@@ -68,11 +67,12 @@ void port_apply_load_overrides(void) {
         esp32_board_profile_by_id(esp32_board_profile_current_id());
     if (!profile) profile = esp32_board_profile_by_id(ESP32_BOARD_PROFILE_ID_GENERIC);
     esp32_board_profile_set(profile->id);
-    if (ESP32_OPTION_AUDIO_KIND > ESP32_AUDIO_KIND_PROFILE)
+    if (ESP32_OPTION_AUDIO_KIND > ESP32_AUDIO_KIND_ES8311)
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
     if (Option.AUDIO_L && Option.AUDIO_R) {
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_PDM;
-        ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_NONE;
+        ESP32_OPTION_AUDIO_AMP_EN = 0;
+        ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
         ESP32_OPTION_AUDIO_I2S_WS = 0;
         ESP32_OPTION_AUDIO_I2S_MCLK = 0;
     } else if (Option.audio_i2s_bclk && Option.audio_i2s_data) {
@@ -84,22 +84,18 @@ void port_apply_load_overrides(void) {
                               : -1;
             if (ws_gpio >= 0) ESP32_OPTION_AUDIO_I2S_WS = codemap(ws_gpio);
         }
+        /* The ES8311 recipe needs the control bus; without OPTION SYSTEM
+         * I2C fall back to plain I2S so the channel still runs. */
+        if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311 &&
+            !Option.SYSTEM_I2C_SDA)
+            ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_I2S;
+        if (ESP32_OPTION_AUDIO_AMP_EN > NBRPINS)
+            ESP32_OPTION_AUDIO_AMP_EN = 0;
     } else {
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
-        ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_NONE;
+        ESP32_OPTION_AUDIO_AMP_EN = 0;
+        ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
         ESP32_OPTION_AUDIO_I2S_WS = 0;
         ESP32_OPTION_AUDIO_I2S_MCLK = 0;
-    }
-    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE) {
-        const esp32_audio_profile_t * ap =
-            esp32_audio_profile_by_id(ESP32_OPTION_AUDIO_PROFILE);
-        if (!esp32_audio_profile_available_for_current_board(ap)) {
-            Option.audio_i2s_bclk = 0;
-            Option.audio_i2s_data = 0;
-            ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
-            ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_NONE;
-            ESP32_OPTION_AUDIO_I2S_WS = 0;
-            ESP32_OPTION_AUDIO_I2S_MCLK = 0;
-        }
     }
 }

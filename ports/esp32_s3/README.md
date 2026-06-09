@@ -282,6 +282,7 @@ Audio configuration commands:
 |---|---|---|
 | `OPTION AUDIO I2S bclk,data` | Standard I2S PCM for an external DAC/amp | Legacy two-pin form: `bclk`, inferred `ws = bclk + 1`, `data` |
 | `OPTION AUDIO I2S bclk,ws,data` | Standard I2S PCM for an external DAC/amp | Explicit wiring form; `ws` must be `bclk + 1` |
+| `OPTION AUDIO ES8311 bclk,ws,dout [,mclk [,ampen [,AMPLOW]]]` | ES8311 codec (I2S + I2C control) | Control bus from `OPTION SYSTEM I2C`; `mclk`/`ampen` accept 0 = none; `AMPLOW` = active-low amp enable |
 | `OPTION AUDIO left,right` | ESP32-S3 I2S PDM TX DAC-style two-line output | left PDM output, right PDM output |
 | `OPTION AUDIO PDM left,right` | Same as the bare two-pin form | left PDM output, right PDM output |
 | `OPTION AUDIO DISABLE` | Audio off | none |
@@ -289,6 +290,7 @@ Audio configuration commands:
 ```basic
 OPTION AUDIO I2S GP5,GP7
 OPTION AUDIO I2S GP5,GP6,GP7
+OPTION AUDIO ES8311 GP5,GP7,GP8,GP4,GP1,AMPLOW   ' the Freenove wiring (CONFIGURE FREENOVE seeds this)
 OPTION AUDIO GP12,GP13
 OPTION AUDIO PDM GP12,GP13
 OPTION AUDIO DISABLE

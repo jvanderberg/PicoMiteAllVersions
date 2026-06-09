@@ -185,10 +185,8 @@ static int profile_pin_matches_gpio(int pin, int gpio) {
 }
 
 static int current_audio_profile_uses_shared_i2c(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    return profile->id == ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341 &&
-           ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE &&
-           ESP32_OPTION_AUDIO_PROFILE == ESP32_AUDIO_PROFILE_FREENOVE;
+    /* The ES8311 codec's control channel rides the shared I2C bus. */
+    return ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311;
 }
 
 static int current_shared_i2c_enabled(void) {
@@ -259,7 +257,8 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.audio_i2s_bclk = 0;
     Option.audio_i2s_data = 0;
     ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
-    ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_NONE;
+    ESP32_OPTION_AUDIO_AMP_EN = 0;
+    ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
     ESP32_OPTION_AUDIO_I2S_WS = 0;
     ESP32_OPTION_AUDIO_I2S_MCLK = 0;
 
@@ -310,8 +309,10 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
         ESP32_OPTION_AUDIO_I2S_WS = profile_pin(profile->audio.ws);
         ESP32_OPTION_AUDIO_I2S_MCLK = profile_pin(profile->audio.mclk);
-        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_PROFILE;
-        ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_FREENOVE;
+        ESP32_OPTION_AUDIO_AMP_EN = profile_pin(profile->audio.amp_enable);
+        ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH =
+            profile->audio.amp_active_level ? 1 : 0;
+        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_ES8311;
     }
 }
 
@@ -383,17 +384,8 @@ int esp32_board_profile_pin_owned_by_shared_i2c(int pin) {
            ExtCurrentConfig[pin] == EXT_BOOT_RESERVED;
 }
 
-static int pin_is_audio_profile_pin(int pin) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (ESP32_OPTION_AUDIO_KIND != ESP32_AUDIO_KIND_PROFILE ||
-        ESP32_OPTION_AUDIO_PROFILE != ESP32_AUDIO_PROFILE_FREENOVE ||
-        profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341)
-        return 0;
-    return profile_pin_matches_gpio(pin, profile->audio.mclk) ||
-           profile_pin_matches_gpio(pin, profile->audio.bclk) ||
-           profile_pin_matches_gpio(pin, profile->audio.ws) ||
-           profile_pin_matches_gpio(pin, profile->audio.dout) ||
-           profile_pin_matches_gpio(pin, profile->audio.amp_enable);
+static int pin_is_audio_amp_pin(int pin) {
+    return ESP32_OPTION_AUDIO_AMP_EN && pin == ESP32_OPTION_AUDIO_AMP_EN;
 }
 
 static int pin_is_generic_audio_pin(int pin) {
@@ -441,7 +433,7 @@ const char * port_pin_reserved_label(int pin) {
          pin == Option.TOUCH_Click))
         return "Boot Reserved : Touch";
 
-    if (pin_is_audio_profile_pin(pin) || pin_is_generic_audio_pin(pin))
+    if (pin_is_audio_amp_pin(pin) || pin_is_generic_audio_pin(pin))
         return "Boot Reserved : Audio";
 
     if (pin_is_vga_pin(pin))
