@@ -16,6 +16,7 @@ typedef struct {
     char * host;
     int port;
     int timeout_ms;
+    int tls;
 } mm_net_tcp_client_open_args_t;
 
 typedef struct {

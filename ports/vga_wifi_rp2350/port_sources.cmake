@@ -57,6 +57,7 @@ target_sources(PicoMite PRIVATE
     ${CMAKE_SOURCE_DIR}/shared/net/MMtftp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMudp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMsetwifi.c
+    ${CMAKE_SOURCE_DIR}/shared/net/mm_net_json_fun.c
 
     # rp2350 features. This board has no PSRAM, so link the
     # psram_heap stub.

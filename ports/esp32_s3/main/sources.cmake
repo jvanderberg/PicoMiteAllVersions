@@ -93,6 +93,8 @@ set(STATE_SRCS
     ${REPO_ROOT}/shared/net/mm_net_web_cmd.c
     ${REPO_ROOT}/shared/net/mm_net_websocket.c
     ${REPO_ROOT}/shared/net/mm_net_wifi_cmd.c
+    ${REPO_ROOT}/shared/net/mm_net_json_fun.c
+    ${REPO_ROOT}/third_party/cjson/cJSON.c
     ${REPO_ROOT}/drivers/web_console/web_console_assets.c
     ${REPO_ROOT}/drivers/web_console/web_console_display.c
     ${REPO_ROOT}/drivers/web_console/web_console_input.c
@@ -308,6 +310,8 @@ idf_component_register(
         usb
         usb_host_hid
         mqtt
+        esp-tls
+        mbedtls
         nvs_flash
         spi_flash
         esp_partition

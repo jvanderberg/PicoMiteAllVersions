@@ -103,7 +103,7 @@ static void test_tcp_client(void) {
     if (pthread_create(&thread, NULL, tcp_client_peer, &listen_fd) != 0)
         fail("tcp client peer thread");
     hal_net_tcp_client_t client = 0;
-    if (hal_net_tcp_client_open("127.0.0.1", TCP_CLIENT_PORT, 1000, &client) != HAL_NET_OK)
+    if (hal_net_tcp_client_open("127.0.0.1", TCP_CLIENT_PORT, 1000, 0, &client) != HAL_NET_OK)
         fail("hal tcp client open");
     if (hal_net_tcp_client_send(client, "PING", 4, 1000) != HAL_NET_OK)
         fail("hal tcp client send");
@@ -742,7 +742,7 @@ static void test_mqtt(void) {
 
     hal_net_mqtt_client_t mqtt = 0;
     if (hal_net_mqtt_connect("127.0.0.1", MQTT_HAL_PORT, "", "",
-                             "HostHal", 1000, &mqtt) != HAL_NET_OK ||
+                             "HostHal", 0, 1000, &mqtt) != HAL_NET_OK ||
         mqtt == 0)
         fail("hal mqtt connect");
     if (hal_net_mqtt_subscribe(mqtt, "host/hal/in", 0, 1000) != HAL_NET_OK)

@@ -63,6 +63,15 @@ CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
 # CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT is not set
 # CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set
 
+# --- TLS --------------------------------------------------------------------
+# WEB MQTT CONNECT ... tls and WEB OPEN TCP CLIENT/STREAM ... tls verify the
+# server against the ESP-IDF X.509 certificate bundle. The "common" subset
+# (~70 KB of certs) covers the CAs signing public brokers and HTTPS APIs;
+# the full bundle costs another ~60 KB of the 2 MB app partition for CAs
+# BASIC programs are unlikely to meet.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+
 CONFIG_LWIP_MAX_SOCKETS=6
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=16
 # CONFIG_LWIP_IPV6 is not set

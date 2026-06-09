@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "hal/hal_filesystem.h"
 #include "hal/hal_net.h"
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
@@ -11,6 +12,7 @@
 #include "esp32_tcp_client.h"
 
 #define ESP32_TCP_CLIENT_RX_CHUNK 512
+#define ESP32_TLS_CA_MAX 8192
 
 typedef struct {
     hal_net_tcp_client_t client;
@@ -78,10 +80,13 @@ void esp32_tcp_client_close(void) {
 static void esp32_tcp_client_open_cmd(unsigned char * arg, int stream_open) {
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(arg, &parsed);
+    if (parsed.tls &&
+        !(hal_net_capabilities() & HAL_NET_CAP_TCP_CLIENT_TLS))
+        error("TLS not supported on this port");
 
     esp32_tcp_client_close();
     if (hal_net_tcp_client_open(parsed.host, (uint16_t)parsed.port,
-                                (uint32_t)parsed.timeout_ms,
+                                (uint32_t)parsed.timeout_ms, parsed.tls,
                                 &s_client.client) != HAL_NET_OK)
         error("No response from client");
 
@@ -151,8 +156,43 @@ static void esp32_tcp_client_stream_cmd(unsigned char * arg) {
     }
 }
 
+static void esp32_tls_cert_cmd(unsigned char * arg) {
+    char * fname = (char *)getCstring(arg);
+    if (!*fname) {
+        hal_net_tls_set_ca(NULL, 0);
+        return;
+    }
+
+    struct hal_stat st;
+    if (hal_fs_stat(fname, &st) < 0 || !(st.mode & HAL_FS_S_IFREG))
+        error("Cannot find file");
+    if (st.size <= 0 || st.size > ESP32_TLS_CA_MAX)
+        error("Invalid CA certificate");
+
+    hal_fs_fd_t fd;
+    if (hal_fs_open(fname, HAL_FS_O_RDONLY, &fd) < 0)
+        error("Cannot find file");
+    char * pem = (char *)GetTempMemory((int)st.size + 1);
+    off_t total = 0;
+    while (total < st.size) {
+        ssize_t n = hal_fs_read(fd, pem + total, (size_t)(st.size - total));
+        if (n <= 0) break;
+        total += n;
+    }
+    hal_fs_close(fd);
+    if (total != st.size) error("Cannot read file");
+    pem[total] = 0;
+    if (!strstr(pem, "-----BEGIN")) error("Invalid CA certificate");
+    if (hal_net_tls_set_ca(pem, (size_t)total) != HAL_NET_OK)
+        error("TLS not supported on this port");
+}
+
 int esp32_tcp_client_cmd(unsigned char * line) {
     unsigned char * tp;
+    if ((tp = checkstring(line, (unsigned char *)"TLS CERT"))) {
+        esp32_tls_cert_cmd(tp);
+        return 1;
+    }
     if ((tp = checkstring(line, (unsigned char *)"OPEN TCP CLIENT"))) {
         esp32_tcp_client_open_cmd(tp, 0);
         return 1;

@@ -71,6 +71,7 @@ target_sources(PicoMite PRIVATE
     ${CMAKE_SOURCE_DIR}/shared/net/MMtftp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMudp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMsetwifi.c
+    ${CMAKE_SOURCE_DIR}/shared/net/mm_net_json_fun.c
 
     # rp2350 features. The pico_stretch RP2350B board has PSRAM on
     # board, so link the real psram_heap impl.

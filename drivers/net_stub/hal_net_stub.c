@@ -18,6 +18,12 @@ int hal_net_init(void) {
     return HAL_NET_OK;
 }
 
+int hal_net_tls_set_ca(const void * pem, size_t len) {
+    (void)pem;
+    (void)len;
+    return HAL_NET_UNSUPPORTED;
+}
+
 void hal_net_poll(void) {
 }
 
@@ -123,10 +129,12 @@ int hal_net_tcp_conn_close(hal_net_tcp_conn_t conn) {
 }
 
 int hal_net_tcp_client_open(const char * host, uint16_t port,
-                            uint32_t timeout_ms, hal_net_tcp_client_t * out) {
+                            uint32_t timeout_ms, int tls,
+                            hal_net_tcp_client_t * out) {
     (void)host;
     (void)port;
     (void)timeout_ms;
+    (void)tls;
     if (out) *out = 0;
     return HAL_NET_UNSUPPORTED;
 }
@@ -199,13 +207,14 @@ int hal_net_udp_recv_event(hal_net_udp_socket_t sock, hal_net_addr_t * from,
 }
 
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
     (void)host;
     (void)port;
     (void)user;
     (void)pass;
     (void)client_id;
+    (void)tls;
     (void)timeout_ms;
     if (out) *out = 0;
     return HAL_NET_UNSUPPORTED;
