@@ -316,9 +316,13 @@ lifecycle; the differences that remain:
 - `OPTION SYSTEM SPI` stores to `Option.LCD_*` on ESP32 (dedicated bus)
   vs `Option.SYSTEM_*` on Pico (shared bus) — invisible at the command
   level, by design.
-- Touch: ESP32 is capacitive-FT6336U-only (hardware class); Pico's
-  capacitive form spells it `OPTION TOUCH FT6336, sda, scl`. Aligning the
-  spelling is a future nicety.
+- Touch: ESP32 is capacitive-FT6336U-only (hardware class). The real
+  structural delta: Pico splits bus from device (`OPTION SYSTEM I2C sda,
+  scl` + `OPTION TOUCH FT6336, irq, reset [,click] [,threshold]`,
+  drivers/gui_touch/Touch.c:57) — the same bus/device split this plan
+  adopted for the LCD — while the ESP32 form bundles the bus pins into
+  `OPTION TOUCH sda, scl [,int [,rst]]`. Aligning the ESP32 onto the
+  SYSTEM I2C + FT6336-keyword shape is the parity follow-up.
 
 ## Known gaps (not in any step's scope yet)
 
