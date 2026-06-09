@@ -258,8 +258,8 @@ int esp32_touch_option_setter(unsigned char * cmdline) {
     if (argc != 3 && argc != 5 && argc != 7)
         error("OPTION TOUCH FT6336, irq, reset [,click] [,threshold]");
     int pins[3] = {0, 0, 0};
-    pins[0] = esp32_parse_pin_arg(argv[0]);                /* IRQ */
-    pins[1] = esp32_parse_pin_arg(argv[2]);                /* RESET */
+    pins[0] = esp32_parse_pin_arg(argv[0]);                            /* IRQ */
+    pins[1] = esp32_parse_pin_arg(argv[2]);                            /* RESET */
     if (argc >= 5 && *argv[4]) pins[2] = esp32_parse_pin_arg(argv[4]); /* click */
     int threshold = (argc == 7) ? getint(argv[6], 0, 255) : 22;
     for (int i = 0; i < 3; i++) {

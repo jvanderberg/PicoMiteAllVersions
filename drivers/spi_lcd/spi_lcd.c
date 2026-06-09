@@ -357,7 +357,6 @@ void SetCS(void) {
         gpio_put(LCD_CD_PIN, GPIO_PIN_SET);
 }
 
-
 void hal_oled_spi_set_contrast(int level_percent) {
     int level = (level_percent * 255) / 100;
     spi_write_command(0x81);
@@ -374,8 +373,6 @@ void ST7920command(unsigned char data) {
     lcd_xmit_byte_multi(a, 3);
     ClearCS(Option.LCD_CD);
 }
-
-
 
 /****************************************************************************************************
  ****************************************************************************************************
