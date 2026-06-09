@@ -9573,6 +9573,70 @@ static void source_skip_parenthesized(const char ** pp) {
     *pp = p;
 }
 
+/* Predeclare-pass parameter scan: fill a subfun's parameter metadata (count,
+ * types, array/byval flags) WITHOUT allocating locals or emitting code, so a
+ * forward call (callee defined later) can still make the by-reference decision.
+ * Mirrors source_parse_params' parsing; the main compile pass re-parses
+ * identically when it reaches the body. */
+static int source_predeclare_params(BCCompiler * cs, const char * p, int sf_idx) {
+    int nparams = 0;
+    source_skip_space(&p);
+    int has_parens = (*p == '(');
+    if (has_parens)
+        p++;
+    else if (*p == '\0' || *p == '\'' || *p == ':')
+        return 0;
+
+    while (1) {
+        source_skip_space(&p);
+        if (has_parens && *p == ')') break;
+        if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
+
+        int is_byval = 0;
+        if (source_keyword(&p, "BYVAL")) {
+            is_byval = 1;
+            source_skip_space(&p);
+        } else if (source_keyword(&p, "BYREF")) {
+            source_skip_space(&p);
+        }
+
+        char name[MAXVARLEN + 1];
+        int name_len = 0;
+        uint8_t ptype = 0;
+        if (!source_parse_varname(&p, name, &name_len, &ptype)) break;
+
+        int is_array = 0;
+        source_skip_space(&p);
+        if (*p == '(') {
+            const char * q = p + 1;
+            source_skip_space(&q);
+            if (*q == ')') {
+                is_array = 1;
+                p = q + 1;
+            }
+        }
+
+        uint8_t as_type = source_parse_as_type_clause(&p);
+        if (as_type != 0) ptype = as_type;
+        if (ptype == 0) ptype = T_NBR;
+
+        if (nparams < BC_MAX_PARAMS) {
+            cs->subfuns[sf_idx].param_types[nparams] = ptype;
+            cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)is_array;
+            cs->subfuns[sf_idx].param_is_byval[nparams] = (uint8_t)is_byval;
+        }
+        nparams++;
+
+        source_skip_space(&p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        break;
+    }
+    return nparams;
+}
+
 static void source_predeclare_line(BCCompiler * cs, const char * line, int line_no) {
     const char * p = line;
     source_skip_space(&p);
@@ -9604,7 +9668,12 @@ static void source_predeclare_line(BCCompiler * cs, const char * line, int line_
              * line through OP_BRIDGE_CMD. */
             int has_struct = source_params_contain_struct(p);
             int sf = source_get_or_create_subfun(cs, name_start, name_len, 0);
-            if (sf >= 0 && has_struct) cs->subfuns[sf].bridged = 1;
+            if (sf >= 0) {
+                if (has_struct)
+                    cs->subfuns[sf].bridged = 1;
+                else
+                    cs->subfuns[sf].nparams = (uint8_t)source_predeclare_params(cs, p, sf);
+            }
         }
         return;
     }
@@ -9626,14 +9695,19 @@ static void source_predeclare_line(BCCompiler * cs, const char * line, int line_
          * source_compile_statement's early-bridge check can see them and
          * bridge the enclosing line. */
         int has_struct_param = source_params_contain_struct(p);
+        const char * param_start = p;
         source_skip_space(&p);
         if (*p == '(') source_skip_parenthesized(&p);
         uint8_t as_type = source_parse_as_type_clause(&p);
         if (as_type != 0 && !has_suffix) ret_type = as_type;
 
         int sf = source_get_or_create_subfun(cs, name_start, sf_name_len, ret_type);
-        if (sf >= 0 && (has_struct_param || ret_type == T_STRUCT))
-            cs->subfuns[sf].bridged = 1;
+        if (sf >= 0) {
+            if (has_struct_param || ret_type == T_STRUCT)
+                cs->subfuns[sf].bridged = 1;
+            else
+                cs->subfuns[sf].nparams = (uint8_t)source_predeclare_params(cs, param_start, sf);
+        }
     }
 }
 
