@@ -128,6 +128,10 @@ static void start_capture(char * buf, int size) {
     capture_ptr = buf;
     capture_remaining = size - 1; /* leave room for null terminator */
     buf[0] = '\0';
+    /* Each run starts at the left margin. MMCharPos is global state shared by
+     * the interpreter and VM runs; reset it so column-dependent builtins like
+     * TAB() compute identically regardless of what the previous run left. */
+    MMCharPos = 0;
     host_output_hook = host_capture_hook;
     capturing = 1;
 }

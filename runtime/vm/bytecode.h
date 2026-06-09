@@ -675,6 +675,11 @@ typedef struct {
     /* For EXIT FOR/DO — patch locations to fill in when we reach NEXT/LOOP */
     uint32_t exit_fixups[64];
     int exit_fixup_count;
+
+    /* For CONTINUE FOR/DO — forward jumps to the loop-closing code (the NEXT
+     * increment/test for FOR, the LOOP condition for DO). */
+    uint32_t continue_fixups[32];
+    int continue_fixup_count;
 } BCNestEntry;
 
 /*
@@ -700,11 +705,17 @@ typedef struct {
 
 /*
  * Local variable record (used during compilation)
+ *
+ * is_static/static_slot are compile-only: a STATIC variable is a name in local
+ * scope that actually resolves to a persistent global slot. bc_commit_locals
+ * copies only the BCLocalMeta prefix to the runtime, so these stay compile-side.
  */
 typedef struct {
     char name[MAXVARLEN + 1];
     uint8_t type;
     uint8_t is_array;
+    uint8_t is_static;    /* 1 if this name aliases a persistent global slot */
+    uint16_t static_slot; /* the global slot to use when is_static */
 } BCLocalVar;
 
 /*

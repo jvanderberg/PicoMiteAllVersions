@@ -69,6 +69,10 @@ typedef struct {
      * string arrays also bridge, so the array lives in g_vartbl with
      * the contiguous layout the bridged EXTRACT/INSERT expects. */
     int uses_struct_extract_insert;
+
+    /* Set by `OPTION ESCAPE`: backslash escape sequences in string constants
+     * are decoded at compile time (matches the interpreter's tokeniser). */
+    int escape_active;
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend * fe) {
@@ -104,6 +108,7 @@ int bc_opt_level = 1;
 
 static uint8_t source_parse_expression(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp);
 static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, const char * stmt);
+static const char * source_find_keyword_outside_string(const char * p, const char * kw);
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
                                     int require_parens);
 static int source_parse_array_indices(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp);
@@ -1005,6 +1010,12 @@ static uint16_t source_resolve_var(BCCompiler * cs, const char * name, int name_
     if (cs->current_subfun >= 0) {
         int loc = bc_find_local(cs, name, name_len);
         if (loc >= 0) {
+            /* STATIC names live in local scope but resolve to a persistent
+             * global slot so their value survives across calls. */
+            if (cs->locals[loc].is_static) {
+                *is_local = 0;
+                return cs->locals[loc].static_slot;
+            }
             *is_local = 1;
             return (uint16_t)loc;
         }
@@ -1428,6 +1439,51 @@ static void source_emit_store_array(BCCompiler * cs, uint16_t slot, uint8_t type
     bc_emit_byte(cs, (uint8_t)ndim);
 }
 
+/* Decode OPTION ESCAPE backslash sequences in the string literal [s, end) into
+ * out. Mirrors the interpreter's evaluator (MMBasic.c). Returns byte count. */
+static int source_decode_escapes(const char * s, const char * end, char * out, int out_cap) {
+    int n = 0;
+    while (s < end && n < out_cap - 1) {
+        if (*s == '\\' && (end - s) > 1) {
+            if ((end - s) > 3 && isdigit((unsigned char)s[1]) &&
+                isdigit((unsigned char)s[2]) && isdigit((unsigned char)s[3])) {
+                int v = (s[1] - '0') * 100 + (s[2] - '0') * 10 + (s[3] - '0');
+                out[n++] = (char)v;
+                s += 4;
+                continue;
+            }
+            char c = s[1];
+            s += 2;
+            switch (c) {
+            case '\\': out[n++] = '\\'; break;
+            case 'a': out[n++] = '\a'; break;
+            case 'b': out[n++] = '\b'; break;
+            case 'e': out[n++] = 0x1b; break;
+            case 'f': out[n++] = '\f'; break;
+            case 'n': out[n++] = '\n'; break;
+            case 'q': out[n++] = '"'; break;
+            case 'r': out[n++] = '\r'; break;
+            case 't': out[n++] = '\t'; break;
+            case 'v': out[n++] = '\v'; break;
+            case '&':
+                if ((end - s) >= 2 && isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1])) {
+                    int hi = mytoupper(s[0]) >= 'A' ? mytoupper(s[0]) - 'A' + 10 : s[0] - '0';
+                    int lo = mytoupper(s[1]) >= 'A' ? mytoupper(s[1]) - 'A' + 10 : s[1] - '0';
+                    out[n++] = (char)((hi << 4) | lo);
+                    s += 2;
+                } else {
+                    out[n++] = 'x';
+                }
+                break;
+            default: out[n++] = c; break;
+            }
+            continue;
+        }
+        out[n++] = *s++;
+    }
+    return n;
+}
+
 static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     const char * p = *pp;
     source_skip_space(&p);
@@ -1441,7 +1497,14 @@ static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, cons
             *pp = p;
             return 0;
         }
-        uint16_t idx = bc_add_constant_string(cs, (const uint8_t *)start, (int)(p - start));
+        uint16_t idx;
+        if (fe->escape_active) {
+            char buf[STRINGSIZE + 1];
+            int n = source_decode_escapes(start, p, buf, sizeof(buf));
+            idx = bc_add_constant_string(cs, (const uint8_t *)buf, n);
+        } else {
+            idx = bc_add_constant_string(cs, (const uint8_t *)start, (int)(p - start));
+        }
         bc_emit_byte(cs, OP_PUSH_STR);
         bc_emit_u16(cs, idx);
         *pp = p + 1;
@@ -2388,6 +2451,17 @@ static int source_match_compare(const char ** pp, char * op) {
         *pp = p + 2;
         return 1;
     }
+    /* MMBasic accepts the reversed spellings =< and => as <= and >=. */
+    if (p[0] == '=' && p[1] == '<') {
+        *op = 'l';
+        *pp = p + 2;
+        return 1;
+    }
+    if (p[0] == '=' && p[1] == '>') {
+        *op = 'g';
+        *pp = p + 2;
+        return 1;
+    }
     if (*p == '=') {
         *op = '=';
         *pp = p + 1;
@@ -2997,17 +3071,11 @@ static void source_compile_for(BCSourceFrontend * fe, BCCompiler * cs, const cha
     *pp = p;
 }
 
-static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
-    if (fe->fast_next_loop) {
-        fe->fast_next_loop = 0;
-        bc_set_error(cs, "'!FAST not yet supported for FOR loops (use DO WHILE instead)");
-        return;
-    }
-    BCNestEntry * ne = bc_nest_find(cs, NEST_FOR);
-    if (!ne) {
-        bc_set_error(cs, "NEXT without matching FOR");
-        return;
-    }
+/* Emit the loop-back / exit code that closes the innermost open FOR loop. */
+static void source_emit_for_next_close(BCCompiler * cs, BCNestEntry * ne) {
+    /* CONTINUE FOR jumps here, to the increment/test at the NEXT. */
+    for (int i = 0; i < ne->continue_fixup_count; i++)
+        source_patch_jmp_here(cs, ne->continue_fixups[i]);
 
     bc_emit_byte(cs, (ne->var_type == T_INT) ? OP_FOR_NEXT_I : OP_FOR_NEXT_F);
     bc_emit_u16(cs, ne->var_slot);
@@ -3019,7 +3087,23 @@ static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const ch
     for (int i = 0; i < ne->exit_fixup_count; i++)
         source_patch_jmp_here(cs, ne->exit_fixups[i]);
     bc_nest_pop(cs);
+}
 
+static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    if (fe->fast_next_loop) {
+        fe->fast_next_loop = 0;
+        bc_set_error(cs, "'!FAST not yet supported for FOR loops (use DO WHILE instead)");
+        return;
+    }
+    BCNestEntry * ne = bc_nest_find(cs, NEST_FOR);
+    if (!ne) {
+        bc_set_error(cs, "NEXT without matching FOR");
+        return;
+    }
+    source_emit_for_next_close(cs, ne);
+
+    /* `NEXT v1, v2, ...` closes one nested FOR per listed variable, innermost
+     * first. The variable names themselves are advisory and not checked. */
     const char * p = *pp;
     source_skip_space(&p);
     if (isnamestart((unsigned char)*p)) {
@@ -3027,6 +3111,22 @@ static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const ch
         int name_len = 0;
         uint8_t type = 0;
         source_parse_varname(&p, name, &name_len, &type);
+        source_skip_space(&p);
+        while (*p == ',') {
+            p++;
+            ne = bc_nest_find(cs, NEST_FOR);
+            if (!ne) {
+                bc_set_error(cs, "NEXT without matching FOR");
+                *pp = p;
+                return;
+            }
+            source_emit_for_next_close(cs, ne);
+            source_skip_space(&p);
+            if (isnamestart((unsigned char)*p)) {
+                source_parse_varname(&p, name, &name_len, &type);
+                source_skip_space(&p);
+            }
+        }
     }
     *pp = p;
 }
@@ -3322,6 +3422,84 @@ static void source_compile_goto(BCSourceFrontend * fe, BCCompiler * cs, const ch
 static void source_compile_gosub(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     (void)fe;
     source_emit_jump_to_target(cs, pp, OP_GOSUB, "GOSUB");
+}
+
+/* `ON expr GOTO|GOSUB t1, t2, ...` — evaluate expr (1-based); branch to the
+ * matching target, or fall through if it is 0 or out of range. For GOSUB the
+ * subroutine returns to the statement following the ON. */
+static void source_compile_on(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    source_skip_space(&p);
+
+    const char * goto_kw = source_find_keyword_outside_string(p, "GOTO");
+    const char * gosub_kw = source_find_keyword_outside_string(p, "GOSUB");
+    const char * kw;
+    int is_gosub;
+    if (gosub_kw && (!goto_kw || gosub_kw < goto_kw)) {
+        kw = gosub_kw;
+        is_gosub = 1;
+    } else {
+        kw = goto_kw;
+        is_gosub = 0;
+    }
+    if (!kw) {
+        bc_set_error(cs, "Expected GOTO or GOSUB after ON");
+        *pp = p;
+        return;
+    }
+
+    char idx_expr[STRINGSIZE + 1];
+    size_t idx_len = (size_t)(kw - p);
+    if (idx_len > STRINGSIZE) idx_len = STRINGSIZE;
+    memcpy(idx_expr, p, idx_len);
+    idx_expr[idx_len] = '\0';
+
+    int is_local = (cs->current_subfun >= 0);
+    uint16_t slot = is_local ? source_alloc_hidden_local(cs, T_INT)
+                             : source_alloc_hidden_slot(cs, T_INT);
+    const char * ep = idx_expr;
+    uint8_t etype = source_parse_expression(fe, cs, &ep);
+    if (cs->has_error) {
+        *pp = p;
+        return;
+    }
+    if (etype == T_STR) {
+        bc_set_error(cs, "ON requires a numeric index");
+        *pp = p;
+        return;
+    }
+    source_emit_store_converted(cs, slot, T_INT, etype, is_local);
+
+    p = kw + (is_gosub ? 5 : 4);
+
+    uint32_t end_fixups[64];
+    int end_count = 0;
+    int64_t idx = 1;
+    while (!cs->has_error) {
+        source_skip_space(&p);
+        if (*p == '\0' || *p == '\'' || *p == ':') break;
+
+        bc_emit_load_var(cs, slot, T_INT, is_local);
+        bc_emit_byte(cs, OP_PUSH_INT);
+        bc_emit_i64(cs, idx);
+        bc_emit_byte(cs, OP_EQ_I);
+        uint32_t skip = source_emit_jmp_placeholder(cs, OP_JZ);
+
+        source_emit_jump_to_target(cs, &p, is_gosub ? OP_GOSUB : OP_JMP_ABS, "ON");
+        if (is_gosub && end_count < 64)
+            end_fixups[end_count++] = source_emit_jmp_placeholder(cs, OP_JMP);
+        source_patch_jmp_here(cs, skip);
+
+        source_skip_space(&p);
+        if (*p != ',') break;
+        p++;
+        idx++;
+    }
+
+    for (int i = 0; i < end_count; i++)
+        source_patch_jmp_here(cs, end_fixups[i]);
+
+    *pp = p;
 }
 
 static void source_compile_const(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
@@ -4128,6 +4306,12 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         }
         if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
 
+        /* Optional BYVAL / BYREF prefix. The VM call ABI passes scalars by
+         * value, which is exactly BYVAL semantics; BYREF is accepted for
+         * source compatibility (see PR notes on the value-only limitation). */
+        if (source_keyword(&p, "BYVAL") || source_keyword(&p, "BYREF"))
+            source_skip_space(&p);
+
         char name[MAXVARLEN + 1];
         int name_len = 0;
         uint8_t ptype = 0;
@@ -4298,6 +4482,95 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
                 return;
             }
             source_emit_store_converted(cs, (uint16_t)local_idx, vtype, etype, 1);
+        }
+
+        source_skip_space(&p);
+        if (*p != ',') break;
+        p++;
+    }
+
+    *pp = p;
+}
+
+/* STATIC declares function-scoped variables that persist across calls. Each is
+ * backed by a hidden global slot (which survives the call frame) aliased to the
+ * plain name for the rest of the function; any initialiser runs only on the
+ * first call, guarded by a hidden flag. */
+static void source_compile_static(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    if (cs->current_subfun < 0) {
+        bc_set_error(cs, "STATIC outside SUB/FUNCTION");
+        *pp = p;
+        return;
+    }
+
+    uint8_t forced_type = 0;
+    source_skip_space(&p);
+    if (strncasecmp(p, "INTEGER", 7) == 0 && !isnamechar((unsigned char)p[7])) {
+        forced_type = T_INT;
+        p += 7;
+    } else if (strncasecmp(p, "FLOAT", 5) == 0 && !isnamechar((unsigned char)p[5])) {
+        forced_type = T_NBR;
+        p += 5;
+    } else if (strncasecmp(p, "STRING", 6) == 0 && !isnamechar((unsigned char)p[6])) {
+        forced_type = T_STR;
+        p += 6;
+    }
+
+    while (!cs->has_error) {
+        char name[MAXVARLEN + 1];
+        int name_len = 0;
+        uint8_t vtype = 0;
+        if (!source_parse_varname(&p, name, &name_len, &vtype)) {
+            bc_set_error(cs, "Expected name in STATIC");
+            *pp = p;
+            return;
+        }
+
+        int is_array = 0;
+        source_skip_space(&p);
+        if (*p == '(') {
+            is_array = 1;
+        }
+
+        uint8_t as_type = source_parse_as_type_clause(&p);
+        if (as_type != 0) vtype = as_type;
+        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
+
+        if (is_array) {
+            bc_set_error(cs, "STATIC arrays not supported in FRUN");
+            *pp = p;
+            return;
+        }
+
+        uint16_t gslot = source_alloc_hidden_slot(cs, vtype);
+        int loc = bc_add_local(cs, name, name_len, vtype, 0);
+        if (loc >= 0) {
+            cs->locals[loc].is_static = 1;
+            cs->locals[loc].static_slot = gslot;
+        }
+
+        source_skip_space(&p);
+        if (*p == '=') {
+            p++;
+            uint16_t guard = source_alloc_hidden_slot(cs, T_INT);
+            bc_emit_load_var(cs, guard, T_INT, 0);
+            uint32_t skip = source_emit_jmp_placeholder(cs, OP_JNZ);
+            uint8_t etype = source_parse_expression(fe, cs, &p);
+            if ((vtype & T_STR) && !(etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign numeric expression to string variable");
+                *pp = p;
+                return;
+            }
+            if (!(vtype & T_STR) && (etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign string expression to numeric variable");
+                *pp = p;
+                return;
+            }
+            source_emit_store_converted(cs, gslot, vtype, etype, 0);
+            bc_emit_byte(cs, OP_PUSH_ONE);
+            bc_emit_store_var(cs, guard, T_INT, 0);
+            source_patch_jmp_here(cs, skip);
         }
 
         source_skip_space(&p);
@@ -6439,6 +6712,10 @@ static void source_compile_loop(BCSourceFrontend * fe, BCCompiler * cs, const ch
     const char * p = *pp;
     source_skip_space(&p);
 
+    /* CONTINUE DO jumps here, to the LOOP condition evaluation. */
+    for (int i = 0; i < ne->continue_fixup_count; i++)
+        source_patch_jmp_here(cs, ne->continue_fixups[i]);
+
     if (ne->type == NEST_WHILE) {
         bc_emit_byte(cs, OP_JMP);
         bc_emit_i16(cs, (int16_t)(ne->addr1 - (cs->code_len + 2)));
@@ -6558,6 +6835,37 @@ static void source_compile_exit(BCCompiler * cs, const char ** pp) {
     }
 
     bc_set_error(cs, "Expected DO, FOR, FUNCTION or SUB after EXIT");
+    *pp = p;
+}
+
+static void source_compile_continue(BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    source_skip_space(&p);
+
+    BCNestEntry * ne;
+    if (source_keyword(&p, "FOR")) {
+        ne = bc_nest_find(cs, NEST_FOR);
+        if (!ne) {
+            bc_set_error(cs, "No FOR loop is in effect");
+            *pp = p;
+            return;
+        }
+    } else if (source_keyword(&p, "DO")) {
+        ne = bc_nest_find(cs, NEST_DO);
+        if (!ne) ne = bc_nest_find(cs, NEST_WHILE);
+        if (!ne) {
+            bc_set_error(cs, "No DO loop is in effect");
+            *pp = p;
+            return;
+        }
+    } else {
+        bc_set_error(cs, "Expected FOR or DO after CONTINUE");
+        *pp = p;
+        return;
+    }
+
+    uint32_t patch = source_emit_jmp_placeholder(cs, OP_JMP);
+    if (ne->continue_fixup_count < 32) ne->continue_fixups[ne->continue_fixup_count++] = patch;
     *pp = p;
 }
 
@@ -7578,6 +7886,28 @@ static void source_compile_case(BCSourceFrontend * fe, BCCompiler * cs, const ch
     uint32_t body_patches[32];
     int body_patch_count = 0;
     while (!cs->has_error) {
+        source_skip_space(&p);
+
+        /* `CASE IS <relop> expr` — relational test against the select value. */
+        if (source_keyword(&p, "IS")) {
+            char op;
+            source_skip_space(&p);
+            if (!source_match_compare(&p, &op)) {
+                bc_set_error(cs, "Expected comparison operator after IS");
+                break;
+            }
+            bc_emit_load_var(cs, ne->select_slot, ne->select_type, 0);
+            uint32_t is_start = cs->code_len;
+            uint8_t is_rhs = source_parse_expression(fe, cs, &p);
+            source_emit_compare(cs, ne->select_type, is_rhs, is_start, op);
+            if (body_patch_count < 32)
+                body_patches[body_patch_count++] = source_emit_jmp_placeholder(cs, OP_JNZ);
+            source_skip_space(&p);
+            if (*p != ',') break;
+            p++;
+            continue;
+        }
+
         bc_emit_load_var(cs, ne->select_slot, ne->select_type, 0);
         uint32_t right_start = cs->code_len;
         uint8_t rhs = source_parse_expression(fe, cs, &p);
@@ -8091,6 +8421,9 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
     }
 
     if (source_keyword(&p, "OPTION")) {
+        const char * op = p;
+        source_skip_space(&op);
+        if (source_keyword(&op, "ESCAPE")) fe->escape_active = 1;
         return;
     }
 
@@ -8501,8 +8834,14 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         return;
     }
 
-    if (source_keyword(&p, "LOCAL") || source_keyword(&p, "STATIC")) {
+    if (source_keyword(&p, "LOCAL")) {
         source_compile_local(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "STATIC")) {
+        source_compile_static(fe, cs, &p);
         source_statement_end(cs, p);
         return;
     }
@@ -8584,6 +8923,12 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         return;
     }
 
+    if (source_keyword(&p, "CONTINUE")) {
+        source_compile_continue(cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
     if (source_keyword(&p, "IF")) {
         source_compile_if(fe, cs, &p);
         return;
@@ -8611,6 +8956,21 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         source_compile_gosub(fe, cs, &p);
         source_statement_end(cs, p);
         return;
+    }
+
+    {
+        /* `ON expr GOTO|GOSUB ...` computed branch. Other ON forms (ON ERROR,
+         * ON KEY, ...) have no GOTO/GOSUB keyword and fall through to bridge. */
+        const char * on_start = p;
+        if (source_keyword(&p, "ON")) {
+            if (source_find_keyword_outside_string(p, "GOTO") ||
+                source_find_keyword_outside_string(p, "GOSUB")) {
+                source_compile_on(fe, cs, &p);
+                source_statement_end(cs, p);
+                return;
+            }
+            p = on_start;
+        }
     }
 
     if (source_keyword(&p, "RETURN")) {
