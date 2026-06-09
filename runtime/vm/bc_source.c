@@ -4562,6 +4562,52 @@ static int source_try_emit_ref_arg(BCSourceFrontend * fe, BCCompiler * cs, const
     return 1;
 }
 
+/* True if the next argument is a structure member access (`p.x`, `arr(i).x`).
+ * MMBasic does not allow passing an individual member to a SUB/FUNCTION — you
+ * pass the whole structure, or copy member data out with STRUCT EXTRACT — so
+ * the interpreter rejects it. (Whole-struct / struct-element arguments go to
+ * struct-typed parameters, whose calls are bridged and never reach here.) */
+static int source_arg_is_struct_member(BCCompiler * cs, const char * p) {
+    source_skip_space(&p);
+    if (!isnamestart((unsigned char)*p)) return 0;
+    char name[MAXVARLEN + 1];
+    int nl = 0;
+    uint8_t suf = 0;
+    if (!source_parse_varname(&p, name, &nl, &suf)) return 0;
+
+    /* source_parse_varname may fold a `.member` tail into name. */
+    const char * dot = memchr(name, '.', (size_t)nl);
+    int baselen = dot ? (int)(dot - name) : (suf ? nl - 1 : nl);
+    if (baselen <= 0) return 0;
+
+    int is_struct = 0;
+    uint16_t slot = bc_find_slot(cs, name, baselen);
+    if (slot != 0xFFFF && cs->slots[slot].type == T_STRUCT) is_struct = 1;
+    if (!is_struct && cs->current_subfun >= 0) {
+        int loc = bc_find_local(cs, name, baselen);
+        if (loc >= 0 && cs->locals[loc].type == T_STRUCT) is_struct = 1;
+    }
+    if (!is_struct) return 0;
+    if (dot) return 1;
+
+    /* Member access may follow an array subscript: `arr(i).member`. */
+    source_skip_space(&p);
+    if (*p == '(') {
+        int d = 0;
+        do {
+            if (*p == '(')
+                d++;
+            else if (*p == ')')
+                d--;
+            else if (*p == '\0')
+                return 0;
+            p++;
+        } while (d > 0);
+        source_skip_space(&p);
+    }
+    return (*p == '.');
+}
+
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
                                     int require_parens, int sf_idx) {
     const char * p = *pp;
@@ -4588,6 +4634,10 @@ static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, cons
         }
         if (!has_parens && (*p == '\0' || *p == '\'')) break;
 
+        if (source_arg_is_struct_member(cs, p)) {
+            bc_set_error(cs, "Cannot pass a structure member as an argument");
+            break;
+        }
         if (!source_try_emit_ref_arg(fe, cs, &p, sf_idx, nargs)) {
             (void)source_parse_expression(fe, cs, &p);
             if (cs->has_error) break;
