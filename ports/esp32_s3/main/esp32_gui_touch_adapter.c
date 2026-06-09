@@ -68,23 +68,11 @@ void PinSetBit(int pin, unsigned int offset) {
 }
 
 static void publish_capacitive_option_state(void) {
-    if (!ESP32_OPTION_TOUCH_SDA) return;
-
-    Option.TOUCH_CAP = 1;
-    Option.TOUCH_CS = ESP32_OPTION_TOUCH_RST;
-    Option.TOUCH_IRQ = ESP32_OPTION_TOUCH_INT;
+    /* Option.TOUCH_CAP / TOUCH_IRQ / TOUCH_CS are the persisted
+     * configuration (OPTION TOUCH FT6336, or a profile seed); only the
+     * threshold default needs filling in here. */
+    if (!Option.TOUCH_CAP) return;
     if (!Option.THRESHOLD_CAP) Option.THRESHOLD_CAP = 22;
-}
-
-static void clear_touch_option_state(void) {
-    Option.TOUCH_CAP = 0;
-    Option.TOUCH_CS = 0;
-    Option.TOUCH_IRQ = 0;
-    Option.TOUCH_SWAPXY = 0;
-    Option.TOUCH_XZERO = 0;
-    Option.TOUCH_YZERO = 0;
-    Option.TOUCH_XSCALE = 0.0f;
-    Option.TOUCH_YSCALE = 0.0f;
 }
 
 static void sample_touch(void) {
@@ -119,20 +107,21 @@ void InitTouch(void) {
     clear_cached_sample();
     esp32_ft6336u_touch_init();
     if (!esp32_ft6336u_touch_is_ready()) {
-        clear_touch_option_state();
+        /* Probe failure leaves the persisted configuration alone — the
+         * controller is retried next boot. */
         TOUCH_GETIRQTRIS = 0;
         return;
     }
 
     publish_capacitive_option_state();
-    TOUCH_IRQ_PIN = pin_to_gpio(ESP32_OPTION_TOUCH_INT);
-    TOUCH_CS_PIN = pin_to_gpio(ESP32_OPTION_TOUCH_RST);
+    TOUCH_IRQ_PIN = pin_to_gpio(Option.TOUCH_IRQ);
+    TOUCH_CS_PIN = pin_to_gpio(Option.TOUCH_CS);
     TOUCH_GETIRQTRIS = 1;
 }
 
 void ConfigTouch(unsigned char * p) {
     (void)p;
-    if (!ESP32_OPTION_TOUCH_SDA)
+    if (!Option.TOUCH_CAP)
         error("Touch not configured (OPTION TOUCH)");
     InitTouch();
 }

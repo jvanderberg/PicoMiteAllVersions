@@ -20,12 +20,6 @@
 #define ESP32_AUDIO_PROFILE_NONE 0
 #define ESP32_AUDIO_PROFILE_FREENOVE 1
 
-/* FT6336U touch I2C wiring as pin indices (0 = unset). Seeded by board
- * profiles, set by OPTION TOUCH. */
-#define ESP32_OPTION_TOUCH_SDA (Option.extensions[76])
-#define ESP32_OPTION_TOUCH_SCL (Option.extensions[77])
-#define ESP32_OPTION_TOUCH_INT (Option.extensions[78])
-#define ESP32_OPTION_TOUCH_RST (Option.extensions[79])
 #define ESP32_OPTION_AUDIO_KIND (Option.extensions[80])
 #define ESP32_OPTION_AUDIO_PROFILE (Option.extensions[81])
 #define ESP32_OPTION_AUDIO_I2S_WS (Option.extensions[82])

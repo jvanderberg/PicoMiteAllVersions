@@ -77,7 +77,7 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
     unsigned char * p = checkstring(cmdline, (unsigned char *)"TOUCH CALIBRATE");
     if (!p) return 0;
     int persist = 1;
-    if (!ESP32_OPTION_TOUCH_SDA)
+    if (!Option.TOUCH_CAP)
         error("Touch not configured (OPTION TOUCH)");
     if (checkstring(p, (unsigned char *)"DEFAULT")) {
         esp32_ft6336u_touch_set_default_calibration();
@@ -98,7 +98,7 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
 }
 
 static void esp32_touch_calibrate_print_option(void) {
-    if (!ESP32_OPTION_TOUCH_SDA) return;
+    if (!Option.TOUCH_CAP) return;
     char line[96];
     snprintf(line, sizeof(line), "OPTION TOUCH CALIBRATE %d,%d,%.0f,%.0f\r\n",
              Option.TOUCH_XZERO, Option.TOUCH_YZERO,

@@ -207,7 +207,8 @@ For a board that has no profile, run on `GENERIC` and configure peripherals by h
 OPTION SYSTEM SPI GP12,GP11,GP13         ' LCD SPI bus: clk, mosi, miso
 OPTION LCDPANEL ILI9341, LANDSCAPE, GP46, 0, GP10, GP45, INVERT
                                          ' controller, orientation, DC, RST (0 = none), CS [, BL] [, INVERT]
-OPTION TOUCH GP16,GP15,GP17,GP18         ' FT6336U I2C: sda, scl [, int [, rst]]
+OPTION SYSTEM I2C GP16,GP15              ' shared I2C bus: sda, scl [, SLOW]
+OPTION TOUCH FT6336, GP17, GP18          ' FT6336U: irq, reset [, click] [, threshold]
 OPTION SDCARD GP47,GP38,GP40,GP39        ' dedicated-SPI SD: cs, clk, mosi, miso
 OPTION AUDIO I2S GP5,GP6,GP7             ' external I2S DAC — see Audio below
 OPTION VGA 3BIT GP8,GP9,GP10,GP11,GP12   ' resistor-DAC VGA — see VGA below
@@ -216,7 +217,7 @@ CPU RESTART
 
 `OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket, display, and touch pins for you.)
 
-`OPTION SYSTEM SPI` assigns the dedicated LCD SPI bus and `OPTION LCDPANEL` picks the controller and control pins — set the bus first, then the panel. ILI9341 (320×240, landscape) is the supported controller. `OPTION TOUCH` wires an FT6336U capacitive touch controller; `OPTION TOUCH CALIBRATE` adjusts its mapping. Each setter validates the pins, saves, and reboots; the matching `... DISABLE` form clears it.
+`OPTION SYSTEM SPI` assigns the dedicated LCD SPI bus and `OPTION LCDPANEL` picks the controller and control pins — set the bus first, then the panel. ILI9341 (320×240, landscape) is the supported controller. Touch follows the same bus-then-device pattern, with the PicoMite syntax: `OPTION SYSTEM I2C` declares the bus, `OPTION TOUCH FT6336` attaches the capacitive controller, and `OPTION TOUCH CALIBRATE` adjusts its mapping. Each setter validates the pins, saves, and reboots; the matching `... DISABLE` form clears it.
 
 ## VGA
 

@@ -196,13 +196,13 @@ static int current_shared_i2c_enabled(void) {
 }
 
 /* Resolve the pin indices of the shared touch/audio I2C bus: the OPTION
- * TOUCH wiring when configured, else the Freenove audio profile's bus pins.
- * The fallback keys on the profile id, not on the live audio state, so the
- * pins still resolve (and can be released) after OPTION AUDIO DISABLE has
- * cleared the audio fields. */
+ * SYSTEM I2C wiring when configured, else the Freenove audio profile's bus
+ * pins. The fallback keys on the profile id, not on the live audio state,
+ * so the pins still resolve (and can be released) after OPTION AUDIO
+ * DISABLE has cleared the audio fields. */
 static void shared_i2c_bus_pins(int * sda, int * scl) {
-    *sda = ESP32_OPTION_TOUCH_SDA;
-    *scl = ESP32_OPTION_TOUCH_SCL;
+    *sda = Option.SYSTEM_I2C_SDA;
+    *scl = Option.SYSTEM_I2C_SCL;
     if (*sda && *scl) return;
     const esp32_board_profile_t * profile = esp32_board_profile_current();
     if (profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
@@ -244,10 +244,14 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.DISPLAY_CONSOLE = 0;
     Option.BGR = 0;
 
-    ESP32_OPTION_TOUCH_SDA = 0;
-    ESP32_OPTION_TOUCH_SCL = 0;
-    ESP32_OPTION_TOUCH_INT = 0;
-    ESP32_OPTION_TOUCH_RST = 0;
+    Option.SYSTEM_I2C_SDA = 0;
+    Option.SYSTEM_I2C_SCL = 0;
+    Option.SYSTEM_I2C_SLOW = 0;
+    Option.TOUCH_CAP = 0;
+    Option.TOUCH_IRQ = 0;
+    Option.TOUCH_CS = 0;
+    Option.TOUCH_Click = 0;
+    Option.THRESHOLD_CAP = 0;
 
     Option.AUDIO_L = 0;
     Option.AUDIO_R = 0;
@@ -285,10 +289,12 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     }
 
     if (profile->has_touch) {
-        ESP32_OPTION_TOUCH_SDA = profile_pin(profile->touch.sda);
-        ESP32_OPTION_TOUCH_SCL = profile_pin(profile->touch.scl);
-        ESP32_OPTION_TOUCH_INT = profile_pin(profile->touch.interrupt);
-        ESP32_OPTION_TOUCH_RST = profile_pin(profile->touch.reset);
+        Option.SYSTEM_I2C_SDA = profile_pin(profile->touch.sda);
+        Option.SYSTEM_I2C_SCL = profile_pin(profile->touch.scl);
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 1;
+        Option.THRESHOLD_CAP = 22;
         esp32_ft6336u_touch_set_default_calibration();
     } else {
         esp32_ft6336u_touch_set_identity_calibration();
@@ -348,12 +354,13 @@ void esp32_board_profile_reserve_lcd_pins(void) {
 }
 
 void esp32_board_profile_reserve_touch_pins(void) {
-    /* Touch pins come from the ESP32_OPTION_TOUCH_* slots (OPTION TOUCH,
-     * or seeded from a profile's defaults). */
-    if (!ESP32_OPTION_TOUCH_SDA || !ESP32_OPTION_TOUCH_SCL) return;
+    /* Touch config lives in the PicoMite Option fields: bus from OPTION
+     * SYSTEM I2C, controller from OPTION TOUCH FT6336 (or profile seed). */
+    if (!Option.TOUCH_CAP) return;
     esp32_board_profile_update_shared_i2c_pins();
-    reserve_pin_index(ESP32_OPTION_TOUCH_INT);
-    reserve_pin_index(ESP32_OPTION_TOUCH_RST);
+    reserve_pin_index(Option.TOUCH_IRQ);
+    reserve_pin_index(Option.TOUCH_CS);
+    reserve_pin_index(Option.TOUCH_Click);
     s_touch_pins_reserved = 1;
 }
 
@@ -430,7 +437,8 @@ const char * port_pin_reserved_label(int pin) {
         return "Boot Reserved : Shared I2C touch/audio";
 
     if (s_touch_pins_reserved &&
-        (pin == ESP32_OPTION_TOUCH_INT || pin == ESP32_OPTION_TOUCH_RST))
+        (pin == Option.TOUCH_IRQ || pin == Option.TOUCH_CS ||
+         pin == Option.TOUCH_Click))
         return "Boot Reserved : Touch";
 
     if (pin_is_audio_profile_pin(pin) || pin_is_generic_audio_pin(pin))

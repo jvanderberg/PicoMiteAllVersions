@@ -1,22 +1,25 @@
 /*
- * esp32_lcd_options.c - OPTION SYSTEM SPI / OPTION LCDPANEL for ESP32-S3.
+ * esp32_lcd_options.c - system bus + LCD panel OPTIONs for ESP32-S3.
  *
- * Display wiring is user-assignable, PicoMite-style:
+ * Display and bus wiring is user-assignable, PicoMite-style:
  *
  *   OPTION SYSTEM SPI clk, mosi, miso
- *   OPTION LCDPANEL ILI9341, LANDSCAPE, DC, RST, CS [, BL]
+ *   OPTION SYSTEM I2C sda, scl [, SLOW]
+ *   OPTION LCDPANEL ILI9341, LANDSCAPE, DC, RST, CS [, BL] [, INVERT]
  *
- * Pins are stored in Option.LCD_* / Option.DISPLAY_BL as pin indices and
- * resolved to raw GPIOs by the drivers (esp32_ili9341_lcd.c,
- * esp32_backlight.c). Board profiles seed the same fields, so OPTION RESET
- * FREENOVE ILI9341 still configures the display in one step. RST may be
- * given as 0 for panels with no reset line (the Freenove wiring); BL is
- * optional. Like OPTION SDCARD, a successful setter saves and reboots so
- * the new wiring is validated and reserved by the normal boot path.
+ * Pins are stored in Option.LCD_* / Option.DISPLAY_BL /
+ * Option.SYSTEM_I2C_* as pin indices and resolved to raw GPIOs by the
+ * drivers (esp32_ili9341_lcd.c, esp32_backlight.c, esp32_ft6336u_touch.c).
+ * Board profiles seed the same fields, so OPTION RESET FREENOVE ILI9341
+ * still configures the display in one step. RST may be given as 0 for
+ * panels with no reset line (the Freenove wiring); BL is optional. Like
+ * OPTION SDCARD, a successful setter saves and reboots so the new wiring
+ * is validated and reserved by the normal boot path.
  */
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "esp32_board_profile.h"
 
 extern int esp32_parse_pin_arg(unsigned char * arg);
 
@@ -129,9 +132,52 @@ static int lcd_panel_setter(unsigned char * tp) {
     return 1;
 }
 
+/* OPTION SYSTEM I2C sda, scl [, SLOW] — the shared I2C bus (touch, and the
+ * Freenove ES8311 codec). Mirrors the PicoMite command; the bus is declared
+ * here, then OPTION TOUCH FT6336 attaches the controller to it. */
+static int lcd_system_i2c_setter(unsigned char * tp) {
+    if (CurrentLinePtr) error("Invalid in a program");
+    if (checkstring(tp, (unsigned char *)"DISABLE")) {
+        if (Option.TOUCH_CAP) error("Disable the touch first");
+        Option.SYSTEM_I2C_SDA = 0;
+        Option.SYSTEM_I2C_SCL = 0;
+        Option.SYSTEM_I2C_SLOW = 0;
+        lcd_option_save_and_reset();
+        return 1;
+    }
+    if (Option.SYSTEM_I2C_SCL) error("I2C already configured");
+    getargs(&tp, 5, (unsigned char *)",");
+    if (argc != 3 && argc != 5) error("OPTION SYSTEM I2C sda, scl [,SLOW]");
+    int slow = 0;
+    if (argc == 5) {
+        if (!checkstring(argv[4], (unsigned char *)"SLOW")) error("Syntax");
+        slow = 1;
+    }
+    int pins[2];
+    pins[0] = esp32_parse_pin_arg(argv[0]); /* SDA */
+    pins[1] = esp32_parse_pin_arg(argv[2]); /* SCL */
+    for (int i = 0; i < 2; i++) {
+        if (pins[i] < 1 || pins[i] > NBRPINS || (PinDef[pins[i]].mode & UNUSED))
+            error("Invalid pin");
+        /* The Freenove ES8311 audio profile may already hold the shared
+         * bus — declaring the same wiring is the normal arrangement. */
+        if (ExtCurrentConfig[pins[i]] != EXT_NOT_CONFIG &&
+            !esp32_board_profile_pin_owned_by_shared_i2c(pins[i]))
+            error("Pin %/| is in use", pins[i], pins[i]);
+    }
+    if (pins[0] == pins[1]) error("Pin %/| is in use", pins[0], pins[0]);
+    Option.SYSTEM_I2C_SDA = pins[0];
+    Option.SYSTEM_I2C_SCL = pins[1];
+    Option.SYSTEM_I2C_SLOW = slow;
+    lcd_option_save_and_reset();
+    return 1;
+}
+
 int esp32_lcdpanel_option_setter(unsigned char * cmdline) {
     unsigned char * tp = checkstring(cmdline, (unsigned char *)"SYSTEM SPI");
     if (tp) return lcd_system_spi_setter(tp);
+    tp = checkstring(cmdline, (unsigned char *)"SYSTEM I2C");
+    if (tp) return lcd_system_i2c_setter(tp);
     tp = checkstring(cmdline, (unsigned char *)"LCDPANEL");
     if (tp) return lcd_panel_setter(tp);
     return 0;
@@ -152,6 +198,14 @@ void esp32_lcd_print_options(void) {
         lcd_print_pin(Option.LCD_MOSI);
         MMPrintString(", ");
         lcd_print_pin(Option.LCD_MISO);
+        MMPrintString("\r\n");
+    }
+    if (Option.SYSTEM_I2C_SDA) {
+        MMPrintString("OPTION SYSTEM I2C ");
+        lcd_print_pin(Option.SYSTEM_I2C_SDA);
+        MMPrintString(", ");
+        lcd_print_pin(Option.SYSTEM_I2C_SCL);
+        if (Option.SYSTEM_I2C_SLOW) MMPrintString(", SLOW");
         MMPrintString("\r\n");
     }
     if (Option.LCD_CD && Option.LCD_CS) {
