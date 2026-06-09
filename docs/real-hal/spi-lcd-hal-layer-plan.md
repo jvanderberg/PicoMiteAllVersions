@@ -294,6 +294,18 @@ pipelines.
 
 ## Known gaps (not in any step's scope yet)
 
+- **ESP32 SPI fast path.** The dominant per-transaction cost in spi_master
+  is bus arbitration around every polling transmit. Two bypass rungs, both
+  entirely inside the ESP32's hal_spi_lcd_bus implementation: (1)
+  `spi_device_acquire_bus()` in `hal_spi_lcd_bus_begin()` / release in
+  `_end()` — batches a whole command sequence or dirty-tile flush under one
+  acquisition, ~30 lines, IDF-sanctioned; (2) raw GPSPI register driving
+  per the S3 TRM (FIFO-feed small writes, hand-built DMA descriptors) —
+  the true Pico-PL022 analogue, only worth it if profiling shows the
+  glyph-rate console / DrawBufferFast paths still bottlenecked after (1).
+  The shadow + dirty-tile architecture already amortizes most of the tax
+  on bulk flushes.
+
 - `MM.INFO$(LCDPANEL)` is not wired in the ESP32 port's MM.INFO dispatch —
   returns 0 with a panel bound. `OPTION LIST` is the authoritative readout.
   Wire it when B3 widens the controller table (the answer becomes the
