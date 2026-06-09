@@ -147,10 +147,13 @@ RP2350, ESP32-S3, host, pc386), in a single PR. Smoke on the Freenove:
 - Builds clean: ESP32-S3 (octal + quad) **and** at least one RP2040 and one
   RP2350 `.uf2` target, host, pc386.
 - On-hardware smoke: **ESP32-S3 Freenove bench smoke** (`SETPIN`+`PIN`,
-  `I2C OPEN/WRITE/READ`, `PWM`, `SERVO`).
-- **Outstanding:** Pico re-smoke — RP PWM/I²C/GPIO must still *function*
-  identically on a Pico target; the code that drives them now lives in
-  `hal_*_pico.c`, not the shared layer.
+  `I2C OPEN/WRITE/READ`, `PWM`, `SERVO`, I²C slave loopback with receive
+  interrupt) and **PicoCalc RP2350B bench smoke** (boot with options
+  preserved, I²C keyboard + SPI LCD live, PWM measured electrically via a
+  GP2→GP3 loopback at exact 50% duty, duty extremes, audio-slice guards,
+  PWM OFF/restart state machine, program-end registry clear). RP2040 remains
+  build-verified only; its shared code and RP backend are identical to the
+  bench-validated RP2350 paths.
 
 ## Decisions (resolved)
 
