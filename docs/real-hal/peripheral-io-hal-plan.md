@@ -1,176 +1,153 @@
-# Peripheral I/O HAL — I²C, PWM, SERVO, GPIO (driving port: ESP32-S3)
+# Peripheral I/O HAL — unify GPIO, I²C, PWM, SERVO across all ports
 
 ## Goal
 
-Give the ESP32-S3 port working **I²C**, **PWM**, and **SERVO**, and do it the
-way the rest of MMBasic is built: the *driver/command* is port-agnostic, the
-*pin mapping* is runtime configuration (`SETPIN` / `OPTION`), and the board
-profile only supplies overridable defaults. A new board with different headers
-must work by changing its profile's default pins — **no code change**.
+One unified, port-agnostic implementation of **GPIO, I²C, PWM, and SERVO** that
+every port shares, with **all** hardware specifics behind HAL contracts
+(`hal_pin.h`, `hal_i2c.h`, `hal_pwm.h`). Pins are runtime configuration
+(`SETPIN`/`OPTION`); the board profile only supplies overridable defaults. A new
+board with different headers works by changing its profile's default pins — no
+code change.
 
-The enabling work is a **proper HAL contract** for each peripheral
-(`hal/hal_i2c.h`, `hal/hal_pwm.h`) so the shared driver calls the HAL and each
-port supplies the backend. No Pico-isms in shared code; no target `#ifdef`s.
+This lands as **one PR** covering all four capabilities and every affected port.
 
-## Current state (verified)
+## Architecture principle (non-negotiable)
 
-| Capability | State | Detail |
+**We do not preserve any port's existing GPIO/I²C/PWM/SERVO code.** Today the
+logic is *duplicated per port* — RP drives it from `runtime/vm/vm_sys_pin.c`
+(Pico SDK), ESP32 from `vm_sys_pin_esp32.c` (stubs), `I2C.c` calls the Pico SDK
+inline, and `cmd_pwm` is copied into every port. That all gets **rewritten into
+a single shared implementation.** The rule:
+
+- **One** copy of the command + syscall + driver logic (`cmd_*`, `vm_sys_*`,
+  the I²C driver), shared by *all* ports.
+- **Hardware-specific code exists only inside `hal_*` port backends.** If a line
+  of shared code names a Pico-SDK call (`pwm_set_*`, `i2c_init`,
+  `gpio_set_function`) or an ESP-IDF call (`ledc_*`, `i2c_master_*`), it is in
+  the wrong place — it moves to that port's `hal_*` backend.
+- **No per-port command/syscall files** for these peripherals. `vm_sys_pin.c`
+  and `vm_sys_pin_esp32.c` collapse into **one** `vm_sys_pin.c`; the per-port
+  `cmd_pwm`/`cmd_setpin`/`cmd_i2c` copies collapse into **one** shared body.
+- **No target `#ifdef`s** in the shared code (enforced by the purity gate).
+- Existing RP behavior must remain *functionally* correct, but its *code* is not
+  sacred — it is extracted, not copied. "It already works on Pico" is not a
+  reason to keep Pico-shaped code in the shared layer.
+
+Result: GPIO/I²C/PWM/SERVO differ between RP2040, RP2350, ESP32-S3, host, and
+pc386 **only** in their `hal_*` backend `.c` files.
+
+## Current state (verified) — the duplication we are removing
+
+| Capability | Today | Problem |
 |---|---|---|
-| **GPIO in/out/analog** | **works** | `vm_sys_pin_setpin` handles `DOUT`/`DIN`/`ARAW` (+ pull-ups) via `hal_pin_*`; pin table marks every GP digital/analog-capable. `SETPIN GP2,DOUT : PIN(GP2)=1` and `PIN(GP14)` work today. |
-| `PORT`, `PULSE` | stubbed | `cmd_port`/`cmd_pulse` are `{}` — multi-pin helpers, out of scope here. |
-| **PWM** | stubbed | `vm_sys_pwm_configure`/`_sync`/`_off` call `error("PWM not supported …")`. Pin table has `ESP32_NO_PWM` (99) for every pin. `cmd_pwm` body exists and is fine. |
-| **SERVO** | stubbed | `vm_sys_servo_configure` errors. Built on PWM. |
-| **I²C** | stubbed | `cmd_i2c`/`cmd_i2c2` are `{}` no-ops (registered tokens → silent no-op). The real driver is shared `drivers/i2c_bus/I2C.c`, but it calls Pico SDK directly. |
+| **GPIO** | `vm_sys_pin.c` (RP, Pico SDK) **and** `vm_sys_pin_esp32.c` (ESP32) — two separate bodies, same signatures | duplicated logic; only the leaf `hal_pin_*` is shared |
+| **PWM** | `vm_sys_pwm_configure` etc. implemented twice (RP body does `pwm_set_chan_level`/`pwm_set_enabled` on a slice; ESP32 body errors). `cmd_pwm` copied into pc386/esp32/host ports | duplicated logic + duplicated command parser |
+| **SERVO** | `vm_sys_servo_configure` twice (RP real, ESP32 errors) | same |
+| **I²C** | shared `drivers/i2c_bus/I2C.c` but it calls Pico SDK inline (`i2c_write_timeout_us`, `i2c_init`, slave via `i2c->hw->` registers + IRQ). ESP32 `cmd_i2c` is a `{}` stub | "shared" driver is actually Pico-bound |
 
-## The MMBasic pin model (what "config-driven" means here)
+Both execution engines already converge here: the interpreter (`cmd_pwm` →
+`vm_sys_pwm_configure`) and the bytecode VM (`OP_SYSCALL` → same
+`vm_sys_pwm_configure`) call the identical syscall — so unifying the syscall
+body fixes both `RUN` and `FRUN` at once.
 
-Pins are bound at runtime against a per-pin **capability table** (`PinDef[].mode`
-bitmap) and validated by `SETPIN`:
+## Target architecture
 
-- **GPIO**: `SETPIN pin, DOUT|DIN|...` → `vm_sys_pin_setpin`.
-- **I²C**: `SETPIN sda, I2C0SDA` + `SETPIN scl, I2C0SCL` set the `I2C0SDApin`/
-  `I2C0SCLpin` globals (`core/mmbasic/External.c`); `I2C OPEN` then brings the
-  bus up on those pins. Defaults seed from `Option.SYSTEM_I2C_SDA/SCL`.
-- **PWM**: `SETPIN pin, PWM…` binds a pin to a PWM channel; `PWM ch,freq,duty`
-  drives it. `SERVO ch,pos` is PWM at 50 Hz.
+```
+BASIC  ──►  cmd_*  ──►  vm_sys_*  ──►  hal_*  ──►  port backend (.c)
+(shared)   (shared)    (shared)     (contract)   (RP / ESP32 / host)
+                ▲                                    pwm_set_* / ledc_*
+   OP_SYSCALL ──┘                                    i2c_*      / i2c_master_*
+   (bytecode VM)                                     gpio_*     / driver/gpio
+```
 
-So per peripheral the ESP32 work is: (a) add capability flags to the ESP32 pin
-table, (b) handle the mode in `setpin`, (c) implement the HAL backend, (d) seed
-FREENOVE defaults (overridable).
+Everything left of `hal_*` is one shared copy. Everything in the backend is
+per-port and nothing else is.
 
-## HAL convention (from `hal/CONTRACT.md`)
+## HAL contracts
 
-- Return `int`: `0` ok, negative errno-style. No-fail funcs return the value.
-- Caller owns all buffers; the HAL impl allocates only its own scratch at init.
-- HAL impls **never** call MMBasic `error()` — they return a code; the caller
-  (`cmd_*`) maps it to the BASIC-visible message.
-- `hal_<name>_init()` exists; hot paths use the Tier-B `hal_<name>_inlines.h`
-  mechanism (I²C/PWM are not hot-path → plain extern is fine).
-- Headers in `hal/*.h` must pass `tools/check_hal_purity.sh` (no target macros).
+`hal/CONTRACT.md` rules: `int` returns (`0` ok / negative errno), caller owns
+buffers, HAL impls never call `error()`, `hal_<name>_init()` exists, headers
+pass `tools/check_hal_purity.sh`.
 
-There is already `hal/hal_pin.h` (GPIO, in use). There is **no** general
-`hal/hal_i2c.h` (only `hal_i2c_keypad.h`, a specific surface) and no
-`hal/hal_pwm.h` — this plan adds them.
+**`hal/hal_pin.h`** — already exists and is the model (GPIO/ADC/pull/function).
+The work is to make the *one* shared `vm_sys_pin.c` use it for every port.
 
-## 1. `hal/hal_i2c.h` — I²C master contract
-
+**`hal/hal_i2c.h`** (new):
 ```c
-/* bus 0 = I2C / I2C0, bus 1 = I2C2 / I2C1. */
+/* bus 0 = I2C/I2C0, bus 1 = I2C2/I2C1 */
 int  hal_i2c_master_init(int bus, int sda_gpio, int scl_gpio, uint32_t baud);
 void hal_i2c_master_deinit(int bus);
 int  hal_i2c_master_write(int bus, uint8_t addr, const uint8_t *buf, size_t len,
-                          int nostop, uint32_t timeout_us);  /* >=0 bytes, <0 err */
+                          int nostop, uint32_t timeout_us);   /* >=0 bytes / <0 err */
 int  hal_i2c_master_read (int bus, uint8_t addr, uint8_t *buf, size_t len,
                           int nostop, uint32_t timeout_us);
+/* slave (RP backend = its current IRQ impl; ESP32 = ESP-IDF i2c slave) */
+int  hal_i2c_slave_enable(int bus, uint8_t addr);
+int  hal_i2c_slave_poll  (int bus, uint8_t *buf, size_t cap, size_t *len);
+int  hal_i2c_slave_send  (int bus, const uint8_t *buf, size_t len);
+void hal_i2c_slave_disable(int bus);
 ```
 
-The shared driver's **master** paths (`I2C OPEN/WRITE/READ/CLOSE` and the
-register-read helpers) call these. `nostop` = repeated-start (hold the bus);
-`timeout_us` mirrors the existing `I2C_Timeout`.
-
-### Refactor (makes `drivers/i2c_bus/I2C.c` port-agnostic)
-1. Add `hal/hal_i2c.h` (purity-clean).
-2. Replace the Pico-SDK master calls in `I2C.c` with `hal_i2c_master_*`.
-3. **Pico backend** `drivers/i2c_bus/hal_i2c_pico.c` (or per-port): thin 1:1
-   wrappers over the exact SDK calls used today — **zero Pico behavior change**.
-4. **ESP32 backend** `ports/esp32_s3/main/hal_i2c_esp32.c` over ESP-IDF
-   `i2c_master` (reuse the bus plumbing in `esp32_freenove_i2c.c`).
-5. Wire both into their ports' builds; keep `run_tests.sh` at 192/192.
-
-### I²C slave — deferred, but kept compilable everywhere
-The slave path in `I2C.c` is IRQ-driven and pokes RP2040 registers directly. To
-avoid a target `#ifdef` in shared code, route the slave command paths through
-`hal_i2c_slave_*` entry points: the **Pico backend** keeps its exact IRQ
-behavior; the **ESP32 backend stubs** them (returns "not supported", `cmd_i2c`
-surfaces the BASIC error). A real ESP-IDF slave impl is a later phase. This
-keeps Phase 1 to the master path — the actual ESP32 need.
-
-## 2. `hal/hal_pwm.h` — PWM contract (SERVO rides it)
-
-Full contract, same rigor as I²C:
-
+**`hal/hal_pwm.h`** (new):
 ```c
-int  hal_pwm_init(void);                       /* once, at boot */
-/* Bind `channel` to `gpio` and start it at `freq_hz` / `duty_pct` (0–100).
- * For a paired second channel (the RP "B" channel / a second LEDC channel
- * sharing the timer) pass has_b/duty_b_pct. Returns 0 or negative errno. */
+int  hal_pwm_init(void);
 int  hal_pwm_configure(int channel, int gpio, float freq_hz,
-                       float duty_pct, int has_b, float duty_b_pct,
-                       int invert);
-int  hal_pwm_set_duty(int channel, int which, float duty_pct); /* which=0/1 */
+                       float duty_pct, int has_b, float duty_b_pct, int invert);
+int  hal_pwm_set_duty(int channel, int which, float duty_pct); /* which 0/1 */
 void hal_pwm_stop(int channel);
-int  hal_pwm_channels(void);                   /* count, for bounds checks */
+int  hal_pwm_channels(void);
 ```
 
-The contract is the *capability*; the **logic stays shared**. Today the PWM
-math (frequency→wrap/clkdiv, duty scaling, the servo 50 Hz / position→duty
-conversion) lives in the RP `vm_sys_pin.c` while ESP32 has stubs — i.e.
-duplicated per port. The fix mirrors I²C: the PWM/servo logic calls
-`hal_pwm_*`, and the hardware specifics drop into the backend.
+## Per-peripheral unification
 
-### Refactor (makes the PWM path port-agnostic)
-1. Add `hal/hal_pwm.h` (purity-clean).
-2. `vm_sys_pwm_configure` / `vm_sys_pwm_set` / `vm_sys_pwm_off` /
-   `vm_sys_servo_configure` call `hal_pwm_*` for the hardware, keeping the
-   shared BASIC-facing semantics (`PWM ch,freq,duty[,duty2]`, `SERVO ch,pos`).
-   `SERVO` = `hal_pwm_configure(ch, pin, 50.0, position→duty)`.
-3. **Pico backend** `hal_pwm_pico.c` — 1:1 wrappers over the RP `pwm_set_*`
-   slice calls `vm_sys_pin.c` makes today → zero Pico behavior change.
-4. **ESP32 backend** `hal_pwm_esp32.c` — LEDC. 8 channels assignable to any
-   GPIO; frequency per-timer (4 timers), so channels at the same frequency
-   share a timer. (`esp32_backlight.c` already drives LEDC — reuse the setup.)
-5. **ESP32 pin table**: give PWM-capable pins a channel id (drop the blanket
-   `ESP32_NO_PWM`); `vm_sys_pin_setpin` accepts the PWM mode and binds
-   pin → channel. Any pin → any free channel, set via `SETPIN`. Existing
-   BASIC syntax unchanged.
+**GPIO** — collapse `vm_sys_pin.c` + `vm_sys_pin_esp32.c` into one shared
+`vm_sys_pin.c` that calls only `hal_pin_*`. The RP `gpio_*`/ADC specifics and the
+ESP32 `driver/gpio`/`esp_adc` specifics move to each port's `hal_pin` backend.
 
-### Channel model (the one decision)
-LEDC's 8 channels are exposed as the `PWM` command's channels — any pin
-assignable to any free channel, unlike RP's fixed slice↔pin. Channels sharing a
-frequency share one of the 4 LEDC timers. This keeps `PWM ch,freq,duty` working
-as-is.
+**I²C** — one shared `cmd_i2c`/`cmd_i2c2` + `I2C.c` calling `hal_i2c_*`. The RP
+SDK master calls and the IRQ slave code move to `hal_i2c_pico.c`; ESP32 master on
+`i2c_master`, slave on ESP-IDF i2c-slave, in `hal_i2c_esp32.c`. Pins via
+`SETPIN sda,I2C0SDA` / `SETPIN scl,I2C0SCL`.
 
-## 3. SERVO
+**PWM** — one shared `cmd_pwm` + `vm_sys_pwm_*` doing the freq/duty math, calling
+`hal_pwm_*`. RP `pwm_set_*` → `hal_pwm_pico.c`; ESP32 LEDC → `hal_pwm_esp32.c`
+(`esp32_backlight.c` already drives LEDC — reuse). ESP32 pin table gains PWM
+channel caps (drop the blanket `ESP32_NO_PWM`).
 
-No separate driver — `vm_sys_servo_configure` is a thin layer over
-`hal_pwm_configure` at 50 Hz, with the standard position→duty mapping
-(`duty ≈ 5 + pos·0.05`, i.e. 1–2 ms on a 20 ms period). Falls out of the PWM
-HAL for free on every port.
+**SERVO** — one shared `vm_sys_servo_configure` = `hal_pwm_configure(ch, pin,
+50, position→duty)`. No backend work beyond PWM.
 
-## 4. Board defaults (FREENOVE) — overridable
+## Channel / pin model
 
-- Seed `Option.SYSTEM_I2C_SDA = GP16`, `SYSTEM_I2C_SCL = GP15` in the FREENOVE
-  profile defaults (the board's single shared touch/audio I²C bus). `GENERIC`
-  seeds nothing. The user can `SETPIN` any pins to override.
-- No PWM/SERVO default pins needed — those are always user-assigned via `SETPIN`.
+- **PWM channels**: RP keeps its fixed slice↔pin mapping inside its backend;
+  ESP32 exposes LEDC's 8 channels (any pin, 4 shared timers). The shared layer
+  just sees abstract `channel` ids — each backend maps them to its hardware.
+- **I²C pins**: always from `SETPIN`/`OPTION`; FREENOVE profile seeds
+  `Option.SYSTEM_I2C_SDA=GP16`, `SYSTEM_I2C_SCL=GP15` (overridable). `GENERIC`
+  seeds nothing.
 
-## Phasing
+## Scope — one PR
 
-GPIO already rides `hal_pin.h` (the model). The two new HALs are **independent,
-equal-weight deliverables** — they touch different shared files, so they can
-land in either order or in parallel; one PR each keeps the Pico-regression
-surface small.
+GPIO + I²C (master+slave) + PWM + SERVO unification, all backends (RP2040,
+RP2350, ESP32-S3, host, pc386), in a single PR. Smoke on the Freenove:
+`SETPIN`+`PIN` (GPIO), `I2C OPEN/WRITE/READ` on GP15/16, a `PWM` pin and a
+`SERVO` on the IO header.
 
-- **PR — I²C master HAL**: `hal_i2c.h`, refactor `I2C.c`, Pico + ESP32 backends,
-  slave stubs. Smoke `I2C OPEN/WRITE/READ` on the Freenove GP15/16 bus.
-- **PR — PWM + SERVO HAL**: `hal_pwm.h`, the shared `vm_sys_pwm_*`/`servo`
-  refactor, Pico + ESP32 (LEDC) backends, pin-table PWM caps. Smoke a PWM pin
-  and a servo on the IO header.
-- **Each PR**: build ESP32 **and** a Pico `.uf2` target (no regression),
-  `run_tests.sh` 192/192, HAL purity gate green.
-- **Later**: I²C slave ESP-IDF impl; `PORT`/`PULSE` if wanted.
+## Gates (behaviour preserved, code unified)
 
-## No-regression guarantee (Pico)
-
-Refactoring `I2C.c` and the PWM syscalls touches Pico-linked code. The Pico
-backends are 1:1 wrappers over the calls those files make **today**, so Pico
-behavior is byte-identical. Gates: `run_tests.sh` stays 192/192, the HAL purity
-gate passes, and at least one Pico `.uf2` target builds clean before merge.
+- `run_tests.sh` stays **192/192**.
+- HAL purity gate green; **zero** Pico-SDK / ESP-IDF symbols in shared files.
+- Builds clean: ESP32-S3 (octal + quad) **and** at least one RP2040 and one
+  RP2350 `.uf2` target, host, pc386.
+- RP PWM/I²C/GPIO still *function* identically (re-smoke a Pico target) — but the
+  code that drives them now lives in `hal_*_pico.c`, not the shared layer.
 
 ## Open decisions
 
-1. **I²C slave**: defer to a later phase (master-first), as above — confirm.
-2. **PWM channel model**: expose LEDC's 8 channels as the `PWM` command's
-   channels, any pin assignable via `SETPIN` — confirm.
-3. **Pico backend placement**: `drivers/i2c_bus/hal_i2c_pico.c` (shared by all
-   RP2 ports) vs per-port — lean shared-in-driver.
+1. **PWM channel model** — LEDC 8 channels exposed as the `PWM` command's
+   channels on ESP32; RP keeps slice mapping in-backend. (Recommended.)
+2. **Pico backend placement** — `drivers/i2c_bus/hal_i2c_pico.c` +
+   `drivers/.../hal_pwm_pico.c` (shared by all RP2 ports) vs per-port dir.
+3. **ESP32 I²C slave** — full ESP-IDF i2c-slave in this PR, or a functional
+   stub with the slave *architecture* unified now and the ESP32 backend filled
+   next. (The architecture is unified either way.)
