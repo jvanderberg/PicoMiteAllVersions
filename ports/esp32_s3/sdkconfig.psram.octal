@@ -6,7 +6,13 @@
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_TYPE_AUTO=y
-CONFIG_SPIRAM_SPEED_80M=y
+# 40 MHz rather than 80 MHz: octal PSRAM at 80 MHz is unstable alongside WiFi on
+# some S3 modules (WiFi FIQ handler touches the shared flash/PSRAM cache and the
+# 80 MHz MSPI timing margin is too tight -> LoadProhibited in the WiFi task at
+# auth). 40 MHz restores margin so every octal module boots reliably; the cost
+# is ~half PSRAM bandwidth, which the interpreter heap does not notice (only
+# bulk framebuffer/array transfers are slower).
+CONFIG_SPIRAM_SPEED_40M=y
 CONFIG_SPIRAM_BOOT_INIT=y
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
