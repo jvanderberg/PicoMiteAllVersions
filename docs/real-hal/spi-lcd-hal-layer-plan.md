@@ -1,8 +1,9 @@
 # SPI LCD Generalization Plan
 
-**Status:** Track A complete (A1–A3) and B0+B1 landed on `jv/spi-lcd-track-a`;
-next is B2 (controller-core extraction). Hardware smoke of Track A on the
-Freenove board is still owed.
+**Status:** Track A complete (A1–A3, hardware-validated on the Freenove
+board) and B0+B1+B2 landed on `jv/spi-lcd-track-a`; next is B3 (ESP32
+adopts the controller core). PicoMite hardware smoke of B2 is owed when a
+Pico board is next on the bench (compile + host + purity gates all hold).
 
 Two tracks, separable and sequenced:
 
@@ -232,7 +233,7 @@ int  hal_spi_lcd_bus_read(uint8_t * buf, size_t len); /* 0 = unsupported */
   `lcd_xmit_byte_multi` exactly as today; the contract adds one call layer
   on the command path only, nothing on the pixel path.
 
-### B2 — controller core extraction
+### B2 — controller core extraction ✅
 
 - New `drivers/spi_lcd/spi_lcd_panels.c`: `display_details[]`, every
   controller init sequence, `spi_write_command/data/cd/CommandData`,
@@ -308,7 +309,7 @@ pipelines.
 | A3 ✅ | OPTION TOUCH pins | touch on generic wiring |
 | B0 ✅ | symbol inventory | doc updated, no code change |
 | B1 ✅ | bus contract + pico/esp32 adapters | buildall + esp32 builds + host suite; purity gate |
-| B2 | controller core extraction | PicoMite hardware regression; byte-identical init |
+| B2 ✅ | controller core extraction | PicoMite hardware regression owed; transplant verified mechanically (cases byte-identical, five 1:1 primitive renames) |
 | B3 | ESP32 adopts core | Freenove regression + one new panel |
 | B4 | presentation/engine unification | separate campaign, own plan refresh |
 

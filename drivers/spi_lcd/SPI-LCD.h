@@ -39,6 +39,7 @@ extern void SPISpeedSet(int speed);
 extern void DefineRegionSPI(int xstart, int ystart, int xend, int yend, int rw);
 extern void ClearCS(int pin);
 extern void ResetController(void);
+extern int spi_lcd_panel_init(void);
 extern void spi_write_command(unsigned char data);
 extern void spi_write_cd(unsigned char command, int data, ...);
 extern void spi_write_data(unsigned char data);
