@@ -1,7 +1,8 @@
 # SPI LCD Generalization Plan
 
-**Status:** planned, not started. Track A is independent and lands first;
-Track B is the structural refactor and follows.
+**Status:** Track A complete (A1–A3) and B0+B1 landed on `jv/spi-lcd-track-a`;
+next is B2 (controller-core extraction). Hardware smoke of Track A on the
+Freenove board is still owed.
 
 Two tracks, separable and sequenced:
 
@@ -290,11 +291,11 @@ pipelines.
 
 | Step | Scope | Gate |
 |---|---|---|
-| A1 | ESP32 drivers read Option | esp32 builds; Freenove smoke; no `profile->lcd` reads outside seeder |
-| A2 | OPTION LCDPANEL / SYSTEM SPI on ESP32 | generic-wiring hardware test; OPTION LIST shows config |
-| A3 | OPTION TOUCH pins | touch on generic wiring |
-| B0 | symbol inventory | doc updated, no code change |
-| B1 | bus contract + pico/esp32 adapters | buildall + esp32 builds + host suite; purity gate |
+| A1 ✅ | ESP32 drivers read Option | esp32 builds; Freenove smoke; no `profile->lcd` reads outside seeder |
+| A2 ✅ | OPTION LCDPANEL / SYSTEM SPI on ESP32 | generic-wiring hardware test; OPTION LIST shows config |
+| A3 ✅ | OPTION TOUCH pins | touch on generic wiring |
+| B0 ✅ | symbol inventory | doc updated, no code change |
+| B1 ✅ | bus contract + pico/esp32 adapters | buildall + esp32 builds + host suite; purity gate |
 | B2 | controller core extraction | PicoMite hardware regression; byte-identical init |
 | B3 | ESP32 adopts core | Freenove regression + one new panel |
 | B4 | presentation/engine unification | separate campaign, own plan refresh |
