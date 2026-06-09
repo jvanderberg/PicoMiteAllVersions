@@ -11,8 +11,8 @@
 
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "esp32_board_profile.h"
 #include "esp32_ft6336u_touch.h"
+#include "esp32_option_ext.h"
 
 #define GUI_TOUCH_SAMPLE_CACHE_US 5000
 
@@ -44,11 +44,6 @@ static int pin_to_gpio(int pin) {
     return gpio;
 }
 
-static int gpio_to_pin(int gpio) {
-    if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) return 0;
-    return codemap(gpio);
-}
-
 void PinSetBit(int pin, unsigned int offset) {
     int gpio = pin_to_gpio(pin);
     if (gpio < 0) return;
@@ -72,12 +67,11 @@ void PinSetBit(int pin, unsigned int offset) {
 }
 
 static void publish_capacitive_option_state(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_touch) return;
+    if (!ESP32_OPTION_TOUCH_SDA) return;
 
     Option.TOUCH_CAP = 1;
-    Option.TOUCH_CS = gpio_to_pin(profile->touch.reset);
-    Option.TOUCH_IRQ = gpio_to_pin(profile->touch.interrupt);
+    Option.TOUCH_CS = ESP32_OPTION_TOUCH_RST;
+    Option.TOUCH_IRQ = ESP32_OPTION_TOUCH_INT;
     if (!Option.THRESHOLD_CAP) Option.THRESHOLD_CAP = 22;
 }
 
@@ -130,16 +124,15 @@ void InitTouch(void) {
     }
 
     publish_capacitive_option_state();
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    TOUCH_IRQ_PIN = profile->touch.interrupt;
-    TOUCH_CS_PIN = profile->touch.reset;
+    TOUCH_IRQ_PIN = pin_to_gpio(ESP32_OPTION_TOUCH_INT);
+    TOUCH_CS_PIN = pin_to_gpio(ESP32_OPTION_TOUCH_RST);
     TOUCH_GETIRQTRIS = 1;
 }
 
 void ConfigTouch(unsigned char * p) {
     (void)p;
-    if (!esp32_board_profile_current()->has_touch)
-        error("Touch not supported on this platform");
+    if (!ESP32_OPTION_TOUCH_SDA)
+        error("Touch not configured (OPTION TOUCH)");
     InitTouch();
 }
 

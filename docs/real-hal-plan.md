@@ -113,6 +113,7 @@ exit gate in practice.
 - [scoreboard.md](real-hal/scoreboard.md) — raw ifdef counts per file per phase, baseline + targets.
 - [esp32-s3-port.md](real-hal/esp32-s3-port.md) + [esp32-s3-port-log.md](real-hal/esp32-s3-port-log.md) — Adafruit Metro ESP32-S3 (#5500) port: rules + invariants, current state, Stage D/E/F work items.
 - [web-console-driver-plan.md](real-hal/web-console-driver-plan.md) — portable WiFi/browser video, keyboard, and sound backend using the native simulator's `FRMB`/`CMDS`/WebAudio model; ESP32-S3 is the first target.
+- [spi-lcd-hal-layer-plan.md](real-hal/spi-lcd-hal-layer-plan.md) — SPI LCD generalization: Track A makes display pins user-configurable on ESP32-S3 (`OPTION LCDPANEL`, profile demotes to defaults seeder); Track B splits `drivers/spi_lcd/` into a transport-neutral controller core + per-port bus adapters.
 
 ## How to work a phase
 

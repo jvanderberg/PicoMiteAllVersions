@@ -183,9 +183,10 @@ set(PORT_LOCAL_SRCS
     esp32_audio_profile.c                   # named board audio-profile table
     esp32_audio_profile_freenove_es8311.c   # Freenove ES8311 setup hook
     ${AUDIO_BACKEND_SRCS}
-    esp32_backlight.c                       # board-profile LCD backlight PWM
+    esp32_backlight.c                       # Option-pin LCD backlight PWM
     hal_vm_framebuffer_esp32.c             # ESP32 web display + Freenove ILI9341 FRAMEBUFFER backend
-    esp32_ili9341_lcd.c                     # board-profile SPI ILI9341 local LCD
+    esp32_ili9341_lcd.c                     # Option-pin SPI ILI9341 local LCD
+    esp32_lcd_options.c                     # OPTION SYSTEM SPI / OPTION LCDPANEL setters
     esp32_freenove_i2c.c                    # shared Freenove touch/audio I2C bus
     esp32_ft6336u_touch.c                   # Freenove FNK0104B FT6336U touch reader
     esp32_touch_function.c                  # ESP32 TOUCH() function over port-local touch readers

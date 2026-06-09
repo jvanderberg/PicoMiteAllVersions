@@ -33,14 +33,16 @@
 #include "esp32_board_profile.h"
 #include "esp32_audio_options.h"
 #include "esp32_ft6336u_touch.h"
+#include "esp32_option_ext.h"
 
 extern void port_print_supported_boards(void);
 extern int port_factory_reset_board(unsigned char * p);
 extern const char * port_pin_reserved_label(int pin);
 
 /* esp32_parse_pin_arg — converts a "GPn" textual pin argument (or raw pin
- * number) to the VM's internal pin index. Used by cmd_setpin / fun_pin. */
-static int esp32_parse_pin_arg(unsigned char * arg) {
+ * number) to the VM's internal pin index. Used by cmd_setpin / fun_pin and
+ * the OPTION pin setters (SDCARD here, LCDPANEL in esp32_lcd_options.c). */
+int esp32_parse_pin_arg(unsigned char * arg) {
     unsigned char * p = arg;
     skipspace(p);
     if ((p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p') && isdigit(p[2]))
@@ -75,8 +77,8 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
     unsigned char * p = checkstring(cmdline, (unsigned char *)"TOUCH CALIBRATE");
     if (!p) return 0;
     int persist = 1;
-    if (!esp32_board_profile_current()->has_touch)
-        error("Touch not supported on this platform");
+    if (!ESP32_OPTION_TOUCH_SDA)
+        error("Touch not configured (OPTION TOUCH)");
     if (checkstring(p, (unsigned char *)"DEFAULT")) {
         esp32_ft6336u_touch_set_default_calibration();
     } else if (checkstring(p, (unsigned char *)"OFF")) {
@@ -96,7 +98,7 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
 }
 
 static void esp32_touch_calibrate_print_option(void) {
-    if (!esp32_board_profile_current()->has_touch) return;
+    if (!ESP32_OPTION_TOUCH_SDA) return;
     char line[96];
     snprintf(line, sizeof(line), "OPTION TOUCH CALIBRATE %d,%d,%.0f,%.0f\r\n",
              Option.TOUCH_XZERO, Option.TOUCH_YZERO,
@@ -136,11 +138,15 @@ void printoptions(void) {
     extern void esp32_wifi_print_options(void);
     extern void esp32_vga_print_options(void);
     extern void esp32_usb_role_print_options(void);
+    extern void esp32_lcd_print_options(void);
+    extern void esp32_touch_print_options(void);
     esp32_board_profile_print_option();
     esp32_wifi_print_options();
     esp32_usb_role_print_options();
     esp32_audio_print_options();
     esp32_vga_print_options();
+    esp32_lcd_print_options();
+    esp32_touch_print_options();
     esp32_touch_calibrate_print_option();
     hal_gui_controls_print_options();
     if (Option.SD_CS) {
@@ -412,6 +418,7 @@ void cmd_option(void) {
     extern int esp32_wifi_option_setter(unsigned char * cmdline);
     extern int esp32_vga_option_setter(unsigned char * cmdline);
     extern int esp32_usb_role_option_setter(unsigned char * cmdline);
+    extern int esp32_lcdpanel_option_setter(unsigned char * cmdline);
     unsigned char * tp;
     if (checkstring(cmdline, (unsigned char *)"LIST")) {
         printoptions();
@@ -423,11 +430,14 @@ void cmd_option(void) {
         esp32_configure(tp);
         return;
     }
+    extern int esp32_touch_option_setter(unsigned char * cmdline);
     if (esp32_usb_role_option_setter(cmdline)) return;
     if (esp32_audio_option_setter(cmdline)) return;
     if (esp32_vga_option_setter(cmdline)) return;
     if (esp32_touch_calibrate_option_setter(cmdline)) return;
+    if (esp32_touch_option_setter(cmdline)) return;
     if (hal_gui_controls_option_set(cmdline)) return;
+    if (esp32_lcdpanel_option_setter(cmdline)) return;
     if (esp32_sdcard_option_setter(cmdline)) return;
     if (option_command_handle_common(cmdline, false)) return;
     if (esp32_wifi_option_setter(cmdline)) return;
