@@ -200,14 +200,6 @@ void esp32_lcd_print_options(void) {
         lcd_print_pin(Option.LCD_MISO);
         MMPrintString("\r\n");
     }
-    if (Option.SYSTEM_I2C_SDA) {
-        MMPrintString("OPTION SYSTEM I2C ");
-        lcd_print_pin(Option.SYSTEM_I2C_SDA);
-        MMPrintString(", ");
-        lcd_print_pin(Option.SYSTEM_I2C_SCL);
-        if (Option.SYSTEM_I2C_SLOW) MMPrintString(", SLOW");
-        MMPrintString("\r\n");
-    }
     if (Option.LCD_CD && Option.LCD_CS) {
         MMPrintString("OPTION LCDPANEL ILI9341, LANDSCAPE, ");
         lcd_print_pin(Option.LCD_CD);
