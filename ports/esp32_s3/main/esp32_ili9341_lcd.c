@@ -1,8 +1,10 @@
 /*
  * esp32_ili9341_lcd.c - ESP-IDF SPI-master ILI9341 backend for ESP32-S3.
  *
- * This is intentionally independent of the Pico SPI-LCD driver stack. Board
- * profile data supplies the pins; Draw.c supplies the drawing dispatch.
+ * This is intentionally independent of the Pico SPI-LCD driver stack.
+ * Option.LCD_* supplies the pins (set by OPTION SYSTEM SPI / OPTION
+ * LCDPANEL, or seeded from a board profile); Draw.c supplies the drawing
+ * dispatch.
  */
 
 #include <stdint.h>
@@ -18,32 +20,21 @@
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "hal/hal_spi_lcd_bus.h"
 #include "esp32_backlight.h"
 #include "esp32_board_profile.h"
 
 #define LCD_W 320
 #define LCD_H 240
 #define LCD_SPI_HOST SPI3_HOST
+#define LCD_SPI_HZ 40000000
 #define LCD_DIRTY_TILE 16
 #define LCD_DIRTY_COLS ((LCD_W + LCD_DIRTY_TILE - 1) / LCD_DIRTY_TILE)
 #define LCD_DIRTY_ROWS ((LCD_H + LCD_DIRTY_TILE - 1) / LCD_DIRTY_TILE)
 
-#define LCD_SWRESET 0x01
-#define LCD_SLPOUT 0x11
-#define LCD_NORON 0x13
-#define LCD_INVON 0x21
-#define LCD_DISPON 0x29
 #define LCD_CASET 0x2A
 #define LCD_PASET 0x2B
 #define LCD_RAMWR 0x2C
-#define LCD_MADCTL 0x36
-#define LCD_PIXFMT 0x3A
-#define LCD_FRMCTR1 0xB1
-#define LCD_DISCTRL 0xB6
-#define LCD_PWCTR1 0xC0
-#define LCD_PWCTR2 0xC1
-#define LCD_VMCTR1 0xC5
-#define LCD_VMCTR2 0xC7
 
 static const char * TAG = "ili9341";
 static spi_device_handle_t s_lcd;
@@ -106,12 +97,39 @@ static void lcd_tx(const void * data, size_t len, int dc) {
     if (err != ESP_OK) ESP_LOGW(TAG, "spi transmit failed: %s", esp_err_to_name(err));
 }
 
+/* hal_spi_lcd_bus implementation: ESP-IDF spi_master transactions on a
+ * dedicated bus. CS is hardware-managed per transaction, so begin()/end()
+ * are no-ops; dc() latches the D/C level applied to subsequent writes.
+ * Panel readback isn't wired (the shadow buffer serves ReadBuffer), so
+ * read() reports unsupported. */
+static int s_bus_dc;
+
+void hal_spi_lcd_bus_begin(void) {}
+
+void hal_spi_lcd_bus_end(void) {}
+
+void hal_spi_lcd_bus_dc(int data) {
+    s_bus_dc = data ? 1 : 0;
+}
+
+void hal_spi_lcd_bus_write(const uint8_t * buf, size_t len) {
+    lcd_tx(buf, len, s_bus_dc);
+}
+
+int hal_spi_lcd_bus_read(uint8_t * buf, size_t len) {
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
 static void lcd_cmd(uint8_t cmd) {
-    lcd_tx(&cmd, 1, 0);
+    hal_spi_lcd_bus_dc(0);
+    hal_spi_lcd_bus_write(&cmd, 1);
 }
 
 static void lcd_data(const uint8_t * data, size_t len) {
-    lcd_tx(data, len, 1);
+    hal_spi_lcd_bus_dc(1);
+    hal_spi_lcd_bus_write(data, len);
 }
 
 static void lcd_cmd_data(uint8_t cmd, const uint8_t * data, size_t len) {
@@ -675,55 +693,42 @@ void esp32_ili9341_lcd_scroll(int lines) {
 }
 
 static void lcd_init_controller(void) {
-    lcd_cmd(LCD_SWRESET);
-    vTaskDelay(pdMS_TO_TICKS(5));
-
-    const uint8_t pw1[] = {0x23};
-    const uint8_t pw2[] = {0x10};
-    const uint8_t vm1[] = {0x2b, 0x2b};
-    const uint8_t vm2[] = {0xc0};
-    const uint8_t pix[] = {0x55};
-    const uint8_t frm[] = {0x00, 0x1b};
-    const uint8_t dis[] = {0x0a, 0x82, 0x27};
-    const uint8_t mad[] = {0x28}; /* landscape, BGR */
-    lcd_cmd_data(LCD_PWCTR1, pw1, sizeof(pw1));
-    lcd_cmd_data(LCD_PWCTR2, pw2, sizeof(pw2));
-    lcd_cmd_data(LCD_VMCTR1, vm1, sizeof(vm1));
-    lcd_cmd_data(LCD_VMCTR2, vm2, sizeof(vm2));
-    lcd_cmd_data(LCD_PIXFMT, pix, sizeof(pix));
-    lcd_cmd_data(LCD_FRMCTR1, frm, sizeof(frm));
-    lcd_cmd_data(LCD_DISCTRL, dis, sizeof(dis));
-    lcd_cmd(LCD_SLPOUT);
-    vTaskDelay(pdMS_TO_TICKS(120));
-    lcd_cmd(LCD_NORON);
-    /* Freenove's ILI9341 panel uses the inverted colour polarity; without
-     * this red presents as cyan and the whole palette is complemented. */
-    lcd_cmd(LCD_INVON);
-    lcd_cmd_data(LCD_MADCTL, mad, sizeof(mad));
+    /* Run the shared SPI LCD controller init (drivers/spi_lcd/
+     * spi_lcd_panels.c) through this file's hal_spi_lcd_bus entry points.
+     * The panel core keys on Option.DISPLAY_TYPE; the configured pins gate
+     * entry to this driver, so bind the type before initialising. The
+     * Freenove panel's inverted colour polarity comes from Option.BGR=1
+     * (seeded by the profile), which selects INVON in the shared ILI9341
+     * sequence. */
+    Option.DISPLAY_TYPE = ILI9341;
+    DISPLAY_TYPE = ILI9341;
+    (void)spi_lcd_panel_init();
     ScrollStart = 0;
-    lcd_cmd(LCD_DISPON);
-    vTaskDelay(pdMS_TO_TICKS(20));
 }
 
-static int lcd_gpio_valid(int gpio) {
-    return gpio >= 0 && gpio < HAL_PORT_GPIO_COUNT;
+/* Display pins live in Option.LCD_* / Option.DISPLAY_BL as pin indices —
+ * set by OPTION SYSTEM SPI / OPTION LCDPANEL, or seeded from a board
+ * profile's defaults. Resolve an index to the raw GPIO the ESP-IDF
+ * SPI/GPIO drivers need; 0 means not configured. */
+static int lcd_option_gpio(int pin) {
+    if (pin <= 0 || pin > NBRPINS || (PinDef[pin].mode & UNUSED)) return -1;
+    return PinDef[pin].GPno;
 }
 
-static int lcd_gpio_available(int gpio) {
-    if (gpio == ESP32_BOARD_PROFILE_NO_PIN) return 1;
-    if (!lcd_gpio_valid(gpio)) return 0;
-    int pin = codemap(gpio);
-    return pin > 0 && pin <= NBRPINS && ExtCurrentConfig[pin] == EXT_NOT_CONFIG;
+static int lcd_pin_available(int pin) {
+    if (pin == 0) return 1; /* optional pin left unconfigured */
+    if (pin < 0 || pin > NBRPINS) return 0;
+    return ExtCurrentConfig[pin] == EXT_NOT_CONFIG;
 }
 
-static int lcd_profile_pins_available(const esp32_board_profile_t * profile) {
-    return lcd_gpio_available(profile->lcd.sclk) &&
-           lcd_gpio_available(profile->lcd.mosi) &&
-           lcd_gpio_available(profile->lcd.miso) &&
-           lcd_gpio_available(profile->lcd.cs) &&
-           lcd_gpio_available(profile->lcd.dc) &&
-           lcd_gpio_available(profile->lcd.rst) &&
-           lcd_gpio_available(profile->lcd.backlight);
+static int lcd_option_pins_available(void) {
+    return lcd_pin_available(Option.LCD_CLK) &&
+           lcd_pin_available(Option.LCD_MOSI) &&
+           lcd_pin_available(Option.LCD_MISO) &&
+           lcd_pin_available(Option.LCD_CS) &&
+           lcd_pin_available(Option.LCD_CD) &&
+           lcd_pin_available(Option.LCD_Reset) &&
+           lcd_pin_available(Option.DISPLAY_BL);
 }
 
 static void lcd_release_resources(int bus_inited) {
@@ -745,25 +750,34 @@ static void lcd_release_resources(int bus_inited) {
 }
 
 void esp32_ili9341_lcd_init(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_lcd || Option.WebConsole || s_lcd) return;
+    /* The configured control pins are the panel selection: OPTION LCDPANEL
+     * sets them, OPTION LCDPANEL DISABLE clears them. Option.DISPLAY_TYPE is
+     * bound state (bind_panel rewrites it) and the web console clobbers it,
+     * so it is deliberately not part of this gate. */
+    if (Option.WebConsole || s_lcd) return;
+    if (!Option.LCD_CD || !Option.LCD_CS) return; /* no panel configured */
     dirty_clear();
-    if (!lcd_gpio_valid(profile->lcd.sclk) ||
-        !lcd_gpio_valid(profile->lcd.mosi) ||
-        !lcd_gpio_valid(profile->lcd.cs) ||
-        !lcd_gpio_valid(profile->lcd.dc)) {
-        ESP_LOGW(TAG, "selected profile has incomplete LCD pins");
+    const int sclk = lcd_option_gpio(Option.LCD_CLK);
+    const int mosi = lcd_option_gpio(Option.LCD_MOSI);
+    const int miso = lcd_option_gpio(Option.LCD_MISO);
+    const int cs = lcd_option_gpio(Option.LCD_CS);
+    const int dc = lcd_option_gpio(Option.LCD_CD);
+    const int rst = lcd_option_gpio(Option.LCD_Reset);
+    const int backlight = lcd_option_gpio(Option.DISPLAY_BL);
+    if (sclk < 0 || mosi < 0 || cs < 0 || dc < 0) {
+        ESP_LOGW(TAG, "LCD pins incomplete; set OPTION SYSTEM SPI and "
+                      "OPTION LCDPANEL");
         return;
     }
-    if (!lcd_profile_pins_available(profile)) {
-        ESP_LOGW(TAG, "selected profile LCD pins are already in use");
+    if (!lcd_option_pins_available()) {
+        ESP_LOGW(TAG, "configured LCD pins are already in use");
         return;
     }
 
     spi_bus_config_t bus = {
-        .mosi_io_num = profile->lcd.mosi,
-        .miso_io_num = profile->lcd.miso,
-        .sclk_io_num = profile->lcd.sclk,
+        .mosi_io_num = mosi,
+        .miso_io_num = miso,
+        .sclk_io_num = sclk,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = LCD_FLUSH_BYTES,
@@ -775,9 +789,9 @@ void esp32_ili9341_lcd_init(void) {
     }
 
     spi_device_interface_config_t dev = {
-        .clock_speed_hz = profile->lcd.spi_hz > 0 ? profile->lcd.spi_hz : 40000000,
+        .clock_speed_hz = LCD_SPI_HZ,
         .mode = 0,
-        .spics_io_num = profile->lcd.cs,
+        .spics_io_num = cs,
         .queue_size = 1,
     };
     err = spi_bus_add_device(LCD_SPI_HOST, &dev, &s_lcd);
@@ -795,15 +809,15 @@ void esp32_ili9341_lcd_init(void) {
         ESP_LOGW(TAG, "spi_device_get_actual_freq failed: %s", esp_err_to_name(err));
     }
 
-    s_dc_gpio = profile->lcd.dc;
+    s_dc_gpio = dc;
     gpio_config_t out = {
         .pin_bit_mask = 1ULL << (uint32_t)s_dc_gpio,
         .mode = GPIO_MODE_OUTPUT,
     };
-    if (lcd_gpio_valid(profile->lcd.backlight))
-        out.pin_bit_mask |= 1ULL << (uint32_t)profile->lcd.backlight;
-    if (lcd_gpio_valid(profile->lcd.rst))
-        out.pin_bit_mask |= 1ULL << (uint32_t)profile->lcd.rst;
+    if (backlight >= 0)
+        out.pin_bit_mask |= 1ULL << (uint32_t)backlight;
+    if (rst >= 0)
+        out.pin_bit_mask |= 1ULL << (uint32_t)rst;
     err = gpio_config(&out);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "gpio_config failed: %s", esp_err_to_name(err));
@@ -811,13 +825,13 @@ void esp32_ili9341_lcd_init(void) {
         return;
     }
 
-    if (lcd_gpio_valid(profile->lcd.rst)) {
-        gpio_set_level((gpio_num_t)profile->lcd.rst, 0);
+    if (rst >= 0) {
+        gpio_set_level((gpio_num_t)rst, 0);
         vTaskDelay(pdMS_TO_TICKS(20));
-        gpio_set_level((gpio_num_t)profile->lcd.rst, 1);
+        gpio_set_level((gpio_num_t)rst, 1);
         vTaskDelay(pdMS_TO_TICKS(120));
     }
-    if (lcd_gpio_valid(profile->lcd.backlight))
+    if (backlight >= 0)
         esp32_backlight_init_default();
 
     if (!s_shadow) {
@@ -852,5 +866,6 @@ void esp32_ili9341_lcd_init(void) {
     CurrentX = 0;
     CurrentY = 0;
     ClearScreen(gui_bcolour);
-    ESP_LOGI(TAG, "ILI9341 ready on %s", profile->platform_name);
+    ESP_LOGI(TAG, "ILI9341 ready: sclk=%d mosi=%d miso=%d cs=%d dc=%d",
+             sclk, mosi, miso, cs, dc);
 }

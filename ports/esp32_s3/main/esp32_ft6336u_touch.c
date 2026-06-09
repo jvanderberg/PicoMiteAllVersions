@@ -16,6 +16,7 @@
 #include "Hardware_Includes.h"
 #include "esp32_board_profile.h"
 #include "esp32_freenove_i2c.h"
+#include "esp32_option_ext.h"
 
 #define FT6336U_ADDR 0x38
 #define FT_REG_DEVICE_MODE 0x00
@@ -41,39 +42,40 @@ static const char * TAG = "ft6336u";
 static int s_init_attempted;
 static int s_ready;
 
-static int gpio_valid(int gpio) {
-    return gpio >= 0 && gpio < HAL_PORT_GPIO_COUNT;
+/* The touch configuration lives in the same Option fields PicoMite uses:
+ * the I2C bus in Option.SYSTEM_I2C_SDA/SCL (OPTION SYSTEM I2C) and the
+ * controller in Option.TOUCH_IRQ / TOUCH_CS(reset) / TOUCH_CAP /
+ * THRESHOLD_CAP (OPTION TOUCH FT6336). Resolve a pin index to the raw GPIO
+ * the ESP-IDF drivers need; 0 means not configured. */
+static int touch_option_gpio(int pin) {
+    if (pin <= 0 || pin > NBRPINS || (PinDef[pin].mode & UNUSED)) return -1;
+    return PinDef[pin].GPno;
 }
 
-static int touch_gpio_available(int gpio, int allow_shared_i2c_owner) {
-    if (!gpio_valid(gpio)) return 0;
-    int pin = codemap(gpio);
-    if (pin <= 0 || pin > NBRPINS) return 0;
+static int touch_pin_available(int pin, int allow_shared_i2c_owner) {
+    if (pin == 0) return 1; /* optional pin left unconfigured */
+    if (pin < 0 || pin > NBRPINS) return 0;
     if (ExtCurrentConfig[pin] == EXT_NOT_CONFIG) return 1;
     return allow_shared_i2c_owner &&
            esp32_board_profile_pin_owned_by_shared_i2c(pin);
 }
 
-static int touch_profile_pins_available(const esp32_board_profile_t * profile) {
-    return touch_gpio_available(profile->touch.sda, 1) &&
-           touch_gpio_available(profile->touch.scl, 1) &&
-           touch_gpio_available(profile->touch.interrupt, 0) &&
-           touch_gpio_available(profile->touch.reset, 0);
+static int touch_option_pins_available(void) {
+    return touch_pin_available(Option.SYSTEM_I2C_SDA, 1) &&
+           touch_pin_available(Option.SYSTEM_I2C_SCL, 1) &&
+           touch_pin_available(Option.TOUCH_IRQ, 0) &&
+           touch_pin_available(Option.TOUCH_CS, 0);
 }
 
-static void release_probe_i2c_if_unowned(const esp32_board_profile_t * profile) {
-    int sda_pin = codemap(profile->touch.sda);
-    int scl_pin = codemap(profile->touch.scl);
-    if (!esp32_board_profile_pin_owned_by_shared_i2c(sda_pin) &&
-        !esp32_board_profile_pin_owned_by_shared_i2c(scl_pin))
+static void release_probe_i2c_if_unowned(void) {
+    if (!esp32_board_profile_pin_owned_by_shared_i2c(Option.SYSTEM_I2C_SDA) &&
+        !esp32_board_profile_pin_owned_by_shared_i2c(Option.SYSTEM_I2C_SCL))
         esp32_freenove_i2c_deinit();
 }
 
-static void release_probe_gpios(const esp32_board_profile_t * profile) {
-    if (gpio_valid(profile->touch.interrupt))
-        (void)gpio_reset_pin((gpio_num_t)profile->touch.interrupt);
-    if (gpio_valid(profile->touch.reset))
-        (void)gpio_reset_pin((gpio_num_t)profile->touch.reset);
+static void release_probe_gpios(int irq_gpio, int rst_gpio) {
+    if (irq_gpio >= 0) (void)gpio_reset_pin((gpio_num_t)irq_gpio);
+    if (rst_gpio >= 0) (void)gpio_reset_pin((gpio_num_t)rst_gpio);
 }
 
 static int clampi(int v, int lo, int hi) {
@@ -122,42 +124,42 @@ void esp32_ft6336u_touch_init(void) {
     if (s_init_attempted) return;
     s_init_attempted = 1;
 
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_touch) return;
-    if (!gpio_valid(profile->touch.sda) || !gpio_valid(profile->touch.scl)) {
-        ESP_LOGW(TAG, "selected profile has incomplete touch I2C pins");
-        return;
-    }
-    if (!touch_profile_pins_available(profile)) {
-        ESP_LOGW(TAG, "selected profile touch pins are already in use");
+    if (!Option.TOUCH_CAP) return; /* touch not configured */
+    const int sda = touch_option_gpio(Option.SYSTEM_I2C_SDA);
+    const int scl = touch_option_gpio(Option.SYSTEM_I2C_SCL);
+    const int irq = touch_option_gpio(Option.TOUCH_IRQ);
+    const int rst = touch_option_gpio(Option.TOUCH_CS);
+    if (sda < 0 || scl < 0) return; /* system I2C not configured */
+    if (!touch_option_pins_available()) {
+        ESP_LOGW(TAG, "configured touch pins are already in use");
         return;
     }
 
-    esp_err_t err = esp32_freenove_i2c_init(profile->touch.sda, profile->touch.scl,
-                                            400000);
+    esp_err_t err = esp32_freenove_i2c_init(
+        sda, scl, Option.SYSTEM_I2C_SLOW ? 100000 : 400000);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2C init failed: %s", esp_err_to_name(err));
         return;
     }
 
-    if (gpio_valid(profile->touch.interrupt)) {
+    if (irq >= 0) {
         gpio_config_t in = {
-            .pin_bit_mask = 1ULL << (uint32_t)profile->touch.interrupt,
+            .pin_bit_mask = 1ULL << (uint32_t)irq,
             .mode = GPIO_MODE_INPUT,
             .pull_up_en = GPIO_PULLUP_ENABLE,
         };
         (void)gpio_config(&in);
     }
 
-    if (gpio_valid(profile->touch.reset)) {
+    if (rst >= 0) {
         gpio_config_t out = {
-            .pin_bit_mask = 1ULL << (uint32_t)profile->touch.reset,
+            .pin_bit_mask = 1ULL << (uint32_t)rst,
             .mode = GPIO_MODE_OUTPUT,
         };
         (void)gpio_config(&out);
-        gpio_set_level((gpio_num_t)profile->touch.reset, 0);
+        gpio_set_level((gpio_num_t)rst, 0);
         vTaskDelay(pdMS_TO_TICKS(20));
-        gpio_set_level((gpio_num_t)profile->touch.reset, 1);
+        gpio_set_level((gpio_num_t)rst, 1);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
@@ -165,8 +167,8 @@ void esp32_ft6336u_touch_init(void) {
     err = esp32_freenove_i2c_read_reg(FT6336U_ADDR, FT_REG_CHIP_ID, &id, 1);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "touch controller not found: %s", esp_err_to_name(err));
-        release_probe_gpios(profile);
-        release_probe_i2c_if_unowned(profile);
+        release_probe_gpios(irq, rst);
+        release_probe_i2c_if_unowned();
         return;
     }
     if (!known_chip(id)) ESP_LOGW(TAG, "unexpected FT6x36 chip id 0x%02x", id);
@@ -174,7 +176,9 @@ void esp32_ft6336u_touch_init(void) {
     (void)esp32_freenove_i2c_write_reg8(FT6336U_ADDR, FT_REG_DEVICE_MODE, 0x00);
     (void)esp32_freenove_i2c_write_reg8(FT6336U_ADDR, FT_REG_INTERRUPT_MODE, 0x00);
     (void)esp32_freenove_i2c_write_reg8(FT6336U_ADDR, FT_REG_CTRL, 0x00);
-    (void)esp32_freenove_i2c_write_reg8(FT6336U_ADDR, FT_REG_THRESHOLD, 22);
+    (void)esp32_freenove_i2c_write_reg8(
+        FT6336U_ADDR, FT_REG_THRESHOLD,
+        Option.THRESHOLD_CAP ? Option.THRESHOLD_CAP : 22);
     (void)esp32_freenove_i2c_write_reg8(FT6336U_ADDR, FT_REG_TOUCHRATE_ACTIVE, 0x01);
 
     publish_default_calibration_if_needed();
@@ -221,4 +225,73 @@ int esp32_ft6336u_touch_read(int index, int * x, int * y) {
 
 int esp32_ft6336u_touch_down(void) {
     return esp32_ft6336u_touch_read(0, NULL, NULL);
+}
+
+/* OPTION TOUCH FT6336, irq, reset [, click] [, threshold] — the PicoMite
+ * capacitive-touch form: the I2C bus comes from OPTION SYSTEM I2C, this
+ * command attaches the controller to it (Option.TOUCH_IRQ / TOUCH_CS /
+ * TOUCH_Click / TOUCH_CAP / THRESHOLD_CAP, the same fields PicoMite
+ * stores). OPTION TOUCH DISABLE clears it. OPTION TOUCH CALIBRATE keeps
+ * its own setter (it runs earlier in the option chain). Like the other pin
+ * setters this saves and reboots so the new wiring is probed at boot. */
+int esp32_touch_option_setter(unsigned char * cmdline) {
+    extern int esp32_parse_pin_arg(unsigned char * arg);
+    unsigned char * tp = checkstring(cmdline, (unsigned char *)"TOUCH");
+    if (!tp) return 0;
+    if (checkstring(tp, (unsigned char *)"CALIBRATE")) return 0;
+    if (CurrentLinePtr) error("Invalid in a program");
+    if (checkstring(tp, (unsigned char *)"DISABLE")) {
+        Option.TOUCH_CAP = 0;
+        Option.TOUCH_IRQ = 0;
+        Option.TOUCH_CS = 0;
+        Option.TOUCH_Click = 0;
+        SaveOptions();
+        _excep_code = RESET_COMMAND;
+        SoftReset();
+        return 1;
+    }
+    unsigned char * p = checkstring(tp, (unsigned char *)"FT6336");
+    if (!p) error("Touch type not supported on this port");
+    if (Option.TOUCH_CAP) error("Touch already configured");
+    if (!Option.SYSTEM_I2C_SDA) error("System I2C not set");
+    getargs(&p, 7, (unsigned char *)",");
+    if (argc != 3 && argc != 5 && argc != 7)
+        error("OPTION TOUCH FT6336, irq, reset [,click] [,threshold]");
+    int pins[3] = {0, 0, 0};
+    pins[0] = esp32_parse_pin_arg(argv[0]);                            /* IRQ */
+    pins[1] = esp32_parse_pin_arg(argv[2]);                            /* RESET */
+    if (argc >= 5 && *argv[4]) pins[2] = esp32_parse_pin_arg(argv[4]); /* click */
+    int threshold = (argc == 7) ? getint(argv[6], 0, 255) : 22;
+    for (int i = 0; i < 3; i++) {
+        if (i == 2 && pins[i] == 0) continue;
+        if (pins[i] < 1 || pins[i] > NBRPINS || (PinDef[pins[i]].mode & UNUSED))
+            error("Invalid pin");
+        if (ExtCurrentConfig[pins[i]] != EXT_NOT_CONFIG)
+            error("Pin %/| is in use", pins[i], pins[i]);
+        for (int j = i + 1; j < 3; j++)
+            if (pins[j] && pins[i] == pins[j])
+                error("Pin %/| is in use", pins[i], pins[i]);
+    }
+    Option.TOUCH_IRQ = pins[0];
+    Option.TOUCH_CS = pins[1];
+    Option.TOUCH_Click = pins[2];
+    Option.TOUCH_CAP = 1;
+    Option.THRESHOLD_CAP = threshold;
+    SaveOptions();
+    _excep_code = RESET_COMMAND;
+    SoftReset();
+    return 1;
+}
+
+void esp32_touch_print_options(void) {
+    if (!Option.TOUCH_CAP) return;
+    MMPrintString("OPTION TOUCH FT6336, ");
+    MMPrintString((char *)PinDef[Option.TOUCH_IRQ].pinname);
+    MMPrintString(", ");
+    MMPrintString((char *)PinDef[Option.TOUCH_CS].pinname);
+    if (Option.TOUCH_Click) {
+        MMPrintString(", ");
+        MMPrintString((char *)PinDef[Option.TOUCH_Click].pinname);
+    }
+    MMPrintString("\r\n");
 }

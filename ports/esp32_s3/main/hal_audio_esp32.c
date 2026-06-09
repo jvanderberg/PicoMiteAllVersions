@@ -36,7 +36,7 @@
 #include "hal/hal_audio_stream.h"
 #include "synth_pcm.h"
 #include "audio_play_common.h"
-#include "esp32_audio_profile.h"
+#include "esp32_audio_es8311.h"
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 
@@ -70,7 +70,7 @@ static audio_backend_t s_backend;
 static esp_err_t s_chan_err = ESP_OK;
 static esp_err_t s_mode_err = ESP_OK;
 static esp_err_t s_enable_err = ESP_OK;
-static esp_err_t s_profile_err = ESP_OK;
+static esp_err_t s_codec_err = ESP_OK;
 static esp_err_t s_write_err = ESP_OK;
 static int s_bclk_gpio = -1;
 static int s_ws_gpio = -1;
@@ -79,7 +79,7 @@ static int s_mclk_gpio = -1;
 static uint32_t s_write_count;
 static uint32_t s_nonzero_write_count;
 static size_t s_last_write_bytes;
-static const esp32_audio_profile_t * s_profile;
+static bool s_es8311;
 
 /* Audio-DMA channel globals referenced by core SOUND/ADC bookkeeping.
  * The shared synth path does not use them, but the symbols must exist. */
@@ -251,11 +251,6 @@ static int option_gpio(int pin, int fallback_gpio) {
     return fallback_gpio;
 }
 
-static int board_gpio(int gpio, int fallback_gpio) {
-    int pin = esp32_audio_profile_pin_to_option(gpio);
-    return pin ? PinDef[pin].GPno : fallback_gpio;
-}
-
 static int audio_pin_invalid(int pin) {
     return pin <= 0 || pin > NBRPINS || (PinDef[pin].mode & UNUSED);
 }
@@ -276,11 +271,11 @@ static int option_i2s_mclk_pin(void) {
 }
 
 static audio_backend_t select_backend(void) {
-    s_profile = NULL;
-    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE) {
-        s_profile = esp32_audio_profile_by_id(ESP32_OPTION_AUDIO_PROFILE);
-        return s_profile ? AUDIO_BACKEND_I2S : AUDIO_BACKEND_NONE;
-    }
+    s_es8311 = (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311);
+    if (s_es8311)
+        return (Option.audio_i2s_bclk && Option.audio_i2s_data)
+                   ? AUDIO_BACKEND_I2S
+                   : AUDIO_BACKEND_NONE;
     if ((ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PDM ||
          ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_OFF) &&
         Option.AUDIO_L && Option.AUDIO_R)
@@ -297,23 +292,13 @@ void esp32_audio_reserve_option_pins(void) {
         ExtCurrentConfig[Option.AUDIO_L] = EXT_BOOT_RESERVED;
     if (Option.AUDIO_R && Option.AUDIO_R <= NBRPINS)
         ExtCurrentConfig[Option.AUDIO_R] = EXT_BOOT_RESERVED;
-    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE) {
-        const esp32_audio_profile_t * profile =
-            esp32_audio_profile_by_id(ESP32_OPTION_AUDIO_PROFILE);
-        if (profile) {
-            int bclk_pin = esp32_audio_profile_pin_to_option(profile->i2s.bclk);
-            int ws_pin = esp32_audio_profile_pin_to_option(profile->i2s.ws);
-            int data_pin = esp32_audio_profile_pin_to_option(profile->i2s.dout);
-            int mclk_pin = esp32_audio_profile_pin_to_option(profile->i2s.mclk);
-            int amp_pin = esp32_audio_profile_pin_to_option(profile->amp_enable);
-            if (!audio_pin_invalid(bclk_pin)) ExtCurrentConfig[bclk_pin] = EXT_BOOT_RESERVED;
-            if (!audio_pin_invalid(ws_pin)) ExtCurrentConfig[ws_pin] = EXT_BOOT_RESERVED;
-            if (!audio_pin_invalid(data_pin)) ExtCurrentConfig[data_pin] = EXT_BOOT_RESERVED;
-            if (!audio_pin_invalid(mclk_pin)) ExtCurrentConfig[mclk_pin] = EXT_BOOT_RESERVED;
-            if (!audio_pin_invalid(amp_pin)) ExtCurrentConfig[amp_pin] = EXT_BOOT_RESERVED;
-            esp32_board_profile_update_shared_i2c_pins();
-        }
-        return;
+    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311) {
+        /* The codec's I2S pins live in the shared Option fields and are
+         * reserved below; only the amp enable and the shared control bus
+         * need extra treatment. */
+        int amp_pin = ESP32_OPTION_AUDIO_AMP_EN;
+        if (!audio_pin_invalid(amp_pin)) ExtCurrentConfig[amp_pin] = EXT_BOOT_RESERVED;
+        esp32_board_profile_update_shared_i2c_pins();
     }
     if (Option.audio_i2s_bclk && Option.audio_i2s_bclk <= NBRPINS) {
         ExtCurrentConfig[Option.audio_i2s_bclk] = EXT_BOOT_RESERVED;
@@ -609,18 +594,10 @@ void hal_audio_init(void) {
     }
 
     if (s_backend == AUDIO_BACKEND_I2S) {
-        int bclk_gpio = s_profile
-                            ? board_gpio(s_profile->i2s.bclk, HAL_PORT_AUDIO_I2S_BCLK_PIN)
-                            : option_gpio(Option.audio_i2s_bclk, HAL_PORT_AUDIO_I2S_BCLK_PIN);
-        int ws_gpio = s_profile
-                          ? board_gpio(s_profile->i2s.ws, HAL_PORT_AUDIO_I2S_WS_PIN)
-                          : option_gpio(option_i2s_ws_pin(), HAL_PORT_AUDIO_I2S_WS_PIN);
-        int data_gpio = s_profile
-                            ? board_gpio(s_profile->i2s.dout, HAL_PORT_AUDIO_I2S_DOUT_PIN)
-                            : option_gpio(Option.audio_i2s_data, HAL_PORT_AUDIO_I2S_DOUT_PIN);
-        int mclk_gpio = s_profile
-                            ? board_gpio(s_profile->i2s.mclk, I2S_GPIO_UNUSED)
-                            : option_gpio(option_i2s_mclk_pin(), I2S_GPIO_UNUSED);
+        int bclk_gpio = option_gpio(Option.audio_i2s_bclk, HAL_PORT_AUDIO_I2S_BCLK_PIN);
+        int ws_gpio = option_gpio(option_i2s_ws_pin(), HAL_PORT_AUDIO_I2S_WS_PIN);
+        int data_gpio = option_gpio(Option.audio_i2s_data, HAL_PORT_AUDIO_I2S_DOUT_PIN);
+        int mclk_gpio = option_gpio(option_i2s_mclk_pin(), I2S_GPIO_UNUSED);
         s_bclk_gpio = bclk_gpio;
         s_ws_gpio = ws_gpio;
         s_data_gpio = data_gpio;
@@ -658,13 +635,13 @@ void hal_audio_init(void) {
             s_tx = NULL;
             return;
         }
-        s_profile_err = ESP_OK;
-        if (s_profile && s_profile->init) {
-            s_profile_err = s_profile->init(s_profile);
-            if (s_profile_err != ESP_OK) {
-                ESP_LOGE(TAG, "audio profile %s init failed: %s",
-                         s_profile->option_name, esp_err_to_name(s_profile_err));
-                if (s_profile->deinit) s_profile->deinit(s_profile);
+        s_codec_err = ESP_OK;
+        if (s_es8311) {
+            s_codec_err = esp32_audio_es8311_init();
+            if (s_codec_err != ESP_OK) {
+                ESP_LOGE(TAG, "ES8311 init failed: %s",
+                         esp_err_to_name(s_codec_err));
+                esp32_audio_es8311_deinit();
                 audio_teardown_channel();
                 s_backend = AUDIO_BACKEND_NONE;
                 return;
@@ -710,14 +687,14 @@ void hal_audio_init(void) {
             s_tx = NULL;
             return;
         }
-        s_profile_err = ESP_OK;
+        s_codec_err = ESP_OK;
     }
     atomic_store_explicit(&s_stream_rate, default_rate, memory_order_release); /* channel starts at the synth rate */
     atomic_store_explicit(&s_pending_rate, default_rate, memory_order_release);
 
     if (xTaskCreate(audio_task, "mmaudio", 4096, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "audio task create failed");
-        if (s_profile && s_profile->deinit) s_profile->deinit(s_profile);
+        if (s_es8311) esp32_audio_es8311_deinit();
         audio_teardown_channel();
         s_backend = AUDIO_BACKEND_NONE;
         return;
@@ -729,7 +706,7 @@ void esp32_audio_status_string(char * out, size_t out_len) {
     if (!out || out_len == 0) return;
     const char * backend = "OFF";
     if (s_backend == AUDIO_BACKEND_I2S)
-        backend = s_profile ? s_profile->option_name : "I2S";
+        backend = s_es8311 ? "ES8311" : "I2S";
     else if (s_backend == AUDIO_BACKEND_PDM)
         backend = "PDM";
     snprintf(out, out_len,
@@ -737,7 +714,7 @@ void esp32_audio_status_string(char * out, size_t out_len) {
              "wr=%u nz=%u bytes=%u playing=%d",
              backend, s_ready ? 1 : 0, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
              (int)s_chan_err, (int)s_mode_err, (int)s_enable_err,
-             (int)s_profile_err, (int)s_write_err, (unsigned)s_write_count,
+             (int)s_codec_err, (int)s_write_err, (unsigned)s_write_count,
              (unsigned)s_nonzero_write_count, (unsigned)s_last_write_bytes,
              (int)CurrentlyPlaying);
 }

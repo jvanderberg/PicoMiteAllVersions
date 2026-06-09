@@ -193,7 +193,7 @@ CONFIGURE GENERIC    ' conservative defaults, no board peripherals
 |---|---|---|
 | `GENERIC` | Any ESP32-S3 dev board | USB Serial/JTAG console, `A:` (LittleFS), WiFi, PSRAM. No display, SD, touch, or audio assumed. |
 | `METRO` | Adafruit Metro ESP32-S3 (#5500) N16R8 | SPI microSD, I2S audio DAC (BCLK GP5 / WS GP6 / DOUT GP7), WS2812. The board used for VGA bring-up. |
-| `FREENOVE ILI9341` | Freenove FNK0104A/B 2.8" | ILI9341 SPI LCD (SCLK 38 / MOSI 40 / MISO 39 / CS 47, etc.), FT6336U capacitive touch, ES8311 audio codec, microSD socket. |
+| `FREENOVE ILI9341` | Freenove FNK0104A/B 2.8" | ILI9341 SPI LCD (SCLK 12 / MOSI 11 / MISO 13 / CS 10 / DC 46 / BL 45), FT6336U capacitive touch, ES8311 audio codec, microSD socket (SCLK 38 / MOSI 40 / MISO 39 / CS 47). |
 
 ### Generic bring-up
 
@@ -201,18 +201,23 @@ CONFIGURE GENERIC    ' conservative defaults, no board peripherals
 
 ### Configuring an unsupported board
 
-For a board that has no profile, run on `GENERIC` and configure peripherals by hand. SD card, audio, and VGA are all `OPTION`-driven and work on any board, exactly as on the other PicoMite ports — a board profile only supplies these as defaults:
+For a board that has no profile, run on `GENERIC` and configure peripherals by hand. The LCD, touch, SD card, audio, and VGA are all `OPTION`-driven and work on any board, exactly as on the other PicoMite ports — a board profile only supplies these as defaults:
 
 ```basic
+OPTION SYSTEM SPI GP12,GP11,GP13         ' LCD SPI bus: clk, mosi, miso
+OPTION LCDPANEL ILI9341, LANDSCAPE, GP46, 0, GP10, GP45, INVERT
+                                         ' controller, orientation, DC, RST (0 = none), CS [, BL] [, INVERT]
+OPTION SYSTEM I2C GP16,GP15              ' shared I2C bus: sda, scl [, SLOW]
+OPTION TOUCH FT6336, GP17, GP18          ' FT6336U: irq, reset [, click] [, threshold]
 OPTION SDCARD GP47,GP38,GP40,GP39        ' dedicated-SPI SD: cs, clk, mosi, miso
 OPTION AUDIO I2S GP5,GP6,GP7             ' external I2S DAC — see Audio below
 OPTION VGA 3BIT GP8,GP9,GP10,GP11,GP12   ' resistor-DAC VGA — see VGA below
 CPU RESTART
 ```
 
-`OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket pins for you.)
+`OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket, display, and touch pins for you.)
 
-The LCD and touch panels remain profile-driven: a board with a different display still needs a board-profile entry rather than a runtime option.
+`OPTION SYSTEM SPI` assigns the dedicated LCD SPI bus and `OPTION LCDPANEL` picks the controller and control pins — set the bus first, then the panel. ILI9341 (320×240, landscape) is the supported controller. Touch follows the same bus-then-device pattern, with the PicoMite syntax: `OPTION SYSTEM I2C` declares the bus, `OPTION TOUCH FT6336` attaches the capacitive controller, and `OPTION TOUCH CALIBRATE` adjusts its mapping. Each setter validates the pins, saves, and reboots; the matching `... DISABLE` form clears it.
 
 ## VGA
 
@@ -277,6 +282,7 @@ Audio configuration commands:
 |---|---|---|
 | `OPTION AUDIO I2S bclk,data` | Standard I2S PCM for an external DAC/amp | Legacy two-pin form: `bclk`, inferred `ws = bclk + 1`, `data` |
 | `OPTION AUDIO I2S bclk,ws,data` | Standard I2S PCM for an external DAC/amp | Explicit wiring form; `ws` must be `bclk + 1` |
+| `OPTION AUDIO ES8311 bclk,ws,dout [,mclk [,ampen [,AMPLOW]]]` | ES8311 codec (I2S + I2C control) | Control bus from `OPTION SYSTEM I2C`; `mclk`/`ampen` accept 0 = none; `AMPLOW` = active-low amp enable |
 | `OPTION AUDIO left,right` | ESP32-S3 I2S PDM TX DAC-style two-line output | left PDM output, right PDM output |
 | `OPTION AUDIO PDM left,right` | Same as the bare two-pin form | left PDM output, right PDM output |
 | `OPTION AUDIO DISABLE` | Audio off | none |
@@ -284,6 +290,7 @@ Audio configuration commands:
 ```basic
 OPTION AUDIO I2S GP5,GP7
 OPTION AUDIO I2S GP5,GP6,GP7
+OPTION AUDIO ES8311 GP5,GP7,GP8,GP4,GP1,AMPLOW   ' the Freenove wiring (CONFIGURE FREENOVE seeds this)
 OPTION AUDIO GP12,GP13
 OPTION AUDIO PDM GP12,GP13
 OPTION AUDIO DISABLE

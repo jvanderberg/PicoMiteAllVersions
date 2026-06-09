@@ -15,13 +15,14 @@
 #define ESP32_AUDIO_KIND_OFF 0
 #define ESP32_AUDIO_KIND_I2S 1
 #define ESP32_AUDIO_KIND_PDM 2
-#define ESP32_AUDIO_KIND_PROFILE 3
+#define ESP32_AUDIO_KIND_ES8311 3
 
-#define ESP32_AUDIO_PROFILE_NONE 0
-#define ESP32_AUDIO_PROFILE_FREENOVE 1
-
+/* ES8311 codec wiring beyond the shared I2S fields: amplifier enable pin
+ * (0 = none) and its active level (1 = active high; AMPLOW selects 0). */
+#define ESP32_OPTION_AUDIO_AMP_EN (Option.extensions[76])
+#define ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH (Option.extensions[77])
 #define ESP32_OPTION_AUDIO_KIND (Option.extensions[80])
-#define ESP32_OPTION_AUDIO_PROFILE (Option.extensions[81])
+/* extensions[81] retired (was the audio board-profile id). */
 #define ESP32_OPTION_AUDIO_I2S_WS (Option.extensions[82])
 #define ESP32_OPTION_AUDIO_I2S_MCLK (Option.extensions[83])
 #define ESP32_OPTION_VGA_EXT_BASE 85

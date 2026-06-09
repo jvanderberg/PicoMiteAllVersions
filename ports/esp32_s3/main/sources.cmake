@@ -120,6 +120,7 @@ set(DEVICE_FACING_SRCS
 set(DRIVER_STUBS
     ${REPO_ROOT}/drivers/audio_mp3/audio_mp3_real.c
     ${REPO_ROOT}/third_party/hxcmod/hxcmod.c
+    ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_panels.c
     ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_mem332_stub.c
     ${REPO_ROOT}/drivers/display_merge/display_merge_stub.c
     ${REPO_ROOT}/drivers/vga_pio/vga_ops_stub.c
@@ -180,12 +181,13 @@ set(PORT_LOCAL_SRCS
     esp32_pin_tables.c                      # ESP32-S3 GPIO map + GPn codemap
     hal_ws2812_esp32.c                      # WS2812/SK6812 over ESP32 RMT
     esp32_audio_options.c                   # OPTION AUDIO / MM.INFO$(AUDIO) surface
-    esp32_audio_profile.c                   # named board audio-profile table
-    esp32_audio_profile_freenove_es8311.c   # Freenove ES8311 setup hook
+    esp32_audio_es8311.c                    # ES8311 codec glue (OPTION AUDIO ES8311)
+    ${REPO_ROOT}/drivers/es8311/es8311.c    # MCU-neutral ES8311 register recipe
     ${AUDIO_BACKEND_SRCS}
-    esp32_backlight.c                       # board-profile LCD backlight PWM
+    esp32_backlight.c                       # Option-pin LCD backlight PWM
     hal_vm_framebuffer_esp32.c             # ESP32 web display + Freenove ILI9341 FRAMEBUFFER backend
-    esp32_ili9341_lcd.c                     # board-profile SPI ILI9341 local LCD
+    esp32_ili9341_lcd.c                     # Option-pin SPI ILI9341 local LCD
+    esp32_lcd_options.c                     # OPTION SYSTEM SPI / OPTION LCDPANEL setters
     esp32_freenove_i2c.c                    # shared Freenove touch/audio I2C bus
     esp32_ft6336u_touch.c                   # Freenove FNK0104B FT6336U touch reader
     esp32_touch_function.c                  # ESP32 TOUCH() function over port-local touch readers
@@ -273,6 +275,7 @@ idf_component_register(
         ${REPO_ROOT}/drivers/gui_controls
         ${REPO_ROOT}/drivers/gui_touch
         ${REPO_ROOT}/drivers/i2c_bus
+        ${REPO_ROOT}/drivers/es8311
         ${REPO_ROOT}/drivers/onewire
         ${REPO_ROOT}/drivers/psram_heap
         ${REPO_ROOT}/drivers/serial
