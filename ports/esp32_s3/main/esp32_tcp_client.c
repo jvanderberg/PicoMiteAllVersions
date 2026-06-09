@@ -16,6 +16,7 @@
 
 typedef struct {
     hal_net_tcp_client_t client;
+    int tls;
     int stream_open;
     volatile int stream_running;
     TaskHandle_t stream_task;
@@ -77,9 +78,11 @@ void esp32_tcp_client_close(void) {
     memset(&s_client, 0, sizeof s_client);
 }
 
-static void esp32_tcp_client_open_cmd(unsigned char * arg, int stream_open) {
+static void esp32_tcp_client_open_cmd(unsigned char * arg, int stream_open,
+                                      int force_tls) {
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(arg, &parsed);
+    if (force_tls) parsed.tls = 1;
     if (parsed.tls &&
         !(hal_net_capabilities() & HAL_NET_CAP_TCP_CLIENT_TLS))
         error("TLS not supported on this port");
@@ -90,6 +93,7 @@ static void esp32_tcp_client_open_cmd(unsigned char * arg, int stream_open) {
                                 &s_client.client) != HAL_NET_OK)
         error("No response from client");
 
+    s_client.tls = parsed.tls;
     s_client.stream_open = stream_open;
     MMPrintString("Connected\r\n");
 }
@@ -194,14 +198,27 @@ int esp32_tcp_client_cmd(unsigned char * line) {
         return 1;
     }
     if ((tp = checkstring(line, (unsigned char *)"OPEN TCP CLIENT"))) {
-        esp32_tcp_client_open_cmd(tp, 0);
+        esp32_tcp_client_open_cmd(tp, 0, 0);
         return 1;
     }
     if ((tp = checkstring(line, (unsigned char *)"OPEN TCP STREAM"))) {
-        esp32_tcp_client_open_cmd(tp, 1);
+        esp32_tcp_client_open_cmd(tp, 1, 0);
+        return 1;
+    }
+    if ((tp = checkstring(line, (unsigned char *)"OPEN TLS CLIENT"))) {
+        esp32_tcp_client_open_cmd(tp, 0, 1);
+        return 1;
+    }
+    if ((tp = checkstring(line, (unsigned char *)"OPEN TLS STREAM"))) {
+        esp32_tcp_client_open_cmd(tp, 1, 1);
         return 1;
     }
     if ((tp = checkstring(line, (unsigned char *)"TCP CLIENT REQUEST"))) {
+        esp32_tcp_client_request_cmd(tp);
+        return 1;
+    }
+    if ((tp = checkstring(line, (unsigned char *)"TLS CLIENT REQUEST"))) {
+        if (s_client.client && !s_client.tls) error("Not a TLS connection");
         esp32_tcp_client_request_cmd(tp);
         return 1;
     }
@@ -209,7 +226,13 @@ int esp32_tcp_client_cmd(unsigned char * line) {
         esp32_tcp_client_stream_cmd(tp);
         return 1;
     }
-    if ((tp = checkstring(line, (unsigned char *)"CLOSE TCP CLIENT"))) {
+    if ((tp = checkstring(line, (unsigned char *)"TLS CLIENT STREAM"))) {
+        if (s_client.client && !s_client.tls) error("Not a TLS connection");
+        esp32_tcp_client_stream_cmd(tp);
+        return 1;
+    }
+    if ((tp = checkstring(line, (unsigned char *)"CLOSE TCP CLIENT")) ||
+        (tp = checkstring(line, (unsigned char *)"CLOSE TLS CLIENT"))) {
         if (*tp) error("Syntax");
         if (!s_client.client) error("No connection");
         esp32_tcp_client_close();
