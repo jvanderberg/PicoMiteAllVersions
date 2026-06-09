@@ -158,6 +158,12 @@ int hal_net_init(void) {
     return HAL_NET_OK;
 }
 
+int hal_net_tls_set_ca(const void * pem, size_t len) {
+    (void)pem;
+    (void)len;
+    return HAL_NET_UNSUPPORTED;
+}
+
 void hal_net_poll(void) {
 }
 
@@ -334,9 +340,11 @@ int hal_net_tcp_conn_close(hal_net_tcp_conn_t conn) {
 }
 
 int hal_net_tcp_client_open(const char * host, uint16_t port,
-                            uint32_t timeout_ms, hal_net_tcp_client_t * out) {
+                            uint32_t timeout_ms, int tls,
+                            hal_net_tcp_client_t * out) {
     if (!host || !out) return HAL_NET_ERR;
     *out = 0;
+    if (tls) return HAL_NET_UNSUPPORTED;
     host_net_init_tables();
     struct addrinfo * ai = NULL;
     if (host_net_resolve_addr(host, port, SOCK_STREAM, &ai) != HAL_NET_OK)
@@ -587,12 +595,13 @@ static uint16_t mqtt_next_id(hal_net_mqtt_client_t client) {
 }
 
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
     if (!host || !client_id || !out) return HAL_NET_ERR;
     *out = 0;
+    if (tls) return HAL_NET_UNSUPPORTED;
     hal_net_tcp_client_t tcp = 0;
-    int rc = hal_net_tcp_client_open(host, port, timeout_ms, &tcp);
+    int rc = hal_net_tcp_client_open(host, port, timeout_ms, 0, &tcp);
     if (rc != HAL_NET_OK) return rc;
     int * tcp_slot = host_net_slot(tcp_clients, HOST_NET_MAX_TCP_CLIENTS, tcp);
     if (!tcp_slot) return HAL_NET_ERR;

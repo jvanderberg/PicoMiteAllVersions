@@ -16,6 +16,7 @@ typedef struct {
     char * pass;
     char * interrupt;
     int has_interrupt;
+    int tls;
 } mm_net_mqtt_connect_args_t;
 
 typedef struct {

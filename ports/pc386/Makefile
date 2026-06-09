@@ -404,6 +404,13 @@ $(BUILD_DIR)/bc/%.o: $(REPO_ROOT)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# The bytecode compiler/VM are the two largest translation units; building them
+# for size (a trailing -Os wins over the kernel-wide -O2) keeps the i386 kernel
+# inside the 1.44 MB boot floppy. They are portable C with no inline asm, so the
+# -Os/inline-asm caveat that keeps the rest of the kernel at -O2 does not apply.
+$(BUILD_DIR)/bc/runtime/vm/bc_source.o: CFLAGS += -Os
+$(BUILD_DIR)/bc/runtime/vm/bc_vm.o: CFLAGS += -Os
+
 $(BUILD_DIR)/simvm/%.o: $(REPO_ROOT)/ports/vm_sys_sim/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<

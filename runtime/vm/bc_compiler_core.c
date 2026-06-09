@@ -379,6 +379,8 @@ int bc_add_local(BCCompiler * cs, const char * name, int name_len, uint8_t type,
     cs->locals[idx].name[copy_len] = '\0';
     cs->locals[idx].type = type;
     cs->locals[idx].is_array = (uint8_t)is_array;
+    cs->locals[idx].is_static = 0;
+    cs->locals[idx].static_slot = 0;
     return idx;
 }
 

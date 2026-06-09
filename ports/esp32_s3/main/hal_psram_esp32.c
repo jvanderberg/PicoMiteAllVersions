@@ -10,8 +10,9 @@
  *      heap_caps_aligned_alloc(PAGESIZE, slab, MALLOC_CAP_SPIRAM |
  *      MALLOC_CAP_8BIT). PAGESIZE alignment matches the bitmap allocator
  *      page granularity in drivers/psram_heap/psram_heap_real.c. The slab
- *      follows the chip's capacity, so a 2 MB or 8 MB part — octal or quad —
- *      is handled by the same code with no per-board size constant.
+ *      follows the chip's capacity, so any size part (2/8/16 MB, ...) is
+ *      handled by the same code with no per-board size constant. (PSRAM line
+ *      mode — octal vs quad — is a separate, build-time choice in sdkconfig.)
  *   3. Publishes the slab pointer and heap size to PSRAMbase / PSRAMsize so
  *      Memory.c routing, the `RAM` command, and the bitmap allocator
  *      all see the same region.

@@ -30,7 +30,8 @@
 #define HAL_PORT_VIDEO_FUN_TOKENS \
     {(unsigned char *)"Touch(", T_FUN | T_INT, 0, fun_touch},
 
-#define HAL_PORT_WIFI_JSON_FUN_TOKEN
+#define HAL_PORT_WIFI_JSON_FUN_TOKEN \
+    {(unsigned char *)"Json$(", T_FUN | T_STR, 0, fun_json},
 
 #define HAL_PORT_RP2350_PIC_MAP_FUN_TOKEN
 

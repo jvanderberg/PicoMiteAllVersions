@@ -528,11 +528,14 @@ void ProcessWeb(int mode) {
 static void host_tcp_client_open_cmd(unsigned char * arg) {
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(arg, &parsed);
+    if (parsed.tls &&
+        !(hal_net_capabilities() & HAL_NET_CAP_TCP_CLIENT_TLS))
+        error("TLS not supported on this port");
 
     host_web_ensure_net();
     close_tcpclient();
     if (hal_net_tcp_client_open(parsed.host, (uint16_t)parsed.port,
-                                (uint32_t)parsed.timeout_ms,
+                                (uint32_t)parsed.timeout_ms, parsed.tls,
                                 &host_tcp_client) != HAL_NET_OK)
         error("No response from client");
 

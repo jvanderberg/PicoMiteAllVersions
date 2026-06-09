@@ -11,8 +11,8 @@
 
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "esp32_board_profile.h"
 #include "esp32_ft6336u_touch.h"
+#include "esp32_option_ext.h"
 
 #define GUI_TOUCH_SAMPLE_CACHE_US 5000
 
@@ -37,16 +37,12 @@ static int clamp_axis(int v, int limit) {
 }
 
 static int pin_to_gpio(int pin) {
-    if (pin <= 0) return -1;
-    int gpio = pin;
-    if (pin <= NBRPINS) gpio = codemap(pin);
+    /* pin is a PinDef[] index; GPno holds its raw GPIO. (codemap() maps the
+     * other direction, GPIO -> pin index.) */
+    if (pin <= 0 || pin > NBRPINS) return -1;
+    int gpio = PinDef[pin].GPno;
     if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) return -1;
     return gpio;
-}
-
-static int gpio_to_pin(int gpio) {
-    if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) return 0;
-    return codemap(gpio);
 }
 
 void PinSetBit(int pin, unsigned int offset) {
@@ -72,24 +68,11 @@ void PinSetBit(int pin, unsigned int offset) {
 }
 
 static void publish_capacitive_option_state(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_touch) return;
-
-    Option.TOUCH_CAP = 1;
-    Option.TOUCH_CS = gpio_to_pin(profile->touch.reset);
-    Option.TOUCH_IRQ = gpio_to_pin(profile->touch.interrupt);
+    /* Option.TOUCH_CAP / TOUCH_IRQ / TOUCH_CS are the persisted
+     * configuration (OPTION TOUCH FT6336, or a profile seed); only the
+     * threshold default needs filling in here. */
+    if (!Option.TOUCH_CAP) return;
     if (!Option.THRESHOLD_CAP) Option.THRESHOLD_CAP = 22;
-}
-
-static void clear_touch_option_state(void) {
-    Option.TOUCH_CAP = 0;
-    Option.TOUCH_CS = 0;
-    Option.TOUCH_IRQ = 0;
-    Option.TOUCH_SWAPXY = 0;
-    Option.TOUCH_XZERO = 0;
-    Option.TOUCH_YZERO = 0;
-    Option.TOUCH_XSCALE = 0.0f;
-    Option.TOUCH_YSCALE = 0.0f;
 }
 
 static void sample_touch(void) {
@@ -124,22 +107,22 @@ void InitTouch(void) {
     clear_cached_sample();
     esp32_ft6336u_touch_init();
     if (!esp32_ft6336u_touch_is_ready()) {
-        clear_touch_option_state();
+        /* Probe failure leaves the persisted configuration alone — the
+         * controller is retried next boot. */
         TOUCH_GETIRQTRIS = 0;
         return;
     }
 
     publish_capacitive_option_state();
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    TOUCH_IRQ_PIN = profile->touch.interrupt;
-    TOUCH_CS_PIN = profile->touch.reset;
+    TOUCH_IRQ_PIN = pin_to_gpio(Option.TOUCH_IRQ);
+    TOUCH_CS_PIN = pin_to_gpio(Option.TOUCH_CS);
     TOUCH_GETIRQTRIS = 1;
 }
 
 void ConfigTouch(unsigned char * p) {
     (void)p;
-    if (!esp32_board_profile_current()->has_touch)
-        error("Touch not supported on this platform");
+    if (!Option.TOUCH_CAP)
+        error("Touch not configured (OPTION TOUCH)");
     InitTouch();
 }
 

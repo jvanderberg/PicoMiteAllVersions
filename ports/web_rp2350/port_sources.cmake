@@ -45,6 +45,7 @@ target_sources(PicoMite PRIVATE
     ${CMAKE_SOURCE_DIR}/shared/net/MMtftp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMudp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMsetwifi.c
+    ${CMAKE_SOURCE_DIR}/shared/net/mm_net_json_fun.c
 
     # GUICONTROLS (only WEBRP2350 combines WiFi with the widget family).
     ${CMAKE_SOURCE_DIR}/drivers/gui_controls/GUI.c

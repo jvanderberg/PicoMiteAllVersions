@@ -1030,6 +1030,12 @@ int hal_net_init(void) {
     return HAL_NET_OK;
 }
 
+int hal_net_tls_set_ca(const void * pem, size_t len) {
+    (void)pem;
+    (void)len;
+    return HAL_NET_UNSUPPORTED;
+}
+
 void hal_net_poll(void) {
     wasm_tcp_server_poll();
     wasm_udp_poll();
@@ -1231,10 +1237,11 @@ int hal_net_udp_recv_event(hal_net_udp_socket_t sock, hal_net_addr_t * from,
 }
 
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
     if (!host || !client_id || !out) return HAL_NET_ERR;
     *out = 0;
+    if (tls) return HAL_NET_UNSUPPORTED;
     closeMQTT();
 
 #ifdef __EMSCRIPTEN__
@@ -1987,6 +1994,7 @@ static void wasm_proxy_udp_close_js(int socket_id) {
 static void wasm_tcp_client_open_cmd(unsigned char * tp) {
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(tp, &parsed);
+    if (parsed.tls) error("TLS not supported on this port");
 
     close_tcpclient();
     snprintf(wasm_tcp_host, sizeof(wasm_tcp_host), "%s", parsed.host);
@@ -2001,6 +2009,7 @@ static void wasm_tcp_client_open_stream_cmd(unsigned char * tp) {
 
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(tp, &parsed);
+    if (parsed.tls) error("TLS not supported on this port");
 
 #ifdef __EMSCRIPTEN__
     close_tcpclient();

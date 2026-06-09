@@ -74,16 +74,28 @@ static int bc_stack_type_matches_array_param(uint8_t stack_type, uint8_t param_t
     }
 }
 
+/*
+ * Resolve a local slot to its effective storage, following a by-reference
+ * binding (see local_ref) to the caller scalar or global it points at. Returns
+ * the value cell and, via type_out, its type cell.
+ */
+static BCValue * bc_vm_local_cell(BCVMState * vm, int idx, uint8_t ** type_out) {
+    if (idx < 0 || idx >= VM_MAX_LOCALS)
+        bc_vm_error(vm, "Local index out of range");
+    if (vm->local_ref_val[idx]) {
+        *type_out = vm->local_ref_typ[idx];
+        return vm->local_ref_val[idx];
+    }
+    *type_out = &vm->local_types[idx];
+    return &vm->locals[idx];
+}
+
 static uint8_t * bc_vm_string_lvalue(BCVMState * vm, uint8_t is_local, uint16_t slot) {
     BCValue * value;
     uint8_t * type;
 
     if (is_local) {
-        int idx = vm->frame_base + slot;
-        if (idx < 0 || idx >= VM_MAX_LOCALS)
-            bc_vm_error(vm, "Local index out of range");
-        value = &vm->locals[idx];
-        type = &vm->local_types[idx];
+        value = bc_vm_local_cell(vm, vm->frame_base + slot, &type);
     } else {
         if (slot >= BC_MAX_SLOTS)
             bc_vm_error(vm, "Global slot out of range");
@@ -119,6 +131,52 @@ static BCArray * bc_resolve_array_ref(BCVMState * vm, BCValue value, uint8_t typ
         bc_vm_error(vm, "Invalid array reference");
         return NULL;
     }
+}
+
+/*
+ * Bind callee parameter `slot` to the caller storage named by a by-reference
+ * argument sitting on top of the operand stack (a BC_STK_SREF_* handle). cf is
+ * the freshly-pushed call frame, whose frame_base is the caller's frame. After
+ * binding, accesses to the parameter resolve to the caller's scalar via
+ * bc_vm_local_cell. Pops the handle.
+ */
+static void bc_vm_bind_scalar_ref(BCVMState * vm, BCCallFrame * cf, int slot, uint8_t param_type) {
+    uint8_t st = vm->stack_types[vm->sp];
+    int64_t packed = vm->stack[vm->sp].i;
+    BCValue * tgt_val;
+    uint8_t * tgt_typ;
+
+    if (st == BC_STK_SREF_L) {
+        int caller_abs = cf->frame_base + (int)(packed & 0xFFFF);
+        /* Chained reference (a ref param passed on as a ref): point straight at
+         * the ultimate cell so local_ref always stays one hop. */
+        if (vm->local_ref_val[caller_abs]) {
+            tgt_val = vm->local_ref_val[caller_abs];
+            tgt_typ = vm->local_ref_typ[caller_abs];
+        } else {
+            tgt_val = &vm->locals[caller_abs];
+            tgt_typ = &vm->local_types[caller_abs];
+        }
+    } else if (st == BC_STK_SREF_G) {
+        int g = (int)(packed & 0xFFFF);
+        tgt_val = &vm->globals[g];
+        tgt_typ = &vm->global_types[g];
+    } else {
+        /* BC_STK_SREF_AELEM: the element BCValue* was resolved at the call site
+         * and stashed in the stack entry's pointer field. The element type is
+         * fixed by the array, so use the slot's own (unused) type cell as a
+         * harmless scratch target for type writes. */
+        tgt_val = (BCValue *)vm->stack[vm->sp].s;
+        tgt_typ = &vm->local_types[slot];
+    }
+
+    vm->local_ref_val[slot] = tgt_val;
+    vm->local_ref_typ[slot] = tgt_typ;
+    vm->local_types[slot] = param_type;
+    vm->local_array_is_alias[slot] = 0;
+    memset(&vm->local_arrays[slot], 0, sizeof(BCArray));
+    vm->locals[slot].i = 0;
+    vm->sp--;
 }
 
 /* ======================================================================
@@ -294,6 +352,9 @@ void bc_vm_init(BCVMState * vm, BCCompiler * cs) {
     memset(vm->for_stack, 0, sizeof(vm->for_stack));
     memset(vm->str_temp, 0, sizeof(vm->str_temp));
     memset(vm->local_array_is_alias, 0, sizeof(vm->local_array_is_alias));
+    /* NULL == inline (slot uses its own locals[] cell, not a reference). */
+    memset(vm->local_ref_val, 0, sizeof(vm->local_ref_val));
+    memset(vm->local_ref_typ, 0, sizeof(vm->local_ref_typ));
 
     /* BC_ALLOC() zeros allocations; keep explicit zeroing for object reuse. */
     if (vm->arrays)
@@ -1748,6 +1809,12 @@ void bc_vm_execute(BCVMState * vm) {
         [OP_STORE_LOCAL_ARR_I] = &&op_store_local_arr_i,
         [OP_STORE_LOCAL_ARR_F] = &&op_store_local_arr_f,
         [OP_STORE_LOCAL_ARR_S] = &&op_store_local_arr_s,
+        [OP_PUSHREF_G] = &&op_pushref_g,
+        [OP_PUSHREF_L] = &&op_pushref_l,
+        [OP_PUSHREF_AELEM] = &&op_pushref_aelem,
+        [OP_DIM_LOCAL_ARR_I] = &&op_dim_local_arr_i,
+        [OP_DIM_LOCAL_ARR_F] = &&op_dim_local_arr_f,
+        [OP_DIM_LOCAL_ARR_S] = &&op_dim_local_arr_s,
         /* PRINT */
         [OP_PRINT_INT] = &&op_print_int,
         [OP_PRINT_FLT] = &&op_print_flt,
@@ -2514,19 +2581,17 @@ op_mov_var: {
     uint16_t dst_slot = dst_raw & 0x7FFFu;
     BCValue * src;
     BCValue * dst;
+    uint8_t * dst_type = NULL; /* points at the effective type cell when local */
 
     if (src_is_local) {
-        int idx = vm->frame_base + src_slot;
-        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
-        src = &vm->locals[idx];
+        uint8_t * st;
+        src = bc_vm_local_cell(vm, vm->frame_base + src_slot, &st);
     } else {
         src = &vm->globals[src_slot];
     }
 
     if (dst_is_local) {
-        int idx = vm->frame_base + dst_slot;
-        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local variable overflow");
-        dst = &vm->locals[idx];
+        dst = bc_vm_local_cell(vm, vm->frame_base + dst_slot, &dst_type);
     } else {
         dst = &vm->globals[dst_slot];
     }
@@ -2535,14 +2600,14 @@ op_mov_var: {
     case BC_MOV_INT:
         dst->i = src->i;
         if (dst_is_local)
-            vm->local_types[vm->frame_base + dst_slot] = T_INT;
+            *dst_type = T_INT;
         else
             vm->global_valid[dst_slot] = 1;
         break;
     case BC_MOV_FLT:
         dst->f = src->f;
         if (dst_is_local)
-            vm->local_types[vm->frame_base + dst_slot] = T_NBR;
+            *dst_type = T_NBR;
         else
             vm->global_valid[dst_slot] = 1;
         break;
@@ -2553,7 +2618,7 @@ op_mov_var: {
         }
         Mstrcpy(dst->s, src->s ? src->s : (uint8_t *)"");
         if (dst_is_local)
-            vm->local_types[vm->frame_base + dst_slot] = T_STR;
+            *dst_type = T_STR;
         else
             vm->global_valid[dst_slot] = 1;
         break;
@@ -2786,6 +2851,12 @@ op_call_sub: {
         uint8_t arg_type = vm->stack_types[vm->sp];
         uint8_t param_type = (i < sf->nparams && i < BC_MAX_PARAMS) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
+        if (arg_type == BC_STK_SREF_G || arg_type == BC_STK_SREF_L ||
+            arg_type == BC_STK_SREF_AELEM) {
+            bc_vm_bind_scalar_ref(vm, cf, slot, param_type);
+            continue;
+        }
+        vm->local_ref_val[slot] = NULL;
         if (i < sf->nparams && i < BC_MAX_PARAMS && sf->param_is_array[i]) {
             BCArray * src;
             if (!bc_stack_type_matches_array_param(arg_type, param_type))
@@ -2854,6 +2925,12 @@ op_call_fun: {
         uint8_t arg_type = vm->stack_types[vm->sp];
         uint8_t param_type = (i < sf->nparams && i < BC_MAX_PARAMS) ? sf->param_types[i] : arg_type;
         if (param_type == 0) param_type = arg_type;
+        if (arg_type == BC_STK_SREF_G || arg_type == BC_STK_SREF_L ||
+            arg_type == BC_STK_SREF_AELEM) {
+            bc_vm_bind_scalar_ref(vm, cf, slot, param_type);
+            continue;
+        }
+        vm->local_ref_val[slot] = NULL;
         if (i < sf->nparams && i < BC_MAX_PARAMS && sf->param_is_array[i]) {
             BCArray * src;
             if (!bc_stack_type_matches_array_param(arg_type, param_type))
@@ -2881,6 +2958,7 @@ op_call_fun: {
     }
 
     /* Zero out slot 0 (return value) */
+    vm->local_ref_val[new_base] = NULL;
     vm->locals[new_base].i = 0;
     vm->local_types[new_base] = sf->return_type;
     vm->local_array_is_alias[new_base] = 0;
@@ -2912,6 +2990,7 @@ op_enter_frame: {
             vm->locals[idx].i = 0;
             vm->local_types[idx] = T_INT;
             vm->local_array_is_alias[idx] = 0;
+            vm->local_ref_val[idx] = NULL;
             memset(&vm->local_arrays[idx], 0, sizeof(BCArray));
         }
     }
@@ -3010,64 +3089,103 @@ op_ret_fun: {
 
 op_load_local_i: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    PUSH_I(vm->locals[idx].i);
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
+    PUSH_I(cell->i);
     DISPATCH();
 }
 
 op_load_local_f: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    PUSH_F(vm->locals[idx].f);
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
+    PUSH_F(cell->f);
     DISPATCH();
 }
 
 op_load_local_s: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
-    uint8_t * s = vm->locals[idx].s;
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
+    uint8_t * s = cell->s;
     PUSH_S(s ? s : vm_empty_string);
     DISPATCH();
 }
 
 op_store_local_i: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
     if (vm->stack_types[vm->sp] == T_NBR)
-        vm->locals[idx].i = (int64_t)POP_F();
+        cell->i = (int64_t)POP_F();
     else
-        vm->locals[idx].i = POP_I();
-    vm->local_types[idx] = T_INT;
+        cell->i = POP_I();
+    *lt = T_INT;
     DISPATCH();
 }
 
 op_store_local_f: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
     if (vm->stack_types[vm->sp] == T_INT)
-        vm->locals[idx].f = (MMFLOAT)POP_I();
+        cell->f = (MMFLOAT)POP_I();
     else
-        vm->locals[idx].f = POP_F();
-    vm->local_types[idx] = T_NBR;
+        cell->f = POP_F();
+    *lt = T_NBR;
     DISPATCH();
 }
 
 op_store_local_s: {
     uint16_t offset = READ_U16();
-    int idx = vm->frame_base + offset;
-    if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local index out of range");
+    uint8_t * lt;
+    BCValue * cell = bc_vm_local_cell(vm, vm->frame_base + offset, &lt);
     uint8_t * src = POP_S();
-    if (!vm->locals[idx].s) {
-        vm->locals[idx].s = BC_ALLOC(STRINGSIZE);
-        if (!vm->locals[idx].s) bc_vm_error(vm, "Out of memory for string");
+    if (!cell->s) {
+        cell->s = BC_ALLOC(STRINGSIZE);
+        if (!cell->s) bc_vm_error(vm, "Out of memory for string");
     }
-    Mstrcpy(vm->locals[idx].s, src);
-    vm->local_types[idx] = T_STR;
+    Mstrcpy(cell->s, src);
+    *lt = T_STR;
+    DISPATCH();
+}
+
+op_pushref_g: {
+    uint16_t slot = READ_U16();
+    uint8_t type = *vm->pc++;
+    bc_push_array_ref(vm, BC_STK_SREF_G, ((int64_t)type << 16) | slot);
+    DISPATCH();
+}
+
+op_pushref_l: {
+    uint16_t slot = READ_U16();
+    uint8_t type = *vm->pc++;
+    bc_push_array_ref(vm, BC_STK_SREF_L, ((int64_t)type << 16) | slot);
+    DISPATCH();
+}
+
+op_pushref_aelem: {
+    uint16_t slot = READ_U16();
+    uint8_t is_local = *vm->pc++;
+    uint8_t ndim = *vm->pc++;
+    BCArray * arr;
+    if (is_local) {
+        int idx = vm->frame_base + slot;
+        if (idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
+        arr = &vm->local_arrays[idx];
+    } else {
+        if (slot >= BC_MAX_SLOTS) bc_vm_error(vm, "Array slot out of range");
+        arr = &vm->arrays[slot];
+    }
+    if (!arr->data) bc_vm_error(vm, "Array not dimensioned");
+    int64_t indices[MAXDIM];
+    for (int d = ndim - 1; d >= 0; d--)
+        indices[d] = POP_NUMERIC_I();
+    uint32_t off = calc_array_offset(vm, arr, indices, ndim);
+    if (vm->sp + 1 >= VM_STACK_SIZE) bc_vm_error(vm, "Stack overflow");
+    vm->sp++;
+    vm->stack[vm->sp].s = (uint8_t *)&arr->data[off];
+    vm->stack_types[vm->sp] = BC_STK_SREF_AELEM;
     DISPATCH();
 }
 
@@ -3319,6 +3437,42 @@ op_dim_arr_s: {
     arr->data = (BCValue *)BC_ALLOC(total * STRINGSIZE);
     if (!arr->data) bc_vm_error(vm, "Out of memory for array");
     memset(arr->data, 0, total * STRINGSIZE); /* length prefix 0 = empty */
+    DISPATCH();
+}
+
+op_dim_local_arr_i:
+op_dim_local_arr_f:
+op_dim_local_arr_s: {
+    /* LOCAL sized arrays live in the call frame; op_leave_frame releases the
+     * non-alias data on return. Same dimension protocol as the global DIMs. */
+    uint8_t op = vm->pc[-1];
+    uint16_t slot = READ_U16();
+    uint8_t ndim = *vm->pc++;
+    int idx = vm->frame_base + slot;
+    if (idx < 0 || idx >= VM_MAX_LOCALS) bc_vm_error(vm, "Local array index out of range");
+    BCArray * arr = &vm->local_arrays[idx];
+    if (arr->data) bc_vm_error(vm, "Array already dimensioned");
+    uint8_t elem_type = (op == OP_DIM_LOCAL_ARR_I)   ? T_INT
+                        : (op == OP_DIM_LOCAL_ARR_S) ? T_STR
+                                                     : T_NBR;
+    arr->ndims = ndim;
+    arr->elem_type = elem_type;
+    uint32_t total = 1;
+    int64_t dims[MAXDIM];
+    for (int d = ndim - 1; d >= 0; d--)
+        dims[d] = POP_NUMERIC_I();
+    for (int d = 0; d < ndim; d++) {
+        if (dims[d] <= 0) bc_vm_error(vm, "Dimensions");
+        arr->dims[d] = (int)dims[d];
+        total *= (uint32_t)(dims[d] + 1);
+    }
+    arr->total_elements = total;
+    size_t esz = (elem_type == T_STR) ? STRINGSIZE : sizeof(BCValue);
+    arr->data = (BCValue *)BC_ALLOC(total * esz);
+    if (!arr->data) bc_vm_error(vm, "Out of memory for array");
+    memset(arr->data, 0, total * esz);
+    vm->local_array_is_alias[idx] = 0;
+    vm->local_types[idx] = elem_type;
     DISPATCH();
 }
 
@@ -4704,9 +4858,12 @@ op_fast_loop: {
     int64_t regs[MAX_FAST_REGS];
     memset(regs, 0, sizeof(int64_t) * nregs);
 
-    /* Load locals into registers */
-    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++)
-        regs[i] = vm->locals[vm->frame_base + i].i;
+    /* Load locals into registers (following by-reference parameter bindings so
+     * a fast loop sees the caller's value, not the empty reference slot). */
+    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++) {
+        int idx = vm->frame_base + i;
+        regs[i] = vm->local_ref_val[idx] ? vm->local_ref_val[idx]->i : vm->locals[idx].i;
+    }
 
     /* Load globals */
     uint16_t global_slots[32];
@@ -5100,9 +5257,14 @@ op_fast_loop: {
     }
 
 fast_loop_done:
-    /* Write back locals */
-    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++)
-        vm->locals[vm->frame_base + i].i = regs[i];
+    /* Write back locals (through by-reference bindings to the caller's storage). */
+    for (int i = 0; i < nlocals && i < (int)(vm->locals_top - vm->frame_base); i++) {
+        int idx = vm->frame_base + i;
+        if (vm->local_ref_val[idx])
+            vm->local_ref_val[idx]->i = regs[i];
+        else
+            vm->locals[idx].i = regs[i];
+    }
 
     /* Write back globals */
     for (int i = 0; i < nglobals; i++) {

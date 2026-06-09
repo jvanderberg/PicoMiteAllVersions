@@ -2,12 +2,12 @@
 
 **Download:** prebuilt ESP32-S3 firmware is published on the [latest release](https://github.com/jvanderberg/PicoMiteAllVersions/releases/tag/latest). **Two images are published — pick by your board's PSRAM line mode**, which is a compile-time choice (one image cannot serve both):
 
-- `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — **8 MB octal** PSRAM (R8 modules: DevKitC-N8R8/N16R8, XIAO ESP32-S3, Freenove, most LilyGo).
-- `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — **2 MB quad** PSRAM (R2 modules) **or no PSRAM at all**.
+- `MMBasic-Anywhere-esp32-s3-octal-merged.bin` — for boards with **octal PSRAM** (the `R8` and `R16` modules, e.g. N16R8, N32R16V).
+- `MMBasic-Anywhere-esp32-s3-quad-merged.bin` — for boards with **quad PSRAM** (the `R2` modules). A board with no PSRAM works on either image.
 
 Not sure which? Neither image bricks a board — flash either and check `MM.INFO(PSRAM SIZE)`; if it returns `0`, the PSRAM line mode is wrong, so flash the other image. A board with no PSRAM still boots on the quad image (using only the internal heap). Flash the merged image to `0x0` **in DIO mode**; see [Flash](#flash). Background: [docs/real-hal/esp32-s3-quad-port.md](../../docs/real-hal/esp32-s3-quad-port.md). Building from source is only needed for development.
 
-ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. PSRAM is owned by MMBasic via a slab reserved from ESP-IDF at boot and sized from the chip actually detected; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
+ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. MMBasic claims the board's PSRAM at boot — as much as the chip actually has — for its program/variable heap; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 
 Plan: [docs/real-hal/esp32-s3-port.md](../../docs/real-hal/esp32-s3-port.md). Session log: [docs/real-hal/esp32-s3-port-log.md](../../docs/real-hal/esp32-s3-port-log.md).
 
@@ -28,10 +28,10 @@ Load the ESP-IDF environment before building:
 ## Build
 
 There are two ESP32-S3 ports, differing only in PSRAM line mode (they share
-`main/sources.cmake` verbatim, and the PSRAM heap slab is sized at boot from the
-detected chip):
+`main/sources.cmake` verbatim; the heap is sized at boot to whatever PSRAM the
+chip has):
 
-- `ports/esp32_s3` — octal PSRAM (R8).
+- `ports/esp32_s3` — octal PSRAM (R8 / R16).
 - `ports/esp32_s3_quad` — quad PSRAM (R2) / no-PSRAM.
 
 Each is a self-contained ESP-IDF project. Build either the standard way:
@@ -155,6 +155,49 @@ http://<device-ip>/__web_console/
 
 The root `/` remains available for BASIC programs serving pages with `WEB TRANSMIT PAGE`.
 
+### TLS (HTTPS And Secure MQTT)
+
+TLS connections are encrypted and the server certificate is verified against
+the ESP-IDF X.509 bundle (the common public CAs), so HTTPS APIs and managed
+MQTT brokers work without any certificate management on the device.
+
+The TCP client uses the WebMite 5.07-era TLS command forms (the syntax in the
+community "MMBASIC WEB ADDENDUM"; later WebMite releases dropped TLS):
+
+```basic
+' HTTPS request
+WEB OPEN TLS CLIENT "api.github.com", 443
+WEB TLS CLIENT REQUEST req$, buf%(), 10000
+WEB CLOSE TLS CLIENT
+```
+
+`WEB OPEN TLS STREAM` / `WEB TLS CLIENT STREAM` are the encrypted versions of
+the stream forms. Equivalently, the plain commands accept an optional
+trailing TLS flag (`WEB OPEN TCP CLIENT host$, port [, timeout] [, tls]`).
+
+MQTT takes the optional trailing flag:
+
+```basic
+' MQTT over TLS (e.g. a broker's TLS listener on 8883)
+WEB MQTT CONNECT "broker.example.com", 8883, user$, pass$, , 1
+```
+
+Without the TLS forms or flag, everything behaves exactly as before
+(plain TCP).
+
+Servers whose certificate chain is not rooted in the common-CA bundle (a
+private broker, a self-signed lab server) need their CA installed first:
+
+```basic
+WEB TLS CERT "a:/myca.pem"   ' verify subsequent TLS connects against this CA
+WEB TLS CERT ""              ' revert to the built-in certificate bundle
+```
+
+The file must be PEM text (`-----BEGIN CERTIFICATE-----`), at most 8 KB, and
+the setting lasts until changed or reset. With no custom CA installed, a
+server outside the bundle fails the handshake with "No response from client"
+/ "Failed to connect".
+
 ## USB Console And Keyboard
 
 The native USB-C port has two saved runtime roles:
@@ -193,7 +236,7 @@ CONFIGURE GENERIC    ' conservative defaults, no board peripherals
 |---|---|---|
 | `GENERIC` | Any ESP32-S3 dev board | USB Serial/JTAG console, `A:` (LittleFS), WiFi, PSRAM. No display, SD, touch, or audio assumed. |
 | `METRO` | Adafruit Metro ESP32-S3 (#5500) N16R8 | SPI microSD, I2S audio DAC (BCLK GP5 / WS GP6 / DOUT GP7), WS2812. The board used for VGA bring-up. |
-| `FREENOVE ILI9341` | Freenove FNK0104A/B 2.8" | ILI9341 SPI LCD (SCLK 38 / MOSI 40 / MISO 39 / CS 47, etc.), FT6336U capacitive touch, ES8311 audio codec, microSD socket. |
+| `FREENOVE ILI9341` | Freenove FNK0104A/B 2.8" | ILI9341 SPI LCD (SCLK 12 / MOSI 11 / MISO 13 / CS 10 / DC 46 / BL 45), FT6336U capacitive touch, ES8311 audio codec, microSD socket (SCLK 38 / MOSI 40 / MISO 39 / CS 47). |
 
 ### Generic bring-up
 
@@ -201,18 +244,23 @@ CONFIGURE GENERIC    ' conservative defaults, no board peripherals
 
 ### Configuring an unsupported board
 
-For a board that has no profile, run on `GENERIC` and configure peripherals by hand. SD card, audio, and VGA are all `OPTION`-driven and work on any board, exactly as on the other PicoMite ports — a board profile only supplies these as defaults:
+For a board that has no profile, run on `GENERIC` and configure peripherals by hand. The LCD, touch, SD card, audio, and VGA are all `OPTION`-driven and work on any board, exactly as on the other PicoMite ports — a board profile only supplies these as defaults:
 
 ```basic
+OPTION SYSTEM SPI GP12,GP11,GP13         ' LCD SPI bus: clk, mosi, miso
+OPTION LCDPANEL ILI9341, LANDSCAPE, GP46, 0, GP10, GP45, INVERT
+                                         ' controller, orientation, DC, RST (0 = none), CS [, BL] [, INVERT]
+OPTION SYSTEM I2C GP16,GP15              ' shared I2C bus: sda, scl [, SLOW]
+OPTION TOUCH FT6336, GP17, GP18          ' FT6336U: irq, reset [, click] [, threshold]
 OPTION SDCARD GP47,GP38,GP40,GP39        ' dedicated-SPI SD: cs, clk, mosi, miso
 OPTION AUDIO I2S GP5,GP6,GP7             ' external I2S DAC — see Audio below
 OPTION VGA 3BIT GP8,GP9,GP10,GP11,GP12   ' resistor-DAC VGA — see VGA below
 CPU RESTART
 ```
 
-`OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket pins for you.)
+`OPTION SDCARD cs, clk, mosi, miso` wires a dedicated-SPI SD card and mounts it as `B:`; the four pins are saved and shown in `LIST OPTIONS`. (On the built-in profiles these same pins are seeded automatically — e.g. `CONFIGURE FREENOVE` sets the Freenove socket, display, and touch pins for you.)
 
-The LCD and touch panels remain profile-driven: a board with a different display still needs a board-profile entry rather than a runtime option.
+`OPTION SYSTEM SPI` assigns the dedicated LCD SPI bus and `OPTION LCDPANEL` picks the controller and control pins — set the bus first, then the panel. ILI9341 (320×240, landscape) is the supported controller. Touch follows the same bus-then-device pattern, with the PicoMite syntax: `OPTION SYSTEM I2C` declares the bus, `OPTION TOUCH FT6336` attaches the capacitive controller, and `OPTION TOUCH CALIBRATE` adjusts its mapping. Each setter validates the pins, saves, and reboots; the matching `... DISABLE` form clears it.
 
 ## VGA
 
@@ -277,6 +325,7 @@ Audio configuration commands:
 |---|---|---|
 | `OPTION AUDIO I2S bclk,data` | Standard I2S PCM for an external DAC/amp | Legacy two-pin form: `bclk`, inferred `ws = bclk + 1`, `data` |
 | `OPTION AUDIO I2S bclk,ws,data` | Standard I2S PCM for an external DAC/amp | Explicit wiring form; `ws` must be `bclk + 1` |
+| `OPTION AUDIO ES8311 bclk,ws,dout [,mclk [,ampen [,AMPLOW]]]` | ES8311 codec (I2S + I2C control) | Control bus from `OPTION SYSTEM I2C`; `mclk`/`ampen` accept 0 = none; `AMPLOW` = active-low amp enable |
 | `OPTION AUDIO left,right` | ESP32-S3 I2S PDM TX DAC-style two-line output | left PDM output, right PDM output |
 | `OPTION AUDIO PDM left,right` | Same as the bare two-pin form | left PDM output, right PDM output |
 | `OPTION AUDIO DISABLE` | Audio off | none |
@@ -284,6 +333,7 @@ Audio configuration commands:
 ```basic
 OPTION AUDIO I2S GP5,GP7
 OPTION AUDIO I2S GP5,GP6,GP7
+OPTION AUDIO ES8311 GP5,GP7,GP8,GP4,GP1,AMPLOW   ' the Freenove wiring (CONFIGURE FREENOVE seeds this)
 OPTION AUDIO GP12,GP13
 OPTION AUDIO PDM GP12,GP13
 OPTION AUDIO DISABLE
@@ -318,8 +368,10 @@ Working on hardware:
 - Default terminal colours survive errors and prompt recovery through shared MMBasic colour-state restoration.
 - `FLASH SAVE 1`, reset, `FLASH LOAD 1`, `RUN` works on the dedicated `mmslots` partition.
 - 48 KB WiFi-enabled MMBasic heap. ESP32 bytecode compiler scratch tables use ESP-IDF internal heap; VM runtime allocations still use the 48 KB MMBasic heap.
-- ESP-IDF detects the onboard PSRAM. The port reserves a slab sized from the detected chip via `heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` at boot and publishes it as `PSRAMbase` / `PSRAMsize`; `MM.INFO(PSRAM SIZE)` now returns the slab size and the shared `RAM` command (test / list / save / load / erase) works the same as on Pico variants. `RAM TEST NOCACHE` is Pico-only and errors on ESP32.
+- ESP-IDF detects the onboard PSRAM. The port reserves a contiguous block sized to the detected chip via `heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` at boot and publishes it as `PSRAMbase` / `PSRAMsize`; `MM.INFO(PSRAM SIZE)` returns that size and the shared `RAM` command (test / list / save / load / erase) works the same as on Pico variants. `RAM TEST NOCACHE` is Pico-only and errors on ESP32.
 - `WEB CONNECT`, `WEB SCAN`, TCP server, TCP client request/stream, UDP send/receive, NTP, and plain-TCP MQTT are hardware-smoked.
+- TLS for the TCP client (HTTPS, WebMite 5.07-compatible `WEB OPEN TLS CLIENT` syntax) and MQTT, verified against the ESP-IDF certificate bundle or a custom CA loaded with `WEB TLS CERT` (see [TLS](#tls-https-and-secure-mqtt)).
+- `JSON$()` for picking fields out of fetched JSON documents.
 - Bundled WEB demos seeded to A: include the small server demo and the multi-file website demo.
 - Browser web console over WiFi at `http://<device-ip>/__web_console/` (see [WiFi, Telnet, And Web Console](#wifi-telnet-and-web-console)).
 - Telnet console over WiFi with `OPTION TELNET CONSOLE ON`.
@@ -331,7 +383,6 @@ Working on hardware:
 Still stubbed or incomplete:
 
 - BASIC-visible GPIO DOUT/DIN/ARAW is hardware-smoked. PWM/servo are still explicit unsupported paths.
-- MQTT TLS/cert handling is not implemented; current MQTT support is plain TCP.
 - MIDI, ARRAY, and STREAM playback are not wired.
 - BLE/Bluetooth and OTA are not implemented.
 

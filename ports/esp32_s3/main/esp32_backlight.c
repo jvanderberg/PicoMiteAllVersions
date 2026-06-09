@@ -30,10 +30,13 @@ static int s_frequency = BACKLIGHT_DEFAULT_FREQUENCY;
 static uint32_t s_duty_max = 255;
 static int s_ready;
 
+/* Option.DISPLAY_BL holds the backlight pin index (OPTION LCDPANEL, or
+ * seeded from a board profile). Resolve to the raw GPIO for LEDC. */
 static int backlight_pin(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile || !profile->has_lcd) return ESP32_BOARD_PROFILE_NO_PIN;
-    return profile->lcd.backlight;
+    int pin = Option.DISPLAY_BL;
+    if (pin <= 0 || pin > NBRPINS || (PinDef[pin].mode & UNUSED))
+        return ESP32_BOARD_PROFILE_NO_PIN;
+    return PinDef[pin].GPno;
 }
 
 static void backlight_init_pwm(int pin, int frequency) {

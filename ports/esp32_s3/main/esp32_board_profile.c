@@ -175,8 +175,7 @@ static void reserve_profile_gpio(int gpio) {
     if (!profile_pin_invalid(pin)) ExtCurrentConfig[pin] = EXT_BOOT_RESERVED;
 }
 
-static void release_profile_gpio(int gpio) {
-    int pin = profile_pin(gpio);
+static void release_pin_index(int pin) {
     if (!profile_pin_invalid(pin) && ExtCurrentConfig[pin] == EXT_BOOT_RESERVED) {
         ExtCurrentConfig[pin] = EXT_NOT_CONFIG;
     }
@@ -187,21 +186,39 @@ static int profile_pin_matches_gpio(int pin, int gpio) {
 }
 
 static int current_audio_profile_uses_shared_i2c(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    return profile->id == ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341 &&
-           ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_PROFILE &&
-           ESP32_OPTION_AUDIO_PROFILE == ESP32_AUDIO_PROFILE_FREENOVE;
+    /* The ES8311 codec's control channel rides the shared I2C bus. */
+    return ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311;
 }
 
 static int current_shared_i2c_enabled(void) {
     return esp32_ft6336u_touch_is_ready() || current_audio_profile_uses_shared_i2c();
 }
 
-static int current_profile_shared_i2c_pin(int pin) {
+/* Resolve the pin indices of the shared touch/audio I2C bus: the OPTION
+ * SYSTEM I2C wiring when configured, else the Freenove audio profile's bus
+ * pins. The fallback keys on the profile id, not on the live audio state,
+ * so the pins still resolve (and can be released) after OPTION AUDIO
+ * DISABLE has cleared the audio fields. */
+static void shared_i2c_bus_pins(int * sda, int * scl) {
+    *sda = Option.SYSTEM_I2C_SDA;
+    *scl = Option.SYSTEM_I2C_SCL;
+    if (*sda && *scl) return;
     const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) return 0;
-    return profile_pin_matches_gpio(pin, profile->touch.sda) ||
-           profile_pin_matches_gpio(pin, profile->touch.scl);
+    if (profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
+        *sda = 0;
+        *scl = 0;
+        return;
+    }
+    *sda = profile_pin(profile->audio.i2c_sda);
+    *scl = profile_pin(profile->audio.i2c_scl);
+}
+
+static int current_profile_shared_i2c_pin(int pin) {
+    if (profile_pin_invalid(pin)) return 0;
+    int sda, scl;
+    shared_i2c_bus_pins(&sda, &scl);
+    if (!sda || !scl) return 0;
+    return pin == sda || pin == scl;
 }
 
 void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
@@ -221,8 +238,19 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.LCD_CD = 0;
     Option.LCD_CS = 0;
     Option.LCD_Reset = 0;
+    Option.DISPLAY_BL = 0;
     Option.DISPLAY_TYPE = 0;
     Option.DISPLAY_CONSOLE = 0;
+    Option.BGR = 0;
+
+    Option.SYSTEM_I2C_SDA = 0;
+    Option.SYSTEM_I2C_SCL = 0;
+    Option.SYSTEM_I2C_SLOW = 0;
+    Option.TOUCH_CAP = 0;
+    Option.TOUCH_IRQ = 0;
+    Option.TOUCH_CS = 0;
+    Option.TOUCH_Click = 0;
+    Option.THRESHOLD_CAP = 0;
 
     Option.SYSTEM_I2C_SDA = 0;
     Option.SYSTEM_I2C_SCL = 0;
@@ -234,7 +262,8 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.audio_i2s_bclk = 0;
     Option.audio_i2s_data = 0;
     ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
-    ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_NONE;
+    ESP32_OPTION_AUDIO_AMP_EN = 0;
+    ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
     ESP32_OPTION_AUDIO_I2S_WS = 0;
     ESP32_OPTION_AUDIO_I2S_MCLK = 0;
 
@@ -251,26 +280,32 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.LCD_CD = profile_pin(profile->lcd.dc);
         Option.LCD_CS = profile_pin(profile->lcd.cs);
         Option.LCD_Reset = profile_pin(profile->lcd.rst);
+        Option.DISPLAY_BL = profile_pin(profile->lcd.backlight);
         Option.DISPLAY_TYPE = ILI9341;
         Option.DISPLAY_ORIENTATION = LANDSCAPE;
+        /* The Freenove panel wants the inverted colour polarity; in the
+         * shared ILI9341 init sequence BGR=1 selects INVON. */
+        Option.BGR = 1;
         Option.DefaultFont = 0x01;
         Option.DefaultFC = WHITE;
         Option.DefaultBC = BLACK;
         Option.ColourCode = 1;
     }
 
-    if (profile->id == ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
-        /* Seed the shared system I2C bus on the Freenove header pins. These
-         * are overridable defaults: a user OPTION SYSTEM I2C or SETPIN
+    if (profile->has_touch) {
+        /* Seed the shared system I2C bus on the touch pins. These are
+         * overridable defaults: a user OPTION SYSTEM I2C or SETPIN
          * reconfigures the pins and persists over this seeding. */
         Option.SYSTEM_I2C_SDA = profile_pin(profile->touch.sda);
         Option.SYSTEM_I2C_SCL = profile_pin(profile->touch.scl);
-    }
-
-    if (profile->has_touch)
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 1;
+        Option.THRESHOLD_CAP = 22;
         esp32_ft6336u_touch_set_default_calibration();
-    else
+    } else {
         esp32_ft6336u_touch_set_identity_calibration();
+    }
 
     if (profile->audio.sink == ESP32_AUDIO_SINK_I2S_DAC) {
         Option.audio_i2s_bclk = profile_pin(profile->audio.bclk);
@@ -282,8 +317,10 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
         ESP32_OPTION_AUDIO_I2S_WS = profile_pin(profile->audio.ws);
         ESP32_OPTION_AUDIO_I2S_MCLK = profile_pin(profile->audio.mclk);
-        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_PROFILE;
-        ESP32_OPTION_AUDIO_PROFILE = ESP32_AUDIO_PROFILE_FREENOVE;
+        ESP32_OPTION_AUDIO_AMP_EN = profile_pin(profile->audio.amp_enable);
+        ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH =
+            profile->audio.amp_active_level ? 1 : 0;
+        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_ES8311;
     }
 }
 
@@ -341,36 +378,42 @@ void esp32_board_profile_open_system_i2c(void) {
 }
 
 void esp32_board_profile_reserve_lcd_pins(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_lcd) return;
-    reserve_profile_gpio(profile->lcd.sclk);
-    reserve_profile_gpio(profile->lcd.mosi);
-    reserve_profile_gpio(profile->lcd.miso);
-    reserve_profile_gpio(profile->lcd.cs);
-    reserve_profile_gpio(profile->lcd.dc);
-    reserve_profile_gpio(profile->lcd.rst);
-    reserve_profile_gpio(profile->lcd.backlight);
+    /* LCD pins come from Option.LCD_* / Option.DISPLAY_BL (OPTION LCDPANEL
+     * and OPTION SYSTEM SPI, or seeded from a profile's defaults). The
+     * control pins are the panel-configured signal; DISPLAY_TYPE is bound
+     * state and the web console rewrites it. */
+    if (!Option.LCD_CD || !Option.LCD_CS) return;
+    reserve_pin_index(Option.LCD_CLK);
+    reserve_pin_index(Option.LCD_MOSI);
+    reserve_pin_index(Option.LCD_MISO);
+    reserve_pin_index(Option.LCD_CS);
+    reserve_pin_index(Option.LCD_CD);
+    reserve_pin_index(Option.LCD_Reset);
+    reserve_pin_index(Option.DISPLAY_BL);
     s_lcd_pins_reserved = 1;
 }
 
 void esp32_board_profile_reserve_touch_pins(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (!profile->has_touch) return;
+    /* Touch config lives in the PicoMite Option fields: bus from OPTION
+     * SYSTEM I2C, controller from OPTION TOUCH FT6336 (or profile seed). */
+    if (!Option.TOUCH_CAP) return;
     esp32_board_profile_update_shared_i2c_pins();
-    reserve_profile_gpio(profile->touch.interrupt);
-    reserve_profile_gpio(profile->touch.reset);
+    reserve_pin_index(Option.TOUCH_IRQ);
+    reserve_pin_index(Option.TOUCH_CS);
+    reserve_pin_index(Option.TOUCH_Click);
     s_touch_pins_reserved = 1;
 }
 
 void esp32_board_profile_update_shared_i2c_pins(void) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) return;
+    int sda, scl;
+    shared_i2c_bus_pins(&sda, &scl);
+    if (!sda || !scl) return;
     if (current_shared_i2c_enabled()) {
-        reserve_profile_gpio(profile->touch.sda);
-        reserve_profile_gpio(profile->touch.scl);
+        reserve_pin_index(sda);
+        reserve_pin_index(scl);
     } else {
-        release_profile_gpio(profile->touch.sda);
-        release_profile_gpio(profile->touch.scl);
+        release_pin_index(sda);
+        release_pin_index(scl);
     }
 }
 
@@ -380,17 +423,8 @@ int esp32_board_profile_pin_owned_by_shared_i2c(int pin) {
            ExtCurrentConfig[pin] == EXT_BOOT_RESERVED;
 }
 
-static int pin_is_audio_profile_pin(int pin) {
-    const esp32_board_profile_t * profile = esp32_board_profile_current();
-    if (ESP32_OPTION_AUDIO_KIND != ESP32_AUDIO_KIND_PROFILE ||
-        ESP32_OPTION_AUDIO_PROFILE != ESP32_AUDIO_PROFILE_FREENOVE ||
-        profile->id != ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341)
-        return 0;
-    return profile_pin_matches_gpio(pin, profile->audio.mclk) ||
-           profile_pin_matches_gpio(pin, profile->audio.bclk) ||
-           profile_pin_matches_gpio(pin, profile->audio.ws) ||
-           profile_pin_matches_gpio(pin, profile->audio.dout) ||
-           profile_pin_matches_gpio(pin, profile->audio.amp_enable);
+static int pin_is_audio_amp_pin(int pin) {
+    return ESP32_OPTION_AUDIO_AMP_EN && pin == ESP32_OPTION_AUDIO_AMP_EN;
 }
 
 static int pin_is_generic_audio_pin(int pin) {
@@ -424,24 +458,21 @@ const char * port_pin_reserved_label(int pin) {
         return "Boot Reserved : SD";
 
     if (s_lcd_pins_reserved &&
-        (profile_pin_matches_gpio(pin, profile->lcd.sclk) ||
-         profile_pin_matches_gpio(pin, profile->lcd.mosi) ||
-         profile_pin_matches_gpio(pin, profile->lcd.miso) ||
-         profile_pin_matches_gpio(pin, profile->lcd.cs) ||
-         profile_pin_matches_gpio(pin, profile->lcd.dc) ||
-         profile_pin_matches_gpio(pin, profile->lcd.rst) ||
-         profile_pin_matches_gpio(pin, profile->lcd.backlight)))
+        (pin == Option.LCD_CLK || pin == Option.LCD_MOSI ||
+         pin == Option.LCD_MISO || pin == Option.LCD_CS ||
+         pin == Option.LCD_CD || pin == Option.LCD_Reset ||
+         pin == Option.DISPLAY_BL))
         return "Boot Reserved : LCD";
 
     if (esp32_board_profile_pin_owned_by_shared_i2c(pin))
         return "Boot Reserved : Shared I2C touch/audio";
 
     if (s_touch_pins_reserved &&
-        (profile_pin_matches_gpio(pin, profile->touch.interrupt) ||
-         profile_pin_matches_gpio(pin, profile->touch.reset)))
+        (pin == Option.TOUCH_IRQ || pin == Option.TOUCH_CS ||
+         pin == Option.TOUCH_Click))
         return "Boot Reserved : Touch";
 
-    if (pin_is_audio_profile_pin(pin) || pin_is_generic_audio_pin(pin))
+    if (pin_is_audio_amp_pin(pin) || pin_is_generic_audio_pin(pin))
         return "Boot Reserved : Audio";
 
     if (pin_is_vga_pin(pin))

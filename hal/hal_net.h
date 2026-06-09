@@ -52,11 +52,23 @@ enum {
     HAL_NET_CAP_MQTT_TLS = 1u << 8,
     HAL_NET_CAP_HTTP_FETCH = 1u << 9,
     HAL_NET_CAP_MQTT_WEBSOCKET = 1u << 10,
+    HAL_NET_CAP_TCP_CLIENT_TLS = 1u << 11,
 };
 
 uint32_t hal_net_capabilities(void);
 int hal_net_init(void);
 void hal_net_poll(void);
+
+/*
+ * hal_net_tls_set_ca(pem, len)
+ *
+ * Install a custom CA certificate (PEM text, `len` bytes, not required to
+ * be NUL-terminated) used to verify servers on subsequent TLS connections
+ * instead of the backend's built-in trust store. The backend copies the
+ * buffer. NULL/0 reverts to the built-in trust store. Backends without TLS
+ * support return HAL_NET_UNSUPPORTED.
+ */
+int hal_net_tls_set_ca(const void * pem, size_t len);
 
 int hal_net_wifi_set_credentials(const char * ssid, const char * pass,
                                  const char * host, const char * ip,
@@ -111,8 +123,18 @@ int hal_net_tcp_conn_send(hal_net_tcp_conn_t conn, const void * buf, size_t len,
                           uint32_t timeout_ms);
 int hal_net_tcp_conn_close(hal_net_tcp_conn_t conn);
 
+/*
+ * hal_net_tcp_client_open(host, port, timeout_ms, tls, out)
+ *
+ * `tls` non-zero requests an encrypted (TLS) connection with server
+ * certificate verification — the transport BASIC programs use for HTTPS
+ * requests. Backends that do not advertise HAL_NET_CAP_TCP_CLIENT_TLS
+ * MUST return HAL_NET_UNSUPPORTED when `tls` is set. The returned handle
+ * is used with the same send/recv/close entry points as a plain client.
+ */
 int hal_net_tcp_client_open(const char * host, uint16_t port,
-                            uint32_t timeout_ms, hal_net_tcp_client_t * out);
+                            uint32_t timeout_ms, int tls,
+                            hal_net_tcp_client_t * out);
 int hal_net_tcp_client_send(hal_net_tcp_client_t client, const void * buf,
                             size_t len, uint32_t timeout_ms);
 int hal_net_tcp_client_recv(hal_net_tcp_client_t client, void * buf,
@@ -129,8 +151,15 @@ int hal_net_udp_send(const char * host, uint16_t port,
 int hal_net_udp_recv_event(hal_net_udp_socket_t sock, hal_net_addr_t * from,
                            void * buf, size_t cap, size_t * len);
 
+/*
+ * hal_net_mqtt_connect(host, port, user, pass, client_id, tls, timeout_ms, out)
+ *
+ * `tls` non-zero requests an encrypted (TLS) broker connection with server
+ * certificate verification. Backends that do not advertise
+ * HAL_NET_CAP_MQTT_TLS MUST return HAL_NET_UNSUPPORTED when `tls` is set.
+ */
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out);
 int hal_net_mqtt_publish(hal_net_mqtt_client_t client, const char * topic,
                          const void * payload, size_t len, int qos, int retain);
