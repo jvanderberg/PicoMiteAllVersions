@@ -168,45 +168,68 @@ gains the controller family.
 The layer boundaries, risks, and non-goals from the original sketch of this
 plan hold; the phases below make them concrete.
 
-### B0 — inventory and naming hygiene
+### B0 — inventory and naming hygiene ✅ (findings below)
 
-- Catalog the symbols `spi_lcd.c` exports that other TUs consume
-  (`DrawRectangleSPI`, `DrawBitmapSPI`, `spi_write_*`, `DefineRegionSPI`,
-  `InitDisplaySPI`, `ConfigDisplaySPI`, …) and which are controller-level
-  vs transport-level vs presentation-level.
-- Rename any real ESP32 framebuffer implementation still living in a
-  `_stub.c`-named file.
-- No behavior change; this phase produces a symbol map in this doc.
+The transport survey changed B1's shape. What the code actually does:
 
-### B1 — transport contract: `hal/hal_spi_lcd_bus.h`
+- **The Pico transport is a shared-bus arbiter, not a dedicated bus.**
+  `SPISpeedSet(device)` (`spi_lcd.c:2395`) multiplexes the system SPI
+  between LCD, touch, and SD, reconfiguring speed/format per device and
+  selecting among three senders (SPI0 / SPI1 / bit-bang) by pin mapping
+  at runtime. `SetCS()` (`spi_lcd.c:1103`) embeds the re-arbitration: it
+  calls `SPISpeedSet(Option.DISPLAY_TYPE)` before asserting CS. A one-shot
+  `bus_init(hz, cpol, cpha)` contract cannot model this — the contract
+  needs claim/release semantics per transaction group.
+- **The seam is already exported.** `SetCS`, `ClearCS`, `LCD_CD_PIN`,
+  `LCD_CS_PIN`, `lcd_xmit_byte_multi`, `lcd_rcvr_byte_multi` are external
+  symbols declared in `SPI-LCD.h`, consumed today by `spi_lcd_fastgfx.c`,
+  `spi_lcd_framebuffer.c`, `spi_lcd_mem332.c`, and
+  `drivers/gui_touch/Touch.c`. The bus adapter wraps symbols, not statics.
+- **Linkage:** `drivers/spi_lcd/spi_lcd.c` is compiled into every device
+  variant from the root `CMakeLists.txt` (VGA ports neutralize it with the
+  internal `#if !HAL_PORT_IS_VGA` gate); per-port extras come from
+  `port_sources.cmake`.
+- **Polarity quirks are controller knowledge:** ST7920 inverts CS and
+  drives the CD line as its select. They stay with controller code, not
+  in the bus contract.
+- Symbol classification — controller-level (moves in B2):
+  `display_details[]`, init sequences, `spi_write_command/data/cd/
+  CommandData`, `DefineRegionSPI`, `ResetController`, orientation/MADCTL.
+  Transport-level (stays per-port): `SPISpeedSet`, `HW0/HW1/BitBang`
+  senders, `spi_write_fast`/`spi_finish` PL022 fast path, DMA.
+  Presentation-level (stays per-port pending B4): `DrawRectangleSPI`,
+  `DrawBitmapSPI`, MEM332/fastgfx machinery.
 
-Pure contract per the HAL standard (no target macros, no port-config
-ifdefs):
+### B1 — transport contract: `hal/hal_spi_lcd_bus.h` ✅
+
+Amended per B0: claim/release semantics, five entries:
 
 ```c
-void hal_spi_lcd_bus_init(uint32_t hz, int cpol, int cpha);
-void hal_spi_lcd_bus_dc(int level);        /* data/command line */
-void hal_spi_lcd_bus_cs(int level);
+void hal_spi_lcd_bus_begin(void);  /* claim + configure bus, assert CS */
+void hal_spi_lcd_bus_end(void);    /* deassert CS, release */
+void hal_spi_lcd_bus_dc(int data); /* D/C line: 0 = command, 1 = data */
 void hal_spi_lcd_bus_write(const uint8_t * buf, size_t len);
-void hal_spi_lcd_bus_write_pixels(const uint8_t * buf, size_t len);
-void hal_spi_lcd_bus_wait_idle(void);
-/* optional, capability-gated: */
-int  hal_spi_lcd_bus_read(uint8_t cmd, uint8_t * buf, size_t len);
+int  hal_spi_lcd_bus_read(uint8_t * buf, size_t len); /* 0 = unsupported */
 ```
 
-- Hot-path note: `write_pixels` is the only bandwidth-critical entry; the
-  pico implementation keeps the PL022 FIFO loop and `__not_in_flash_func`
-  placement. Per the plan-wide rule, binding is link-time — no function
-  pointers added to pixel paths beyond the `lcd_xmit_byte_multi` indirection
-  that already exists.
-- Implementations: `drivers/spi_lcd/spi_lcd_bus_pico.c` (verbatim transplant
-  of `spi_write_fast`, `spi_finish`, the `spi_init`/`spi_set_format` bring-up,
-  and the CD/CS GPIO helpers) and `ports/esp32_s3/main/spi_lcd_bus_esp32.c`
-  (wrapping the existing `spi_master` transaction helpers from
-  `esp32_ili9341_lcd.c`).
-- Validation here is compile-only on the pico side: call sites still in
-  `spi_lcd.c`, now routed through the contract; all device variants build;
-  host suite green (links the stub or nothing — host has no SPI LCD).
+- Implementations: `drivers/spi_lcd/spi_lcd_bus_pico.c` (adapter over
+  `SetCS`/`ClearCS`/`LCD_CD_PIN`/`lcd_xmit_byte_multi` — the arbiter and
+  senders stay where they are) and the ESP32 entry points in
+  `esp32_ili9341_lcd.c` (spi_master transactions; CS hardware-managed, so
+  begin/end are no-ops and dc() latches the transaction's D/C level).
+- **The ESP32 side consumes the contract immediately**: `lcd_cmd` /
+  `lcd_data` route through `hal_spi_lcd_bus_dc`/`_write`, so the entire
+  ILI9341 init sequence and pixel path exercise the contract on real
+  hardware.
+- **Pico call sites do NOT migrate in B1.** Routing `spi_lcd.c`'s 29 CD
+  sites onto the contract before extraction would churn the same lines
+  twice — B2 moves each call site once, rewriting it against the contract
+  as it lands in `spi_lcd_panels.c`. Until then the pico adapter is
+  compiled into every device variant (link-validated); its consumer
+  arrives with B2.
+- Hot-path note: per-pixel bandwidth on Pico flows through
+  `lcd_xmit_byte_multi` exactly as today; the contract adds one call layer
+  on the command path only, nothing on the pixel path.
 
 ### B2 — controller core extraction
 
@@ -216,8 +239,9 @@ int  hal_spi_lcd_bus_read(uint8_t cmd, uint8_t * buf, size_t len);
   Transplant verbatim — every branch and quirk moves as-is; cleanups are
   separate commits after tests pass.
 - The 29 `gpio_put(LCD_CD_PIN, …)` sites become `hal_spi_lcd_bus_dc()`;
-  `SetCS`/`ClearCS` become `hal_spi_lcd_bus_cs()`; the file's pico includes
-  drop to zero. Purity gate extends to cover it.
+  `SetCS`/`ClearCS` pairs become `hal_spi_lcd_bus_begin()`/`_end()` (ST7920's
+  inverted polarity is handled in the controller code that knows about it);
+  the file's pico includes drop to zero. Purity gate extends to cover it.
 - What remains in `spi_lcd.c` (pico-only): the fast blit/draw paths
   (`DrawRectangleSPI`, DMA, MEM332 hooks), which consume the same contract
   plus pico-specific acceleration.

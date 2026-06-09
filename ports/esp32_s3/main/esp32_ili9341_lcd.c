@@ -20,6 +20,7 @@
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "hal/hal_spi_lcd_bus.h"
 #include "esp32_backlight.h"
 #include "esp32_board_profile.h"
 
@@ -109,12 +110,39 @@ static void lcd_tx(const void * data, size_t len, int dc) {
     if (err != ESP_OK) ESP_LOGW(TAG, "spi transmit failed: %s", esp_err_to_name(err));
 }
 
+/* hal_spi_lcd_bus implementation: ESP-IDF spi_master transactions on a
+ * dedicated bus. CS is hardware-managed per transaction, so begin()/end()
+ * are no-ops; dc() latches the D/C level applied to subsequent writes.
+ * Panel readback isn't wired (the shadow buffer serves ReadBuffer), so
+ * read() reports unsupported. */
+static int s_bus_dc;
+
+void hal_spi_lcd_bus_begin(void) {}
+
+void hal_spi_lcd_bus_end(void) {}
+
+void hal_spi_lcd_bus_dc(int data) {
+    s_bus_dc = data ? 1 : 0;
+}
+
+void hal_spi_lcd_bus_write(const uint8_t * buf, size_t len) {
+    lcd_tx(buf, len, s_bus_dc);
+}
+
+int hal_spi_lcd_bus_read(uint8_t * buf, size_t len) {
+    (void)buf;
+    (void)len;
+    return 0;
+}
+
 static void lcd_cmd(uint8_t cmd) {
-    lcd_tx(&cmd, 1, 0);
+    hal_spi_lcd_bus_dc(0);
+    hal_spi_lcd_bus_write(&cmd, 1);
 }
 
 static void lcd_data(const uint8_t * data, size_t len) {
-    lcd_tx(data, len, 1);
+    hal_spi_lcd_bus_dc(1);
+    hal_spi_lcd_bus_write(data, len);
 }
 
 static void lcd_cmd_data(uint8_t cmd, const uint8_t * data, size_t len) {
