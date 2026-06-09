@@ -3407,16 +3407,16 @@ static void source_compile_print(BCSourceFrontend * fe, BCCompiler * cs, const c
         bc_emit_byte(cs, op);
         bc_emit_byte(cs, PRINT_NO_NEWLINE);
         source_skip_space(&p);
-        if (*p == ',' || *p == ';') continue;
-        /* Adjacent string literal with no separator — MMBasic's tokenizer
-         * splits "a""b" into two strings ("a" and "b") and PRINT auto-
-         * concatenates them. hello.bas's RUN-hint lines rely on this
-         * (PRINT "  RUN ""fizzbuzz.bas""" -> "  RUN " + "fizzbuzz.bas" +
-         * ""). Loop back to parse the next string literal as another
-         * PRINT argument; the trailing-newline rule applies only after
-         * the LAST argument so we don't suppress here. */
-        if (*p == '"') continue;
-        break;
+        /* PRINT items may be separated by ';' , ',' or just whitespace, and may
+         * mix string literals, variables, and expressions. The loop head
+         * handles ';' and ',' (and '@'); anything that is not end-of-statement
+         * is the next whitespace-separated item, so loop back and parse it.
+         * (This also covers MMBasic's "a""b" adjacent-string concatenation,
+         * since the tokenizer splits it into two string literals.) The
+         * trailing-newline rule applies only after the last item, so don't
+         * suppress here. */
+        if (*p == '\0' || *p == '\'' || *p == ':') break;
+        continue;
     }
 
     if (!suppress_newline) bc_emit_byte(cs, OP_PRINT_NEWLINE);
