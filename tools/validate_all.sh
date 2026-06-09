@@ -47,11 +47,29 @@ if run_section "host_native build" bash -c "cd '$ROOT/ports/host_native' && ./bu
         bash -c "cd '$ROOT/ports/host_native' && SKIP_HAL_PURITY=1 ./run_tests.sh"
     run_section "host_native host-shim tests" \
         bash -c "cd '$ROOT/ports/host_native' && ./run_host_shim_tests.sh"
+    run_section "host_native frontend tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_frontend_tests.sh"
+    run_section "host_native optimizer tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_optimizer_tests.sh"
+    run_section "host_native immediate tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_immediate_tests.sh"
+    run_section "host_native missing-syscall tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_missing_syscall_tests.sh"
+    run_section "host_native pixel tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_pixel_tests.sh"
+    run_section "host_native unsupported (negative) tests" \
+        bash -c "cd '$ROOT/ports/host_native' && ./run_unsupported_tests.sh"
     run_section "host_native NEW smoke (porttools)" \
         python3 "$ROOT/porttools/host_new_smoke.py" --no-build
 else
     SECTIONS+=("SKIP: host_native tests (build failed)")
     SECTIONS+=("SKIP: host_native host-shim tests (build failed)")
+    SECTIONS+=("SKIP: host_native frontend tests (build failed)")
+    SECTIONS+=("SKIP: host_native optimizer tests (build failed)")
+    SECTIONS+=("SKIP: host_native immediate tests (build failed)")
+    SECTIONS+=("SKIP: host_native missing-syscall tests (build failed)")
+    SECTIONS+=("SKIP: host_native pixel tests (build failed)")
+    SECTIONS+=("SKIP: host_native unsupported tests (build failed)")
     SECTIONS+=("SKIP: host_native NEW smoke (build failed)")
 fi
 

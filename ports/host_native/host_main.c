@@ -130,8 +130,11 @@ static void start_capture(char * buf, int size) {
     buf[0] = '\0';
     /* Each run starts at the left margin. MMCharPos is global state shared by
      * the interpreter and VM runs; reset it so column-dependent builtins like
-     * TAB() compute identically regardless of what the previous run left. */
-    MMCharPos = 0;
+     * TAB() compute identically regardless of what the previous run left.
+     * Column 1 is the start-of-line value the console maintains (MMputchar sets
+     * MMCharPos = 1 on '\r'), so resetting to 1 keeps the first line consistent
+     * with every subsequent line and with real-device column math. */
+    MMCharPos = 1;
     host_output_hook = host_capture_hook;
     capturing = 1;
 }
@@ -141,6 +144,32 @@ static void stop_capture(void) {
     host_output_hook = NULL;
     capturing = 0;
     if (capture_buf) strip_ansi_sequences(capture_buf);
+}
+
+/*
+ * A test may declare that BOTH engines are expected to reject its input with a
+ * marker comment anywhere in the source:
+ *   ' EXPECT_BOTH_ERROR: <substring>
+ * In compare mode the test then passes iff both the interpreter and the VM
+ * error, and (if a substring is given) it appears in both captured outputs.
+ * This is for inputs the language defines as illegal — the normal compare path
+ * treats any error as a failure. Returns 1 if the marker is present and copies
+ * the optional substring into substr_out.
+ */
+static int source_expect_both_error(const char * src, char * substr_out, int cap) {
+    substr_out[0] = '\0';
+    const char * m = strstr(src, "EXPECT_BOTH_ERROR");
+    if (!m) return 0;
+    m += strlen("EXPECT_BOTH_ERROR");
+    if (*m == ':') {
+        m++;
+        while (*m == ' ' || *m == '\t') m++;
+        int n = 0;
+        while (*m && *m != '\n' && *m != '\r' && n < cap - 1) substr_out[n++] = *m++;
+        while (n > 0 && (substr_out[n - 1] == ' ' || substr_out[n - 1] == '\t')) n--;
+        substr_out[n] = '\0';
+    }
+    return 1;
 }
 
 static int parse_pixel_assert(const char * spec, PixelAssert * out) {
@@ -867,6 +896,27 @@ int main(int argc, char ** argv) {
         printf("\n--- Results ---\n");
         printf("Interpreter: %s\n", r1 == 0 ? "OK" : (r1 == 2 ? "TIMEOUT" : "ERROR"));
         printf("Bytecode VM Source: %s\n", r2 == 0 ? "OK" : (r2 == 2 ? "TIMEOUT" : "ERROR"));
+
+        /* Negative test: both engines must reject this input. */
+        char expect_substr[256];
+        if (source_expect_both_error(source_text, expect_substr, sizeof(expect_substr))) {
+            int both_err = (r1 == 1 && r2 == 1);
+            int substr_ok = (expect_substr[0] == '\0') ||
+                            (strstr(interp_output, expect_substr) != NULL &&
+                             strstr(vm_output, expect_substr) != NULL);
+            if (both_err && substr_ok) {
+                printf("Both engines rejected as expected: MATCH\n");
+                free(source_text);
+                free_framebuffer_snapshot(&interp_frame);
+                return 0;
+            }
+            printf("EXPECT_BOTH_ERROR not satisfied!\n\n");
+            printf("Interpreter output:\n---\n%s\n---\n\n", interp_output);
+            printf("Bytecode VM Source output:\n---\n%s\n---\n\n", vm_output);
+            free(source_text);
+            free_framebuffer_snapshot(&interp_frame);
+            return 1;
+        }
 
         /* Memory simulation report */
         {

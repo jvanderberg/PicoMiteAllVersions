@@ -1440,14 +1440,20 @@ static void source_emit_store_array(BCCompiler * cs, uint16_t slot, uint8_t type
 }
 
 /* Decode OPTION ESCAPE backslash sequences in the string literal [s, end) into
- * out. Mirrors the interpreter's evaluator (MMBasic.c). Returns byte count. */
-static int source_decode_escapes(const char * s, const char * end, char * out, int out_cap) {
+ * out. Mirrors the interpreter's evaluator (MMBasic.c). Returns byte count. A
+ * \000 / \&00 escape (an embedded NUL) is an error in both engines. */
+static int source_decode_escapes(BCCompiler * cs, const char * s, const char * end,
+                                 char * out, int out_cap) {
     int n = 0;
     while (s < end && n < out_cap - 1) {
         if (*s == '\\' && (end - s) > 1) {
             if ((end - s) > 3 && isdigit((unsigned char)s[1]) &&
                 isdigit((unsigned char)s[2]) && isdigit((unsigned char)s[3])) {
                 int v = (s[1] - '0') * 100 + (s[2] - '0') * 10 + (s[3] - '0');
+                if (v == 0) {
+                    bc_set_error(cs, "Null character in escape sequence - use CHR$(0)");
+                    return n;
+                }
                 out[n++] = (char)v;
                 s += 4;
                 continue;
@@ -1455,27 +1461,54 @@ static int source_decode_escapes(const char * s, const char * end, char * out, i
             char c = s[1];
             s += 2;
             switch (c) {
-            case '\\': out[n++] = '\\'; break;
-            case 'a': out[n++] = '\a'; break;
-            case 'b': out[n++] = '\b'; break;
-            case 'e': out[n++] = 0x1b; break;
-            case 'f': out[n++] = '\f'; break;
-            case 'n': out[n++] = '\n'; break;
-            case 'q': out[n++] = '"'; break;
-            case 'r': out[n++] = '\r'; break;
-            case 't': out[n++] = '\t'; break;
-            case 'v': out[n++] = '\v'; break;
+            case '\\':
+                out[n++] = '\\';
+                break;
+            case 'a':
+                out[n++] = '\a';
+                break;
+            case 'b':
+                out[n++] = '\b';
+                break;
+            case 'e':
+                out[n++] = 0x1b;
+                break;
+            case 'f':
+                out[n++] = '\f';
+                break;
+            case 'n':
+                out[n++] = '\n';
+                break;
+            case 'q':
+                out[n++] = '"';
+                break;
+            case 'r':
+                out[n++] = '\r';
+                break;
+            case 't':
+                out[n++] = '\t';
+                break;
+            case 'v':
+                out[n++] = '\v';
+                break;
             case '&':
                 if ((end - s) >= 2 && isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1])) {
                     int hi = mytoupper(s[0]) >= 'A' ? mytoupper(s[0]) - 'A' + 10 : s[0] - '0';
                     int lo = mytoupper(s[1]) >= 'A' ? mytoupper(s[1]) - 'A' + 10 : s[1] - '0';
-                    out[n++] = (char)((hi << 4) | lo);
+                    int v = (hi << 4) | lo;
+                    if (v == 0) {
+                        bc_set_error(cs, "Null character in escape sequence - use CHR$(0)");
+                        return n;
+                    }
+                    out[n++] = (char)v;
                     s += 2;
                 } else {
                     out[n++] = 'x';
                 }
                 break;
-            default: out[n++] = c; break;
+            default:
+                out[n++] = c;
+                break;
             }
             continue;
         }
@@ -1500,7 +1533,11 @@ static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, cons
         uint16_t idx;
         if (fe->escape_active) {
             char buf[STRINGSIZE + 1];
-            int n = source_decode_escapes(start, p, buf, sizeof(buf));
+            int n = source_decode_escapes(cs, start, p, buf, sizeof(buf));
+            if (cs->has_error) {
+                *pp = p;
+                return 0;
+            }
             idx = bc_add_constant_string(cs, (const uint8_t *)buf, n);
         } else {
             idx = bc_add_constant_string(cs, (const uint8_t *)start, (int)(p - start));
@@ -3470,6 +3507,27 @@ static void source_compile_on(BCSourceFrontend * fe, BCCompiler * cs, const char
     }
     source_emit_store_converted(cs, slot, T_INT, etype, is_local);
 
+    /* Runtime range check: the interpreter evaluates the index with
+     * getint(...,0,255), so an index outside 0..255 is an error (whereas 0 or
+     * an in-range value past the target list simply falls through). */
+    bc_emit_load_var(cs, slot, T_INT, is_local);
+    bc_emit_byte(cs, OP_PUSH_ZERO);
+    bc_emit_byte(cs, OP_LT_I);
+    bc_emit_load_var(cs, slot, T_INT, is_local);
+    bc_emit_byte(cs, OP_PUSH_INT);
+    bc_emit_i64(cs, 255);
+    bc_emit_byte(cs, OP_GT_I);
+    bc_emit_byte(cs, OP_OR);
+    uint32_t in_range = source_emit_jmp_placeholder(cs, OP_JZ);
+    {
+        const char * msg = "ON value invalid (valid is 0 to 255)";
+        uint16_t midx = bc_add_constant_string(cs, (const uint8_t *)msg, (int)strlen(msg));
+        bc_emit_byte(cs, OP_PUSH_STR);
+        bc_emit_u16(cs, midx);
+        bc_emit_byte(cs, OP_ERROR_S);
+    }
+    source_patch_jmp_here(cs, in_range);
+
     p = kw + (is_gosub ? 5 : 4);
 
     uint32_t end_fixups[64];
@@ -4307,10 +4365,16 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
 
         /* Optional BYVAL / BYREF prefix. The VM call ABI passes scalars by
-         * value, which is exactly BYVAL semantics; BYREF is accepted for
-         * source compatibility (see PR notes on the value-only limitation). */
-        if (source_keyword(&p, "BYVAL") || source_keyword(&p, "BYREF"))
+         * value, which is exactly BYVAL semantics, so BYVAL is accepted. BYREF
+         * is an explicit request for by-reference, which the value-only ABI
+         * cannot honour — reject it rather than silently mutate a copy. */
+        if (source_keyword(&p, "BYVAL")) {
             source_skip_space(&p);
+        } else if (source_keyword(&p, "BYREF")) {
+            bc_set_error(cs, "BYREF not supported in FRUN (value-only call ABI)");
+            *pp = p;
+            return nparams;
+        }
 
         char name[MAXVARLEN + 1];
         int name_len = 0;
