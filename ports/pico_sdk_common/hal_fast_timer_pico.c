@@ -18,6 +18,11 @@
 
 #include "hal/hal_fast_timer.h"
 
+/* Mirrors whether PWM slice 0 is claimed by the fast timer. The shared
+ * PWM layer (runtime/vm/vm_sys_pwm.c) and set_PWM consult it to block
+ * BASIC PWM/SERVO use of channel 0 while a measurement is running. */
+extern bool fast_timer_active;
+
 bool hal_fast_timer_available(void) {
 #ifdef rp2350
     return true;
@@ -41,6 +46,7 @@ bool hal_fast_timer_configure(uint32_t wrap_count, void (*isr_fn)(void)) {
         pwm_set_irq1_enabled(0, true);
     }
     pwm_set_enabled(0, true);
+    fast_timer_active = true;
     return true;
 #else
     (void)wrap_count;
@@ -53,4 +59,5 @@ void hal_fast_timer_disable(void) {
 #ifdef rp2350
     pwm_set_irq1_enabled(0, false);
 #endif
+    fast_timer_active = false;
 }

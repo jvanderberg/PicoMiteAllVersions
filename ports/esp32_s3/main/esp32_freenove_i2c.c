@@ -1,5 +1,13 @@
 /*
  * Shared Freenove I2C bus for onboard touch/audio peripherals.
+ *
+ * The FT6336U touch and ES8311 codec share the bus-0 master with the BASIC
+ * system I²C. The new i2c-master driver permits only one master bus per
+ * port, so this module does not create its own bus: it obtains the per-port
+ * master bus and per-address device handles from the shared owner in
+ * hal_i2c_esp32.c (esp32_i2c_master_bus / esp32_i2c_master_device), holding
+ * one reference while installed. Register reads/writes go through
+ * i2c_master_transmit / i2c_master_transmit_receive on those device handles.
  */
 
 #include "esp32_freenove_i2c.h"
@@ -7,12 +15,14 @@
 #include <string.h>
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-#define FREENOVE_I2C_PORT I2C_NUM_0
+#include "hal_i2c_esp32.h"
+
+#define FREENOVE_I2C_PORT 0
 #define FREENOVE_I2C_TIMEOUT_MS 100
 
 static const char * TAG = "freenove_i2c";
@@ -43,54 +53,24 @@ esp_err_t esp32_freenove_i2c_init(int sda_gpio, int scl_gpio, uint32_t hz) {
     if (lock_err != ESP_OK) return lock_err;
     if (s_installed) {
         if (s_sda == sda_gpio && s_scl == scl_gpio) {
-            if (s_hz == requested_hz) {
-                give_bus();
-                return ESP_OK;
-            }
-            i2c_config_t conf = {
-                .mode = I2C_MODE_MASTER,
-                .sda_io_num = sda_gpio,
-                .scl_io_num = scl_gpio,
-                .sda_pullup_en = GPIO_PULLUP_ENABLE,
-                .scl_pullup_en = GPIO_PULLUP_ENABLE,
-                .master.clk_speed = requested_hz,
-                .clk_flags = 0,
-            };
-            esp_err_t err = i2c_param_config(FREENOVE_I2C_PORT, &conf);
-            if (err == ESP_OK) {
-                s_hz = requested_hz;
-                ESP_LOGI(TAG, "I2C speed changed to %lu Hz", (unsigned long)s_hz);
-            }
+            /* Already up on these pins; the per-device speed is applied when
+             * a device handle is fetched, so just adopt the requested rate. */
+            s_hz = requested_hz;
             give_bus();
-            return err;
+            return ESP_OK;
         }
         ESP_LOGE(TAG, "I2C bus already installed on GPIO%d/GPIO%d", s_sda, s_scl);
         give_bus();
         return ESP_ERR_INVALID_STATE;
     }
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = sda_gpio,
-        .scl_io_num = scl_gpio,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = requested_hz,
-        .clk_flags = 0,
-    };
-    esp_err_t err = i2c_param_config(FREENOVE_I2C_PORT, &conf);
-    if (err != ESP_OK) {
+    if (esp32_i2c_master_bus(FREENOVE_I2C_PORT, sda_gpio, scl_gpio) == NULL) {
         give_bus();
-        return err;
-    }
-    err = i2c_driver_install(FREENOVE_I2C_PORT, conf.mode, 0, 0, 0);
-    if (err != ESP_OK) {
-        give_bus();
-        return err;
+        return ESP_FAIL;
     }
     s_installed = 1;
     s_sda = sda_gpio;
     s_scl = scl_gpio;
-    s_hz = conf.master.clk_speed;
+    s_hz = requested_hz;
     ESP_LOGI(TAG, "I2C ready on GPIO%d/GPIO%d at %lu Hz",
              s_sda, s_scl, (unsigned long)s_hz);
     give_bus();
@@ -102,15 +82,11 @@ void esp32_freenove_i2c_deinit(void) {
     esp_err_t lock_err = take_bus();
     if (lock_err != ESP_OK) return;
     if (s_installed) {
-        int old_sda = s_sda;
-        int old_scl = s_scl;
-        (void)i2c_driver_delete(FREENOVE_I2C_PORT);
+        esp32_i2c_master_bus_release(FREENOVE_I2C_PORT);
         s_installed = 0;
         s_sda = -1;
         s_scl = -1;
         s_hz = 0;
-        if (old_sda >= 0) (void)gpio_reset_pin((gpio_num_t)old_sda);
-        if (old_scl >= 0) (void)gpio_reset_pin((gpio_num_t)old_scl);
         ESP_LOGI(TAG, "I2C deinitialized");
     }
     give_bus();
@@ -121,9 +97,14 @@ esp_err_t esp32_freenove_i2c_read_reg(uint8_t addr, uint8_t reg,
     if (!s_installed || !data || len == 0) return ESP_ERR_INVALID_STATE;
     esp_err_t err = take_bus();
     if (err != ESP_OK) return err;
-    err = i2c_master_write_read_device(FREENOVE_I2C_PORT, addr, &reg, 1,
-                                       data, len,
-                                       pdMS_TO_TICKS(FREENOVE_I2C_TIMEOUT_MS));
+    i2c_master_dev_handle_t dev =
+        esp32_i2c_master_device(FREENOVE_I2C_PORT, addr, s_hz);
+    if (dev == NULL) {
+        give_bus();
+        return ESP_FAIL;
+    }
+    err = i2c_master_transmit_receive(dev, &reg, 1, data, len,
+                                      FREENOVE_I2C_TIMEOUT_MS);
     give_bus();
     return err;
 }
@@ -138,8 +119,13 @@ esp_err_t esp32_freenove_i2c_write_reg(uint8_t addr, uint8_t reg,
     if (len && data) memcpy(&buf[1], data, len);
     esp_err_t err = take_bus();
     if (err != ESP_OK) return err;
-    err = i2c_master_write_to_device(FREENOVE_I2C_PORT, addr, buf, len + 1,
-                                     pdMS_TO_TICKS(FREENOVE_I2C_TIMEOUT_MS));
+    i2c_master_dev_handle_t dev =
+        esp32_i2c_master_device(FREENOVE_I2C_PORT, addr, s_hz);
+    if (dev == NULL) {
+        give_bus();
+        return ESP_FAIL;
+    }
+    err = i2c_master_transmit(dev, buf, len + 1, FREENOVE_I2C_TIMEOUT_MS);
     give_bus();
     return err;
 }

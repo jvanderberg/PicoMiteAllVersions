@@ -45,7 +45,6 @@ void cmd_adc(void) {}
 void cmd_backlight(void) {}
 void cmd_camera(void) {}
 void cmd_cfunction(void) {}
-void cmd_Classic(void) {}
 void cmd_configure(void) {}
 void cmd_cpu(void) {}
 void cmd_csubinterrupt(void) {}
@@ -53,8 +52,6 @@ void cmd_device(void) {}
 void cmd_DHT22(void) {}
 void cmd_ds18b20(void) {}
 void cmd_endprogram(void) {}
-void cmd_i2c(void) {}
-void cmd_i2c2(void) {}
 void cmd_in(void) {}
 void cmd_ir(void) {}
 void cmd_irq(void) {}
@@ -70,7 +67,6 @@ void cmd_library(void) {}
 void cmd_mouse(void) {}
 void cmd_mov(void) {}
 void cmd_nop(void) {}
-void cmd_Nunchuck(void) {}
 void cmd_onewire(void) {}
 void cmd_option(void) {
     extern int port_web_option_setter(unsigned char * cmdline);
@@ -93,83 +89,6 @@ void cmd_program(void) {}
 void cmd_pull(void) {}
 void cmd_pulse(void) {}
 void cmd_push(void) {}
-
-void cmd_pwm(void) {
-    unsigned char * tp;
-    if ((tp = checkstring(cmdline, (unsigned char *)"SYNC"))) {
-        MMFLOAT counts[12];
-        uint16_t present = 0;
-        int i;
-        for (i = 0; i < 12; i++) counts[i] = -1.0;
-#ifdef rp2350
-        getargs(&tp, 23, (unsigned char *)",");
-#else
-        getargs(&tp, 15, (unsigned char *)",");
-#endif
-        for (i = 0; i < argc / 2 + 1 && i < 12; i++) {
-            if (i * 2 < argc && *argv[i * 2]) {
-                counts[i] = getnumber(argv[i * 2]);
-                if ((counts[i] < 0.0 || counts[i] > 100.0) && counts[i] != -1.0)
-                    error("Syntax");
-                present |= (uint16_t)(1u << i);
-            }
-        }
-        vm_sys_pwm_sync(present, counts);
-        return;
-    }
-
-    getargs(&cmdline, 11, (unsigned char *)",");
-    if (argc < 3) error("Syntax");
-    {
-        int slice = getint(argv[0], 0, 11);
-        int phase = 0;
-        int defer = 0;
-        int has_duty1 = 0, has_duty2 = 0;
-        MMFLOAT frequency, duty1 = 0, duty2 = 0;
-        if (checkstring(argv[2], (unsigned char *)"OFF")) {
-            vm_sys_pwm_off(slice);
-            return;
-        }
-        if (argc < 5) error("Syntax");
-        frequency = getnumber(argv[2]);
-        if (*argv[4]) {
-            duty1 = getnumber(argv[4]);
-            has_duty1 = 1;
-        }
-        if (argc >= 7 && *argv[6]) {
-            duty2 = getnumber(argv[6]);
-            has_duty2 = 1;
-        }
-        if (argc >= 9 && *argv[8]) phase = getint(argv[8], 0, 1);
-        if (argc == 11 && *argv[10]) defer = getint(argv[10], 0, 1);
-        vm_sys_pwm_configure(slice, frequency, has_duty1, duty1, has_duty2, duty2, phase, defer);
-    }
-}
-
-void cmd_rtc(void) {}
-
-void cmd_Servo(void) {
-    getargs(&cmdline, 5, (unsigned char *)",");
-    if (argc < 3) error("Syntax");
-    {
-        int slice = getint(argv[0], 0, 11);
-        int has_pos1 = 0, has_pos2 = 0;
-        MMFLOAT pos1 = 0, pos2 = 0;
-        if (checkstring(argv[2], (unsigned char *)"OFF")) {
-            vm_sys_pwm_off(slice);
-            return;
-        }
-        if (*argv[2]) {
-            pos1 = getnumber(argv[2]);
-            has_pos1 = 1;
-        }
-        if (argc >= 5 && *argv[4]) {
-            pos2 = getnumber(argv[4]);
-            has_pos2 = 1;
-        }
-        vm_sys_servo_configure(slice, has_pos1, pos1, has_pos2, pos2);
-    }
-}
 
 void cmd_set(void) {}
 
@@ -224,6 +143,34 @@ void cmd_setpin(void) {
         mode = VM_PIN_MODE_PWM7A;
     else if (checkstring(argv[2], (unsigned char *)"PWM7B"))
         mode = VM_PIN_MODE_PWM7B;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SDA"))
+        mode = VM_PIN_MODE_I2C0SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SCL"))
+        mode = VM_PIN_MODE_I2C0SCL;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SDA"))
+        mode = VM_PIN_MODE_I2C1SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SCL"))
+        mode = VM_PIN_MODE_I2C1SCL;
+    else if (checkstring(argv[2], (unsigned char *)"UART0TX"))
+        mode = VM_PIN_MODE_UART0TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART0RX"))
+        mode = VM_PIN_MODE_UART0RX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1TX"))
+        mode = VM_PIN_MODE_UART1TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1RX"))
+        mode = VM_PIN_MODE_UART1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0RX"))
+        mode = VM_PIN_MODE_SPI0RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0TX"))
+        mode = VM_PIN_MODE_SPI0TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0SCK"))
+        mode = VM_PIN_MODE_SPI0SCK;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1RX"))
+        mode = VM_PIN_MODE_SPI1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1TX"))
+        mode = VM_PIN_MODE_SPI1TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1SCK"))
+        mode = VM_PIN_MODE_SPI1SCK;
 #ifdef rp2350
     else if (checkstring(argv[2], (unsigned char *)"PWM8A"))
         mode = VM_PIN_MODE_PWM8A;
@@ -471,6 +418,47 @@ void blitmerge(int x0, int y0, int w, int h, uint8_t colour) {
  * host gets here via the dead branch after has_pipeline() returns 0. */
 void setframebuffer(void) {}
 
+/* SSD1306-over-I²C framebuffer ops. I2C.c's InitDisplayI2C wires these
+ * to the DrawBuffer/DrawPixel function pointers, but host never selects
+ * an I²C OLED panel so the path is unreached; the stubs satisfy the
+ * link. */
+void DrawRectangleMEM(int x1, int y1, int x2, int y2, int c) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)c;
+}
+void DrawBitmapMEM(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char * bitmap) {
+    (void)x1;
+    (void)y1;
+    (void)width;
+    (void)height;
+    (void)scale;
+    (void)fc;
+    (void)bc;
+    (void)bitmap;
+}
+void DrawBufferMEM(int x1, int y1, int x2, int y2, unsigned char * p) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)p;
+}
+void ReadBufferMEM(int x1, int y1, int x2, int y2, unsigned char * buff) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)buff;
+}
+void DrawPixelMEM(int x1, int y1, int c) {
+    (void)x1;
+    (void)y1;
+    (void)c;
+}
+
 /* =========================================================================
  * SPI / Serial / Audio stubs
  * ======================================================================= */
@@ -616,7 +604,7 @@ void PinSetBit(int pin, unsigned int offset) {
     (void)pin;
     (void)offset;
 }
-volatile unsigned int GetPinStatus(int pin) {
+unsigned int GetPinStatus(int pin) {
     (void)pin;
     return 0;
 }
@@ -754,7 +742,6 @@ void setterminal(int height, int width) {
 void OtherOptions(void) {}
 void disable_sd(void) {}
 void disable_systemspi(void) {}
-void disable_systemi2c(void) {}
 void mT4IntEnable(int status) {
     (void)status;
 }

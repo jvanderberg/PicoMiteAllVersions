@@ -245,6 +245,13 @@ void hal_pin_adc_select(uint32_t adc_channel) {
     s_current_channel = (int)adc_channel;
 }
 
+int hal_pin_adc_validate(int pin) {
+    /* ESP32-S3 has no package-variant ADC restriction beyond the pin's
+     * ANALOG_IN capability flag, which the caller has already checked. */
+    (void)pin;
+    return 0;
+}
+
 void hal_pin_adc_set_temp_sensor(bool enabled) {
     /* ESP32-S3 has a temperature sensor via temperature_sensor.h —
      * separate from ADC. Wire later if a caller needs it. */

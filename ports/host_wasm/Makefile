@@ -53,7 +53,7 @@ CFLAGS = -O2 -std=gnu11 -funsigned-char \
          -DMMBA_RELEASE_VERSION=\"$(MMBA_RELEASE_VERSION)\" \
          -include host_platform.h \
          $(THIRD_PARTY_CFLAGS) \
-         -I$(WASM_DIR) -I$(NATIVE_DIR) -I$(PICO_COMPAT_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
+         -I$(WASM_DIR) -I$(NATIVE_DIR) -I$(PICO_COMPAT_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/peripheral -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
          -MMD -MP \
          -pthread
 # `-pthread` here makes the wasm module's linear memory a
@@ -90,6 +90,8 @@ CORE_SRCS = core/mmbasic/MMBasic.c core/mmbasic/Commands.c core/mmbasic/Function
             shared/gfx/gfx_pixel_shared.c shared/gfx/gfx_cls_shared.c shared/gfx/gfx_text_shared.c \
             shared/gfx/gfx_console_shared.c \
             shared/mmbasic/mm_misc_shared.c shared/mmbasic/options_ini.c core/mmbasic/OptionCommands.c \
+            shared/peripheral/pwm_cmd.c shared/peripheral/i2c_config.c \
+            shared/peripheral/uart_config.c shared/peripheral/spi_config.c \
             display_state.c pin_state.c option_state.c audio_state.c \
             mm_net_interrupts.c \
             mm_net_http.c \
@@ -120,11 +122,12 @@ CORE_SRCS += audio_mp3_real.c third_party/hxcmod/hxcmod.c spi_lcd_mem332_stub.c 
 CORE_SRCS += gfx_3d.c upng_sprite_stub.c gui_touch_stub.c gui_controls_stub.c psram_heap_stub.c hal_psram_stub.c i2c_keypad_stub.c heartbeat_stub.c
 CORE_SRCS += editor_console_stub.c
 CORE_SRCS += display_pixel_host.c
+CORE_SRCS += I2C.c
 
 # Bytecode VM sources.
 BC_SRCS = runtime/vm/bc_alloc.c runtime/vm/bc_bridge.c runtime/vm/vm_host_fat.c \
           third_party/fatfs/ff.c third_party/fatfs/ffunicode.c third_party/fatfs/ffsystem.c \
-          runtime/vm/vm_sys_input.c runtime/vm/vm_sys_graphics.c runtime/vm/vm_sys_time.c \
+          runtime/vm/vm_sys_input.c runtime/vm/vm_sys_graphics.c runtime/vm/vm_sys_time.c runtime/vm/vm_sys_pwm.c \
           vm_sys_pin_sim.c vm_sys_file_sim.c \
           runtime/vm/bc_source.c runtime/vm/bc_compiler_core.c \
           runtime/vm/bc_vm.c runtime/vm/bc_runtime.c runtime/vm/bc_debug.c
@@ -136,7 +139,8 @@ HOST_PORTABLE_SRCS = host_runtime.c host_fastgfx.c host_fs_shims.c \
                      host_peripheral_stubs.c host_fs.c \
                      host_sim_emit_stub.c \
                      host_time.c host_fb.c host_keys.c host_bc_runtime_noop.c \
-                     hal_flash_host.c hal_time_host.c hal_random_host.c hal_pin_host.c hal_storage_host.c hal_filesystem_host.c \
+                     hal_flash_host.c hal_time_host.c hal_random_host.c hal_pin_host.c hal_pwm_host.c hal_storage_host.c hal_filesystem_host.c \
+                     hal_i2c_host.c \
                      hal_keyboard_host.c $(AUDIO_BACKEND_SRCS) hal_vm_framebuffer_host.c
 HOST_WASM_SRCS = host_wasm_main.c host_wasm_console.c host_wasm_canvas.c \
                  host_wasm_audio.c host_wasm_web.c host_sim_slowdown.c \
@@ -267,6 +271,9 @@ $(BUILD_DIR)/%.o: $(REPO_ROOT)/drivers/gui_controls/%.c
 	@mkdir -p $(dir $@)
 	$(EMCC) $(CFLAGS) -c -o $@ $<
 $(BUILD_DIR)/%.o: $(REPO_ROOT)/drivers/i2c_picocalc_kbd/%.c
+	@mkdir -p $(dir $@)
+	$(EMCC) $(CFLAGS) -c -o $@ $<
+$(BUILD_DIR)/%.o: $(REPO_ROOT)/drivers/i2c_bus/%.c
 	@mkdir -p $(dir $@)
 	$(EMCC) $(CFLAGS) -c -o $@ $<
 $(BUILD_DIR)/%.o: $(REPO_ROOT)/drivers/heartbeat/%.c

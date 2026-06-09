@@ -20,6 +20,7 @@
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "shared/peripheral/i2c_config.h"
 #include "runtime/runtime.h"
 #include "runtime/runtime_console_escdecode.h"
 #include "hal/hal_time.h"
@@ -422,6 +423,7 @@ void printoptions(void) {
              sb_dma,
              (unsigned)(Option.pc386_sb_dma16 ? Option.pc386_sb_dma16 : 5));
     MMPrintString(line);
+    i2c_config_print_option();
     MMPrintString("OPTIONS.INI C:/OPTIONS.INI\r\n");
 }
 

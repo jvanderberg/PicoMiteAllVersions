@@ -9,6 +9,7 @@
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "hal/hal_i2c.h"
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 #include "esp32_ft6336u_touch.h"
@@ -251,9 +252,13 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     Option.TOUCH_Click = 0;
     Option.THRESHOLD_CAP = 0;
 
+    Option.SYSTEM_I2C_SDA = 0;
+    Option.SYSTEM_I2C_SCL = 0;
+    Option.SYSTEM_I2C_SLOW = 0;
+
     Option.AUDIO_L = 0;
     Option.AUDIO_R = 0;
-    Option.AUDIO_SLICE = 0;
+    Option.AUDIO_SLICE = 99;
     Option.audio_i2s_bclk = 0;
     Option.audio_i2s_data = 0;
     ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
@@ -288,6 +293,9 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
     }
 
     if (profile->has_touch) {
+        /* Seed the shared system I2C bus on the touch pins. These are
+         * overridable defaults: a user OPTION SYSTEM I2C or SETPIN
+         * reconfigures the pins and persists over this seeding. */
         Option.SYSTEM_I2C_SDA = profile_pin(profile->touch.sda);
         Option.SYSTEM_I2C_SCL = profile_pin(profile->touch.scl);
         Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
@@ -335,6 +343,37 @@ void esp32_board_profile_reserve_pins(void) {
     if (profile->has_ws2812) {
         reserve_profile_gpio(profile->ws2812_pin);
         s_ws2812_pins_reserved = 1;
+    }
+}
+
+/* Open the shared system I²C bus seeded by the board profile (Freenove seeds
+ * SDA/SCL on the touch header). Mirrors the RP boot bring-up: reserve the
+ * pins, then drive the bus the pins advertise (I2C0SDA -> bus 0, otherwise
+ * bus 1) through the HAL. Leaves I2C0locked / I2C0SDApin / I2C0SCLpin /
+ * I2C_enabled / I2C_Timeout in the same state the BASIC I2C layer reads, so
+ * I2C READ/WRITE and the system bus work without an explicit OPTION SYSTEM
+ * I2C. A user OPTION SYSTEM I2C DISABLE / reconfigure still overrides this. */
+void esp32_board_profile_open_system_i2c(void) {
+    if (!Option.SYSTEM_I2C_SDA) return;
+    ExtCfg(Option.SYSTEM_I2C_SCL, EXT_BOOT_RESERVED, 0);
+    ExtCfg(Option.SYSTEM_I2C_SDA, EXT_BOOT_RESERVED, 0);
+    uint32_t baud = Option.SYSTEM_I2C_SLOW ? HAL_PORT_I2C_SLOW_HZ : 400000;
+    if (PinDef[Option.SYSTEM_I2C_SDA].mode & I2C0SDA) {
+        I2C0locked = 1;
+        I2C0SDApin = Option.SYSTEM_I2C_SDA;
+        I2C0SCLpin = Option.SYSTEM_I2C_SCL;
+        I2C_enabled = 1;
+        I2C_Timeout = SystemI2CTimeout;
+        hal_i2c_master_init(0, PinDef[Option.SYSTEM_I2C_SDA].GPno,
+                            PinDef[Option.SYSTEM_I2C_SCL].GPno, baud);
+    } else {
+        I2C1locked = 1;
+        I2C1SDApin = Option.SYSTEM_I2C_SDA;
+        I2C1SCLpin = Option.SYSTEM_I2C_SCL;
+        I2C2_enabled = 1;
+        I2C2_Timeout = SystemI2CTimeout;
+        hal_i2c_master_init(1, PinDef[Option.SYSTEM_I2C_SDA].GPno,
+                            PinDef[Option.SYSTEM_I2C_SCL].GPno, baud);
     }
 }
 

@@ -151,12 +151,6 @@ void cmd_program(void) {}
 void cmd_pull(void) {}
 void cmd_pulse(void) {}
 void cmd_push(void) {}
-void cmd_pwm(void) {
-    error("PWM not available on PC386");
-}
-void cmd_Servo(void) {
-    error("Servo not available on PC386");
-}
 void cmd_set(void) {}
 void cmd_spi(void) {}
 void cmd_spi2(void) {}
@@ -587,7 +581,6 @@ void copyframetoscreen(uint8_t * s, int xstart, int xend, int ystart, int yend, 
 }
 void disable_audio(void) {}
 void disable_sd(void) {}
-void disable_systemi2c(void) {}
 void disable_systemspi(void) {}
 
 /* display_details is an array, not a function. Storage so the symbol

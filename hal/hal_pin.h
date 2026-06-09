@@ -107,6 +107,14 @@ void hal_pin_select_digital(uint32_t gpio);
  * (`PinDef[].ADCpin` on pico). */
 void hal_pin_adc_select(uint32_t adc_channel);
 
+/* Validate that the given BASIC pin index can be configured as a raw
+ * analog input on this target. Returns 0 when the pin is a usable ADC
+ * input, negative otherwise. Targets whose ADC availability depends on
+ * the package variant (e.g. RP2350A vs RP2350B) decide it here; targets
+ * with no per-package restriction return 0 once the caller has already
+ * confirmed the pin's ANALOG_IN capability flag. */
+int hal_pin_adc_validate(int pin);
+
 /* Single-shot ADC subsystem:
  *   init            — one-time power-up; idempotent.
  *   set_temp_sensor — enable/disable the on-die temperature sensor;

@@ -198,9 +198,11 @@ void app_main(void) {
     vm_sys_file_reset();
     vm_sys_pin_reset();
     extern void esp32_board_profile_reserve_pins(void);
+    extern void esp32_board_profile_open_system_i2c(void);
     extern void esp32_audio_reserve_option_pins(void);
     extern void esp32_vga_reserve_option_pins(void);
     esp32_board_profile_reserve_pins();
+    esp32_board_profile_open_system_i2c();
     esp32_audio_reserve_option_pins();
     esp32_vga_reserve_option_pins();
 

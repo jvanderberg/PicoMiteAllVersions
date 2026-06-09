@@ -15,6 +15,7 @@ do not know about Pico SDK hardware.
 #include "Draw.h"
 #include "FileIO.h"
 #include "OptionCommands.h"
+#include "shared/peripheral/i2c_config.h"
 
 extern void setterminal(int height, int width);
 
@@ -376,6 +377,12 @@ bool option_command_handle_common(unsigned char * cmdline, bool clear_display_on
             return true;
         }
         error("Syntax");
+    }
+
+    tp = checkstring(cmdline, (unsigned char *)"SYSTEM I2C");
+    if (tp) {
+        i2c_config_option_system_i2c(tp);
+        return true;
     }
 
     return false;

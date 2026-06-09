@@ -70,7 +70,7 @@ CFLAGS = -std=gnu11 -ffreestanding -O2 -g \
          -include pc386_platform.h \
          $(THIRD_PARTY_CFLAGS) \
          -I$(PORT_DIR)/include_shim -I$(PORT_DIR) \
-         -I$(REPO_ROOT)/ports/host_native -I$(PICO_COMPAT_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
+         -I$(REPO_ROOT)/ports/host_native -I$(PICO_COMPAT_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/peripheral -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
          -MMD -MP
 
 ifeq ($(PC386_NO_FPU),1)
@@ -174,7 +174,7 @@ PORT_SRCS = kmain.c kprint.c mmap.c heap_region.c kstring.c \
             pc386_cpu.c pc386_rtc.c pc386_memio.c pc386_lpt.c pc386_interp.c \
             pc386_flash.c vm_sys_pin_pc386.c idt.c \
             $(AUDIO_BACKEND_SRCS) hal_filesystem_pc386.c hal_flash_pc386.c \
-            hal_keyboard_pc386.c hal_pin_pc386.c hal_random_pc386.c \
+            hal_keyboard_pc386.c hal_pin_pc386.c hal_pwm_pc386.c hal_i2c_pc386.c hal_random_pc386.c \
             hal_storage_pc386.c hal_time_pc386.c \
             hal_vm_framebuffer_pc386.c \
             $(PC386_SOFTFLOAT_SRCS)
@@ -187,6 +187,7 @@ CORE_SRCS += core/mmbasic/MMBasic_Print.c core/mmbasic/MMBasic_REPL.c core/mmbas
 CORE_SRCS += shared/gfx/gfx_box_shared.c shared/gfx/gfx_circle_shared.c shared/gfx/gfx_line_shared.c shared/gfx/gfx_pixel_shared.c
 CORE_SRCS += shared/gfx/gfx_cls_shared.c shared/gfx/gfx_text_shared.c shared/gfx/gfx_console_shared.c
 CORE_SRCS += shared/mmbasic/mm_misc_shared.c shared/mmbasic/options_ini.c core/mmbasic/OptionCommands.c
+CORE_SRCS += shared/peripheral/pwm_cmd.c shared/peripheral/i2c_config.c shared/peripheral/uart_config.c shared/peripheral/spi_config.c
 CORE_SRCS += core/mmbasic/Draw.c shared/gfx/RGB121.c shared/gfx/Tilemap.c core/mmbasic/FileIO.c $(AUDIO_SHARED_CORE_SRCS) drivers/bmp_decoder/BmpDecoder.c third_party/regex/re.c third_party/picojpeg/picojpeg.c
 CORE_SRCS += core/mmbasic/XModem.c
 
@@ -204,7 +205,7 @@ RUNTIME_SRCS = runtime_boot.c runtime_program.c runtime_console_putchar.c runtim
 # BC (bytecode) compiler + VM. ff/ffunicode/ffsystem are already in
 # FATFS_SRCS so don't re-list them here.
 BC_SRCS = runtime/vm/bc_alloc.c runtime/vm/bc_bridge.c \
-          runtime/vm/vm_sys_input.c runtime/vm/vm_sys_graphics.c runtime/vm/vm_sys_time.c \
+          runtime/vm/vm_sys_input.c runtime/vm/vm_sys_graphics.c runtime/vm/vm_sys_time.c runtime/vm/vm_sys_pwm.c \
           runtime/vm/bc_source.c runtime/vm/bc_compiler_core.c runtime/vm/bc_vm.c runtime/vm/bc_runtime.c runtime/vm/bc_debug.c
 # runtime/vm/vm_host_fat.c (in-RAM FAT for sim B: drive) is omitted: pc386 has
 # real FatFs over ATA-PIO from Stage 2 and provides its own

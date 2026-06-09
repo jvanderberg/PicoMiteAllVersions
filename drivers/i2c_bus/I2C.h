@@ -88,6 +88,10 @@ extern char * I2C_Slave_Send_IntLine;     // pointer to the slave send interrupt
 extern char * I2C_Slave_Receive_IntLine;  // pointer to the slave receive interrupt line number
 extern char * I2C2_Slave_Send_IntLine;    // pointer to the slave send interrupt line number
 extern char * I2C2_Slave_Receive_IntLine; // pointer to the slave receive interrupt line number
+/* Consume one pending slave receive/send event; used by the interrupt
+ * dispatchers on every port. Returns 1 with *intaddr set to the registered
+ * interrupt target. */
+extern int i2c_slave_interrupt_pending(unsigned char ** intaddr);
 /* PicoCalc keypad-register write. Declared unconditionally so portable
  * core code can reference it under an `if (HAL_PORT_BACKLIGHT_VIA_KEYPAD_I2C)`
  * runtime guard. The body only exists on PicoCalc ports; on

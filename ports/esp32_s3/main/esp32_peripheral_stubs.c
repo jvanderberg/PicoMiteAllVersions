@@ -25,6 +25,7 @@
 #include "lfs.h"
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "shared/peripheral/i2c_config.h"
 #include "OptionCommands.h"
 #include "runtime/runtime.h"
 #include "vm_sys_pin.h"
@@ -149,6 +150,7 @@ void printoptions(void) {
     esp32_touch_print_options();
     esp32_touch_calibrate_print_option();
     hal_gui_controls_print_options();
+    i2c_config_print_option();
     if (Option.SD_CS) {
         MMPrintString("OPTION SDCARD ");
         MMPrintString((char *)PinDef[Option.SD_CS].pinname);
@@ -258,9 +260,49 @@ void cmd_adc(void) {}
 
 void cmd_camera(void) {}
 
-void cmd_cfunction(void) {}
+/* SSD1306-over-I²C framebuffer ops. The shared I²C bus driver's
+ * InitDisplayI2C wires these to the DrawBuffer/DrawPixel function
+ * pointers; ESP32 never selects an I²C OLED panel so the path is
+ * unreached. The real bodies live in spi_lcd.c, which this port does
+ * not link. */
+void DrawRectangleMEM(int x1, int y1, int x2, int y2, int c) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)c;
+}
+void DrawBitmapMEM(int x1, int y1, int width, int height, int scale, int fc, int bc, unsigned char * bitmap) {
+    (void)x1;
+    (void)y1;
+    (void)width;
+    (void)height;
+    (void)scale;
+    (void)fc;
+    (void)bc;
+    (void)bitmap;
+}
+void DrawBufferMEM(int x1, int y1, int x2, int y2, unsigned char * p) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)p;
+}
+void ReadBufferMEM(int x1, int y1, int x2, int y2, unsigned char * buff) {
+    (void)x1;
+    (void)y1;
+    (void)x2;
+    (void)y2;
+    (void)buff;
+}
+void DrawPixelMEM(int x1, int y1, int c) {
+    (void)x1;
+    (void)y1;
+    (void)c;
+}
 
-void cmd_Classic(void) {}
+void cmd_cfunction(void) {}
 
 static void esp32_configure(unsigned char * p) {
     if (!*p) {
@@ -317,10 +359,6 @@ void cmd_files_restore_program_context(void) {}
 
 void cmd_files_save_program_context(void) {}
 
-void cmd_i2c(void) {}
-
-void cmd_i2c2(void) {}
-
 void cmd_in(void) {}
 
 void cmd_ir(void) {}
@@ -364,8 +402,6 @@ void cmd_mouse(void) {}
 void cmd_mov(void) {}
 
 void cmd_nop(void) {}
-
-void cmd_Nunchuck(void) {}
 
 void cmd_onewire(void) {}
 
@@ -473,79 +509,6 @@ void cmd_pulse(void) {}
 
 void cmd_push(void) {}
 
-void cmd_pwm(void) {
-    unsigned char * tp;
-    if ((tp = checkstring(cmdline, (unsigned char *)"SYNC"))) {
-        MMFLOAT counts[12];
-        uint16_t present = 0;
-        int i;
-        for (i = 0; i < 12; i++) counts[i] = -1.0;
-        getargs(&tp, 15, (unsigned char *)",");
-        for (i = 0; i < argc / 2 + 1 && i < 12; i++) {
-            if (i * 2 < argc && *argv[i * 2]) {
-                counts[i] = getnumber(argv[i * 2]);
-                if ((counts[i] < 0.0 || counts[i] > 100.0) && counts[i] != -1.0)
-                    error("Syntax");
-                present |= (uint16_t)(1u << i);
-            }
-        }
-        vm_sys_pwm_sync(present, counts);
-        return;
-    }
-
-    getargs(&cmdline, 11, (unsigned char *)",");
-    if (argc < 3) error("Syntax");
-    {
-        int slice = getint(argv[0], 0, 11);
-        int phase = 0;
-        int defer = 0;
-        int has_duty1 = 0, has_duty2 = 0;
-        MMFLOAT frequency, duty1 = 0, duty2 = 0;
-        if (checkstring(argv[2], (unsigned char *)"OFF")) {
-            vm_sys_pwm_off(slice);
-            return;
-        }
-        if (argc < 5) error("Syntax");
-        frequency = getnumber(argv[2]);
-        if (*argv[4]) {
-            duty1 = getnumber(argv[4]);
-            has_duty1 = 1;
-        }
-        if (argc >= 7 && *argv[6]) {
-            duty2 = getnumber(argv[6]);
-            has_duty2 = 1;
-        }
-        if (argc >= 9 && *argv[8]) phase = getint(argv[8], 0, 1);
-        if (argc == 11 && *argv[10]) defer = getint(argv[10], 0, 1);
-        vm_sys_pwm_configure(slice, frequency, has_duty1, duty1, has_duty2, duty2, phase, defer);
-    }
-}
-
-void cmd_rtc(void) {}
-
-void cmd_Servo(void) {
-    getargs(&cmdline, 5, (unsigned char *)",");
-    if (argc < 3) error("Syntax");
-    {
-        int slice = getint(argv[0], 0, 11);
-        int has_pos1 = 0, has_pos2 = 0;
-        MMFLOAT pos1 = 0, pos2 = 0;
-        if (checkstring(argv[2], (unsigned char *)"OFF")) {
-            vm_sys_pwm_off(slice);
-            return;
-        }
-        if (*argv[2]) {
-            pos1 = getnumber(argv[2]);
-            has_pos1 = 1;
-        }
-        if (argc >= 5 && *argv[4]) {
-            pos2 = getnumber(argv[4]);
-            has_pos2 = 1;
-        }
-        vm_sys_servo_configure(slice, has_pos1, pos1, has_pos2, pos2);
-    }
-}
-
 void cmd_set(void) {}
 
 void cmd_setpin(void) {
@@ -599,6 +562,34 @@ void cmd_setpin(void) {
         mode = VM_PIN_MODE_PWM7A;
     else if (checkstring(argv[2], (unsigned char *)"PWM7B"))
         mode = VM_PIN_MODE_PWM7B;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SDA"))
+        mode = VM_PIN_MODE_I2C0SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SCL"))
+        mode = VM_PIN_MODE_I2C0SCL;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SDA"))
+        mode = VM_PIN_MODE_I2C1SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SCL"))
+        mode = VM_PIN_MODE_I2C1SCL;
+    else if (checkstring(argv[2], (unsigned char *)"UART0TX"))
+        mode = VM_PIN_MODE_UART0TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART0RX"))
+        mode = VM_PIN_MODE_UART0RX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1TX"))
+        mode = VM_PIN_MODE_UART1TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1RX"))
+        mode = VM_PIN_MODE_UART1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0RX"))
+        mode = VM_PIN_MODE_SPI0RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0TX"))
+        mode = VM_PIN_MODE_SPI0TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0SCK"))
+        mode = VM_PIN_MODE_SPI0SCK;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1RX"))
+        mode = VM_PIN_MODE_SPI1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1TX"))
+        mode = VM_PIN_MODE_SPI1TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1SCK"))
+        mode = VM_PIN_MODE_SPI1SCK;
     else
         error("Unsupported SETPIN mode");
 
@@ -611,6 +602,27 @@ void cmd_setpin(void) {
             error("Unsupported SETPIN option");
     }
     vm_sys_pin_setpin(pin, mode, option);
+}
+
+/* External.c's pin reservation hook, routed onto the VM pin HAL. The
+ * shared I²C bus driver calls ExtCfg to reserve / release SDA/SCL; the
+ * EXT_COM_RESERVED reservation marker has no VM pin-mode and is a no-op
+ * here. */
+void ExtCfg(int pin, int cfg, int option) {
+    if (cfg == EXT_NOT_CONFIG) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_OFF, VM_PIN_OPT_NONE);
+    } else if (cfg == EXT_DIG_IN) {
+        int vm_option = VM_PIN_OPT_NONE;
+        if (option == CNPUSET)
+            vm_option = VM_PIN_OPT_PULLUP;
+        else if (option == CNPDSET)
+            vm_option = VM_PIN_OPT_PULLDOWN;
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_DIN, vm_option);
+    } else if (cfg == EXT_DIG_OUT) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_DOUT, VM_PIN_OPT_NONE);
+    } else if (cfg == EXT_ADCRAW) {
+        vm_sys_pin_setpin(pin, VM_PIN_MODE_ARAW, VM_PIN_OPT_NONE);
+    }
 }
 
 void cmd_settick(void) {}
@@ -636,8 +648,6 @@ void cmd_wraptarget(void) {}
 void cmd_xmodem(void) {}
 
 void disable_sd(void) {}
-
-void disable_systemi2c(void) {}
 
 void disable_systemspi(void) {}
 
@@ -913,13 +923,19 @@ uint8_t I2C0locked = 0;
 
 uint8_t I2C1locked = 0;
 
+uint8_t SPI0locked = 0;
+
+uint8_t SPI1locked = 0;
+
+/* RTC poll throttle counter the shared RTC code resets; no tick decrements
+ * it on this port yet. */
+volatile unsigned int clocktimer = 0;
+
 unsigned char IgnorePIN = 0;
 
 void initMouse0(int sensitivity) {
     (void)sensitivity;
 }
-
-int mmI2Cvalue = 0;
 
 int mmOWvalue = 0;
 

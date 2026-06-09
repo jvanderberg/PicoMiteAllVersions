@@ -1,5 +1,7 @@
 #include "pico_runtime_internal.h"
 
+#include "hal/hal_i2c.h"
+
 lfs_t lfs;
 lfs_dir_t lfs_dir;
 struct lfs_info lfs_info;
@@ -255,6 +257,7 @@ int MIPS16 main() {
     extern void InitDisplaySPI(int InitOnly);
     extern void InitDisplayI2C(int InitOnly);
     extern void InitTouch(void);
+    hal_i2c_init();
     if (!hal_i2c_keypad_owns_i2c_bus()) InitDisplaySSD();
     InitDisplaySPI(0);
     if (!hal_i2c_keypad_owns_i2c_bus()) {

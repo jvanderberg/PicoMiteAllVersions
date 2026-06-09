@@ -23,6 +23,7 @@
 #include "vm_sys_graphics.h"
 #include "vm_sys_time.h"
 #include "vm_sys_pin.h"
+#include "vm_sys_pwm.h"
 #include "vm_sys_file.h"
 
 /* Ensure __not_in_flash_func is defined (from pico SDK platform headers) */

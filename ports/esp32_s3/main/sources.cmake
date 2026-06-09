@@ -53,6 +53,10 @@ set(CORE_SRCS
     ${REPO_ROOT}/drivers/fs_lfs_fatfs/fs_lfs_fatfs_helpers.c
     ${REPO_ROOT}/core/mmbasic/OptionCommands.c
     ${REPO_ROOT}/shared/cmd_ws2812_shared.c
+    ${REPO_ROOT}/shared/peripheral/pwm_cmd.c
+    ${REPO_ROOT}/shared/peripheral/i2c_config.c
+    ${REPO_ROOT}/shared/peripheral/uart_config.c
+    ${REPO_ROOT}/shared/peripheral/spi_config.c
     ${REPO_ROOT}/shared/cmd_psram.c
     ${REPO_ROOT}/shared/audio/synth_pcm.c
 )
@@ -115,6 +119,7 @@ set(DEVICE_FACING_SRCS
     ${REPO_ROOT}/core/mmbasic/FileIO.c
     ${AUDIO_SHARED_CORE_SRCS}
     ${REPO_ROOT}/drivers/bmp_decoder/BmpDecoder.c
+    ${REPO_ROOT}/drivers/i2c_bus/I2C.c
     ${REPO_ROOT}/third_party/regex/re.c
     ${REPO_ROOT}/third_party/picojpeg/picojpeg.c
 )
@@ -152,8 +157,9 @@ set(BC_SRCS
     ${REPO_ROOT}/runtime/vm/vm_sys_input.c
     ${REPO_ROOT}/runtime/vm/vm_sys_graphics.c
     ${REPO_ROOT}/runtime/vm/vm_sys_time.c
+    ${REPO_ROOT}/runtime/vm/vm_sys_pwm.c
     esp32_bc_alloc.c                        # VM runtime on MMBasic heap; compiler scratch on ESP-IDF internal heap
-    vm_sys_pin_esp32.c
+    ${REPO_ROOT}/runtime/vm/vm_sys_pin.c
     ${REPO_ROOT}/runtime/vm/vm_sys_file.c
 )
 
@@ -180,6 +186,8 @@ set(PORT_LOCAL_SRCS
     esp32_compat.c                          # small porting bits
     hal_psram_esp32.c                       # PSRAM HAL: slab acquisition, cache sync, PSRAMbase/PSRAMsize publication
     hal_pin_esp32.c                         # real GPIO/ADC over driver/gpio.h + esp_adc
+    hal_pwm_esp32.c                         # PWM/SERVO over LEDC (hal_pwm.h)
+    hal_i2c_esp32.c                         # I2C master over driver/i2c_master.h; register-level slave ISR (hal_i2c.h)
     esp32_pin_tables.c                      # ESP32-S3 GPIO map + GPn codemap
     hal_ws2812_esp32.c                      # WS2812/SK6812 over ESP32 RMT
     esp32_audio_options.c                   # OPTION AUDIO / MM.INFO$(AUDIO) surface
@@ -271,6 +279,7 @@ idf_component_register(
         ${REPO_ROOT}/core/mmbasic
         ${REPO_ROOT}/runtime/vm
         ${REPO_ROOT}/shared/gfx
+        ${REPO_ROOT}/shared/peripheral
         ${REPO_ROOT}/shared/audio
         ${REPO_ROOT}/shared/mmbasic
         ${REPO_ROOT}/drivers/bmp_decoder

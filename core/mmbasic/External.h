@@ -190,7 +190,7 @@ extern volatile int64_t INT1Count, INT2Count, INT3Count, INT4Count;
 extern volatile uint64_t INT5Count, INT5Value, INT5InitTimer, INT5Timer;
 extern void PinSetBit(int pin, unsigned int offset);
 extern int PinRead(int pin);
-extern volatile unsigned int GetPinStatus(int pin);
+extern unsigned int GetPinStatus(int pin);
 extern int GetPinBit(int pin);
 extern void WriteCoreTimer(unsigned long timeset);
 extern unsigned long ReadCoreTimer(void);

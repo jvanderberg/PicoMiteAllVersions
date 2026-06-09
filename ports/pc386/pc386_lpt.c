@@ -51,6 +51,34 @@ void cmd_setpin(void) {
         mode = VM_PIN_MODE_DIN;
     else if (checkstring(argv[2], (unsigned char *)"DOUT"))
         mode = VM_PIN_MODE_DOUT;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SDA"))
+        mode = VM_PIN_MODE_I2C0SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C0SCL"))
+        mode = VM_PIN_MODE_I2C0SCL;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SDA"))
+        mode = VM_PIN_MODE_I2C1SDA;
+    else if (checkstring(argv[2], (unsigned char *)"I2C1SCL"))
+        mode = VM_PIN_MODE_I2C1SCL;
+    else if (checkstring(argv[2], (unsigned char *)"UART0TX"))
+        mode = VM_PIN_MODE_UART0TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART0RX"))
+        mode = VM_PIN_MODE_UART0RX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1TX"))
+        mode = VM_PIN_MODE_UART1TX;
+    else if (checkstring(argv[2], (unsigned char *)"UART1RX"))
+        mode = VM_PIN_MODE_UART1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0RX"))
+        mode = VM_PIN_MODE_SPI0RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0TX"))
+        mode = VM_PIN_MODE_SPI0TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI0SCK"))
+        mode = VM_PIN_MODE_SPI0SCK;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1RX"))
+        mode = VM_PIN_MODE_SPI1RX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1TX"))
+        mode = VM_PIN_MODE_SPI1TX;
+    else if (checkstring(argv[2], (unsigned char *)"SPI1SCK"))
+        mode = VM_PIN_MODE_SPI1SCK;
     else
         error("Unsupported SETPIN mode");
 
@@ -119,7 +147,7 @@ int GetPinBit(int pin) {
     return (int)ExtInp(pin);
 }
 
-volatile unsigned int GetPinStatus(int pin) {
+unsigned int GetPinStatus(int pin) {
     if (IsInvalidPin(pin)) return 0;
     return (unsigned int)ExtCurrentConfig[pin];
 }
