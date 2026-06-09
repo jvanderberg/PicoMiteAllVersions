@@ -10,16 +10,17 @@
 void mm_net_mqtt_parse_connect(unsigned char * arg,
                                mm_net_mqtt_connect_args_t * out) {
     memset(out, 0, sizeof(*out));
-    getargs(&arg, 9, (unsigned char *)",");
-    if (!(argc == 7 || argc == 9)) error("Syntax");
+    getargs(&arg, 11, (unsigned char *)",");
+    if (!(argc == 7 || argc == 9 || argc == 11)) error("Syntax");
     out->host = (char *)getCstring(argv[0]);
     out->port = getint(argv[2], 1, 65535);
     out->user = (char *)getCstring(argv[4]);
     out->pass = (char *)getCstring(argv[6]);
-    if (argc == 9) {
+    if (argc >= 9 && *argv[8]) {
         out->interrupt = (char *)GetIntAddress(argv[8]);
         out->has_interrupt = 1;
     }
+    if (argc == 11) out->tls = (int)getint(argv[10], 0, 1);
 }
 
 void mm_net_mqtt_parse_publish(unsigned char * arg,

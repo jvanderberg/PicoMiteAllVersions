@@ -32,6 +32,9 @@ int mm_net_mqtt_hal_cmd(unsigned char * line,
         mm_net_mqtt_connect_args_t parsed;
         mm_net_mqtt_parse_connect(tp, &parsed);
         if (mqtt_is_connected(ctx)) error("Already connected");
+        if (parsed.tls &&
+            !(hal_net_capabilities() & HAL_NET_CAP_MQTT_TLS))
+            error("TLS not supported on this port");
 
         if (parsed.has_interrupt) {
             MQTTInterrupt = parsed.interrupt;
@@ -52,7 +55,7 @@ int mm_net_mqtt_hal_cmd(unsigned char * line,
 
         if (hal_net_mqtt_connect(parsed.host, (uint16_t)parsed.port,
                                  parsed.user, parsed.pass, ctx->client_id,
-                                 5000, ctx->client) != HAL_NET_OK) {
+                                 parsed.tls, 5000, ctx->client) != HAL_NET_OK) {
             *ctx->client = 0;
             mqtt_set_connected(ctx, 0);
             error("Failed to connect");

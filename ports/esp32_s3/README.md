@@ -155,6 +155,49 @@ http://<device-ip>/__web_console/
 
 The root `/` remains available for BASIC programs serving pages with `WEB TRANSMIT PAGE`.
 
+### TLS (HTTPS And Secure MQTT)
+
+TLS connections are encrypted and the server certificate is verified against
+the ESP-IDF X.509 bundle (the common public CAs), so HTTPS APIs and managed
+MQTT brokers work without any certificate management on the device.
+
+The TCP client uses the WebMite 5.07-era TLS command forms (the syntax in the
+community "MMBASIC WEB ADDENDUM"; later WebMite releases dropped TLS):
+
+```basic
+' HTTPS request
+WEB OPEN TLS CLIENT "api.github.com", 443
+WEB TLS CLIENT REQUEST req$, buf%(), 10000
+WEB CLOSE TLS CLIENT
+```
+
+`WEB OPEN TLS STREAM` / `WEB TLS CLIENT STREAM` are the encrypted versions of
+the stream forms. Equivalently, the plain commands accept an optional
+trailing TLS flag (`WEB OPEN TCP CLIENT host$, port [, timeout] [, tls]`).
+
+MQTT takes the optional trailing flag:
+
+```basic
+' MQTT over TLS (e.g. a broker's TLS listener on 8883)
+WEB MQTT CONNECT "broker.example.com", 8883, user$, pass$, , 1
+```
+
+Without the TLS forms or flag, everything behaves exactly as before
+(plain TCP).
+
+Servers whose certificate chain is not rooted in the common-CA bundle (a
+private broker, a self-signed lab server) need their CA installed first:
+
+```basic
+WEB TLS CERT "a:/myca.pem"   ' verify subsequent TLS connects against this CA
+WEB TLS CERT ""              ' revert to the built-in certificate bundle
+```
+
+The file must be PEM text (`-----BEGIN CERTIFICATE-----`), at most 8 KB, and
+the setting lasts until changed or reset. With no custom CA installed, a
+server outside the bundle fails the handshake with "No response from client"
+/ "Failed to connect".
+
 ## USB Console And Keyboard
 
 The native USB-C port has two saved runtime roles:
@@ -327,6 +370,8 @@ Working on hardware:
 - 48 KB WiFi-enabled MMBasic heap. ESP32 bytecode compiler scratch tables use ESP-IDF internal heap; VM runtime allocations still use the 48 KB MMBasic heap.
 - ESP-IDF detects the onboard PSRAM. The port reserves a contiguous block sized to the detected chip via `heap_caps_aligned_alloc(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` at boot and publishes it as `PSRAMbase` / `PSRAMsize`; `MM.INFO(PSRAM SIZE)` returns that size and the shared `RAM` command (test / list / save / load / erase) works the same as on Pico variants. `RAM TEST NOCACHE` is Pico-only and errors on ESP32.
 - `WEB CONNECT`, `WEB SCAN`, TCP server, TCP client request/stream, UDP send/receive, NTP, and plain-TCP MQTT are hardware-smoked.
+- TLS for the TCP client (HTTPS, WebMite 5.07-compatible `WEB OPEN TLS CLIENT` syntax) and MQTT, verified against the ESP-IDF certificate bundle or a custom CA loaded with `WEB TLS CERT` (see [TLS](#tls-https-and-secure-mqtt)).
+- `JSON$()` for picking fields out of fetched JSON documents.
 - Bundled WEB demos seeded to A: include the small server demo and the multi-file website demo.
 - Browser web console over WiFi at `http://<device-ip>/__web_console/` (see [WiFi, Telnet, And Web Console](#wifi-telnet-and-web-console)).
 - Telnet console over WiFi with `OPTION TELNET CONSOLE ON`.
@@ -338,7 +383,6 @@ Working on hardware:
 Still stubbed or incomplete:
 
 - BASIC-visible GPIO DOUT/DIN/ARAW is hardware-smoked. PWM/servo are still explicit unsupported paths.
-- MQTT TLS/cert handling is not implemented; current MQTT support is plain TCP.
 - MIDI, ARRAY, and STREAM playback are not wired.
 - BLE/Bluetooth and OTA are not implemented.
 

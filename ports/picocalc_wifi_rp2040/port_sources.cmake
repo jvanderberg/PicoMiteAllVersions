@@ -45,6 +45,7 @@ target_sources(PicoMite PRIVATE
     ${CMAKE_SOURCE_DIR}/shared/net/MMtftp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMudp.c
     ${CMAKE_SOURCE_DIR}/shared/net/MMsetwifi.c
+    ${CMAKE_SOURCE_DIR}/shared/net/mm_net_json_fun.c
 
     # SPI-LCD framebuffer + nextgen stub (WEB has SPI-LCD support but no
     # rp2350 nextgen displays).

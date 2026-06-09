@@ -141,6 +141,12 @@ int hal_net_init(void) {
     return HAL_NET_OK;
 }
 
+int hal_net_tls_set_ca(const void * pem, size_t len) {
+    (void)pem;
+    (void)len;
+    return HAL_NET_UNSUPPORTED;
+}
+
 void hal_net_poll(void) {
     cyw43_arch_poll();
 }
@@ -831,9 +837,11 @@ static err_t tcp_client_connected_cb(void * arg, struct tcp_pcb * pcb,
 }
 
 int hal_net_tcp_client_open(const char * host, uint16_t port,
-                            uint32_t timeout_ms, hal_net_tcp_client_t * out) {
+                            uint32_t timeout_ms, int tls,
+                            hal_net_tcp_client_t * out) {
     if (out) *out = 0;
     if (!host || !port) return HAL_NET_ERR;
+    if (tls) return HAL_NET_UNSUPPORTED;
 
     int free_slot = -1;
     for (int i = 0; i < LWIP_HAL_MAX_TCP_CLIENTS; i++) {
@@ -1046,10 +1054,11 @@ static void mqtt_request_cb(void * arg, err_t err) {
 }
 
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
     if (out) *out = 0;
     if (!host || !port) return HAL_NET_ERR;
+    if (tls) return HAL_NET_UNSUPPORTED;
 
     ip_addr_t remote;
     int rc = resolve_host(host, timeout_ms, &remote);

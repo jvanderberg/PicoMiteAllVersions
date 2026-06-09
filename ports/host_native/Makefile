@@ -63,6 +63,7 @@ CORE_SRCS += mm_net_lifecycle.c
 CORE_SRCS += mm_net_options.c
 CORE_SRCS += mm_net_service.c
 CORE_SRCS += mm_net_state.c
+CORE_SRCS += mm_net_json_fun.c third_party/cjson/cJSON.c
 CORE_SRCS += mm_net_tcp_client_cmd.c
 CORE_SRCS += mm_net_tcp_server_cmd.c
 CORE_SRCS += mm_net_tftp.c

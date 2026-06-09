@@ -12,11 +12,12 @@ void mm_net_tcp_client_parse_open(unsigned char * arg,
                                   mm_net_tcp_client_open_args_t * out) {
     memset(out, 0, sizeof(*out));
     out->timeout_ms = 5000;
-    getargs(&arg, 5, (unsigned char *)",");
-    if (!(argc == 3 || argc == 5)) error("Syntax");
+    getargs(&arg, 7, (unsigned char *)",");
+    if (!(argc == 3 || argc == 5 || argc == 7)) error("Syntax");
     out->host = (char *)getCstring(argv[0]);
     out->port = getint(argv[2], 1, 65535);
-    if (argc == 5) out->timeout_ms = getint(argv[4], 1, 100000);
+    if (argc >= 5 && *argv[4]) out->timeout_ms = getint(argv[4], 1, 100000);
+    if (argc == 7) out->tls = (int)getint(argv[6], 0, 1);
 }
 
 void mm_net_tcp_client_parse_request(unsigned char * arg,

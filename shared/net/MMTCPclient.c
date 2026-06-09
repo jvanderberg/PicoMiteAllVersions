@@ -73,12 +73,16 @@ void pico_tcp_client_stream_poll(void) {
 static void pico_tcp_client_open_cmd(unsigned char * tp) {
     mm_net_tcp_client_open_args_t parsed;
     mm_net_tcp_client_parse_open(tp, &parsed);
+    if (parsed.tls &&
+        !(hal_net_capabilities() & HAL_NET_CAP_TCP_CLIENT_TLS))
+        error("TLS not supported on this port");
 
     close_tcpclient();
     int rc = hal_net_tcp_client_open(parsed.host, (uint16_t)parsed.port,
-                                     (uint32_t)parsed.timeout_ms,
+                                     (uint32_t)parsed.timeout_ms, parsed.tls,
                                      &pico_tcp_client);
     if (rc == HAL_NET_TIMEOUT) error("No response from client");
+    if (rc == HAL_NET_UNSUPPORTED) error("TLS not supported on this port");
     if (rc != HAL_NET_OK) error("Failed to open client");
     pico_tcp_client_opened = 1;
     if (!optionsuppressstatus) MMPrintString("Connected\r\n");

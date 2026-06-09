@@ -93,6 +93,8 @@ set(STATE_SRCS
     ${REPO_ROOT}/shared/net/mm_net_web_cmd.c
     ${REPO_ROOT}/shared/net/mm_net_websocket.c
     ${REPO_ROOT}/shared/net/mm_net_wifi_cmd.c
+    ${REPO_ROOT}/shared/net/mm_net_json_fun.c
+    ${REPO_ROOT}/third_party/cjson/cJSON.c
     ${REPO_ROOT}/drivers/web_console/web_console_assets.c
     ${REPO_ROOT}/drivers/web_console/web_console_display.c
     ${REPO_ROOT}/drivers/web_console/web_console_input.c
@@ -199,6 +201,7 @@ set(PORT_LOCAL_SRCS
     hal_time_esp32.c
     hal_random_esp32.c
     hal_net_esp32.c                         # ESP-IDF socket transport HAL
+    esp32_mbedtls_mem.c                     # TLS allocator: PSRAM-first, internal fallback
     ${REPO_ROOT}/hal/generic/hal_watchdog_noop.c
     hal_flash_esp32.c                         # NVS-backed Options plus mmslots-backed program/slot persistence
     hal_storage_esp32_stub.c
@@ -311,6 +314,8 @@ idf_component_register(
         usb
         usb_host_hid
         mqtt
+        esp-tls
+        mbedtls
         nvs_flash
         spi_flash
         esp_partition

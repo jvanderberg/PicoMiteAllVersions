@@ -1,5 +1,13 @@
 # Reference Documents
 
+`WebMite_User_Manual.pdf` (MMBasic 5.08.00, Revision 3) is the last standalone
+WebMite manual before the WiFi documentation was folded into the PicoMite
+manual; sourced from geoffg.net's archive. Note it post-dates the removal of
+the 5.07-era TLS client commands (`WEB OPEN TLS CLIENT` / `WEB TLS CLIENT
+REQUEST` / `WEB CLOSE TLS CLIENT`), so those appear in neither manual — the
+community "MMBASIC WEB ADDENDUM" (pwillard.com) documents them. The ESP32
+port implements that historical TLS syntax.
+
 `PicoMite_User_Manual.pdf` is kept here as the canonical in-repository copy.
 During the Stage 2 root-directory cleanup, the root copy was compared against
 this file and removed because it was older and smaller:

@@ -18,11 +18,13 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include "esp_crt_bundle.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
+#include "esp_tls.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,6 +46,11 @@ extern volatile int WIFIconnected;
 extern int startupcomplete;
 
 typedef struct {
+    int fd;          /* plain-TCP socket, -1 when the slot is unused */
+    esp_tls_t * tls; /* TLS session, NULL for plain connections */
+} esp32_net_tcp_client_slot_t;
+
+typedef struct {
     esp_mqtt_client_handle_t client;
     volatile int connected;
     volatile int subscribed;
@@ -58,9 +65,14 @@ typedef struct {
     size_t payload_len;
 } esp32_net_mqtt_slot_t;
 
+/* Custom CA installed by hal_net_tls_set_ca; NUL-terminated PEM. When
+ * NULL, TLS connections verify against the ESP-IDF certificate bundle. */
+static char * tls_ca_pem;
+static size_t tls_ca_len;
+
 static int tcp_servers[ESP32_NET_MAX_TCP_SERVERS];
 static int tcp_conns[ESP32_NET_MAX_TCP_CONNS];
-static int tcp_clients[ESP32_NET_MAX_TCP_CLIENTS];
+static esp32_net_tcp_client_slot_t tcp_clients[ESP32_NET_MAX_TCP_CLIENTS];
 static int udp_socks[ESP32_NET_MAX_UDP_SOCKS];
 static esp32_net_mqtt_slot_t mqtt_clients[ESP32_NET_MAX_MQTT_CLIENTS];
 static int tables_ready;
@@ -81,7 +93,10 @@ static void esp32_net_init_tables(void) {
     if (tables_ready) return;
     for (size_t i = 0; i < ESP32_NET_MAX_TCP_SERVERS; ++i) tcp_servers[i] = -1;
     for (size_t i = 0; i < ESP32_NET_MAX_TCP_CONNS; ++i) tcp_conns[i] = -1;
-    for (size_t i = 0; i < ESP32_NET_MAX_TCP_CLIENTS; ++i) tcp_clients[i] = -1;
+    for (size_t i = 0; i < ESP32_NET_MAX_TCP_CLIENTS; ++i) {
+        tcp_clients[i].fd = -1;
+        tcp_clients[i].tls = NULL;
+    }
     for (size_t i = 0; i < ESP32_NET_MAX_UDP_SOCKS; ++i) udp_socks[i] = -1;
     memset(mqtt_clients, 0, sizeof mqtt_clients);
     tables_ready = 1;
@@ -163,6 +178,77 @@ static int esp32_net_send_all(int fd, const void * buf, size_t len,
     return HAL_NET_OK;
 }
 
+static esp32_net_tcp_client_slot_t * esp32_net_tcp_client_slot(
+    hal_net_tcp_client_t handle) {
+    if (handle == 0 || handle > ESP32_NET_MAX_TCP_CLIENTS) return NULL;
+    esp32_net_tcp_client_slot_t * slot = &tcp_clients[handle - 1];
+    if (slot->fd < 0 && !slot->tls) return NULL;
+    return slot;
+}
+
+static hal_net_tcp_client_t esp32_net_tcp_client_alloc(int fd,
+                                                       esp_tls_t * tls) {
+    esp32_net_init_tables();
+    for (size_t i = 0; i < ESP32_NET_MAX_TCP_CLIENTS; ++i) {
+        if (tcp_clients[i].fd < 0 && !tcp_clients[i].tls) {
+            tcp_clients[i].fd = fd;
+            tcp_clients[i].tls = tls;
+            return (hal_net_tcp_client_t)(i + 1);
+        }
+    }
+    return 0;
+}
+
+static int esp32_net_tls_sockfd(esp_tls_t * tls) {
+    int fd = -1;
+    if (esp_tls_get_conn_sockfd(tls, &fd) != ESP_OK) return -1;
+    return fd;
+}
+
+static int esp32_net_tls_send_all(esp_tls_t * tls, const void * buf,
+                                  size_t len, uint32_t timeout_ms) {
+    const uint8_t * p = (const uint8_t *)buf;
+    size_t sent = 0;
+    int fd = esp32_net_tls_sockfd(tls);
+    if (fd < 0) return HAL_NET_ERR;
+    while (sent < len) {
+        ssize_t n = esp_tls_conn_write(tls, p + sent, len - sent);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n == ESP_TLS_ERR_SSL_WANT_READ || n == ESP_TLS_ERR_SSL_WANT_WRITE) {
+            int wait = esp32_net_wait_fd(
+                fd, n == ESP_TLS_ERR_SSL_WANT_WRITE, timeout_ms);
+            if (wait != HAL_NET_OK) return wait;
+            continue;
+        }
+        return HAL_NET_ERR;
+    }
+    return HAL_NET_OK;
+}
+
+static int esp32_net_tls_recv(esp_tls_t * tls, void * buf, size_t cap,
+                              size_t * len, uint32_t timeout_ms) {
+    /* TLS records may already be buffered inside mbedTLS, in which case the
+     * socket never becomes readable — drain the session buffer first. */
+    if (esp_tls_get_bytes_avail(tls) <= 0) {
+        int fd = esp32_net_tls_sockfd(tls);
+        if (fd < 0) return HAL_NET_ERR;
+        int wait = esp32_net_wait_fd(fd, 0, timeout_ms);
+        if (wait != HAL_NET_OK) return wait;
+    }
+    ssize_t n = esp_tls_conn_read(tls, buf, cap);
+    if (n > 0) {
+        if (len) *len = (size_t)n;
+        return HAL_NET_OK;
+    }
+    if (n == 0) return HAL_NET_OK;
+    if (n == ESP_TLS_ERR_SSL_WANT_READ || n == ESP_TLS_ERR_SSL_WANT_WRITE)
+        return HAL_NET_WOULD_BLOCK;
+    return HAL_NET_ERR;
+}
+
 static int esp32_net_resolve_addr(const char * host, uint16_t port, int socktype,
                                   struct addrinfo ** out) {
     char portbuf[16];
@@ -196,8 +282,12 @@ static void esp32_net_wifi_event_handler(void * arg, esp_event_base_t event_base
     }
 }
 
+void esp32_mbedtls_mem_install(void);
+
 static int esp32_net_wifi_ensure_ready(void) {
     if (wifi_ready) return HAL_NET_OK;
+
+    esp32_mbedtls_mem_install();
 
     esp_log_level_set("wifi", ESP_LOG_WARN);
     esp_log_level_set("wifi_init", ESP_LOG_WARN);
@@ -352,11 +442,27 @@ uint32_t hal_net_capabilities(void) {
            HAL_NET_CAP_UDP_SEND |
            HAL_NET_CAP_WIFI_SCAN |
            HAL_NET_CAP_WIFI_CONNECT |
-           HAL_NET_CAP_MQTT_PLAIN;
+           HAL_NET_CAP_MQTT_PLAIN |
+           HAL_NET_CAP_MQTT_TLS |
+           HAL_NET_CAP_TCP_CLIENT_TLS;
 }
 
 int hal_net_init(void) {
     esp32_net_init_tables();
+    return HAL_NET_OK;
+}
+
+int hal_net_tls_set_ca(const void * pem, size_t len) {
+    free(tls_ca_pem);
+    tls_ca_pem = NULL;
+    tls_ca_len = 0;
+    if (!pem || !len) return HAL_NET_OK;
+    char * copy = malloc(len + 1);
+    if (!copy) return HAL_NET_ERR;
+    memcpy(copy, pem, len);
+    copy[len] = 0;
+    tls_ca_pem = copy;
+    tls_ca_len = len;
     return HAL_NET_OK;
 }
 
@@ -653,10 +759,43 @@ int hal_net_tcp_conn_close(hal_net_tcp_conn_t conn) {
 }
 
 int hal_net_tcp_client_open(const char * host, uint16_t port,
-                            uint32_t timeout_ms, hal_net_tcp_client_t * out) {
+                            uint32_t timeout_ms, int tls,
+                            hal_net_tcp_client_t * out) {
     if (!host || !out) return HAL_NET_ERR;
     *out = 0;
     esp32_net_init_tables();
+
+    if (tls) {
+        esp_tls_cfg_t cfg = {
+            .timeout_ms = (int)(timeout_ms ? timeout_ms : 5000),
+        };
+        if (tls_ca_pem) {
+            /* mbedTLS PEM parsing requires the terminating NUL in the
+             * buffer length. */
+            cfg.cacert_buf = (const unsigned char *)tls_ca_pem;
+            cfg.cacert_bytes = (unsigned int)(tls_ca_len + 1);
+        } else {
+            cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        }
+        esp_tls_t * session = esp_tls_init();
+        if (!session) return HAL_NET_ERR;
+        if (esp_tls_conn_new_sync(host, (int)strlen(host), port, &cfg,
+                                  session) != 1) {
+            esp_tls_conn_destroy(session);
+            return HAL_NET_TIMEOUT;
+        }
+        /* Non-blocking after the handshake so reads gated by select()
+         * surface WANT_READ instead of stalling on partial records. */
+        int fd = esp32_net_tls_sockfd(session);
+        if (fd >= 0) esp32_net_set_nonblock(fd, 1);
+        hal_net_tcp_client_t handle = esp32_net_tcp_client_alloc(-1, session);
+        if (!handle) {
+            esp_tls_conn_destroy(session);
+            return HAL_NET_ERR;
+        }
+        *out = handle;
+        return HAL_NET_OK;
+    }
 
     struct addrinfo * ai = NULL;
     if (esp32_net_resolve_addr(host, port, SOCK_STREAM, &ai) != HAL_NET_OK)
@@ -689,7 +828,7 @@ int hal_net_tcp_client_open(const char * host, uint16_t port,
     if (!ok || fd < 0) return HAL_NET_TIMEOUT;
 
     esp32_net_set_nonblock(fd, 0);
-    uint16_t handle = esp32_net_alloc(tcp_clients, ESP32_NET_MAX_TCP_CLIENTS, fd);
+    hal_net_tcp_client_t handle = esp32_net_tcp_client_alloc(fd, NULL);
     if (!handle) {
         close(fd);
         return HAL_NET_ERR;
@@ -700,19 +839,21 @@ int hal_net_tcp_client_open(const char * host, uint16_t port,
 
 int hal_net_tcp_client_send(hal_net_tcp_client_t client, const void * buf,
                             size_t len, uint32_t timeout_ms) {
-    int * slot = esp32_net_slot(tcp_clients, ESP32_NET_MAX_TCP_CLIENTS, client);
+    esp32_net_tcp_client_slot_t * slot = esp32_net_tcp_client_slot(client);
     if (!slot) return HAL_NET_ERR;
-    return esp32_net_send_all(*slot, buf, len, timeout_ms);
+    if (slot->tls) return esp32_net_tls_send_all(slot->tls, buf, len, timeout_ms);
+    return esp32_net_send_all(slot->fd, buf, len, timeout_ms);
 }
 
 int hal_net_tcp_client_recv(hal_net_tcp_client_t client, void * buf,
                             size_t cap, size_t * len, uint32_t timeout_ms) {
     if (len) *len = 0;
-    int * slot = esp32_net_slot(tcp_clients, ESP32_NET_MAX_TCP_CLIENTS, client);
+    esp32_net_tcp_client_slot_t * slot = esp32_net_tcp_client_slot(client);
     if (!slot || !buf || cap == 0) return HAL_NET_ERR;
-    int wait = esp32_net_wait_fd(*slot, 0, timeout_ms);
+    if (slot->tls) return esp32_net_tls_recv(slot->tls, buf, cap, len, timeout_ms);
+    int wait = esp32_net_wait_fd(slot->fd, 0, timeout_ms);
     if (wait != HAL_NET_OK) return wait;
-    ssize_t n = recv(*slot, buf, cap, 0);
+    ssize_t n = recv(slot->fd, buf, cap, 0);
     if (n > 0) {
         if (len) *len = (size_t)n;
         return HAL_NET_OK;
@@ -724,7 +865,17 @@ int hal_net_tcp_client_recv(hal_net_tcp_client_t client, void * buf,
 }
 
 int hal_net_tcp_client_close(hal_net_tcp_client_t client) {
-    return esp32_net_close_slot(tcp_clients, ESP32_NET_MAX_TCP_CLIENTS, client);
+    esp32_net_tcp_client_slot_t * slot = esp32_net_tcp_client_slot(client);
+    if (!slot) return HAL_NET_ERR;
+    if (slot->tls) {
+        esp_tls_conn_destroy(slot->tls);
+    } else {
+        shutdown(slot->fd, SHUT_RDWR);
+        close(slot->fd);
+    }
+    slot->fd = -1;
+    slot->tls = NULL;
+    return HAL_NET_OK;
 }
 
 int hal_net_udp_bind(uint16_t port, hal_net_udp_socket_t * out) {
@@ -847,7 +998,7 @@ int hal_net_udp_recv_event(hal_net_udp_socket_t sock, hal_net_addr_t * from,
 }
 
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
-                         const char * pass, const char * client_id,
+                         const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
     if (out) *out = 0;
     if (!host || !out) return HAL_NET_ERR;
@@ -868,7 +1019,11 @@ int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
     esp_mqtt_client_config_t cfg = {
         .broker.address.hostname = slot->host,
         .broker.address.port = (uint32_t)port,
-        .broker.address.transport = MQTT_TRANSPORT_OVER_TCP,
+        .broker.address.transport = tls ? MQTT_TRANSPORT_OVER_SSL
+                                        : MQTT_TRANSPORT_OVER_TCP,
+        .broker.verification.certificate = tls && tls_ca_pem ? tls_ca_pem : NULL,
+        .broker.verification.crt_bundle_attach =
+            tls && !tls_ca_pem ? esp_crt_bundle_attach : NULL,
         .credentials.username = *slot->user ? slot->user : NULL,
         .credentials.client_id = slot->client_id,
         .credentials.authentication.password = *slot->pass ? slot->pass : NULL,
