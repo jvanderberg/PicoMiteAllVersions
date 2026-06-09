@@ -171,15 +171,22 @@ int esp32_web_console_display_init(void) {
     /* When the web console is disabled keep the framebuffer / display
      * dispatch entirely uninitialised. The USB serial console then takes
      * the fast path with OptionConsole=1 and no per-character framebuffer
-     * cost. Also clear any DISPLAY_CONSOLE state left over from a previous
-     * session when WebConsole was on -- otherwise `OPTION DISPLAY rows,cols`
-     * keeps erroring "Cannot change LCD console" until OPTION RESET. */
+     * cost. Also clear any DISPLAY_CONSOLE / DISP_USER state left over from
+     * a previous session when WebConsole was on -- otherwise `OPTION DISPLAY
+     * rows,cols` keeps erroring "Cannot change LCD console" until OPTION
+     * RESET. Only the web console's own DISPLAY_TYPE (DISP_USER) is cleared:
+     * Option.DISPLAY_TYPE is the persisted local-panel selection (OPTION
+     * LCDPANEL / profile defaults) and gates esp32_ili9341_lcd_init(), which
+     * runs after this at boot. */
     if (!Option.WebConsole) {
-        int changed = Option.DISPLAY_CONSOLE != 0 || Option.DISPLAY_TYPE != 0;
+        int changed = Option.DISPLAY_CONSOLE != 0 ||
+                      Option.DISPLAY_TYPE == DISP_USER;
         esp32_web_console_display_deinit();
+        if (Option.DISPLAY_TYPE == DISP_USER) {
+            Option.DISPLAY_TYPE = 0;
+            DISPLAY_TYPE = 0;
+        }
         Option.DISPLAY_CONSOLE = 0;
-        Option.DISPLAY_TYPE = 0;
-        DISPLAY_TYPE = 0;
         OptionConsole = 1;
         return changed;
     }

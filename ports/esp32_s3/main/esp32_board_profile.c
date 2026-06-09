@@ -308,8 +308,10 @@ void esp32_board_profile_reserve_pins(void) {
 
 void esp32_board_profile_reserve_lcd_pins(void) {
     /* LCD pins come from Option.LCD_* / Option.DISPLAY_BL (OPTION LCDPANEL
-     * and OPTION SYSTEM SPI, or seeded from a profile's defaults). */
-    if (!Option.DISPLAY_TYPE) return;
+     * and OPTION SYSTEM SPI, or seeded from a profile's defaults). The
+     * control pins are the panel-configured signal; DISPLAY_TYPE is bound
+     * state and the web console rewrites it. */
+    if (!Option.LCD_CD || !Option.LCD_CS) return;
     reserve_pin_index(Option.LCD_CLK);
     reserve_pin_index(Option.LCD_MOSI);
     reserve_pin_index(Option.LCD_MISO);

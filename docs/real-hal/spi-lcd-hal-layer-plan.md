@@ -287,6 +287,18 @@ pipelines.
   PicoMite via `Option.DISPLAY_TYPE` runtime dispatch; the extraction keeps
   that dispatch, so no new dispatcher is needed.
 
+## Known gaps (not in any step's scope yet)
+
+- `MM.INFO$(LCDPANEL)` is not wired in the ESP32 port's MM.INFO dispatch —
+  returns 0 with a panel bound. `OPTION LIST` is the authoritative readout.
+  Wire it when B3 widens the controller table (the answer becomes the
+  controller name, same as PicoMite).
+- The web console persists `DISP_USER` into `Option.DISPLAY_TYPE` across
+  saves while active. Display init and pin reservation now key off the
+  configured control pins instead of `DISPLAY_TYPE`, which makes the local
+  panel immune to that clobbering; a cleaner separation (web console state
+  out of the persisted panel field) is B3-adjacent cleanup.
+
 ## Sequencing and exit gates
 
 | Step | Scope | Gate |

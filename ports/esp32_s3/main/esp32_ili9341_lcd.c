@@ -780,7 +780,12 @@ static void lcd_release_resources(int bus_inited) {
 }
 
 void esp32_ili9341_lcd_init(void) {
-    if (Option.DISPLAY_TYPE != ILI9341 || Option.WebConsole || s_lcd) return;
+    /* The configured control pins are the panel selection: OPTION LCDPANEL
+     * sets them, OPTION LCDPANEL DISABLE clears them. Option.DISPLAY_TYPE is
+     * bound state (bind_panel rewrites it) and the web console clobbers it,
+     * so it is deliberately not part of this gate. */
+    if (Option.WebConsole || s_lcd) return;
+    if (!Option.LCD_CD || !Option.LCD_CS) return; /* no panel configured */
     dirty_clear();
     const int sclk = lcd_option_gpio(Option.LCD_CLK);
     const int mosi = lcd_option_gpio(Option.LCD_MOSI);

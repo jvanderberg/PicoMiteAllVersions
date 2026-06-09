@@ -137,7 +137,7 @@ void esp32_lcd_print_options(void) {
         lcd_print_pin(Option.LCD_MISO);
         MMPrintString("\r\n");
     }
-    if (Option.DISPLAY_TYPE == ILI9341) {
+    if (Option.LCD_CD && Option.LCD_CS) {
         MMPrintString("OPTION LCDPANEL ILI9341, LANDSCAPE, ");
         lcd_print_pin(Option.LCD_CD);
         MMPrintString(", ");
