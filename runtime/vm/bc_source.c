@@ -69,6 +69,10 @@ typedef struct {
      * string arrays also bridge, so the array lives in g_vartbl with
      * the contiguous layout the bridged EXTRACT/INSERT expects. */
     int uses_struct_extract_insert;
+
+    /* Set by `OPTION ESCAPE`: backslash escape sequences in string constants
+     * are decoded at compile time (matches the interpreter's tokeniser). */
+    int escape_active;
 } BCSourceFrontend;
 
 static int source_asm_buf_alloc(BCSourceFrontend * fe) {
@@ -104,8 +108,9 @@ int bc_opt_level = 1;
 
 static uint8_t source_parse_expression(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp);
 static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, const char * stmt);
+static const char * source_find_keyword_outside_string(const char * p, const char * kw);
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
-                                    int require_parens);
+                                    int require_parens, int sf_idx);
 static int source_parse_array_indices(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp);
 static void source_emit_bridge_for_stmt(BCCompiler * cs, const char * stmt);
 static void source_emit_int_conversion(BCCompiler * cs, uint8_t type);
@@ -991,6 +996,22 @@ static int source_try_begin_struct_field_store(BCSourceFrontend * fe, BCCompiler
     return 2;
 }
 
+/* True if `name` is a built-in command keyword. At statement start a command
+ * word is always the command (the interpreter tokenises it as such), even if a
+ * variable or sub of the same name exists — so the VM must hand such a statement
+ * to the interpreter rather than treat it as an assignment or user-sub call.
+ * (PicoMite User Manual: a variable/label name must not be the same as a
+ * command or function.) */
+static int source_name_is_command(const char * name, int name_len) {
+    if (name_len <= 0) return 0;
+    for (int i = 0; i < CommandTableSize - 1; i++) {
+        const char * n = (const char *)commandtbl[i].name;
+        if ((int)strlen(n) == name_len && strncasecmp(n, name, (size_t)name_len) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 static uint16_t source_resolve_global(BCCompiler * cs, const char * name, int name_len,
                                       uint8_t type, int create) {
     uint16_t slot = bc_find_slot(cs, name, name_len);
@@ -1005,6 +1026,12 @@ static uint16_t source_resolve_var(BCCompiler * cs, const char * name, int name_
     if (cs->current_subfun >= 0) {
         int loc = bc_find_local(cs, name, name_len);
         if (loc >= 0) {
+            /* STATIC names live in local scope but resolve to a persistent
+             * global slot so their value survives across calls. */
+            if (cs->locals[loc].is_static) {
+                *is_local = 0;
+                return cs->locals[loc].static_slot;
+            }
             *is_local = 1;
             return (uint16_t)loc;
         }
@@ -1428,6 +1455,84 @@ static void source_emit_store_array(BCCompiler * cs, uint16_t slot, uint8_t type
     bc_emit_byte(cs, (uint8_t)ndim);
 }
 
+/* Decode OPTION ESCAPE backslash sequences in the string literal [s, end) into
+ * out. Mirrors the interpreter's evaluator (MMBasic.c). Returns byte count. A
+ * \000 / \&00 escape (an embedded NUL) is an error in both engines. */
+static int source_decode_escapes(BCCompiler * cs, const char * s, const char * end,
+                                 char * out, int out_cap) {
+    int n = 0;
+    while (s < end && n < out_cap - 1) {
+        if (*s == '\\' && (end - s) > 1) {
+            if ((end - s) > 3 && isdigit((unsigned char)s[1]) &&
+                isdigit((unsigned char)s[2]) && isdigit((unsigned char)s[3])) {
+                int v = (s[1] - '0') * 100 + (s[2] - '0') * 10 + (s[3] - '0');
+                if (v == 0) {
+                    bc_set_error(cs, "Null character in escape sequence - use CHR$(0)");
+                    return n;
+                }
+                out[n++] = (char)v;
+                s += 4;
+                continue;
+            }
+            char c = s[1];
+            s += 2;
+            switch (c) {
+            case '\\':
+                out[n++] = '\\';
+                break;
+            case 'a':
+                out[n++] = '\a';
+                break;
+            case 'b':
+                out[n++] = '\b';
+                break;
+            case 'e':
+                out[n++] = 0x1b;
+                break;
+            case 'f':
+                out[n++] = '\f';
+                break;
+            case 'n':
+                out[n++] = '\n';
+                break;
+            case 'q':
+                out[n++] = '"';
+                break;
+            case 'r':
+                out[n++] = '\r';
+                break;
+            case 't':
+                out[n++] = '\t';
+                break;
+            case 'v':
+                out[n++] = '\v';
+                break;
+            case '&':
+                if ((end - s) >= 2 && isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1])) {
+                    int hi = mytoupper(s[0]) >= 'A' ? mytoupper(s[0]) - 'A' + 10 : s[0] - '0';
+                    int lo = mytoupper(s[1]) >= 'A' ? mytoupper(s[1]) - 'A' + 10 : s[1] - '0';
+                    int v = (hi << 4) | lo;
+                    if (v == 0) {
+                        bc_set_error(cs, "Null character in escape sequence - use CHR$(0)");
+                        return n;
+                    }
+                    out[n++] = (char)v;
+                    s += 2;
+                } else {
+                    out[n++] = 'x';
+                }
+                break;
+            default:
+                out[n++] = c;
+                break;
+            }
+            continue;
+        }
+        out[n++] = *s++;
+    }
+    return n;
+}
+
 static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     const char * p = *pp;
     source_skip_space(&p);
@@ -1441,7 +1546,18 @@ static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, cons
             *pp = p;
             return 0;
         }
-        uint16_t idx = bc_add_constant_string(cs, (const uint8_t *)start, (int)(p - start));
+        uint16_t idx;
+        if (fe->escape_active) {
+            char buf[STRINGSIZE + 1];
+            int n = source_decode_escapes(cs, start, p, buf, sizeof(buf));
+            if (cs->has_error) {
+                *pp = p;
+                return 0;
+            }
+            idx = bc_add_constant_string(cs, (const uint8_t *)buf, n);
+        } else {
+            idx = bc_add_constant_string(cs, (const uint8_t *)start, (int)(p - start));
+        }
         bc_emit_byte(cs, OP_PUSH_STR);
         bc_emit_u16(cs, idx);
         *pp = p + 1;
@@ -2022,7 +2138,7 @@ static uint8_t source_parse_primary(BCSourceFrontend * fe, BCCompiler * cs, cons
         if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type != 0 &&
             !cs->subfuns[sf_idx].bridged && *after_name == '(') {
             p = after_name;
-            int nargs = source_compile_call_args(fe, cs, &p, 1);
+            int nargs = source_compile_call_args(fe, cs, &p, 1, sf_idx);
             if (cs->has_error) {
                 *pp = p;
                 return 0;
@@ -2384,6 +2500,17 @@ static int source_match_compare(const char ** pp, char * op) {
         return 1;
     }
     if (p[0] == '>' && p[1] == '=') {
+        *op = 'g';
+        *pp = p + 2;
+        return 1;
+    }
+    /* MMBasic accepts the reversed spellings =< and => as <= and >=. */
+    if (p[0] == '=' && p[1] == '<') {
+        *op = 'l';
+        *pp = p + 2;
+        return 1;
+    }
+    if (p[0] == '=' && p[1] == '>') {
         *op = 'g';
         *pp = p + 2;
         return 1;
@@ -2997,17 +3124,11 @@ static void source_compile_for(BCSourceFrontend * fe, BCCompiler * cs, const cha
     *pp = p;
 }
 
-static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
-    if (fe->fast_next_loop) {
-        fe->fast_next_loop = 0;
-        bc_set_error(cs, "'!FAST not yet supported for FOR loops (use DO WHILE instead)");
-        return;
-    }
-    BCNestEntry * ne = bc_nest_find(cs, NEST_FOR);
-    if (!ne) {
-        bc_set_error(cs, "NEXT without matching FOR");
-        return;
-    }
+/* Emit the loop-back / exit code that closes the innermost open FOR loop. */
+static void source_emit_for_next_close(BCCompiler * cs, BCNestEntry * ne) {
+    /* CONTINUE FOR jumps here, to the increment/test at the NEXT. */
+    for (int i = 0; i < ne->continue_fixup_count; i++)
+        source_patch_jmp_here(cs, ne->continue_fixups[i]);
 
     bc_emit_byte(cs, (ne->var_type == T_INT) ? OP_FOR_NEXT_I : OP_FOR_NEXT_F);
     bc_emit_u16(cs, ne->var_slot);
@@ -3019,7 +3140,23 @@ static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const ch
     for (int i = 0; i < ne->exit_fixup_count; i++)
         source_patch_jmp_here(cs, ne->exit_fixups[i]);
     bc_nest_pop(cs);
+}
 
+static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    if (fe->fast_next_loop) {
+        fe->fast_next_loop = 0;
+        bc_set_error(cs, "'!FAST not yet supported for FOR loops (use DO WHILE instead)");
+        return;
+    }
+    BCNestEntry * ne = bc_nest_find(cs, NEST_FOR);
+    if (!ne) {
+        bc_set_error(cs, "NEXT without matching FOR");
+        return;
+    }
+    source_emit_for_next_close(cs, ne);
+
+    /* `NEXT v1, v2, ...` closes one nested FOR per listed variable, innermost
+     * first. The variable names themselves are advisory and not checked. */
     const char * p = *pp;
     source_skip_space(&p);
     if (isnamestart((unsigned char)*p)) {
@@ -3027,6 +3164,22 @@ static void source_compile_next(BCSourceFrontend * fe, BCCompiler * cs, const ch
         int name_len = 0;
         uint8_t type = 0;
         source_parse_varname(&p, name, &name_len, &type);
+        source_skip_space(&p);
+        while (*p == ',') {
+            p++;
+            ne = bc_nest_find(cs, NEST_FOR);
+            if (!ne) {
+                bc_set_error(cs, "NEXT without matching FOR");
+                *pp = p;
+                return;
+            }
+            source_emit_for_next_close(cs, ne);
+            source_skip_space(&p);
+            if (isnamestart((unsigned char)*p)) {
+                source_parse_varname(&p, name, &name_len, &type);
+                source_skip_space(&p);
+            }
+        }
     }
     *pp = p;
 }
@@ -3254,16 +3407,16 @@ static void source_compile_print(BCSourceFrontend * fe, BCCompiler * cs, const c
         bc_emit_byte(cs, op);
         bc_emit_byte(cs, PRINT_NO_NEWLINE);
         source_skip_space(&p);
-        if (*p == ',' || *p == ';') continue;
-        /* Adjacent string literal with no separator — MMBasic's tokenizer
-         * splits "a""b" into two strings ("a" and "b") and PRINT auto-
-         * concatenates them. hello.bas's RUN-hint lines rely on this
-         * (PRINT "  RUN ""fizzbuzz.bas""" -> "  RUN " + "fizzbuzz.bas" +
-         * ""). Loop back to parse the next string literal as another
-         * PRINT argument; the trailing-newline rule applies only after
-         * the LAST argument so we don't suppress here. */
-        if (*p == '"') continue;
-        break;
+        /* PRINT items may be separated by ';' , ',' or just whitespace, and may
+         * mix string literals, variables, and expressions. The loop head
+         * handles ';' and ',' (and '@'); anything that is not end-of-statement
+         * is the next whitespace-separated item, so loop back and parse it.
+         * (This also covers MMBasic's "a""b" adjacent-string concatenation,
+         * since the tokenizer splits it into two string literals.) The
+         * trailing-newline rule applies only after the last item, so don't
+         * suppress here. */
+        if (*p == '\0' || *p == '\'' || *p == ':') break;
+        continue;
     }
 
     if (!suppress_newline) bc_emit_byte(cs, OP_PRINT_NEWLINE);
@@ -3322,6 +3475,105 @@ static void source_compile_goto(BCSourceFrontend * fe, BCCompiler * cs, const ch
 static void source_compile_gosub(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     (void)fe;
     source_emit_jump_to_target(cs, pp, OP_GOSUB, "GOSUB");
+}
+
+/* `ON expr GOTO|GOSUB t1, t2, ...` — evaluate expr (1-based); branch to the
+ * matching target, or fall through if it is 0 or out of range. For GOSUB the
+ * subroutine returns to the statement following the ON. */
+static void source_compile_on(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    source_skip_space(&p);
+
+    const char * goto_kw = source_find_keyword_outside_string(p, "GOTO");
+    const char * gosub_kw = source_find_keyword_outside_string(p, "GOSUB");
+    const char * kw;
+    int is_gosub;
+    if (gosub_kw && (!goto_kw || gosub_kw < goto_kw)) {
+        kw = gosub_kw;
+        is_gosub = 1;
+    } else {
+        kw = goto_kw;
+        is_gosub = 0;
+    }
+    if (!kw) {
+        bc_set_error(cs, "Expected GOTO or GOSUB after ON");
+        *pp = p;
+        return;
+    }
+
+    char idx_expr[STRINGSIZE + 1];
+    size_t idx_len = (size_t)(kw - p);
+    if (idx_len > STRINGSIZE) idx_len = STRINGSIZE;
+    memcpy(idx_expr, p, idx_len);
+    idx_expr[idx_len] = '\0';
+
+    int is_local = (cs->current_subfun >= 0);
+    uint16_t slot = is_local ? source_alloc_hidden_local(cs, T_INT)
+                             : source_alloc_hidden_slot(cs, T_INT);
+    const char * ep = idx_expr;
+    uint8_t etype = source_parse_expression(fe, cs, &ep);
+    if (cs->has_error) {
+        *pp = p;
+        return;
+    }
+    if (etype == T_STR) {
+        bc_set_error(cs, "ON requires a numeric index");
+        *pp = p;
+        return;
+    }
+    source_emit_store_converted(cs, slot, T_INT, etype, is_local);
+
+    /* Runtime range check: the interpreter evaluates the index with
+     * getint(...,0,255), so an index outside 0..255 is an error (whereas 0 or
+     * an in-range value past the target list simply falls through). */
+    bc_emit_load_var(cs, slot, T_INT, is_local);
+    bc_emit_byte(cs, OP_PUSH_ZERO);
+    bc_emit_byte(cs, OP_LT_I);
+    bc_emit_load_var(cs, slot, T_INT, is_local);
+    bc_emit_byte(cs, OP_PUSH_INT);
+    bc_emit_i64(cs, 255);
+    bc_emit_byte(cs, OP_GT_I);
+    bc_emit_byte(cs, OP_OR);
+    uint32_t in_range = source_emit_jmp_placeholder(cs, OP_JZ);
+    {
+        const char * msg = "ON value invalid (valid is 0 to 255)";
+        uint16_t midx = bc_add_constant_string(cs, (const uint8_t *)msg, (int)strlen(msg));
+        bc_emit_byte(cs, OP_PUSH_STR);
+        bc_emit_u16(cs, midx);
+        bc_emit_byte(cs, OP_ERROR_S);
+    }
+    source_patch_jmp_here(cs, in_range);
+
+    p = kw + (is_gosub ? 5 : 4);
+
+    uint32_t end_fixups[64];
+    int end_count = 0;
+    int64_t idx = 1;
+    while (!cs->has_error) {
+        source_skip_space(&p);
+        if (*p == '\0' || *p == '\'' || *p == ':') break;
+
+        bc_emit_load_var(cs, slot, T_INT, is_local);
+        bc_emit_byte(cs, OP_PUSH_INT);
+        bc_emit_i64(cs, idx);
+        bc_emit_byte(cs, OP_EQ_I);
+        uint32_t skip = source_emit_jmp_placeholder(cs, OP_JZ);
+
+        source_emit_jump_to_target(cs, &p, is_gosub ? OP_GOSUB : OP_JMP_ABS, "ON");
+        if (is_gosub && end_count < 64)
+            end_fixups[end_count++] = source_emit_jmp_placeholder(cs, OP_JMP);
+        source_patch_jmp_here(cs, skip);
+
+        source_skip_space(&p);
+        if (*p != ',') break;
+        p++;
+        idx++;
+    }
+
+    for (int i = 0; i < end_count; i++)
+        source_patch_jmp_here(cs, end_fixups[i]);
+
+    *pp = p;
 }
 
 static void source_compile_const(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
@@ -4128,6 +4380,16 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         }
         if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
 
+        /* Optional BYVAL / BYREF prefix. Default scalar passing is by reference
+         * (matching the interpreter); BYVAL forces by value. */
+        int is_byval = 0;
+        if (source_keyword(&p, "BYVAL")) {
+            is_byval = 1;
+            source_skip_space(&p);
+        } else if (source_keyword(&p, "BYREF")) {
+            source_skip_space(&p);
+        }
+
         char name[MAXVARLEN + 1];
         int name_len = 0;
         uint8_t ptype = 0;
@@ -4156,6 +4418,7 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
         if (nparams < BC_MAX_PARAMS) {
             cs->subfuns[sf_idx].param_types[nparams] = ptype;
             cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)is_array;
+            cs->subfuns[sf_idx].param_is_byval[nparams] = (uint8_t)is_byval;
         }
         nparams++;
 
@@ -4181,8 +4444,172 @@ static int source_parse_params(BCCompiler * cs, const char ** pp, int sf_idx) {
     return nparams;
 }
 
+/* Look up an already-known variable by name (no creation). Reports its slot,
+ * scope, scalar type, and whether it is an array. Returns 0 if unknown. */
+static int source_lookup_known_var(BCCompiler * cs, const char * name, int name_len,
+                                   uint16_t * slot_out, int * is_local_out,
+                                   uint8_t * type_out, int * is_array_out) {
+    if (cs->current_subfun >= 0) {
+        int loc = bc_find_local(cs, name, name_len);
+        if (loc >= 0) {
+            if (cs->locals[loc].is_static) {
+                /* STATIC names alias a persistent global slot. */
+                *slot_out = cs->locals[loc].static_slot;
+                *is_local_out = 0;
+                *type_out = cs->slots[cs->locals[loc].static_slot].type;
+                *is_array_out = cs->slots[cs->locals[loc].static_slot].is_array;
+                return 1;
+            }
+            *slot_out = (uint16_t)loc;
+            *is_local_out = 1;
+            *type_out = cs->locals[loc].type;
+            *is_array_out = cs->locals[loc].is_array;
+            return 1;
+        }
+    }
+    uint16_t s = bc_find_slot(cs, name, name_len);
+    if (s != 0xFFFF) {
+        /* CONSTs occupy slots but hold no runtime storage — never by-reference. */
+        if (cs->slots[s].is_const) return 0;
+        *slot_out = s;
+        *is_local_out = 0;
+        *type_out = cs->slots[s].type;
+        *is_array_out = cs->slots[s].is_array;
+        return 1;
+    }
+    return 0;
+}
+
+/* If the next argument is a simple scalar variable or a scalar array element
+ * whose type matches a non-BYVAL parameter, emit a by-reference handle so the
+ * callee's writes reach the caller's storage (matching the interpreter).
+ * Returns 1 (and advances *pp) when a reference was emitted; 0 to fall back to
+ * compiling the argument by value. */
+static int source_try_emit_ref_arg(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
+                                   int sf_idx, int argi) {
+    if (sf_idx < 0) return 0;
+    BCSubFun * sf = &cs->subfuns[sf_idx];
+    if (argi >= sf->nparams || argi >= BC_MAX_PARAMS) return 0;
+    if (sf->param_is_byval[argi] || sf->param_is_array[argi]) return 0;
+    uint8_t param_type = sf->param_types[argi];
+    if (param_type == 0 || param_type == T_STRUCT) return 0;
+
+    const char * p = *pp;
+    source_skip_space(&p);
+    if (!isnamestart((unsigned char)*p)) return 0;
+
+    char name[MAXVARLEN + 1];
+    int name_len = 0;
+    uint8_t suffix = 0;
+    const char * q = p;
+    if (!source_parse_varname(&q, name, &name_len, &suffix)) return 0;
+    if (suffix != 0 && suffix != param_type) return 0;
+    source_skip_space(&q);
+
+    if (*q == '(') {
+        /* Array element: arr(i, ...). Only a known scalar-typed array, where the
+         * element forms the whole argument, binds by reference. */
+        uint16_t slot;
+        int is_local, is_array;
+        uint8_t atype;
+        if (!source_lookup_known_var(cs, name, name_len, &slot, &is_local, &atype, &is_array))
+            return 0;
+        if (!is_array || atype != param_type) return 0;
+
+        /* Confirm the element is the entire argument (nothing like `arr(i)+1`
+         * or a struct `.field` follows) before emitting any index code. */
+        const char * scan = q;
+        int depth = 0;
+        do {
+            if (*scan == '(')
+                depth++;
+            else if (*scan == ')')
+                depth--;
+            else if (*scan == '\0')
+                return 0;
+            scan++;
+        } while (depth > 0);
+        source_skip_space(&scan);
+        if (!(*scan == ',' || *scan == ')' || *scan == '\0' || *scan == '\'')) return 0;
+
+        const char * ip = q;
+        int ndim = source_parse_array_indices(fe, cs, &ip);
+        if (cs->has_error || ndim == 0) return 0;
+        bc_emit_byte(cs, OP_PUSHREF_AELEM);
+        bc_emit_u16(cs, slot);
+        bc_emit_byte(cs, (uint8_t)(is_local ? 1 : 0));
+        bc_emit_byte(cs, (uint8_t)ndim);
+        *pp = ip;
+        return 1;
+    }
+
+    /* Simple scalar variable: must be the whole argument, and must already be a
+     * declared scalar of the parameter's type. Anything else — a CONST, an
+     * undeclared name, an array, a type mismatch — is compiled by value. */
+    if (!(*q == ',' || *q == ')' || *q == '\0' || *q == '\'')) return 0;
+
+    uint16_t slot;
+    int is_local, is_array;
+    uint8_t actual_type;
+    if (!source_lookup_known_var(cs, name, name_len, &slot, &is_local, &actual_type, &is_array))
+        return 0;
+    if (is_array || actual_type != param_type) return 0;
+
+    bc_emit_byte(cs, is_local ? OP_PUSHREF_L : OP_PUSHREF_G);
+    bc_emit_u16(cs, slot);
+    bc_emit_byte(cs, param_type);
+    *pp = q;
+    return 1;
+}
+
+/* True if the next argument is a structure member access (`p.x`, `arr(i).x`).
+ * MMBasic does not allow passing an individual member to a SUB/FUNCTION — you
+ * pass the whole structure, or copy member data out with STRUCT EXTRACT — so
+ * the interpreter rejects it. (Whole-struct / struct-element arguments go to
+ * struct-typed parameters, whose calls are bridged and never reach here.) */
+static int source_arg_is_struct_member(BCCompiler * cs, const char * p) {
+    source_skip_space(&p);
+    if (!isnamestart((unsigned char)*p)) return 0;
+    char name[MAXVARLEN + 1];
+    int nl = 0;
+    uint8_t suf = 0;
+    if (!source_parse_varname(&p, name, &nl, &suf)) return 0;
+
+    /* source_parse_varname may fold a `.member` tail into name. */
+    const char * dot = memchr(name, '.', (size_t)nl);
+    int baselen = dot ? (int)(dot - name) : (suf ? nl - 1 : nl);
+    if (baselen <= 0) return 0;
+
+    int is_struct = 0;
+    uint16_t slot = bc_find_slot(cs, name, baselen);
+    if (slot != 0xFFFF && cs->slots[slot].type == T_STRUCT) is_struct = 1;
+    if (!is_struct && cs->current_subfun >= 0) {
+        int loc = bc_find_local(cs, name, baselen);
+        if (loc >= 0 && cs->locals[loc].type == T_STRUCT) is_struct = 1;
+    }
+    if (!is_struct) return 0;
+    if (dot) return 1;
+
+    /* Member access may follow an array subscript: `arr(i).member`. */
+    source_skip_space(&p);
+    if (*p == '(') {
+        int d = 0;
+        do {
+            if (*p == '(')
+                d++;
+            else if (*p == ')')
+                d--;
+            else if (*p == '\0')
+                return 0;
+            p++;
+        } while (d > 0);
+        source_skip_space(&p);
+    }
+    return (*p == '.');
+}
+
 static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp,
-                                    int require_parens) {
+                                    int require_parens, int sf_idx) {
     const char * p = *pp;
     int nargs = 0;
     source_skip_space(&p);
@@ -4207,8 +4634,14 @@ static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, cons
         }
         if (!has_parens && (*p == '\0' || *p == '\'')) break;
 
-        (void)source_parse_expression(fe, cs, &p);
-        if (cs->has_error) break;
+        if (source_arg_is_struct_member(cs, p)) {
+            bc_set_error(cs, "Cannot pass a structure member as an argument");
+            break;
+        }
+        if (!source_try_emit_ref_arg(fe, cs, &p, sf_idx, nargs)) {
+            (void)source_parse_expression(fe, cs, &p);
+            if (cs->has_error) break;
+        }
         nargs++;
 
         source_skip_space(&p);
@@ -4231,7 +4664,6 @@ static int source_compile_call_args(BCSourceFrontend * fe, BCCompiler * cs, cons
 }
 
 static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
-    (void)fe;
     const char * p = *pp;
     if (cs->current_subfun < 0) {
         bc_set_error(cs, "LOCAL outside SUB/FUNCTION");
@@ -4263,13 +4695,33 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
         }
 
         int is_array = 0;
+        int arr_ndim = 0;
         source_skip_space(&p);
         if (*p == '(') {
-            const char * q = p + 1;
-            source_skip_space(&q);
-            if (*q == ')') {
+            p++;
+            source_skip_space(&p);
+            if (*p == ')') {
+                /* Empty () — an array received as a parameter, no allocation. */
                 is_array = 1;
-                p = q + 1;
+                p++;
+            } else {
+                /* Sized local array `b(n[,n...])` — emit the dimension
+                 * expressions now; the OP_DIM_LOCAL_ARR below pops them. */
+                is_array = 1;
+                while (!cs->has_error) {
+                    uint8_t dtype = source_parse_expression(fe, cs, &p);
+                    source_emit_int_conversion(cs, dtype);
+                    arr_ndim++;
+                    source_skip_space(&p);
+                    if (*p != ',') break;
+                    p++;
+                }
+                if (*p != ')') {
+                    bc_set_error(cs, "Expected ')' in LOCAL");
+                    *pp = p;
+                    return;
+                }
+                p++;
             }
         }
 
@@ -4277,6 +4729,15 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
         if (as_type != 0) vtype = as_type;
         if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
         int local_idx = bc_add_local(cs, name, name_len, vtype, is_array);
+
+        if (is_array && arr_ndim > 0 && local_idx >= 0) {
+            uint8_t dim_op = (vtype == T_INT)   ? OP_DIM_LOCAL_ARR_I
+                             : (vtype == T_STR) ? OP_DIM_LOCAL_ARR_S
+                                                : OP_DIM_LOCAL_ARR_F;
+            bc_emit_byte(cs, dim_op);
+            bc_emit_u16(cs, (uint16_t)local_idx);
+            bc_emit_byte(cs, (uint8_t)arr_ndim);
+        }
 
         /* Optional `= expr` initialiser. The interpreter accepts
          * `LOCAL INTEGER x = 5` so the VM compiler must too. Mirrors
@@ -4298,6 +4759,95 @@ static void source_compile_local(BCSourceFrontend * fe, BCCompiler * cs, const c
                 return;
             }
             source_emit_store_converted(cs, (uint16_t)local_idx, vtype, etype, 1);
+        }
+
+        source_skip_space(&p);
+        if (*p != ',') break;
+        p++;
+    }
+
+    *pp = p;
+}
+
+/* STATIC declares function-scoped variables that persist across calls. Each is
+ * backed by a hidden global slot (which survives the call frame) aliased to the
+ * plain name for the rest of the function; any initialiser runs only on the
+ * first call, guarded by a hidden flag. */
+static void source_compile_static(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    if (cs->current_subfun < 0) {
+        bc_set_error(cs, "STATIC outside SUB/FUNCTION");
+        *pp = p;
+        return;
+    }
+
+    uint8_t forced_type = 0;
+    source_skip_space(&p);
+    if (strncasecmp(p, "INTEGER", 7) == 0 && !isnamechar((unsigned char)p[7])) {
+        forced_type = T_INT;
+        p += 7;
+    } else if (strncasecmp(p, "FLOAT", 5) == 0 && !isnamechar((unsigned char)p[5])) {
+        forced_type = T_NBR;
+        p += 5;
+    } else if (strncasecmp(p, "STRING", 6) == 0 && !isnamechar((unsigned char)p[6])) {
+        forced_type = T_STR;
+        p += 6;
+    }
+
+    while (!cs->has_error) {
+        char name[MAXVARLEN + 1];
+        int name_len = 0;
+        uint8_t vtype = 0;
+        if (!source_parse_varname(&p, name, &name_len, &vtype)) {
+            bc_set_error(cs, "Expected name in STATIC");
+            *pp = p;
+            return;
+        }
+
+        int is_array = 0;
+        source_skip_space(&p);
+        if (*p == '(') {
+            is_array = 1;
+        }
+
+        uint8_t as_type = source_parse_as_type_clause(&p);
+        if (as_type != 0) vtype = as_type;
+        if (vtype == 0) vtype = forced_type ? forced_type : T_NBR;
+
+        if (is_array) {
+            bc_set_error(cs, "STATIC arrays not supported in FRUN");
+            *pp = p;
+            return;
+        }
+
+        uint16_t gslot = source_alloc_hidden_slot(cs, vtype);
+        int loc = bc_add_local(cs, name, name_len, vtype, 0);
+        if (loc >= 0) {
+            cs->locals[loc].is_static = 1;
+            cs->locals[loc].static_slot = gslot;
+        }
+
+        source_skip_space(&p);
+        if (*p == '=') {
+            p++;
+            uint16_t guard = source_alloc_hidden_slot(cs, T_INT);
+            bc_emit_load_var(cs, guard, T_INT, 0);
+            uint32_t skip = source_emit_jmp_placeholder(cs, OP_JNZ);
+            uint8_t etype = source_parse_expression(fe, cs, &p);
+            if ((vtype & T_STR) && !(etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign numeric expression to string variable");
+                *pp = p;
+                return;
+            }
+            if (!(vtype & T_STR) && (etype & T_STR)) {
+                bc_set_error(cs, "Cannot assign string expression to numeric variable");
+                *pp = p;
+                return;
+            }
+            source_emit_store_converted(cs, gslot, vtype, etype, 0);
+            bc_emit_byte(cs, OP_PUSH_ONE);
+            bc_emit_store_var(cs, guard, T_INT, 0);
+            source_patch_jmp_here(cs, skip);
         }
 
         source_skip_space(&p);
@@ -6439,6 +6989,10 @@ static void source_compile_loop(BCSourceFrontend * fe, BCCompiler * cs, const ch
     const char * p = *pp;
     source_skip_space(&p);
 
+    /* CONTINUE DO jumps here, to the LOOP condition evaluation. */
+    for (int i = 0; i < ne->continue_fixup_count; i++)
+        source_patch_jmp_here(cs, ne->continue_fixups[i]);
+
     if (ne->type == NEST_WHILE) {
         bc_emit_byte(cs, OP_JMP);
         bc_emit_i16(cs, (int16_t)(ne->addr1 - (cs->code_len + 2)));
@@ -6558,6 +7112,37 @@ static void source_compile_exit(BCCompiler * cs, const char ** pp) {
     }
 
     bc_set_error(cs, "Expected DO, FOR, FUNCTION or SUB after EXIT");
+    *pp = p;
+}
+
+static void source_compile_continue(BCCompiler * cs, const char ** pp) {
+    const char * p = *pp;
+    source_skip_space(&p);
+
+    BCNestEntry * ne;
+    if (source_keyword(&p, "FOR")) {
+        ne = bc_nest_find(cs, NEST_FOR);
+        if (!ne) {
+            bc_set_error(cs, "No FOR loop is in effect");
+            *pp = p;
+            return;
+        }
+    } else if (source_keyword(&p, "DO")) {
+        ne = bc_nest_find(cs, NEST_DO);
+        if (!ne) ne = bc_nest_find(cs, NEST_WHILE);
+        if (!ne) {
+            bc_set_error(cs, "No DO loop is in effect");
+            *pp = p;
+            return;
+        }
+    } else {
+        bc_set_error(cs, "Expected FOR or DO after CONTINUE");
+        *pp = p;
+        return;
+    }
+
+    uint32_t patch = source_emit_jmp_placeholder(cs, OP_JMP);
+    if (ne->continue_fixup_count < 32) ne->continue_fixups[ne->continue_fixup_count++] = patch;
     *pp = p;
 }
 
@@ -7578,6 +8163,28 @@ static void source_compile_case(BCSourceFrontend * fe, BCCompiler * cs, const ch
     uint32_t body_patches[32];
     int body_patch_count = 0;
     while (!cs->has_error) {
+        source_skip_space(&p);
+
+        /* `CASE IS <relop> expr` — relational test against the select value. */
+        if (source_keyword(&p, "IS")) {
+            char op;
+            source_skip_space(&p);
+            if (!source_match_compare(&p, &op)) {
+                bc_set_error(cs, "Expected comparison operator after IS");
+                break;
+            }
+            bc_emit_load_var(cs, ne->select_slot, ne->select_type, 0);
+            uint32_t is_start = cs->code_len;
+            uint8_t is_rhs = source_parse_expression(fe, cs, &p);
+            source_emit_compare(cs, ne->select_type, is_rhs, is_start, op);
+            if (body_patch_count < 32)
+                body_patches[body_patch_count++] = source_emit_jmp_placeholder(cs, OP_JNZ);
+            source_skip_space(&p);
+            if (*p != ',') break;
+            p++;
+            continue;
+        }
+
         bc_emit_load_var(cs, ne->select_slot, ne->select_type, 0);
         uint32_t right_start = cs->code_len;
         uint8_t rhs = source_parse_expression(fe, cs, &p);
@@ -7672,17 +8279,45 @@ static void source_compile_statement_list(BCSourceFrontend * fe, BCCompiler * cs
     }
 }
 
+/* Compile a single-line IF then/else clause. A clause consisting of a bare
+ * line number is an implicit GOTO to that line (e.g. `IF c THEN 100`), matching
+ * the interpreter's cmd_if behaviour. */
+static void source_compile_if_clause(BCSourceFrontend * fe, BCCompiler * cs, const char * clause) {
+    const char * c = clause;
+    source_skip_space(&c);
+    if (isdigit((unsigned char)*c)) {
+        char buf[STRINGSIZE + 1];
+        snprintf(buf, sizeof(buf), "GOTO %s", c);
+        source_compile_statement_list(fe, cs, buf);
+        return;
+    }
+    source_compile_statement_list(fe, cs, clause);
+}
+
 static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char ** pp) {
     const char * p = *pp;
+    /* `IF cond GOTO target` is shorthand for `IF cond THEN GOTO target`. When
+     * THEN is absent the GOTO keyword separates condition from the then-clause
+     * and is retained as the body of that clause. */
     const char * then_kw = source_find_keyword_outside_string(p, "THEN");
-    if (!then_kw) {
-        bc_set_error(cs, "IF without THEN");
-        *pp = p;
-        return;
+    const char * cond_end;
+    const char * then_start;
+    if (then_kw) {
+        cond_end = then_kw;
+        then_start = then_kw + 4;
+    } else {
+        const char * goto_kw = source_find_keyword_outside_string(p, "GOTO");
+        if (!goto_kw) {
+            bc_set_error(cs, "IF without THEN");
+            *pp = p;
+            return;
+        }
+        cond_end = goto_kw;
+        then_start = goto_kw;
     }
 
     char cond[STRINGSIZE + 1];
-    size_t cond_len = (size_t)(then_kw - p);
+    size_t cond_len = (size_t)(cond_end - p);
     if (cond_len > STRINGSIZE) cond_len = STRINGSIZE;
     memcpy(cond, p, cond_len);
     cond[cond_len] = '\0';
@@ -7709,7 +8344,6 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
 
     uint32_t false_patch = source_emit_jmp_placeholder(cs, OP_JZ);
 
-    const char * then_start = then_kw + 4;
     if (source_line_empty_or_comment(then_start)) {
         bc_nest_push(cs, NEST_IF);
         BCNestEntry * ne = bc_nest_top(cs);
@@ -7727,7 +8361,7 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
     if (then_len > STRINGSIZE) then_len = STRINGSIZE;
     memcpy(then_stmt, then_start, then_len);
     then_stmt[then_len] = '\0';
-    source_compile_statement_list(fe, cs, then_stmt);
+    source_compile_if_clause(fe, cs, then_stmt);
     if (cs->has_error) {
         *pp = then_start;
         return;
@@ -7736,7 +8370,7 @@ static void source_compile_if(BCSourceFrontend * fe, BCCompiler * cs, const char
     if (else_kw) {
         uint32_t end_patch = source_emit_jmp_placeholder(cs, OP_JMP);
         source_patch_jmp_here(cs, false_patch);
-        source_compile_statement_list(fe, cs, else_kw + 4);
+        source_compile_if_clause(fe, cs, else_kw + 4);
         source_patch_jmp_here(cs, end_patch);
         *pp = else_kw + strlen(else_kw);
         return;
@@ -8064,6 +8698,9 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
     }
 
     if (source_keyword(&p, "OPTION")) {
+        const char * op = p;
+        source_skip_space(&op);
+        if (source_keyword(&op, "ESCAPE")) fe->escape_active = 1;
         return;
     }
 
@@ -8474,8 +9111,14 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         return;
     }
 
-    if (source_keyword(&p, "LOCAL") || source_keyword(&p, "STATIC")) {
+    if (source_keyword(&p, "LOCAL")) {
         source_compile_local(fe, cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
+    if (source_keyword(&p, "STATIC")) {
+        source_compile_static(fe, cs, &p);
         source_statement_end(cs, p);
         return;
     }
@@ -8557,6 +9200,12 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         return;
     }
 
+    if (source_keyword(&p, "CONTINUE")) {
+        source_compile_continue(cs, &p);
+        source_statement_end(cs, p);
+        return;
+    }
+
     if (source_keyword(&p, "IF")) {
         source_compile_if(fe, cs, &p);
         return;
@@ -8586,6 +9235,21 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         return;
     }
 
+    {
+        /* `ON expr GOTO|GOSUB ...` computed branch. Other ON forms (ON ERROR,
+         * ON KEY, ...) have no GOTO/GOSUB keyword and fall through to bridge. */
+        const char * on_start = p;
+        if (source_keyword(&p, "ON")) {
+            if (source_find_keyword_outside_string(p, "GOTO") ||
+                source_find_keyword_outside_string(p, "GOSUB")) {
+                source_compile_on(fe, cs, &p);
+                source_statement_end(cs, p);
+                return;
+            }
+            p = on_start;
+        }
+    }
+
     if (source_keyword(&p, "RETURN")) {
         bc_emit_byte(cs, OP_RETURN);
         source_statement_end(cs, p);
@@ -8603,7 +9267,12 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
         char name[MAXVARLEN + 1];
         int name_len = 0;
         uint8_t type = 0;
-        if (source_parse_varname(&probe, name, &name_len, &type)) {
+        /* A statement that begins with a built-in command keyword is that
+         * command, even if a same-named variable or sub exists — let it bridge
+         * to the interpreter rather than be parsed as an assignment/call. The
+         * bare name (suffix excluded) is what the command table holds. */
+        if (source_parse_varname(&probe, name, &name_len, &type) &&
+            !source_name_is_command(name, type ? name_len - 1 : name_len)) {
             source_skip_space(&probe);
             if (*probe == '=') {
                 source_compile_assignment(fe, cs, &p);
@@ -8634,7 +9303,7 @@ static void source_compile_statement(BCSourceFrontend * fe, BCCompiler * cs, con
             if (sf_idx >= 0 && cs->subfuns[sf_idx].return_type == 0 &&
                 !cs->subfuns[sf_idx].bridged) {
                 p = after_name;
-                int nargs = source_compile_call_args(fe, cs, &p, 0);
+                int nargs = source_compile_call_args(fe, cs, &p, 0, sf_idx);
                 if (!cs->has_error) {
                     bc_emit_byte(cs, OP_CALL_SUB);
                     bc_emit_u16(cs, (uint16_t)sf_idx);
@@ -8904,6 +9573,70 @@ static void source_skip_parenthesized(const char ** pp) {
     *pp = p;
 }
 
+/* Predeclare-pass parameter scan: fill a subfun's parameter metadata (count,
+ * types, array/byval flags) WITHOUT allocating locals or emitting code, so a
+ * forward call (callee defined later) can still make the by-reference decision.
+ * Mirrors source_parse_params' parsing; the main compile pass re-parses
+ * identically when it reaches the body. */
+static int source_predeclare_params(BCCompiler * cs, const char * p, int sf_idx) {
+    int nparams = 0;
+    source_skip_space(&p);
+    int has_parens = (*p == '(');
+    if (has_parens)
+        p++;
+    else if (*p == '\0' || *p == '\'' || *p == ':')
+        return 0;
+
+    while (1) {
+        source_skip_space(&p);
+        if (has_parens && *p == ')') break;
+        if (!has_parens && (*p == '\0' || *p == '\'' || *p == ':')) break;
+
+        int is_byval = 0;
+        if (source_keyword(&p, "BYVAL")) {
+            is_byval = 1;
+            source_skip_space(&p);
+        } else if (source_keyword(&p, "BYREF")) {
+            source_skip_space(&p);
+        }
+
+        char name[MAXVARLEN + 1];
+        int name_len = 0;
+        uint8_t ptype = 0;
+        if (!source_parse_varname(&p, name, &name_len, &ptype)) break;
+
+        int is_array = 0;
+        source_skip_space(&p);
+        if (*p == '(') {
+            const char * q = p + 1;
+            source_skip_space(&q);
+            if (*q == ')') {
+                is_array = 1;
+                p = q + 1;
+            }
+        }
+
+        uint8_t as_type = source_parse_as_type_clause(&p);
+        if (as_type != 0) ptype = as_type;
+        if (ptype == 0) ptype = T_NBR;
+
+        if (nparams < BC_MAX_PARAMS) {
+            cs->subfuns[sf_idx].param_types[nparams] = ptype;
+            cs->subfuns[sf_idx].param_is_array[nparams] = (uint8_t)is_array;
+            cs->subfuns[sf_idx].param_is_byval[nparams] = (uint8_t)is_byval;
+        }
+        nparams++;
+
+        source_skip_space(&p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        break;
+    }
+    return nparams;
+}
+
 static void source_predeclare_line(BCCompiler * cs, const char * line, int line_no) {
     const char * p = line;
     source_skip_space(&p);
@@ -8935,7 +9668,12 @@ static void source_predeclare_line(BCCompiler * cs, const char * line, int line_
              * line through OP_BRIDGE_CMD. */
             int has_struct = source_params_contain_struct(p);
             int sf = source_get_or_create_subfun(cs, name_start, name_len, 0);
-            if (sf >= 0 && has_struct) cs->subfuns[sf].bridged = 1;
+            if (sf >= 0) {
+                if (has_struct)
+                    cs->subfuns[sf].bridged = 1;
+                else
+                    cs->subfuns[sf].nparams = (uint8_t)source_predeclare_params(cs, p, sf);
+            }
         }
         return;
     }
@@ -8957,14 +9695,19 @@ static void source_predeclare_line(BCCompiler * cs, const char * line, int line_
          * source_compile_statement's early-bridge check can see them and
          * bridge the enclosing line. */
         int has_struct_param = source_params_contain_struct(p);
+        const char * param_start = p;
         source_skip_space(&p);
         if (*p == '(') source_skip_parenthesized(&p);
         uint8_t as_type = source_parse_as_type_clause(&p);
         if (as_type != 0 && !has_suffix) ret_type = as_type;
 
         int sf = source_get_or_create_subfun(cs, name_start, sf_name_len, ret_type);
-        if (sf >= 0 && (has_struct_param || ret_type == T_STRUCT))
-            cs->subfuns[sf].bridged = 1;
+        if (sf >= 0) {
+            if (has_struct_param || ret_type == T_STRUCT)
+                cs->subfuns[sf].bridged = 1;
+            else
+                cs->subfuns[sf].nparams = (uint8_t)source_predeclare_params(cs, param_start, sf);
+        }
     }
 }
 
