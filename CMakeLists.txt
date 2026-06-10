@@ -222,6 +222,7 @@ set(PICOMITE_PICO_SDK_HAL_SOURCES
 	ports/pico_sdk_common/hal_watchdog_pico.c
 	ports/pico_sdk_common/hal_pin_pico.c
 	ports/pico_sdk_common/hal_pwm_pico.c
+	ports/pico_sdk_common/hal_display_backlight_pico.c
 	ports/pico_sdk_common/hal_i2c_pico.c
 	ports/pico_sdk_common/hal_ws2812_pico.c
 	ports/pico_sdk_common/pico_gpio_irq.c

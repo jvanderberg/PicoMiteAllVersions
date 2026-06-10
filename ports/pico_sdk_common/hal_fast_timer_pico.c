@@ -23,6 +23,16 @@
  * PWM/SERVO use of channel 0 while a measurement is running. */
 extern bool fast_timer_active;
 
+#ifdef rp2350
+/* Wrap-IRQ entry: acknowledge slice 0's wrap then run the core callback.
+ * Keeping the ack here means the callback body stays SDK-free. */
+static void (*fast_timer_callback)(void);
+static void __not_in_flash_func(fast_timer_irq_handler)(void) {
+    pwm_clear_irq(0);
+    fast_timer_callback();
+}
+#endif
+
 bool hal_fast_timer_available(void) {
 #ifdef rp2350
     return true;
@@ -40,7 +50,8 @@ bool hal_fast_timer_configure(uint32_t wrap_count, void (*isr_fn)(void)) {
     pwm_set_wrap(0, wrap_count);
     pwm_clear_irq(0);
     if (isr_fn) {
-        irq_set_exclusive_handler(PWM_IRQ_WRAP_1, isr_fn);
+        fast_timer_callback = isr_fn;
+        irq_set_exclusive_handler(PWM_IRQ_WRAP_1, fast_timer_irq_handler);
         irq_set_enabled(PWM_IRQ_WRAP_1, true);
         irq_set_priority(PWM_IRQ_WRAP_1, 0);
         pwm_set_irq1_enabled(0, true);

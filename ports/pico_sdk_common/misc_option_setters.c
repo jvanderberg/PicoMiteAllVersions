@@ -16,6 +16,7 @@
 #include "hal/hal_pin.h"
 #include "hal/hal_option_setters.h"
 #include "hardware/pio.h"
+#include "hardware/spi.h"
 
 #if !defined(MMBASIC_HOST)
 
@@ -184,6 +185,22 @@ int MIPS16 port_mminfo_scroll_start(int64_t * out_iret) {
 }
 int MIPS16 port_mminfo_screenbuff(int64_t * out_iret) {
     return port_setter_screenbuff(out_iret);
+}
+
+/* MM.INFO SPI SPEED — reprogram the system SPI for the active display
+ * (SPISpeedSet) and report the achieved baudrate in Hz. Returns 0 when
+ * no hardware SPI instance maps to the system clock pin. */
+int MIPS16 port_mminfo_system_spi_speed(int64_t * out_iret) {
+    SPISpeedSet(Option.DISPLAY_TYPE);
+    if (PinDef[Option.SYSTEM_CLK].mode & SPI0SCK) {
+        *out_iret = spi_get_baudrate(spi0);
+        return 1;
+    }
+    if (PinDef[Option.SYSTEM_CLK].mode & SPI1SCK) {
+        *out_iret = spi_get_baudrate(spi1);
+        return 1;
+    }
+    return 0;
 }
 
 /* POKE DISPLAY <args> raw command/data byte sequence. Dispatches by

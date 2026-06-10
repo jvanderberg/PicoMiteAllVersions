@@ -41,8 +41,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 9 | 0–4 |
-| `core/mmbasic/MM_Misc.c` | 14 | 14 | 1, 2, 3, 5 |
+| `core/mmbasic/External.c` | 13 | 8 | 0–4 |
+| `core/mmbasic/MM_Misc.c` | 14 | 10 | 1, 2, 3, 5 |
 | `core/mmbasic/Custom.c` | 10 | 10 | 5 |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
@@ -103,7 +103,7 @@ MMntp.c additionally moved `time_us_64()` → `hal_time_us_64()` (its include
 carried that one live symbol). `validate_all.sh` green incl. all 14 device
 variants + RAM baseline; pc386 builds; pinned clang-format clean.
 
-### Phase 1 — PWM closeout
+### Phase 1 — PWM closeout — ✅ CLOSED
 
 1. Extend `hal_pwm.h` with a readback call (top/duty per channel) and route
    `MM_Misc.c fun_info`'s `pwm_hw->slice[]` reads through it.
@@ -115,6 +115,19 @@ variants + RAM baseline; pc386 builds; pinned clang-format clean.
    to the existing `port_system_lcd_spi_option_setter` family.
 
 Exit: zero `pwm_*` / `spi_get_baudrate` vendor calls in core/.
+
+Closed: `hal_pwm_query` (top + both compare levels, raw backend ticks) in
+all four backends; teardown converged on `hal_pwm_stop`, which also fixes a
+stale-state bug — a slice torn down at a program boundary stayed marked
+started, so a later bare `PWM SYNC` could re-enable it with its pads already
+released. The fast-timer wrap-IRQ ack moved into the fast-timer backend (a
+RAM-resident trampoline acks then calls the registered handler). Backlight
+math landed verbatim as `hal/hal_display_backlight.h` +
+`hal_display_backlight_pico.c`; frequency policy (explicit argument /
+per-display default) stays with the callers. MM.INFO(SPI SPEED) routes
+through `port_mminfo_system_spi_speed` beside its `port_mminfo_*` siblings.
+External.c 9 → 8 includes, MM_Misc.c 14 → 10 (one was a duplicate);
+zero `pwm_*`/`spi_get_baudrate` symbols anywhere in core/.
 
 ### Phase 2 — `hal_adc.h`
 

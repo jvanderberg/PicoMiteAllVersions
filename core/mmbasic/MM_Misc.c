@@ -38,24 +38,22 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "pico/bootrom.h"
 #include "hardware/structs/systick.h"
 #include "hardware/structs/watchdog.h"
-#include "hardware/structs/pwm.h"
 #include "hardware/dma.h"
 #include "hardware/adc.h"
-#include "hardware/pwm.h"
 #include "hal/hal_flash.h"
 #include "hal/hal_time.h"
 #include "hal/hal_pin.h"
+#include "hal/hal_pwm.h"
+#include "hal/hal_display_backlight.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_gui_controls.h"
 #include "hal/hal_watchdog.h"
 #include "shared/audio/audio_option_common.h"
 #include "hardware/regs/addressmap.h" /* XIP_BASE */
-#include "hardware/spi.h"
 #include "hardware/pio.h"
 #include "hardware/pio_instructions.h"
 #include <malloc.h>
 #include "xregex.h"
-#include "hardware/structs/pwm.h"
 #include "aes.h"
 #include "OptionCommands.h"
 
@@ -103,6 +101,7 @@ extern int port_mminfo_interrupts(int64_t * out_iret);
 extern int port_mminfo_touch_status(unsigned char * out_sret);
 extern int port_mminfo_scroll_start(int64_t * out_iret);
 extern int port_mminfo_screenbuff(int64_t * out_iret);
+extern int port_mminfo_system_spi_speed(int64_t * out_iret);
 extern PIO port_pio_for_index(int pio_idx);
 extern int port_poke_display_panel(unsigned char * p);
 extern void port_apply_default_console_colors(int default_fc, int default_bc);
@@ -1184,19 +1183,7 @@ void MIPS16 cmd_option(void) {
             }
         }
         if (Option.DISPLAY_BL) {
-            MMFLOAT frequency = 1000.0, duty = Option.BackLightLevel;
-            int wrap = (Option.CPU_Speed * 1000) / frequency;
-            int high = (int)((MMFLOAT)Option.CPU_Speed / frequency * duty * 10.0);
-            int div = 1;
-            while (wrap > 65535) {
-                wrap >>= 1;
-                if (duty >= 0.0) high >>= 1;
-                div <<= 1;
-            }
-            wrap--;
-            if (div != 1) pwm_set_clkdiv(BacklightSlice, (float)div);
-            pwm_set_wrap(BacklightSlice, wrap);
-            pwm_set_chan_level(BacklightSlice, BacklightChannel, high);
+            hal_display_backlight_set(Option.BackLightLevel, 1000.0);
         }
         port_apply_default_console_colors(Option.DefaultFC, Option.DefaultBC);
         Option.DISPLAY_CONSOLE = true;
@@ -2191,7 +2178,9 @@ void MIPS16 fun_info(void) {
              * true): only 0..7 accessible. rp2350b: 0..11. */
             int max_slice = rp2350a ? 7 : (HAL_PORT_PWM_SLICE_COUNT - 1);
             int channel = getint(tp, 0, max_slice);
-            iret = pwm_hw->slice[channel].top;
+            uint32_t top;
+            if (hal_pwm_query(channel, &top, NULL, NULL) != 0) error("Number out of bounds");
+            iret = top;
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PWM DUTY"))) {
@@ -2200,10 +2189,9 @@ void MIPS16 fun_info(void) {
             int max_slice = rp2350a ? 7 : (HAL_PORT_PWM_SLICE_COUNT - 1);
             int channel = getint(argv[0], 0, max_slice);
             int AorB = getint(argv[2], 0, 1);
-            if (AorB)
-                iret = ((pwm_hw->slice[channel].cc) >> 16);
-            else
-                iret = (pwm_hw->slice[channel].cc & 0xFFFF);
+            uint32_t level_a, level_b;
+            if (hal_pwm_query(channel, NULL, &level_a, &level_b) != 0) error("Number out of bounds");
+            iret = AorB ? level_b : level_a;
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIN"))) {
@@ -2298,13 +2286,7 @@ void MIPS16 fun_info(void) {
             targ = T_STR;
             return;
         } else if (checkstring(ep, (unsigned char *)"SPI SPEED")) {
-            SPISpeedSet(Option.DISPLAY_TYPE);
-            if (PinDef[Option.SYSTEM_CLK].mode & SPI0SCK) {
-                iret = spi_get_baudrate(spi0);
-            } else if (PinDef[Option.SYSTEM_CLK].mode & SPI1SCK) {
-                iret = spi_get_baudrate(spi1);
-            } else
-                error("System SPI not configured");
+            if (!port_mminfo_system_spi_speed(&iret)) error("System SPI not configured");
             targ = T_INT;
             return;
         } else if (checkstring(ep, (unsigned char *)"STACK")) {

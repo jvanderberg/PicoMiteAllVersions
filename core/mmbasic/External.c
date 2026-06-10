@@ -37,8 +37,10 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_time.h"
 #include "hal/hal_pin.h"
 #include "hal/hal_fast_timer.h"
+#include "hal/hal_pwm.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_gui_controls.h"
+#include "hal/hal_display_backlight.h"
 #include "hal/hal_display_oled_spi.h"
 #include "hal/hal_heartbeat.h"
 #include "hal/hal_i2c_keypad.h"
@@ -56,7 +58,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 extern void SetBacklightSSD1963(int intensity);
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
-#include "hardware/pwm.h"
 //#include "hardware/gpio.h"
 #include "hardware/adc.h"
 #include "hardware/structs/systick.h"
@@ -234,11 +235,11 @@ int codecheck(unsigned char * line) {
         return 4;
     return 0;
 }
-/* PWM-wrap ISR used by the RP2350 fast-timer path. Installed only by
- * the rp2350 fast-timer driver; on other ports the function sits unused
- * in flash (linker -gc-sections drops it). */
+/* PWM-wrap callback used by the RP2350 fast-timer path. Installed only
+ * by the rp2350 fast-timer driver, which acknowledges the wrap IRQ
+ * before invoking it; on other ports the function sits unused in flash
+ * (linker -gc-sections drops it). */
 void __not_in_flash_func(on_pwm_wrap_1)(void) {
-    pwm_clear_irq(0);
     INT5Count++;
 }
 
@@ -1921,7 +1922,7 @@ void PWMoff(int slice) {
     if (slice == 11 && PWM11Bpin != 99 && ExtCurrentConfig[PWM11Bpin] < EXT_BOOT_RESERVED) {
         ExtCfg(PWM11Bpin, EXT_NOT_CONFIG, 0);
     }
-    pwm_set_enabled(slice, false);
+    hal_pwm_stop(slice);
 }
 /* Unified backlight set. Signature is (level, setfrequency) on every
  * target; PicoCalc ports write the keypad-controller I2C register
@@ -1942,18 +1943,7 @@ void setBacklight(int level, int setfrequency) {
      * NEXTGEN so the clause just short-circuits there. */
     if (((Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) || Option.DISPLAY_TYPE >= NEXTGEN || (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL)) && Option.DISPLAY_BL) {
         MMFLOAT frequency = setfrequency ? (MMFLOAT)setfrequency : (Option.DISPLAY_TYPE == ILI9488W ? 1000.0 : 50000.0);
-        int wrap = (Option.CPU_Speed * 1000) / frequency;
-        int high = (int)((MMFLOAT)Option.CPU_Speed / frequency * level * 10.0);
-        int div = 1;
-        while (wrap > 65535) {
-            wrap >>= 1;
-            if (level >= 0.0) high >>= 1;
-            div <<= 1;
-        }
-        wrap--;
-        if (div != 1) pwm_set_clkdiv(BacklightSlice, (float)div);
-        pwm_set_wrap(BacklightSlice, wrap);
-        pwm_set_chan_level(BacklightSlice, BacklightChannel, high);
+        hal_display_backlight_set(level, frequency);
     } else if (Option.DISPLAY_TYPE <= I2C_PANEL) {
         level *= 255;
         level /= 100;
