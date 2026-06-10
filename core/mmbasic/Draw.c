@@ -1861,7 +1861,7 @@ void cmd_line(void) {
         lastx = x2;
         lasty = y2; // save in case the user wants the last value
     } else {
-        int x1, y1, x2, y2, w = 0, c = 0, n = 0, i, nc = 0, nw = 0;
+        int x1, y1, x2, y2, w = 0, c = 0, n = 0, i, nc = 0;
         if ((p = checkstring(cmdline, (unsigned char *)"PLOT"))) {
             int64_t * y1ptr;
             MMFLOAT * y1fptr;
