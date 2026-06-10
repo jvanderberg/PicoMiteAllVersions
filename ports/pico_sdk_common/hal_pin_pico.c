@@ -8,6 +8,7 @@
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
 #include "hardware/gpio.h"
+#include "hardware/structs/ioqspi.h"
 #include "hardware/structs/sio.h"
 
 #include "hal/hal_pin.h"
@@ -252,4 +253,27 @@ void hal_pin_pulldown_reset(int pin) {
 #else
     (void)pin;
 #endif
+}
+
+/* BOOTSEL shares the QSPI flash CS line, so reading it forces CS low
+ * via the pad override while flash is quiesced — the body must run
+ * from RAM inside the flash-write guard (FileIO.c), which also fixes
+ * up the soft RTC for the time spent with interrupts off. */
+extern void fileio_flash_write_begin(void);
+extern void fileio_flash_write_end(void);
+
+bool __no_inline_not_in_flash_func(hal_pin_bootsel_pressed)(void) {
+    const uint CS_PIN_INDEX = 1;
+    fileio_flash_write_begin();
+    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
+                    GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
+                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+    for (volatile int i = 0; i < 100; ++i);
+    bool button_state = !(sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
+    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
+                    GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
+                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
+    fileio_flash_write_end();
+
+    return button_state;
 }

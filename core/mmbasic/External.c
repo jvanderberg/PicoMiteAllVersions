@@ -46,6 +46,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_display_oled_spi.h"
 #include "hal/hal_heartbeat.h"
 #include "hal/hal_i2c_keypad.h"
+#include "hal/hal_watchdog.h"
 #include "vm_sys_pwm.h"
 #include "vm_sys_pin.h"
 #include "i2c_config.h"
@@ -58,12 +59,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * setBacklight() means the call only fires when an SSD-class panel is
  * configured, which the OPTION setter rejects on non-SSD1963 ports. */
 extern void SetBacklightSSD1963(int intensity);
-#include "hardware/watchdog.h"
 #include "pico/stdlib.h"
-//#include "hardware/gpio.h"
 #include "hardware/dma.h"
-#include <hardware/structs/ioqspi.h>
-#include <hardware/structs/sio.h>
 #include "pico_gpio_irq.h"
 
 #define ANA_AVERAGE 10
@@ -240,7 +237,7 @@ void __not_in_flash_func(on_pwm_wrap_1)(void) {
 void SoftReset(void) {
     _excep_code = SOFT_RESET;
     hal_keyboard_quiesce_for_reset();
-    watchdog_enable(1, 1);
+    hal_watchdog_reboot();
     while (1);
 }
 void PORT_RAM_FUNC(PinSetBit)(int pin, unsigned int offset) {
@@ -1371,27 +1368,6 @@ process:
         InterruptUsed = true;
     }
 }
-/*
- * @cond
- * The following section will be excluded from the documentation.
- */
-bool __no_inline_not_in_flash_func(bb_get_bootsel_button)() {
-    const uint CS_PIN_INDEX = 1;
-    fileio_flash_write_begin();
-    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
-                    GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
-                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-    for (volatile int i = 0; i < 100; ++i);
-    bool button_state = !(sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
-    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
-                    GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
-                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-    fileio_flash_write_end();
-
-    return button_state;
-}
-/*  @endcond */
-
 void fun_pin(void) {
     char code;
     int pin, i, j, b[ANA_AVERAGE];
@@ -1410,7 +1386,7 @@ void fun_pin(void) {
         return;
     }
     if (checkstring(ep, (unsigned char *)"BOOTSEL")) {
-        iret = bb_get_bootsel_button();
+        iret = hal_pin_bootsel_pressed();
         targ = T_INT;
         return;
     }

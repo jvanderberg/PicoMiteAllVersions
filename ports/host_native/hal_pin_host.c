@@ -141,3 +141,8 @@ void hal_pin_bank_xor_mask(uint64_t mask) {
         if (mask & (1ULL << i)) host_pin_levels[i] = !host_pin_levels[i];
     }
 }
+
+/* No boot button on the host. */
+bool hal_pin_bootsel_pressed(void) {
+    return false;
+}

@@ -36,7 +36,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 //#include "upng.h"
 #include <complex.h>
 #include "pico/bootrom.h"
-#include "hardware/structs/watchdog.h"
 #include "hardware/dma.h"
 #include "hal/hal_adc.h"
 #include "hal/hal_cycle_counter.h"

@@ -112,7 +112,6 @@ int port_setter_pico_pins(unsigned char * cmdline) {
  * behaviour as rp2040; rp2350-B routes those pins differently and
  * skips the shadow. */
 #include "hal/hal_main_init.h"
-#include "hardware/gpio.h"
 
 /* PIO pin-reset loop. Non-WiFi RP2350-A skips the CYW43-shadow
  * pins (44+); other builds (RP2350-B, RP2040) walk the full
@@ -125,10 +124,15 @@ void port_pio_pin_reset_inputs(void) {
 #endif
     for (int i = 1; i < end; i++) {
         if (CheckPin(i, CP_NOABORT | CP_IGNORE_INUSE | CP_IGNORE_RESERVED)) {
-            gpio_set_input_enabled(PinDef[i].GPno, true);
+            hal_pin_set_input_enabled(PinDef[i].GPno, true);
         }
     }
 }
+
+/* Pico-board SMPS mode pin write (GPIO 23) — impl in
+ * ports/pico_sdk_common/pico_boot.c; this file is only compiled on
+ * RP device builds. */
+extern void pico_smps_set_pwm_mode(int pwm_on);
 
 void hal_pwm_mode_shadow_apply(void) {
 #ifdef rp2350
@@ -136,9 +140,7 @@ void hal_pwm_mode_shadow_apply(void) {
 #endif
     if (Option.AllPins) return;
     if (!CheckPin(41, CP_NOABORT | CP_IGNORE_INUSE | CP_IGNORE_RESERVED)) return;
-    gpio_init(23);
-    gpio_put(23, Option.PWM ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    gpio_set_dir(23, GPIO_OUT);
+    pico_smps_set_pwm_mode(Option.PWM);
 }
 
 /* OPTION HEARTBEAT — non-WiFi ports allow pin reassignment in addition

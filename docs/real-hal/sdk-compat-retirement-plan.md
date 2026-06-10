@@ -41,8 +41,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 5 | 0–4 |
-| `core/mmbasic/MM_Misc.c` | 14 | 8 | 1, 2, 3, 5 |
+| `core/mmbasic/External.c` | 13 | 2 | 0–4 |
+| `core/mmbasic/MM_Misc.c` | 14 | 7 | 1, 2, 3, 5 |
 | `core/mmbasic/Custom.c` | 10 | 10 | 5 |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
@@ -50,8 +50,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 | `shared/net/MMtelnet.c` | 1 | 1 | 6 |
 | `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
-| `shared/net/MMweb_stubs.c` | 1 | 1 | 4 |
-| **Total** | **46** | **28** | |
+| `shared/net/MMweb_stubs.c` | 1 | 0 | 4 ✅ |
+| **Total** | **46** | **23** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -191,6 +191,25 @@ and the SysTick RVR constant (16777215) left core with it.
 
 Exit: External.c at zero SDK includes. Scoreboard: core/ leaves only
 Custom.c + MM_Misc.c's PIO remnant.
+
+Landed: BOOTSEL is `hal_pin_bootsel_pressed()` — the BASIC surface is
+PIN(BOOTSEL), so the contract lives in `hal_pin.h`; the QSPI-CS-override
+body moved verbatim into `hal_pin_pico.c` (still RAM-resident inside the
+FileIO flash-write guard), and every non-RP backend returns false.
+SoftReset routes through the new `hal_watchdog_reboot()` (pico backend
+keeps `watchdog_enable(1, 1)` verbatim; the generic no-op leaves host's
+follow-on spin loop unchanged). MM_Misc.c's `hardware/structs/watchdog.h`
+include was consumer-free and is gone — no watchdog SDK usage remains in
+core/ or shared/. MMweb_stubs.c reached zero: the PIO pin-reset loop rides
+`hal_pin_set_input_enabled` and the GPIO 23 write moved into
+`pico_smps_set_pwm_mode()` (pico_boot.c); the rp2350a/AllPins policy stays
+with the `hal_pwm_mode_shadow_apply` stub. External.c holds at 2 includes:
+`hardware/dma.h` is Phase 5's, and `pico/stdlib.h` is still bound by the
+GPIO-IRQ edge constants + `irq_set_priority(IO_IRQ_BANK0)` (Phase 5/6
+candidates alongside the pico_gpio_irq contract) and by the raw
+`__not_in_flash_func` on on_pwm_wrap_1/bitstream/serialtx/serialrx —
+not PORT_RAM_FUNC-routable, because WiFi ports define PORT_RAM_FUNC as
+identity while these bodies must stay RAM-resident there.
 
 ### Phase 5 — PIO relocation
 

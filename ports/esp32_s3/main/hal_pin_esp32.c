@@ -267,3 +267,9 @@ uint16_t hal_pin_adc_read(void) {
     adc_oneshot_read(handle, (adc_channel_t)s_current_channel, &raw);
     return (uint16_t)(raw & 0xfff); /* 12-bit on ESP32-S3 */
 }
+
+/* The ESP32-S3 BOOT button is strapping pin GPIO 0, not exposed as a
+ * BASIC pin; no PIN(BOOTSEL) surface on this port. */
+bool hal_pin_bootsel_pressed(void) {
+    return false;
+}

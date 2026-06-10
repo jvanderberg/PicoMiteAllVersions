@@ -365,3 +365,12 @@ int MIPS16 main() {
     extern void MMBasic_RunPromptLoop(void);
     MMBasic_RunPromptLoop();
 }
+
+/* Pico-board SMPS power-mode pin: GPIO 23 high selects PWM (low-ripple)
+ * regulation, low selects power-saving PFM. Called from the
+ * hal_pwm_mode_shadow_apply policy hook in MMweb_stubs.c. */
+void pico_smps_set_pwm_mode(int pwm_on) {
+    gpio_init(23);
+    gpio_put(23, pwm_on ? 1 : 0);
+    gpio_set_dir(23, GPIO_OUT);
+}
