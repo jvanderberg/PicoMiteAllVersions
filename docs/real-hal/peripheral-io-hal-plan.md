@@ -247,6 +247,10 @@ divergent per-display copies, so it is deliberately not shared.
 - `OPTION AUDIO` — needs a checkslice hook abstraction in the audio layer
   before its setter can move to the shared layer.
 
+*Sweep completed* under `sdk-compat-retirement-plan.md`, which absorbed this
+step and drove core/shared to zero Pico-SDK includes/calls (shim directories
+deleted; the two deferred OPTION items above stay deferred there too).
+
 **Step 12 — Phase 2 validation.** Full `tools/validate_all.sh` green (incl.
 mmbasic_stdio + mmbasic_ansi), `buildesp32.sh all`, pc386, purity. Add a generic-
 ESP32 reachability check: with the GENERIC profile (no seeded pins), `SETPIN

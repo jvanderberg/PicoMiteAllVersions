@@ -646,12 +646,6 @@ int port_mminfo_screenbuff(int64_t * o) {
     return 0;
 }
 
-#include "hardware/pio.h"
-PIO port_pio_for_index(int i) {
-    (void)i;
-    return NULL;
-}
-
 int port_poke_display_panel(unsigned char * p) {
     (void)p;
     return 0;

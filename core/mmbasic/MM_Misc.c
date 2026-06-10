@@ -29,8 +29,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "runtime/runtime.h"
 #include "shared/net/mm_net_interrupts.h"
 #include "port_config.h"
-#include "pico/stdlib.h"
-#include "hardware/clocks.h"
 #include <time.h>
 #include "pico_gpio_irq.h"
 //#include "upng.h"
@@ -47,7 +45,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_gui_controls.h"
 #include "hal/hal_watchdog.h"
 #include "shared/audio/audio_option_common.h"
-#include "hardware/regs/addressmap.h" /* XIP_BASE */
 #include <malloc.h>
 #include "xregex.h"
 #include "aes.h"
@@ -98,6 +95,9 @@ extern int port_mminfo_touch_status(unsigned char * out_sret);
 extern int port_mminfo_scroll_start(int64_t * out_iret);
 extern int port_mminfo_screenbuff(int64_t * out_iret);
 extern int port_mminfo_system_spi_speed(int64_t * out_iret);
+extern int port_mminfo_valid_cpuspeed(uint32_t speed_khz);
+/* CPU address of the flash MOD-buffer region (XIP window + offset). */
+extern char * port_modbuff_address(void);
 extern int port_poke_display_panel(unsigned char * p);
 extern void port_apply_default_console_colors(int default_fc, int default_bc);
 extern void port_web_print_options(void);
@@ -147,7 +147,6 @@ static inline CommandToken commandtbl_decode(const unsigned char * p) {
     return ((CommandToken)(p[0] & 0x7f)) | ((CommandToken)(p[1] & 0x7f) << 7);
 }
 extern int busfault;
-//#include "pico/stdio_usb/reset_interface.h"
 const char * OrientList[] = {"LANDSCAPE", "PORTRAIT", "RLANDSCAPE", "RPORTRAIT"};
 const char * KBrdList[] = {"", "US", "FR", "GR", "IT", "BE", "UK", "ES"};
 extern const void * const CallTable[];
@@ -1292,7 +1291,7 @@ void MIPS16 cmd_option(void) {
                 Option.modbuff = true;
                 SaveOptions();
                 ResetFlashStorage(1);
-                modbuff = (char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH));
+                modbuff = port_modbuff_address();
                 _excep_code = RESET_COMMAND;
                 SoftReset();
             } else
@@ -1477,25 +1476,25 @@ void MIPS16 cmd_option(void) {
     if (tp) {
         int pin1, pin2, pin3, pin4;
         if (CallBackEnabled == 2)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 2) {
             hal_pin_irq_set_edge(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~2);
         }
         if (CallBackEnabled == 4)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 4) {
             hal_pin_irq_set_edge(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~4);
         }
         if (CallBackEnabled == 8)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 8) {
             hal_pin_irq_set_edge(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~8);
         }
         if (CallBackEnabled == 16)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 16) {
             hal_pin_irq_set_edge(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~16);
@@ -1948,7 +1947,7 @@ void MIPS16 fun_info(void) {
         targ = T_STR;
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"MODBUFF ADDRESS"))) {
-        iret = (int64_t)((uint32_t)(char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH)));
+        iret = (int64_t)((uint32_t)port_modbuff_address());
         targ = T_INT;
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"MODIFIED"))) {
@@ -2344,10 +2343,8 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"VALID CPUSPEED"))) {
-            iret = 1;
             uint32_t speed = getint(tp, MIN_CPU, MAX_CPU);
-            uint vco, postdiv1, postdiv2;
-            if (!check_sys_clock_khz(speed, &vco, &postdiv1, &postdiv2)) iret = 0;
+            iret = port_mminfo_valid_cpuspeed(speed);
             targ = T_INT;
             return;
         } else

@@ -23,7 +23,7 @@ WiFi/browser video, keyboard, and sound follow-on:
 | C — interactive REPL | ✅ | PRINT, FOR/NEXT, IF/ELSE, GOTO/GOSUB, LIST, EDIT, CPU RESTART, CLS, COLOUR all work |
 | C — A: drive (LFS) | ✅ | LFS over `esp_partition_*`, bundled demos seed-only with zero-byte repair, FILES/LOAD/SAVE-to-file/RUN/FRUN all work for files on A: |
 | C — VM source compiler regression fixes | ✅ | adjacent string literals (`""` in PRINT), post-compact heap fragmentation, wrapped-multiply optimizer semantics |
-| D — decouple from host_native | 🔧 | Runtime/peripheral host_native sources are gone; ESP32 owns the port surface in `esp32_*.c` and `hal_*_esp32.c`; core/shared Pico SDK leakage is clean; strict link policy is active. BASIC-visible GPIO DOUT/DIN/ARAW, WS2812 output, and the WEB network surface are hardware-smoked. Legacy `hardware/*` header shims now live under `ports/pico_sdk_compat/`. Remaining debt: PWM/servo are not wired and MQTT is plain TCP only. |
+| D — decouple from host_native | 🔧 | Runtime/peripheral host_native sources are gone; ESP32 owns the port surface in `esp32_*.c` and `hal_*_esp32.c`; core/shared Pico SDK leakage is clean; strict link policy is active. BASIC-visible GPIO DOUT/DIN/ARAW, WS2812 output, and the WEB network surface are hardware-smoked. The legacy `hardware/*` header shims are gone — `ports/pico_sdk_compat/` was deleted when core/shared reached zero Pico-SDK includes (`sdk-compat-retirement-plan.md`). Remaining debt: PWM/servo are not wired and MQTT is plain TCP only. |
 | E — real flash persistence | ✅ | NVS-backed Options and numbered `FLASH SAVE`/`FLASH LOAD` slots are implemented and hardware-smoked. `VAR SAVE` shares the `mmslots` backing. |
 | F — gate + plan hygiene | ✅ | ESP32 port files are in the HAL purity gate; `docs/real-hal-plan.md`, this port README, and opt-in `buildesp32.sh` are current. |
 | G — device smoke + HAL cleanup | ✅ | G0 smoke suite is implemented and passing, including opt-in flash/VAR persistence and network conformance. G1 plan/comment drift cleanup, G2 explicit ESP32 port config, G3 neutral hardware shims, and G4 removal of the temporary host compile identity are done. |
@@ -116,7 +116,7 @@ The ESP32 link line no longer includes `host_runtime.c`, `host_peripheral_stubs.
 Remaining coupling is narrower:
 
 - The simulator VM syscall bodies live under `ports/vm_sys_sim/` for host-style builds. ESP32 no longer links either simulator body: file syscalls use shared device `vm_sys_file.c`, and pin syscalls use ESP32-owned `vm_sys_pin_esp32.c` plus the Metro pin table.
-- ESP32 no longer needs a `pico/stdlib.h` compatibility shim for core/shared code. A strict scan of the core/shared scope is clean for Pico SDK includes/APIs. Remaining `hardware/*` Pico SDK header shims come from the neutral `ports/pico_sdk_compat/` include path until they disappear behind HAL.
+- ESP32 needs no Pico-SDK compatibility shims for core/shared code at all: core/shared is at zero SDK includes/APIs and the neutral `ports/pico_sdk_compat/` shim tree was deleted (`sdk-compat-retirement-plan.md` terminal gate).
 - `ports/esp32_s3_metro/port_config.h` now defines ESP32's `HAL_PORT_*` surface explicitly instead of inheriting host defaults.
 - `esp32_platform.h` defines `MMBASIC_ESP32` only. The temporary host compile identity is gone; the HAL purity gate now checks the ESP32 platform/CMake files for regression.
 
@@ -389,7 +389,7 @@ Required shape:
 
 The build no longer includes `ports/host_native` for legacy `hardware/*` shim headers.
 
-Done by moving the generic `hardware/*` compatibility shim tree to `ports/pico_sdk_compat/` and wiring ESP32 to include that neutral path. Host-native also includes the neutral path for the same compile-time shims.
+Done by moving the generic `hardware/*` compatibility shim tree to `ports/pico_sdk_compat/` and wiring ESP32 to include that neutral path. (Host-native also included the neutral path for the same compile-time shims; the tree was later deleted outright under `sdk-compat-retirement-plan.md`.)
 
 Exit gate: `ports/esp32_s3_metro/main/CMakeLists.txt` has no `ports/host_native` include path and the HAL purity gate still passes.
 
@@ -467,8 +467,7 @@ smoke harness `porttools/psram_smoke.py`.
 - `ports/esp32_s3_metro/port_config.h` — D8 edits land here.
 - `ports/esp32_s3_metro/probe.py` — debug driver; use it instead of picocom.
 - `ports/vm_sys_sim/` — simulator VM syscall bodies used by host-style builds only.
-- `ports/host_native/pico/` — host-owned Pico compatibility headers.
-- `ports/pico_sdk_compat/hardware/` — neutral legacy Pico SDK `hardware/*` compatibility shims.
+- `ports/host_native/pico/` and `ports/pico_sdk_compat/hardware/` — compatibility-shim trees, since deleted under `sdk-compat-retirement-plan.md`.
 - `ports/pico_sdk_common/` — the reference for what device-port shape looks like.
 - `tools/check_hal_purity.sh` — F1 edits the strict-scope file list here.
 - `docs/real-hal-plan.md` — F2 adds the scoreboard row.

@@ -40,12 +40,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifndef MISC_HEADER
 #define MISC_HEADER
 
-#if defined(PICO_BUILD) && !defined(__uninitialized_ram)
-#include "pico.h"
-#endif
-#ifndef __uninitialized_ram
-#define __uninitialized_ram(group) group
-#endif
 #include <time.h> /* get_epoch returns time_t */
 
 extern void OtherOptions(void);
@@ -102,7 +96,8 @@ extern bool optionfulltime;
 extern int64_t TimeOffsetToUptime;
 extern time_t get_epoch(int year, int month, int day, int hour, int minute, int second);
 extern uint_fast64_t gettimefromepoch(int * year, int * month, int * day, int * hour, int * minute, int * second);
-extern uint64_t __uninitialized_ram(_persistent);
+/* Survives soft reset; the defining port places it in uninitialized RAM. */
+extern uint64_t _persistent;
 extern void printoptions(void);
 
 #endif

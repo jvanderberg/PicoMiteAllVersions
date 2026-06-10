@@ -225,7 +225,7 @@ extern void setBacklight(int level, int frequency);
  * knowing the length (which differs by chip: 30 on RP2040 / WEB,
  * 48 on RP2350 variants). */
 extern const uint8_t PINMAP[];
-void gpio_callback(uint gpio, uint32_t events);
+void gpio_callback(unsigned int gpio, uint32_t events);
 // for CheckPin() action can be set to:
 #define CP_CHECKALL 0b0000        // abort with an error if invalid, in use or reserved
 #define CP_NOABORT 0b0001         // the function will not abort with an error

@@ -22,6 +22,13 @@
 #include "Include.h"
 #include "hal/hal_main_init.h"
 
+// QVGA PIO instance for the QVGA_PIO_NUM block index (configuration.h).
+#ifdef rp2350
+#define QVGA_PIO (QVGA_PIO_NUM == 0 ? pio0 : (QVGA_PIO_NUM == 1 ? pio1 : pio2))
+#else
+#define QVGA_PIO (QVGA_PIO_NUM == 0 ? pio0 : pio1)
+#endif
+
 extern void ResetDisplay(void);
 extern void ClearScreen(int colour);
 #ifdef rp2350

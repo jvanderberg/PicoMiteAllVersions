@@ -468,14 +468,14 @@ void KBDIntEnable(int status) {
     if (status) {
         if (!CallBackEnabled) {
             CallBackEnabled = 32;
-            pico_gpio_irq_set_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true);
+            pico_gpio_irq_set_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, HAL_PIN_EDGE_FALL, true);
         } else {
             CallBackEnabled |= 32;
             gpio_set_irq_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true);
         }
     } else {
         if (CallBackEnabled == 32)
-            pico_gpio_irq_set_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             gpio_set_irq_enabled(PinDef[Option.KEYBOARD_CLOCK].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
         CallBackEnabled &= (~32);

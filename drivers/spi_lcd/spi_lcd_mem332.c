@@ -18,6 +18,12 @@
 #include "hal/hal_spi_lcd_mem332.h"
 #include "pico/multicore.h"
 #include "hardware/dma.h"
+#include "hardware/spi.h"
+
+/* Raw fast-path SPI writes shared by the spi_lcd RP TUs (defined in
+ * spi_lcd.c). */
+extern void __not_in_flash_func(spi_write_fast)(spi_inst_t * spi, const uint8_t * src, size_t len);
+extern void __not_in_flash_func(spi_finish)(spi_inst_t * spi);
 
 /* DefineRegionSPI / DrawBitmapSPISCR / ScrollStart /
  * low_x/low_y/high_x/high_y / silly_low/silly_high / RGB565 are all

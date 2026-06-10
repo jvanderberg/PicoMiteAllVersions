@@ -88,7 +88,15 @@
 #define HAL_PORT_AUDIO_MOD_BUFFER_SIZE 8192
 #define HAL_PORT_HAS_MP3 1
 
+#include "pico.h" /* __not_in_flash_func for the placement macros below */
 #define PORT_RAM_FUNC(name) __not_in_flash_func(name)
+
+/* Always-RAM placement for timing-critical bodies (bit-banged serial,
+ * GPIO/PWM IRQ handlers). Unlike PORT_RAM_FUNC — a RAM-for-speed trade
+ * that is identity on RAM-tight builds — this is __not_in_flash_func on
+ * every RP port: these bodies run while flash writes have XIP disabled,
+ * or carry cycle-counted loops that cannot tolerate XIP cache misses. */
+#define PORT_TIMING_CRITICAL_FUNC(name) __not_in_flash_func(name)
 
 /* Placement for MMBasic's per-expression hot functions (getvalue,
  * findvar) and the big DefinedSubFun dispatch. rp2350 HDMI has plenty

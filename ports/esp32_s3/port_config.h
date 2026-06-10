@@ -64,6 +64,7 @@
 #define HAL_PORT_AUDIO_I2S_DOUT_PIN 7 /* serial data (DIN/SD)  */
 
 #define PORT_RAM_FUNC(name) name
+#define PORT_TIMING_CRITICAL_FUNC(name) name
 #define MMB_HOT_FUNC(name) name
 #define MMB_DISPATCH_FUNC(name) name
 

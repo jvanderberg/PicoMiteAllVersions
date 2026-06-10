@@ -305,11 +305,3 @@ uint16_t tilebcols[80 * 40] = {0};
 int MOUSE_CLOCK = 0, MOUSE_DATA = 0;
 
 volatile uint64_t IRoffset = 0;
-
-/* dma_hw / watchdog_hw stubs — Commands.c references their fields. */
-#include "hardware/dma.h"
-#include "hardware/structs/watchdog.h"
-static dma_hw_t pc386_dma_store = {0};
-static watchdog_hw_t pc386_wdog_store = {0};
-dma_hw_t * dma_hw = &pc386_dma_store;
-watchdog_hw_t * watchdog_hw = &pc386_wdog_store;

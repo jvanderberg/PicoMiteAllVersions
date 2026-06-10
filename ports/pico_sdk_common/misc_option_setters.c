@@ -17,6 +17,9 @@
 #include "hal/hal_option_setters.h"
 #include "hardware/pio.h"
 #include "hardware/spi.h"
+#include "pico/stdlib.h"              /* check_sys_clock_khz (SDK 1.x home) */
+#include "hardware/clocks.h"          /* check_sys_clock_khz (SDK 2.x home) */
+#include "hardware/regs/addressmap.h" /* XIP_BASE */
 
 #if !defined(MMBASIC_HOST)
 
@@ -201,6 +204,20 @@ int MIPS16 port_mminfo_system_spi_speed(int64_t * out_iret) {
         return 1;
     }
     return 0;
+}
+
+/* MM.INFO(VALID CPUSPEED n) — 1 if the PLL can synthesise the requested
+ * sysclk, 0 otherwise. */
+int MIPS16 port_mminfo_valid_cpuspeed(uint32_t speed_khz) {
+    uint vco, postdiv1, postdiv2;
+    return check_sys_clock_khz(speed_khz, &vco, &postdiv1, &postdiv2) ? 1 : 0;
+}
+
+/* CPU address of the flash MOD-buffer region: the XIP window plus the
+ * page-rounded top of system flash (OPTION MODBUFF / MM.INFO(MODBUFF
+ * ADDRESS); the audio driver computes the same address). */
+char * port_modbuff_address(void) {
+    return (char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH));
 }
 
 /* POKE DISPLAY <args> raw command/data byte sequence. Dispatches by

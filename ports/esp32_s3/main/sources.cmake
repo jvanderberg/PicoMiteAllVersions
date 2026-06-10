@@ -305,7 +305,6 @@ idf_component_register(
         ${REPO_ROOT}/third_party/picojpeg
         ${REPO_ROOT}/third_party/regex
         ${REPO_ROOT}/third_party/upng
-        ${REPO_ROOT}/ports/pico_sdk_compat # legacy hardware/* Pico SDK header shims
     REQUIRES
         driver
         esp_lcd

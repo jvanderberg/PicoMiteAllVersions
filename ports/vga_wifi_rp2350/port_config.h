@@ -90,6 +90,15 @@
 #define HAL_PORT_HAS_MP3 1
 
 #define PORT_RAM_FUNC(name) name
+
+#include "pico.h" /* __not_in_flash_func for the placement macro below */
+/* Always-RAM placement for timing-critical bodies (bit-banged serial,
+ * GPIO/PWM IRQ handlers). Unlike PORT_RAM_FUNC — a RAM-for-speed trade
+ * that is identity on this RAM-tight build — this is __not_in_flash_func
+ * on every RP port: these bodies run while flash writes have XIP
+ * disabled, or carry cycle-counted loops that cannot tolerate XIP cache
+ * misses. */
+#define PORT_TIMING_CRITICAL_FUNC(name) __not_in_flash_func(name)
 #define MMB_HOT_FUNC(name) __not_in_flash_func(name)
 #define MMB_DISPATCH_FUNC(name) __not_in_flash_func(name)
 

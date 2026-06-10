@@ -161,19 +161,6 @@ uint32_t __get_MSP(void) {
     return 0xFFFFFFFFu;
 }
 
-/* Pico-SDK hardware-register window stubs. Core code includes
- * hardware/structs/{dma,watchdog}.h and dereferences these on rp2040
- * paths that gate later via DISPLAY_TYPE / HAL_PORT_HAS_*. The
- * pointers must resolve to valid memory so the load instruction
- * doesn't fault before the gate filters out the path; the contents
- * never matter on this port. */
-#include "hardware/structs/dma.h"
-#include "hardware/structs/watchdog.h"
-static dma_hw_t _dma_hw_store = {0};
-static watchdog_hw_t _watchdog_hw_store = {0};
-dma_hw_t * dma_hw = &_dma_hw_store;
-watchdog_hw_t * watchdog_hw = &_watchdog_hw_store;
-
 /* PSRAMsize / PSRAMbase / hal_psram_* live in hal_psram_esp32.c — the
  * ESP32 HAL implementation reserves a slab via heap_caps_aligned_alloc()
  * and publishes the (base, size) pair to MMBasic at boot. */

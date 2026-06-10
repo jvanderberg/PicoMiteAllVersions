@@ -29,6 +29,12 @@
 #include "hal/hal_display_merge.h"
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/spi.h"
+
+/* Raw fast-path SPI writes shared by the spi_lcd RP TUs (defined in
+ * spi_lcd.c). */
+extern void __not_in_flash_func(spi_write_fast)(spi_inst_t * spi, const uint8_t * src, size_t len);
+extern void __not_in_flash_func(spi_finish)(spi_inst_t * spi);
 
 /* File-scope globals defined in Draw.c / SSD1963.c. */
 extern int map[16];

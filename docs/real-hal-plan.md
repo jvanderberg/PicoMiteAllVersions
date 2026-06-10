@@ -114,7 +114,7 @@ exit gate in practice.
 - [esp32-s3-port.md](real-hal/esp32-s3-port.md) + [esp32-s3-port-log.md](real-hal/esp32-s3-port-log.md) — Adafruit Metro ESP32-S3 (#5500) port: rules + invariants, current state, Stage D/E/F work items.
 - [web-console-driver-plan.md](real-hal/web-console-driver-plan.md) — portable WiFi/browser video, keyboard, and sound backend using the native simulator's `FRMB`/`CMDS`/WebAudio model; ESP32-S3 is the first target.
 - [spi-lcd-hal-layer-plan.md](real-hal/spi-lcd-hal-layer-plan.md) — SPI LCD generalization: Track A makes display pins user-configurable on ESP32-S3 (`OPTION LCDPANEL`, profile demotes to defaults seeder); Track B splits `drivers/spi_lcd/` into a transport-neutral controller core + per-port bus adapters.
-- [sdk-compat-retirement-plan.md](real-hal/sdk-compat-retirement-plan.md) — the successor campaign: drive Pico-SDK includes/calls out of core/ and shared/ (46 include lines across 10 files at baseline) until `ports/pico_sdk_compat/` and `ports/host_native/pico/` can be deleted with every non-Pico build green. Absorbs peripheral-io-hal-plan.md Step 11.
+- [sdk-compat-retirement-plan.md](real-hal/sdk-compat-retirement-plan.md) — the successor campaign, ✅ complete: drove Pico-SDK includes/calls out of core/ and shared/ (46 include lines across 10 files at baseline → 0); `ports/pico_sdk_compat/` and `ports/host_native/pico/` are deleted with every non-Pico build green, and `check_hal_purity.sh` now rejects SDK includes / register windows / cyw43 calls in core+shared. Absorbed peripheral-io-hal-plan.md Step 11.
 
 ## How to work a phase
 

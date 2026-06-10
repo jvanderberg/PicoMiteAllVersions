@@ -29,6 +29,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_spi_lcd_mem332.h"
 #include "hardware/dma.h"
 #include "hardware/gpio.h"
+#include "hardware/spi.h"
 #include "pico/multicore.h"
 int CurrentSPIDevice = NONE_SPI_DEVICE;
 void __not_in_flash_func(spi_write_fast)(spi_inst_t * spi, const uint8_t * src, size_t len) {

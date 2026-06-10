@@ -59,7 +59,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * setBacklight() means the call only fires when an SSD-class panel is
  * configured, which the OPTION setter rejects on non-SSD1963 ports. */
 extern void SetBacklightSSD1963(int intensity);
-#include "pico/stdlib.h"
 #include "drivers/pio_rp2/pio_rp2.h"
 #include "pico_gpio_irq.h"
 
@@ -230,7 +229,7 @@ int codecheck(unsigned char * line) {
  * by the rp2350 fast-timer driver, which acknowledges the wrap IRQ
  * before invoking it; on other ports the function sits unused in flash
  * (linker -gc-sections drops it). */
-void __not_in_flash_func(on_pwm_wrap_1)(void) {
+void PORT_TIMING_CRITICAL_FUNC(on_pwm_wrap_1)(void) {
     INT5Count++;
 }
 
@@ -431,28 +430,28 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     ClearPin(pin); //disable the link to any special functions
     if (pin == Option.INT1pin) {
         if (CallBackEnabled == 2)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~2);
     }
     if (pin == Option.INT2pin) {
         if (CallBackEnabled == 4)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~4);
     }
     if (pin == Option.INT3pin) {
         if (CallBackEnabled == 8)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~8);
     }
     if (pin == Option.INT4pin) {
         if (CallBackEnabled == 16)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~16);
@@ -619,22 +618,19 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     case EXT_CNT_IN:
     case EXT_FREQ_IN: // same as counting, so fall through
     case EXT_PER_IN:  // same as counting, so fall through
-        edge = GPIO_IRQ_EDGE_RISE;
-        if (cfg == EXT_CNT_IN && option == 2) edge = GPIO_IRQ_EDGE_FALL;
-        if (cfg == EXT_CNT_IN && option >= 3) edge = GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE;
+        edge = HAL_PIN_EDGE_RISE;
+        if (cfg == EXT_CNT_IN && option == 2) edge = HAL_PIN_EDGE_FALL;
+        if (cfg == EXT_CNT_IN && option >= 3) edge = HAL_PIN_EDGE_BOTH;
         if (option == 1 || option == 4) hal_pin_set_pulls(PinDef[pin].GPno, HAL_PIN_PULL_DOWN);
         if (option == 2 || option == 5) hal_pin_set_pulls(PinDef[pin].GPno, HAL_PIN_PULL_UP);
-        irq_set_priority(IO_IRQ_BANK0, 0);
+        pico_gpio_irq_set_highest_priority();
         PinSetBit(pin, TRISSET);
         if (pin == Option.INT1pin) {
             if (!CallBackEnabled) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 2;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 2;
             }
             INT1Count = INT1Value = 0;
@@ -649,10 +645,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 4;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 4;
             }
             INT2Count = INT2Value = 0;
@@ -667,10 +660,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 8;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 8;
             }
             INT3Count = INT3Value = 0;
@@ -685,10 +675,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 16;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 16;
             }
             INT4Count = INT4Value = 0;
@@ -1729,7 +1716,7 @@ void cmd_ir(void) {
     if (checkstring(cmdline, (unsigned char *)"CLOSE")) {
         if (IrState == IR_CLOSED) error("Not Open");
         if (CallBackEnabled == 1)
-            pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         IrInterrupt = NULL;
@@ -1787,7 +1774,7 @@ void IrInit(void) {
     ExtCfg(IRpin, EXT_IR, 0);
     ExtCfg(IRpin, EXT_COM_RESERVED, 0);
     if (!CallBackEnabled) {
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, true);
         CallBackEnabled = 1;
     } else {
         hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, true);
@@ -2522,13 +2509,13 @@ void fun_dev(void) {
  * @cond
  * The following section will be excluded from the documentation.
  */
-void __not_in_flash_func(bitstream)(int gppin, unsigned int * data, int num) {
+void PORT_TIMING_CRITICAL_FUNC(bitstream)(int gppin, unsigned int * data, int num) {
     for (int i = 0; i < num; i++) {
         hal_pin_bank_xor_mask(gppin);
         shortpause(data[i])
     }
 }
-void __not_in_flash_func(serialtx)(int gppin, unsigned char * string, int bittime) {
+void PORT_TIMING_CRITICAL_FUNC(serialtx)(int gppin, unsigned char * string, int bittime) {
     int mask;
     int count = 0;
     while (count++ < string[0]) {
@@ -2558,7 +2545,7 @@ unsigned short FloatToUint32(MMFLOAT x) {
         error("Number range");
     return (x >= 0 ? (unsigned int)(x + 0.5) : (unsigned int)(x - 0.5));
 }
-int __not_in_flash_func(serialrx)(int gppin, unsigned char * string, int timeout, int bittime, int half, int maxchars, char * termchars) {
+int PORT_TIMING_CRITICAL_FUNC(serialrx)(int gppin, unsigned char * string, int timeout, int bittime, int half, int maxchars, char * termchars) {
     int i, c, count = 0;
     while (1) {
         while (hal_pin_bank_read_all() & gppin) {    // wait for the start bit
@@ -2993,31 +2980,31 @@ void MIPS16 ClearExternalIO(void) {
     hal_fast_timer_disable();
     closeframebuffer('A');
     if (CallBackEnabled == 1)
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 1) {
         hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~1);
     }
     if (CallBackEnabled == 2)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 2) {
         hal_pin_irq_set_edge(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~2);
     }
     if (CallBackEnabled == 4)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 4) {
         hal_pin_irq_set_edge(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~4);
     }
     if (CallBackEnabled == 8)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 8) {
         hal_pin_irq_set_edge(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~8);
     }
     if (CallBackEnabled == 16)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 16) {
         hal_pin_irq_set_edge(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~16);
@@ -3044,7 +3031,7 @@ void MIPS16 ClearExternalIO(void) {
     SPIClose();
     SPI2Close();
     if (IRpin != 99) {
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         IrInterrupt = NULL;
         ExtCfg(IRpin, EXT_NOT_CONFIG, 0);
     }
@@ -3194,7 +3181,7 @@ void MIPS16 ClearExternalIO(void) {
     WAVInterrupt = NULL;
 }
 
-void __not_in_flash_func(TM_EXTI_Handler_1)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_1)(void) {
     if (ExtCurrentConfig[Option.INT1pin] == EXT_PER_IN) {
         if (--INT1Timer <= 0) {
             INT1Value = INT1Count;
@@ -3210,7 +3197,7 @@ void __not_in_flash_func(TM_EXTI_Handler_1)(void) {
 }
 
 // perform the counting functions for INT2
-void __not_in_flash_func(TM_EXTI_Handler_2)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_2)(void) {
     if (ExtCurrentConfig[Option.INT2pin] == EXT_PER_IN) {
         if (--INT2Timer <= 0) {
             INT2Value = INT2Count;
@@ -3226,7 +3213,7 @@ void __not_in_flash_func(TM_EXTI_Handler_2)(void) {
 }
 
 // perform the counting functions for INT3
-void __not_in_flash_func(TM_EXTI_Handler_3)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_3)(void) {
     if (ExtCurrentConfig[Option.INT3pin] == EXT_PER_IN) {
         if (--INT3Timer <= 0) {
             INT3Value = INT3Count;
@@ -3242,7 +3229,7 @@ void __not_in_flash_func(TM_EXTI_Handler_3)(void) {
 }
 
 // perform the counting functions for INT4
-void __not_in_flash_func(TM_EXTI_Handler_4)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_4)(void) {
     if (ExtCurrentConfig[Option.INT4pin] == EXT_PER_IN) {
         if (--INT4Timer <= 0) {
             INT4Value = INT4Count;
@@ -3256,7 +3243,7 @@ void __not_in_flash_func(TM_EXTI_Handler_4)(void) {
             INT4Count++;
     }
 }
-void MIPS16 __not_in_flash_func(IRHandler)(void) {
+void MIPS16 PORT_TIMING_CRITICAL_FUNC(IRHandler)(void) {
     int ElapsedMicroSec;
     static unsigned int LastIrBits;
     ElapsedMicroSec = readIRclock();
@@ -3332,7 +3319,7 @@ void MIPS16 __not_in_flash_func(IRHandler)(void) {
         break;
     }
 }
-void __not_in_flash_func(gpio_callback)(uint gpio, uint32_t events) {
+void PORT_TIMING_CRITICAL_FUNC(gpio_callback)(unsigned int gpio, uint32_t events) {
     hal_keyboard_on_gpio_edge(gpio);
     if (gpio == PinDef[IRpin].GPno) IRHandler();
     if (gpio == PinDef[Option.INT1pin].GPno) TM_EXTI_Handler_1();

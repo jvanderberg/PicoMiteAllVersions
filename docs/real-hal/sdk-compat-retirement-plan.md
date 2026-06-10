@@ -4,17 +4,20 @@
 
 Every line of core/ and shared/ compiles against `hal/*.h` contracts only — no
 Pico SDK headers, no `_hw->` register access, no vendor function calls. The
-campaign ends when **`ports/pico_sdk_compat/` and `ports/host_native/pico/`
-are deleted and all six non-Pico builds (host_native, host_wasm, pc386,
-mmbasic_stdio, mmbasic_ansi, esp32_s3) still build and pass their suites.**
+campaign's terminal gate — **`ports/pico_sdk_compat/` and
+`ports/host_native/pico/` deleted, with every non-Pico build (host_native,
+host_wasm, pc386, mmbasic_stdio, mmbasic_ansi, esp32_s3) still building and
+passing its suite** — **is reached: the shim directories are gone** (Phase 7).
 
-That terminal gate is the point. The shim directories exist so that shared
-code can keep calling `adc_read()` or poking `systick_hw->cvr` and still
-compile everywhere — on non-Pico ports those calls silently do nothing
-(`adc_read()` returns 0). Deleting the shims converts every remaining vendor
-call site into a hard build error, so the finish line cannot be gamed: either
-the call moved behind a HAL contract with a real backend or an erroring stub,
-or the build is red.
+That terminal gate was the point. The shim directories existed so that shared
+code could keep calling `adc_read()` or poking `systick_hw->cvr` and still
+compile everywhere — on non-Pico ports those calls silently did nothing
+(`adc_read()` returned 0). Deleting the shims converted every remaining vendor
+call site into a hard build error, so the finish line could not be gamed:
+either the call moved behind a HAL contract with a real backend or an erroring
+stub, or the build went red. From here, reintroducing an SDK call in core/ or
+shared/ is both a build error on six ports and a `check_hal_purity.sh`
+failure.
 
 This extends `peripheral-io-hal-plan.md` (whose Step 11 sweep this campaign
 absorbs) and follows the same architecture principle: **one shared body for
@@ -30,10 +33,11 @@ preprocessor gates. This campaign adds the next ratchet for core/ and shared/:
 5. **Zero `#include` of `hardware/*` or `pico/*` headers.**
 6. **Zero `_hw->` register access and zero Pico-SDK / vendor function calls.**
 
-`tools/check_hal_purity.sh` is extended in the final phase to enforce both,
-once the count is zero. Until then the scoreboard below is the ratchet:
-a file's include count may only decrease, and a phase closes only when its
-targeted files reach zero.
+`tools/check_hal_purity.sh` enforces both since Phase 7 (the SDK-clean
+section: every file under core/ and shared/ is checked for SDK includes,
+`_hw->` register-window tokens, and `cyw43_*` calls). During the campaign the
+scoreboard below was the ratchet: a file's include count could only decrease,
+and a phase closed only when its targeted files reached zero.
 
 ## Scoreboard — SDK include lines per file
 
@@ -41,8 +45,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 1 | 0–5 |
-| `core/mmbasic/MM_Misc.c` | 14 | 3 | 1, 2, 3, 5 |
+| `core/mmbasic/External.c` | 13 | 0 | 0–5, 7 ✅ |
+| `core/mmbasic/MM_Misc.c` | 14 | 0 | 1, 2, 3, 5, 7 ✅ |
 | `core/mmbasic/Custom.c` | 10 | 0 (file relocated to `drivers/pio_rp2/`) | 5 ✅ |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
@@ -51,7 +55,7 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 | `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMweb_stubs.c` | 1 | 0 | 4 ✅ |
-| **Total** | **46** | **4** | |
+| **Total** | **46** | **0** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -288,19 +292,87 @@ green, full WiFi device builds green: WEB, picocalc_wifi_rp2040,
 picocalc_wifi_rp2350, DVIWIFIRP2350 (the CYW43_PIO_CLOCK_DIV_DYNAMIC
 shape that compiles the moved divider).
 
-### Phase 7 — delete the shims, ratchet the gate
+### Phase 7 — delete the shims, ratchet the gate — ✅ CLOSED
 
-1. `git rm -r ports/pico_sdk_compat ports/host_native/pico`.
-2. Drop the include paths from the six build files
-   (`ports/{host_native,host_wasm,pc386,mmbasic_stdio,mmbasic_ansi}/Makefile`,
-   `ports/esp32_s3/main/sources.cmake`) and `tools/check_vm_pin_modes.sh`.
-3. Extend `tools/check_hal_purity.sh`: reject `#include` of `hardware/*` or
-   `pico/*` and `_hw->` register access anywhere in core/ and shared/.
-4. Full matrix green: `validate_all.sh`, `buildall.sh`, `buildesp32.sh all`,
-   pc386.
+Prep landed — core/ at zero SDK include lines, scoreboard 46 → 0:
 
-Exit: the campaign's terminal gate — the shim directories no longer exist
-and every build is green.
+- **RAM placement** (External.c `pico/stdlib.h`, binder 1): the raw
+  `__not_in_flash_func` decorations were not PORT_RAM_FUNC-routable —
+  no RP variant is a copy-to-RAM build (no `PICO_COPY_TO_RAM` anywhere),
+  so identity-PORT_RAM_FUNC ports (WEB, WEBRP2350, VGA/VGAWIFI, the
+  WiFi PicoCalcs) place PORT_RAM_FUNC bodies in XIP flash by design.
+  New `PORT_TIMING_CRITICAL_FUNC` in the port_config.h family:
+  `__not_in_flash_func` on **all 13** RP ports, identity on host/ESP32.
+  All ten External.c bodies (on_pwm_wrap_1, bitstream, serialtx/rx, the
+  four TM_EXTI handlers, IRHandler, gpio_callback) moved onto it; nm on
+  PICO / WEB / PICORP2350 / DVIWIFIRP2350 confirms every one stays in
+  SRAM while WEB's PinSetBit/ExtSet/ExtInp stay in flash — placement
+  identical to baseline on every shape. RP port_config.h now includes
+  `pico.h` so the placement macros expand without core SDK includes.
+- **GPIO edge constants** (binder 2, both files):
+  `pico_gpio_irq_set_enabled` now takes a HAL_PIN_EDGE_* mask; the
+  HAL→SDK event translation (values differ: HAL 1/2 vs SDK 8/4) lives
+  in pico_gpio_irq.c. All 16 core sites plus the ps2_mouse/ps2_matrix
+  driver callers converted; the counting-input `edge` variable and the
+  `hal_pin_irq_set_edge` calls now share one vocabulary, dropping the
+  inline conversion expressions.
+- **`irq_set_priority(IO_IRQ_BANK0, 0)`** (binder 3):
+  `pico_gpio_irq_set_highest_priority()` beside the dispatcher it tunes.
+- **`check_sys_clock_khz`** (MM_Misc.c): `port_mminfo_valid_cpuspeed()`
+  beside its port_mminfo_* siblings in misc_option_setters.c (which
+  includes both the SDK 1.x and 2.x homes of the declaration).
+- **`XIP_BASE`** (MM_Misc.c): both sites computed the MOD-buffer CPU
+  address (`XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH)`) — hal_flash.h
+  speaks absolute flash offsets, not XIP mappings, so this landed as
+  `port_modbuff_address()` in misc_option_setters.c rather than a HAL
+  query. gpio_callback's `uint` parameter became `unsigned int`
+  (External.h carried the SDK typedef).
+
+Closed — the shim directories are deleted and the gate is ratcheted:
+
+1. `git rm -r ports/pico_sdk_compat ports/host_native/pico` (31 headers);
+   include paths dropped from the five port Makefiles,
+   `ports/esp32_s3/main/sources.cmake`, and `tools/check_vm_pin_modes.sh`.
+2. Deletion fallout, fixed by the campaign's rules (all dead compat code or
+   driver-internal relocation — no new shims, no `#if` gates):
+   - `drivers/spi_lcd/SPI-LCD.h` (in every core TU via Hardware_Includes.h)
+     included `hardware/spi.h` for two `spi_inst_t` fast-path declarations
+     (`spi_write_fast` / `spi_finish`, defined in spi_lcd.c). The
+     declarations moved into the RP TUs that share them (spi_lcd_mem332,
+     spi_lcd_framebuffer, spi_lcd_fastgfx — VS1053.c already carried its
+     own), each beside its own `hardware/spi.h` include; the header is now
+     SDK-free.
+   - `configuration.h`'s `QVGA_PIO` macro named `pio0/pio1/pio2` (flagged by
+     the new gate section, not a build break — the SDK defines them on RP).
+     It moved to its only consumer, `drivers/vga_pio/vga_qvga_modes.c`,
+     taking one `rp2350` gate out of core; `QVGA_PIO_NUM` stays (the VGA
+     ports' `piomap[]` bookkeeping keys on it).
+   - Dead `dma_hw`/`watchdog_hw` dummy-storage blocks deleted from
+     host_runtime.c, pc386_state.c, and esp32_compat.c (no consumer
+     anywhere in core/shared/runtime since the ADC/PIO phases), along with
+     the consumer-free `port_pio_for_index` stubs in host_runtime.c and
+     pc386_runtime.c (its only caller is `drivers/pio_rp2/pio_rp2.c`, RP-only)
+     and host_main.c's unused `hardware/flash.h` include.
+   - runtime_abort.c / runtime_interrupt.c dropped their
+     `__has_include("pico.h")` blocks — redundant on RP since the
+     port_config.h family includes `pico.h` itself (Phase 7a), dangling on
+     host once `ports/host_native/pico/platform.h` was deleted. Their
+     `MMB_HOT_FUNC` comes from port_config.h via MMBasic_Includes.h.
+3. `tools/check_hal_purity.sh` grew the SDK-clean section: all of core/ and
+   shared/ (not just STRICT_FILES) fails on (a) `#include` of `hardware/*`,
+   `pico/*`, or `pico.h`, (b) `_hw->` register-window tokens and the
+   pio0/pio1/pio2 instance structs (word-boundary match over
+   comment-and-string-stripped source), (c) `cyw43_*` calls. Detection was
+   verified by injecting each violation class into a core file (all three
+   fail the gate) plus a comment-only mention (passes).
+4. Matrix green: purity gate; host_native build + 291/291 tests (incl.
+   check_vm_pin_modes); mmbasic_stdio; mmbasic_ansi; pc386 (i686-elf-gcc);
+   device PICO, PICORP2350, WEB, VGA, VGARP2350 from clean /tmp trees (the
+   five shapes that compile every TU this phase touched). host_wasm built in
+   CI (no local emcc; validate_all skips it the same way).
+
+Exit reached: the campaign's terminal gate — the shim directories no longer
+exist and every build is green.
 
 ## Deferred / out of scope
 

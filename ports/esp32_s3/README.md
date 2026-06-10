@@ -420,5 +420,4 @@ The ESP32 port owns its runtime/peripheral surface in `main/esp32_*.c` and `main
 Known remaining cleanup:
 
 - BASIC-visible GPIO uses ESP32-owned `vm_sys_pin_esp32.c` plus the Metro pin table. PWM/servo remains future work.
-- Legacy Pico SDK `hardware/*` compatibility headers come from neutral `ports/pico_sdk_compat/`.
 - The build defines `MMBASIC_ESP32` only; the temporary `MMBASIC_HOST` compile-mode tag has been removed.
