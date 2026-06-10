@@ -1,5 +1,6 @@
 #include "pico_runtime_internal.h"
 
+#include "hal/hal_adc.h"
 #include "hal/hal_i2c.h"
 
 lfs_t lfs;
@@ -188,8 +189,7 @@ int MIPS16 main() {
         Option.CPU_Speed * 1000,                          // Input frequency
         ADC_CLK_SPEED                                     // Output (must be same as no divider)
     );
-    SetADCFreq(500000);
-    adc_clk_div = adc_hw->div;
+    hal_adc_set_default_clock(500000);
     systick_hw->csr = 0x5;
     systick_hw->rvr = 0x00FFFFFF;
     hal_display_merge_init_fb_mutex(); /* SPI-LCD ports only */

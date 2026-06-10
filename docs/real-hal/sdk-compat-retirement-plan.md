@@ -41,8 +41,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 8 | 0–4 |
-| `core/mmbasic/MM_Misc.c` | 14 | 10 | 1, 2, 3, 5 |
+| `core/mmbasic/External.c` | 13 | 6 | 0–4 |
+| `core/mmbasic/MM_Misc.c` | 14 | 9 | 1, 2, 3, 5 |
 | `core/mmbasic/Custom.c` | 10 | 10 | 5 |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
@@ -129,7 +129,7 @@ through `port_mminfo_system_spi_speed` beside its `port_mminfo_*` siblings.
 External.c 9 → 8 includes, MM_Misc.c 14 → 10 (one was a duplicate);
 zero `pwm_*`/`spi_get_baudrate` symbols anywhere in core/.
 
-### Phase 2 — `hal_adc.h`
+### Phase 2 — `hal_adc.h` — ✅ CLOSED
 
 Contract: `hal_adc_init`, `hal_adc_set_clock`, `hal_adc_read(pin_gp)` (single
 conversion, error-sticky recovery inside the backend), and a capture-session
@@ -144,6 +144,23 @@ Routes: `ExtInp`, `fun_pin`, `SetADCFreq`, `cmd_adc`, `ADCint`,
 Exit: zero `adc_*` / `adc_hw` / ADC-DMA references in core/. On ESP32 an
 analog `PIN()` read returns a real conversion or a real error — never a
 silent 0.
+
+Closed: `hal/hal_adc.h` carries the sample-clock model (set / set-default /
+restore-default, replacing the `adc_clk_div` boot-snapshot global), the
+single conversion with sticky-error recovery, and the capture-session
+surface — continuous double-buffered streaming (the chained-DMA
+pointer-rewrite trick and the DMA_IRQ_1 ISR moved verbatim into
+`hal_adc_pico.c`; core supplies a RAM-resident buffer-swap callback) plus
+single-shot capture with a polled completion that stops and drains the
+converter. Raw→MMFLOAT scaling, pin bookkeeping, and interrupt dispatch
+stay in core. Teardown converged on `hal_adc_capture_end`. The
+`SetADCFreq` shim and the `ADC_dma_chan`/`adcint*` compat globals died
+across all ports. vm_sys_pin's ADC cache now stores the BASIC pin number,
+restoring the interpreter's re-select-skip invariant. ESP32's analog-read
+honesty item rides the existing `hal_pin_adc_*` surface (vm_sys_pin), which
+that port already implements; External.c's interpreter path is RP-only.
+External.c 8 → 6 includes, MM_Misc.c 10 → 9 (`hardware/dma.h` stays in
+both pending the PIO phase).
 
 ### Phase 3 — cycle counter
 

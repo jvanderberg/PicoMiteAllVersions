@@ -664,9 +664,6 @@ unsigned long ReadCount5(void) {
 void WriteCount5(unsigned long timeset) {
     (void)timeset;
 }
-void SetADCFreq(float frequency) {
-    (void)frequency;
-}
 /* Host has no backlight to drive; the stub just consumes the args.
  * The non-keypad signature is the canonical one — keypad ports
  * provide their own setBacklight via picocalc_features_real.c. */

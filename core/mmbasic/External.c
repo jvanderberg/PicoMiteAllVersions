@@ -35,6 +35,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "Hardware_Includes.h"
 #include "port_config.h"
 #include "hal/hal_time.h"
+#include "hal/hal_adc.h"
 #include "hal/hal_pin.h"
 #include "hal/hal_fast_timer.h"
 #include "hal/hal_pwm.h"
@@ -59,9 +60,7 @@ extern void SetBacklightSSD1963(int intensity);
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 //#include "hardware/gpio.h"
-#include "hardware/adc.h"
 #include "hardware/structs/systick.h"
-#include "hardware/structs/adc.h"
 #include "hardware/dma.h"
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
@@ -191,13 +190,8 @@ char * ADCInterrupt;
 volatile MMFLOAT * volatile a1float = NULL, * volatile a2float = NULL, * volatile a3float = NULL, * volatile a4float = NULL;
 volatile int ADCpos = 0;
 float frequency;
-uint32_t ADC_dma_chan = ADC_DMA;
-uint32_t ADC_dma_chan2 = ADC_DMA2;
 short * ADCbuffer = NULL;
 void PWMoff(int slice);
-volatile uint8_t * adcint = NULL;
-uint8_t * adcint1 = NULL;
-uint8_t * adcint2 = NULL;
 MMFLOAT ADCscale[4], ADCbottom[4];
 extern void mouse0close(void);
 //Vector to CFunction routine called every command (ie, from the BASIC interrupt checker)
@@ -931,23 +925,15 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     }
     uSec(2);
 }
-extern int adc_clk_div;
 int64_t PORT_RAM_FUNC(ExtInp)(int pin) {
     if (ExtCurrentConfig[pin] == EXT_ANA_IN || ExtCurrentConfig[pin] == EXT_ADCRAW) {
-        if (adc_clk_div != adc_hw->div) {
-            SetADCFreq(500000.0);
-        }
+        hal_adc_restore_default_clock();
 
         if (last_adc != pin) {
             last_adc = pin;
-            adc_select_input(PinDef[pin].ADCpin);
+            hal_pin_adc_select(PinDef[pin].ADCpin);
         }
-        int a = adc_read();
-        if (adc_hw->cs & (ADC_CS_ERR_STICKY_BITS | ADC_CS_ERR_BITS)) {
-            hw_set_bits(&adc_hw->cs, ADC_CS_ERR_STICKY_BITS);
-            a = -1;
-        }
-        return a;
+        return hal_adc_read_single();
     } else if (ExtCurrentConfig[pin] == EXT_FREQ_IN || ExtCurrentConfig[pin] == EXT_PER_IN) {
         // select input channel
         if (pin == Option.INT1pin) return INT1Value;
@@ -2799,13 +2785,10 @@ void cmd_device(void) {
  * @cond
  * The following section will be excluded from the documentation.
  */
-void __not_in_flash_func(ADCint)() {
-    // Clear the interrupt request for DMA control channel
-    dma_hw->ints1 = (1u << ADC_dma_chan);
-    if (adcint == adcint2)
-        adcint = adcint1;
-    else
-        adcint = adcint2;
+/* Runs from the capture IRQ each time a continuous-mode (ADC RUN) buffer
+ * fills; checkdetailinterrupts dispatches the BASIC ADC interrupt off the
+ * flag. */
+static void PORT_RAM_FUNC(ADCBufferSwapped)(void) {
     ADCDualBuffering = true;
 }
 /*  @endcond */
@@ -2819,7 +2802,7 @@ void cmd_adc(void) {
         if (!(argc == 3 || argc == 5)) error("Syntax");
         int nbr = getint(argv[2], 1, HAL_PORT_ADC_CHANNEL_MAX);
         frequency = (float)getnumber(argv[0]) * nbr;
-        if (frequency < ADC_CLK_SPEED / 65536.0 / 96.0 || frequency > ADC_CLK_SPEED / 96.0) error("Invalid frequency");
+        if (!hal_adc_clock_valid(frequency)) error("Invalid frequency");
         /* ADC pin reserve. rp2350a==true on RP2040 / RP2040-WEB /
          * RP2350A: channels live on pin slots 31/32/34(/44). RP2350B
          * (rp2350a==false): channels on slots 55/56/57/58. nbr is
@@ -2879,7 +2862,8 @@ void cmd_adc(void) {
         if (!(argc == 3)) error("Argument count");
         ADCmax = 0;
         ADCpos = 0;
-        adcint1 = adcint2 = NULL;
+        uint8_t * adcint1 = NULL;
+        uint8_t * adcint2 = NULL;
         int64_t * adcval = NULL;
         /* parseintegerarray's dim-array type differs by chip (int on
          * RP2350, short on RP2040) to match each platform's native
@@ -2893,58 +2877,7 @@ void cmd_adc(void) {
         adcint2 = (uint8_t *)adcval;
         if (card1 != ADCmax) error("Array size mismatch %,%", card1, ADCmax);
         ADCmax *= 8;
-        dma_channel_cleanup(ADC_dma_chan);
-        dma_channel_cleanup(ADC_dma_chan2);
-        hal_pin_adc_init();
-        adc_set_round_robin(ADCopen == 1 ? 1 : ADCopen == 2 ? 3
-                                           : ADCopen == 3   ? 7
-                                                            : 15);
-        adc_fifo_setup(
-            true,  // Write each completed conversion to the sample FIFO
-            true,  // Enable DMA data request (DREQ)
-            1,     // DREQ (and IRQ) asserted when at least 1 sample present
-            false, // We won't see the ERR bit because of 8 bit reads; disable.
-            true   // Shift each sample to 8 bits when pushing to FIFO
-        );
-        adcint = adcint1;
-        SetADCFreq(frequency);
-        // Set up the DMA to start transferring data as soon as it appears in FIFO
-        dma_channel_config cfg = dma_channel_get_default_config(ADC_dma_chan);
-
-        // Reading from constant address, writing to incrementing byte addresses
-        channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
-        channel_config_set_read_increment(&cfg, false);
-        channel_config_set_write_increment(&cfg, true);
-        channel_config_set_irq_quiet(&cfg, false);
-        channel_config_set_dreq(&cfg, DREQ_ADC);
-        channel_config_set_chain_to(&cfg, ADC_dma_chan2);
-        dma_channel_configure(ADC_dma_chan, &cfg,
-                              adcint,        // dst
-                              &adc_hw->fifo, // src
-                              ADCmax,        // transfer count
-                              false          // start immediately
-        );
-        dma_channel_config c2 = dma_channel_get_default_config(ADC_dma_chan2); //Get configurations for control channel
-        channel_config_set_transfer_data_size(&c2, DMA_SIZE_32);               //Set control channel data transfer size to 32 bits
-        channel_config_set_read_increment(&c2, false);                         //Set control channel read increment to false
-        channel_config_set_write_increment(&c2, false);                        //Set control channel write increment to false
-        channel_config_set_dreq(&c2, 0x3F);
-        //                                channel_config_set_chain_to(&c2, dma_tx_chan);
-        dma_channel_configure(ADC_dma_chan2,
-                              &c2,
-                              &dma_hw->ch[ADC_dma_chan].al2_write_addr_trig,
-                              &adcint,
-                              1,
-                              false); //Configure control channel
-        dma_channel_set_irq1_enabled(ADC_dma_chan, true);
-
-        // set DMA IRQ handler
-        irq_set_exclusive_handler(DMA_IRQ_1, ADCint);
-        // set highest IRQ priority
-        irq_set_enabled(DMA_IRQ_1, true);
-        dma_start_channel_mask(1u << ADC_dma_chan2);
-        adc_run(true);
-        adcint = adcint2;
+        hal_adc_capture_run(ADCopen, frequency, adcint1, adcint2, ADCmax, ADCBufferSwapped);
         ADCDualBuffering = false;
         return;
     }
@@ -2954,7 +2887,7 @@ void cmd_adc(void) {
         getargs(&tp, 1, (unsigned char *)",");
         if (!ADCopen) error("Not open");
         float localfrequency = (float)getnumber(argv[0]) * ADCopen;
-        if (localfrequency < ADC_CLK_SPEED / 65536.0 / 96.0 || localfrequency > ADC_CLK_SPEED / 96.0) error("Invalid frequency");
+        if (!hal_adc_clock_valid(localfrequency)) error("Invalid frequency");
         frequency = localfrequency;
         return;
     }
@@ -3013,45 +2946,14 @@ void cmd_adc(void) {
         }
         ADCmax++;
         ADCbuffer = GetMemory(ADCmax * ADCopen * 2);
-        hal_pin_adc_init();
-        adc_set_round_robin(ADCopen == 1 ? 1 : ADCopen == 2 ? 3
-                                           : ADCopen == 3   ? 7
-                                                            : 15);
-        adc_fifo_setup(
-            true,  // Write each completed conversion to the sample FIFO
-            true,  // Enable DMA data request (DREQ)
-            1,     // DREQ (and IRQ) asserted when at least 1 sample present
-            false, // We won't see the ERR bit because of 8 bit reads; disable.
-            false  // Shift each sample to 8 bits when pushing to FIFO
-        );
-        SetADCFreq(frequency);
-        // Set up the DMA to start transferring data as soon as it appears in FIFO
-        dma_channel_config cfg = dma_channel_get_default_config(ADC_dma_chan);
+        hal_adc_capture_start(ADCopen, frequency, (uint16_t *)ADCbuffer, ADCmax * ADCopen);
 
-        // Reading from constant address, writing to incrementing byte addresses
-        channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-        channel_config_set_read_increment(&cfg, false);
-        channel_config_set_write_increment(&cfg, true);
-        channel_config_set_irq_quiet(&cfg, true);
-
-        // Pace transfers based on availability of ADC samples
-        channel_config_set_dreq(&cfg, DREQ_ADC);
-
-        dma_channel_configure(ADC_dma_chan, &cfg,
-                              (uint8_t *)ADCbuffer, // dst
-                              &adc_hw->fifo,        // src
-                              ADCmax * ADCopen,     // transfer count
-                              true                  // start immediately
-        );
-        adc_run(true);
-
-        // Once DMA finishes, stop any new conversions from starting, and clean up
-        // the FIFO in case the ADC was still mid-conversion.
+        // Once the transfer finishes, hal_adc_capture_complete stops new
+        // conversions from starting and cleans up the FIFO in case the ADC
+        // was still mid-conversion.
         if (!ADCInterrupt) {
-            while (dma_channel_is_busy(ADC_dma_chan)) tight_loop_contents();
-            __compiler_memory_barrier();
-            adc_run(false);
-            adc_fifo_drain();
+            while (!hal_adc_capture_complete()) {
+            }
             int k = 0;
             for (int i = 0; i < ADCmax; i++) {
                 for (int j = 0; j < ADCopen; j++) {
@@ -3071,12 +2973,7 @@ void cmd_adc(void) {
     tp = checkstring(cmdline, (unsigned char *)"CLOSE");
     if (tp) {
         if (!ADCopen) error("Not open");
-        irq_set_enabled(DMA_IRQ_1, false);
-        dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
-        dma_channel_abort(ADC_dma_chan);
-        dma_channel_abort(ADC_dma_chan2);
-        adc_set_round_robin(0);
-        SetADCFreq(500000);
+        hal_adc_capture_end();
         /* rp2350a==true matches both RP2040 (always true) and RP2350A
          * (30-pin variant): ADC channels live on GP26..29 == pin slots
          * 31/32/34/44. RP2350B exposes the same channels via GP40..43
@@ -3093,7 +2990,6 @@ void cmd_adc(void) {
             if (ADCopen >= 4) ExtCfg(58, EXT_NOT_CONFIG, 0);
         }
         ADCopen = 0;
-        adcint = adcint1 = adcint2 = NULL;
         ADCDualBuffering = false;
         dmarunning = false;
         last_adc = 99;
@@ -3101,16 +2997,6 @@ void cmd_adc(void) {
         return;
     }
     error("Syntax");
-}
-void SetADCFreq(float frequency) {
-    //Our ADC clock is running at ADC_CLK_SPEED (in Hz) so we need to stretch the time to produce the required frequency
-    //The time delta for our frequency is 1/frequency*96 - 1/(ADC_CLK_SPEED) seconds
-    //This must be added to clk_div as a number of CPU clock ticks i.e. delta/(1/ADC_CLK_SPEED)
-    //Plus we need to add 95 to cater for the actual time taken for the conversion
-    double delta = 1.0 / (frequency * 96.0) - 1.0 / ((double)ADC_CLK_SPEED);
-    float div = delta / (1.0 / ((double)ADC_CLK_SPEED)) * 96.0 + 95.0;
-    if (div <= 96.0) div = 0;
-    adc_set_clkdiv(div);
 }
 
 /*
@@ -3127,7 +3013,7 @@ void MIPS16 ClearExternalIO(void) {
     cameraclose();
     InterruptUsed = false;
     InterruptReturn = NULL;
-    irq_set_enabled(DMA_IRQ_1, false);
+    hal_adc_capture_end();
     hal_fast_timer_disable();
     closeframebuffer('A');
     if (CallBackEnabled == 1)
@@ -3301,8 +3187,6 @@ void MIPS16 ClearExternalIO(void) {
         if (ADCopen >= 4) ExtCfg(58, EXT_NOT_CONFIG, 0);
     }
     ADCopen = 0;
-    adc_set_round_robin(0);
-    SetADCFreq(500000);
     KeyInterrupt = NULL;
     OnKeyGOSUB = NULL;
     hal_keyboard_on_external_io_clear();
@@ -3352,12 +3236,6 @@ void MIPS16 ClearExternalIO(void) {
     if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
     //    dma_channel_cleanup(dma_tx_chan);
     //    dma_channel_cleanup(dma_tx_chan2);
-    dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
-    if (dma_channel_is_busy(ADC_dma_chan)) dma_channel_abort(ADC_dma_chan);
-    if (dma_channel_is_busy(ADC_dma_chan2)) dma_channel_abort(ADC_dma_chan2);
-    //    dma_channel_cleanup(ADC_dma_chan);
-    //    dma_channel_cleanup(ADC_dma_chan2);
-    adcint = adcint1 = adcint2 = NULL;
 }
 
 void __not_in_flash_func(TM_EXTI_Handler_1)(void) {

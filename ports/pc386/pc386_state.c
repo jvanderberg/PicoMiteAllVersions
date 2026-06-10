@@ -20,8 +20,6 @@
 /* Hardware / system state */
 uint32_t _excep_code = 0;
 uint64_t _persistent = 0;
-uint32_t ADC_dma_chan = 0;
-uint32_t ADC_dma_chan2 = 0;
 bool ADCDualBuffering = 0;
 volatile unsigned int AHRSTimer = 0;
 volatile int ConsoleTxBufHead = 0;
@@ -245,8 +243,6 @@ volatile MMFLOAT * volatile a3float = NULL, * volatile a4float = NULL;
 uint32_t ADCmax = 0;
 char * ADCInterrupt = NULL;
 short * ADCbuffer = NULL;
-volatile uint8_t * adcint = NULL;
-uint8_t *adcint1 = NULL, *adcint2 = NULL;
 unsigned char * KeypadInterrupt = NULL;
 MMFLOAT ADCscale[4] = {0}, ADCbottom[4] = {0};
 

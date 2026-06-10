@@ -39,7 +39,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hardware/structs/systick.h"
 #include "hardware/structs/watchdog.h"
 #include "hardware/dma.h"
-#include "hardware/adc.h"
+#include "hal/hal_adc.h"
 #include "hal/hal_flash.h"
 #include "hal/hal_time.h"
 #include "hal/hal_pin.h"
@@ -1707,7 +1707,7 @@ void MIPS16 fun_info(void) {
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"ADC"))) {
         targ = T_INT;
-        iret = ((adcint == adcint1 && adcint) ? 1 : ((adcint == adcint2 && adcint) ? 2 : 0));
+        iret = hal_adc_capture_buffer();
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"BATTERY"))) {
         iret = port_picocalc_battery_pct();
@@ -2843,10 +2843,7 @@ int checkdetailinterrupts(void) {
         }
     }
     if (ADCInterrupt && dmarunning) {
-        if (!dma_channel_is_busy(ADC_dma_chan)) {
-            __compiler_memory_barrier();
-            adc_run(false);
-            adc_fifo_drain();
+        if (hal_adc_capture_complete()) {
             int k = 0;
             for (int i = 0; i < ADCmax; i++) {
                 for (int j = 0; j < ADCopen; j++) {

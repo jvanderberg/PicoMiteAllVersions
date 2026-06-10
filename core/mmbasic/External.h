@@ -215,7 +215,6 @@ extern int BacklightSlice, BacklightChannel;
  * backlight hardware the values stay at their init sentinel (-1) and the
  * control paths that read them are guarded elsewhere. */
 extern int KeyboardlightSlice, KeyboardlightChannel;
-extern void SetADCFreq(float frequency);
 /* Unified backlight setter — PicoCalc ports ignore the
  * frequency; other variants map it to the backlight PWM's wrap. */
 extern void setBacklight(int level, int frequency);
@@ -330,12 +329,7 @@ extern bool dmarunning;
 extern int last_adc;
 extern bool ADCDualBuffering;
 extern char * ADCInterrupt;
-extern uint32_t ADC_dma_chan;
-extern uint32_t ADC_dma_chan2;
 extern short * ADCbuffer;
-extern volatile uint8_t * adcint;
-extern uint8_t * adcint1;
-extern uint8_t * adcint2;
 void IrInit(void);
 void IrReset(void);
 void IRSendSignal(int pin, int half_cycles);

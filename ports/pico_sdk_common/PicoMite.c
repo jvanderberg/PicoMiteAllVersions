@@ -142,7 +142,6 @@ volatile int MMAbort = false;
 unsigned int _excep_peek;
 void TryLoadProgram(void);
 unsigned char lastchar = 0;
-int adc_clk_div;
 unsigned char BreakKey = BREAK_KEY; // defaults to CTRL-C.  Set to zero to disable the break function
 volatile char ConsoleRxBuf[CONSOLE_RX_BUF_SIZE] = {0};
 volatile int ConsoleRxBufHead = 0;
