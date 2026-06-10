@@ -269,7 +269,13 @@ bool __no_inline_not_in_flash_func(hal_pin_bootsel_pressed)(void) {
                     GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
                     IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
     for (volatile int i = 0; i < 100; ++i);
+#if PICO_RP2040
     bool button_state = !(sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
+#else
+    /* On RP2350 gpio_hi_in bits 0-15 are GPIO32-47; the QSPI CSn level
+     * sits in its own dedicated bit. */
+    bool button_state = !(sio_hw->gpio_hi_in & SIO_GPIO_HI_IN_QSPI_CSN_BITS);
+#endif
     hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
                     GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
                     IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
