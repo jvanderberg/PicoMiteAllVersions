@@ -253,8 +253,10 @@ typedef enum _BOOL { FALSE = 0,
 extern int CommandTableSize, TokenTableSize;
 
 extern volatile int MMAbort;
-extern jmp_buf mark;           // longjump to recover from an error
-extern unsigned char BreakKey; // console break key (defaults to CTRL-C)
+extern jmp_buf mark;                   // longjump to recover from an error
+extern volatile int mark_armed;        // set once mark holds a live setjmp target
+extern volatile int error_in_recovery; // error() is inside do_end()
+extern unsigned char BreakKey;         // console break key (defaults to CTRL-C)
 extern jmp_buf jmprun;
 extern int ProgMemSize;
 

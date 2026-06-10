@@ -28,6 +28,7 @@
 #include "esp32_tcp_server.h"
 #include "esp32_telnet.h"
 #include "esp32_tftp.h"
+#include "vga_lcdcam_s3.h"
 #include "esp32_udp.h"
 
 static const char * TAG = "mmbasic_wifi";
@@ -90,13 +91,19 @@ static int esp32_lifecycle_open_web_console(void) {
     /* Auto-start WiFi if needed; the actual listening socket is the
      * shared TCP server, which esp32_web_console_open() brings up. */
     if (!WIFIconnected) WebConnect();
-    (void)esp32_web_console_display_init();
-    if (!esp32_web_console_display()) return 0;
+    /* The virtual web display exists for boards with no local display.
+     * When VGA owns the panel it stays the console; taking the display
+     * here would freeze the VGA output. */
+    if (!vga_lcdcam_s3_active()) {
+        (void)esp32_web_console_display_init();
+        if (!esp32_web_console_display()) return 0;
+    }
     return esp32_web_console_open();
 }
 
 static void esp32_lifecycle_close_web_console(void) {
     esp32_web_console_close();
+    if (vga_lcdcam_s3_active()) return;
     (void)esp32_web_console_display_init();
     if (!esp32_ili9341_lcd_restore_panel()) esp32_ili9341_lcd_init();
 }

@@ -145,6 +145,8 @@ void MMBasic_RunPromptLoop(void) {
 
     if (setjmp(mark) != 0) {
         // we got here via a long jump which means an error or CTRL-C or the program wants to exit to the command prompt
+        mark_armed = 1;
+        error_in_recovery = 0;
         FlashLoad = 0;
         //        LoadOptions();
         hal_keyboard_clear_repeat_state();
@@ -166,6 +168,7 @@ void MMBasic_RunPromptLoop(void) {
             goto autorun;
         }
     } else {
+        mark_armed = 1;
         if (*ProgMemory == 0x01)
             ClearVars(0, true);
         else {

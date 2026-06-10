@@ -422,7 +422,10 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
 
     bc_crash_checkpoint(BC_CK_VM_EXECUTE, "bc_vm_execute");
     if (setjmp(mark) == 0) {
+        mark_armed = 1;
         bc_vm_execute(vm);
+    } else {
+        error_in_recovery = 0;
     }
     bc_crash_checkpoint(BC_CK_VM_CLEANUP, "vm_execute returned");
     VMRUN_DBG("VM: returned\r\n");

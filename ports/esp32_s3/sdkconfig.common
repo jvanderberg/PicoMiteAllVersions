@@ -58,7 +58,11 @@ CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF=3
 # CONFIG_ESP_WIFI_AMPDU_TX_ENABLED is not set
 # CONFIG_ESP_WIFI_AMPDU_RX_ENABLED is not set
 CONFIG_ESP_WIFI_MGMT_SBUF_NUM=8
-# CONFIG_ESP_WIFI_ENABLE_WPA3_SAE is not set
+# WPA3-SAE must stay enabled: with it compiled out, the WiFi blob's
+# supplicant function table has NULL SAE entries, and associating with a
+# WPA3 or WPA2/WPA3-transition AP calls through one at the auth frame —
+# InstrFetchProhibited at PC=0, crash-looping until safe mode.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=y
 # CONFIG_ESP_WIFI_ENABLE_SAE_PK is not set
 # CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT is not set
 # CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA is not set

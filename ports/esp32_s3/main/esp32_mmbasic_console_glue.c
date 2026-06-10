@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#include "esp_timer.h"
 #include "esp32_tcp_server.h"
 #include "esp32_telnet.h"
 #include "hal/hal_time.h"
@@ -209,6 +210,10 @@ int MMgetchar(void) {
     int from_web;
     do {
         extern void ProcessWeb(int mode);
+        /* No 1 kHz timer IRQ on this port — synthesize CursorTimer from the
+         * monotonic clock so ShowCursor's blink math works. */
+        CursorTimer = (int)((esp_timer_get_time() / 1000) %
+                            (CURSOR_OFF + CURSOR_ON));
         ShowCursor(1);
         from_web = 0;
         ProcessWeb(0);

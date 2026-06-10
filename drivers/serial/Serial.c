@@ -398,7 +398,7 @@ Add a character to the serial output buffer.
 unsigned char SerialPutchar(int comnbr, unsigned char c) {
     if (comnbr == 1) {
         while (com1Tx_tail == ((com1Tx_head + 1) % TX_BUFFER_SIZE)) // wait if the buffer is full
-            if (MMAbort) {                                          // allow the user to abort a hung serial port
+            if (MMAbort && mark_armed) {                            // allow the user to abort a hung serial port
                 com1Tx_tail = com1Tx_head = 0;                      // clear the buffer
                 longjmp(mark, 1);                                   // and abort
             }
@@ -411,7 +411,7 @@ unsigned char SerialPutchar(int comnbr, unsigned char c) {
         }
     } else if (comnbr == 2) {
         while (com2Tx_tail == ((com2Tx_head + 1) % TX_BUFFER_SIZE)) // wait if the buffer is full
-            if (MMAbort) {                                          // allow the user to abort a hung serial port
+            if (MMAbort && mark_armed) {                            // allow the user to abort a hung serial port
                 com2Tx_tail = com2Tx_head = 0;                      // clear the buffer
                 longjmp(mark, 1);                                   // and abort
             }

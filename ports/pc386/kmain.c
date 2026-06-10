@@ -381,6 +381,7 @@ void kmain(uint32_t magic, uint32_t info_addr) {
         kputc('\n');
         halt();
     }
+    mark_armed = 1;
 
     LoadOptions();
     kputs("LoadOptions ok, ");
