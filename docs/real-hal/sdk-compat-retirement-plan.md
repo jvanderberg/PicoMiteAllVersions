@@ -41,8 +41,8 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 6 | 0–4 |
-| `core/mmbasic/MM_Misc.c` | 14 | 9 | 1, 2, 3, 5 |
+| `core/mmbasic/External.c` | 13 | 5 | 0–4 |
+| `core/mmbasic/MM_Misc.c` | 14 | 8 | 1, 2, 3, 5 |
 | `core/mmbasic/Custom.c` | 10 | 10 | 5 |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
@@ -51,7 +51,7 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 | `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMweb_stubs.c` | 1 | 1 | 4 |
-| **Total** | **46** | **38** | |
+| **Total** | **46** | **28** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -162,7 +162,7 @@ that port already implements; External.c's interpreter path is RP-only.
 External.c 8 → 6 includes, MM_Misc.c 10 → 9 (`hardware/dma.h` stays in
 both pending the PIO phase).
 
-### Phase 3 — cycle counter
+### Phase 3 — cycle counter — ✅ CLOSED
 
 1. Grow `hal_fast_timer.h` into a cycle-counter contract: read-current,
    calibrate, and a busy-wait primitive precise enough for bit-banged serial.
@@ -171,6 +171,15 @@ both pending the PIO phase).
    only the time source is port-owned.
 
 Exit: zero `systick_hw` references in core/.
+
+Landed as a sibling header, not a `hal_fast_timer.h` extension: the fast
+timer is a PWM-slice event counter while this is a CPU-cycle countdown, and
+the consumers run as `__not_in_flash_func` so the surface had to be Tier-B
+inline. `hal/hal_cycle_counter.h` + per-port `hal_cycle_counter_inlines.h`
+(`hal_cycle_reload` / `hal_cycle_restart` / `hal_cycle_remaining`) keep the
+countdown-compare bodies verbatim; the `shortpause()` macro, DEVICE
+BITSTREAM, the Touch.c `TDelay`, and MM.INFO(SYSTICK) ride the same surface,
+and the SysTick RVR constant (16777215) left core with it.
 
 ### Phase 4 — board switches
 

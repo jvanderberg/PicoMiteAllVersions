@@ -44,6 +44,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifndef EXTERNAL_HEADER
 #define EXTERNAL_HEADER
 
+#include "hal/hal_cycle_counter.h" /* shortpause() below expands to its inlines */
+
 #define NBR_PULSE_SLOTS 5 // number of concurrent pulse commands, each entry is 8 bytes
 
 extern unsigned char * InterruptReturn;
@@ -231,16 +233,16 @@ void gpio_callback(uint gpio, uint32_t events);
 #define CP_IGNORE_RESERVED 0b0100 // the function will ignore reserved pins (EXT_COM_RESERVED and EXT_BOOT_RESERVED)
 #define CP_IGNORE_BOOTRES 0b1000  // the function will ignore the boot reserved pins (EXT_BOOT_RESERVED)
 #define setuptime (12 - (Option.CPU_Speed - 250000) / 50000)
-#define shortpause(a)                 \
-    {                                 \
-        systick_hw->cvr = 0;          \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        while (systick_hw->cvr > a) { \
-        };                            \
+#define shortpause(a)                       \
+    {                                       \
+        hal_cycle_restart();                \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        while (hal_cycle_remaining() > a) { \
+        };                                  \
     }
 extern int CheckPin(int pin, int action);
 extern unsigned int CFuncInt1;

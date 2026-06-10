@@ -37,6 +37,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_time.h"
 #include "hal/hal_adc.h"
 #include "hal/hal_pin.h"
+#include "hal/hal_cycle_counter.h"
 #include "hal/hal_fast_timer.h"
 #include "hal/hal_pwm.h"
 #include "hal/hal_keyboard.h"
@@ -60,7 +61,6 @@ extern void SetBacklightSSD1963(int intensity);
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
 //#include "hardware/gpio.h"
-#include "hardware/structs/systick.h"
 #include "hardware/dma.h"
 #include <hardware/structs/ioqspi.h>
 #include <hardware/structs/sio.h>
@@ -2556,24 +2556,24 @@ void __not_in_flash_func(serialtx)(int gppin, unsigned char * string, int bittim
     int mask;
     int count = 0;
     while (count++ < string[0]) {
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         hal_pin_bank_clr_mask(gppin); // send the start bit
         mask = 1;
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         for (mask = 1; mask < 0x100; mask <<= 1) {
             if (string[count] & mask) {       // check the bit to send
                 hal_pin_bank_set_mask(gppin); // send the start bit
             } else {
                 hal_pin_bank_clr_mask(gppin); // send the start bit
             }
-            while (systick_hw->cvr > bittime) {
+            while (hal_cycle_remaining() > bittime) {
             };
-            systick_hw->cvr = 0;
+            hal_cycle_restart();
         }
         hal_pin_bank_set_mask(gppin); // send the start bit
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
     }
 }
@@ -2588,19 +2588,19 @@ int __not_in_flash_func(serialrx)(int gppin, unsigned char * string, int timeout
         while (hal_pin_bank_read_all() & gppin) {    // wait for the start bit
             if (readusclock() >= timeout) return -1; // return if there is a timeout
         }
-        systick_hw->cvr = 0;
-        while (systick_hw->cvr > half) {
+        hal_cycle_restart();
+        while (hal_cycle_remaining() > half) {
         };
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         if (hal_pin_bank_read_all() & gppin) continue; // go around again if not low
         c = 0;
         for (i = 0; i < 8; i++) {
-            while (systick_hw->cvr > bittime) {
+            while (hal_cycle_remaining() > bittime) {
             };
-            systick_hw->cvr = 0;
+            hal_cycle_restart();
             c |= (((hal_pin_bank_read_all() & gppin) ? 1 : 0) << i); // and add this bit in
         }
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
         if (!(hal_pin_bank_read_all() & gppin)) continue; // a framing error if not high
         count++;
@@ -2705,8 +2705,8 @@ void cmd_device(void) {
         if (argc > 9 && *argv[10]) maxchars = getint(argv[10], 1, 255);
         if (argc == 13) termchars = (char *)getstring(argv[12]);
         writeusclock(0);
-        int bittime = 16777215 + 12 - (ticks_per_second / baudrate);
-        int half = 16777215 + 12 - (ticks_per_second / (baudrate << 1));
+        int bittime = (int)hal_cycle_reload() + 12 - (ticks_per_second / baudrate);
+        int half = (int)hal_cycle_reload() + 12 - (ticks_per_second / (baudrate << 1));
         if (!(hal_pin_bank_read_all() & gppin)) error("Framing error");
         fileio_flash_write_begin();
         int istat = serialrx(gppin, string, timeout, bittime, half, maxchars, termchars);
@@ -2734,7 +2734,7 @@ void cmd_device(void) {
         if (!(ExtCurrentConfig[pin] == EXT_DIG_OUT || ExtCurrentConfig[pin] == EXT_NOT_CONFIG)) error("Pin %/| is not off or an output", pin, pin);
         if (ExtCurrentConfig[pin] == EXT_NOT_CONFIG) ExtCfg(pin, EXT_DIG_OUT, 0);
         hal_pin_bank_set_mask(gppin); // send the start bit
-        int bittime = 16777215 + 12 - (ticks_per_second / baudrate);
+        int bittime = (int)hal_cycle_reload() + 12 - (ticks_per_second / baudrate);
         fileio_flash_write_begin();
         serialtx(gppin, string, bittime);
         fileio_flash_write_end();
@@ -2771,7 +2771,7 @@ void cmd_device(void) {
             }
         }
         for (i = 0; i < num; i++) {
-            data[i] = 16777215 + setuptime - ((data[i] * ticks_per_millisecond) / 1000);
+            data[i] = (int)hal_cycle_reload() + setuptime - ((data[i] * ticks_per_millisecond) / 1000);
         }
         //        data[0]+=((ticks_per_millisecond/2000)+(250000-Option.CPU_Speed)/1000);
         fileio_flash_write_begin();

@@ -36,10 +36,10 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 //#include "upng.h"
 #include <complex.h>
 #include "pico/bootrom.h"
-#include "hardware/structs/systick.h"
 #include "hardware/structs/watchdog.h"
 #include "hardware/dma.h"
 #include "hal/hal_adc.h"
+#include "hal/hal_cycle_counter.h"
 #include "hal/hal_flash.h"
 #include "hal/hal_time.h"
 #include "hal/hal_pin.h"
@@ -2294,7 +2294,7 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"SYSTICK"))) {
-            iret = (int64_t)(uint32_t)systick_hw->cvr;
+            iret = (int64_t)hal_cycle_remaining();
             targ = T_INT;
             return;
         } else if (checkstring(ep, (unsigned char *)"SYSTEM HEAP")) {

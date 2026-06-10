@@ -36,7 +36,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_gui_controls.h"
 #include "hal/hal_display_merge.h"
 #include "hardware/gpio.h"
-#include "hardware/structs/systick.h"
 #include "pico/multicore.h"
 #include "hardware/i2c.h"
 
@@ -359,7 +358,7 @@ int __not_in_flash_func(GetTouchValue)(int cmd) {
 void __not_in_flash_func(TDelay)(void) // provides a small (~200ns) delay for the touch screen controller.
 {
     int ticks_per_millisecond = ticks_per_second / 1000;
-    int T = 16777215 + setuptime - ((4 * ticks_per_millisecond) / 20000);
+    int T = (int)hal_cycle_reload() + setuptime - ((4 * ticks_per_millisecond) / 20000);
     shortpause(T);
 }
 

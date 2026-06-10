@@ -42,7 +42,6 @@ extern "C" {
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/structs/sio.h"
-#include "hardware/structs/systick.h"
 #include "hardware/structs/timer.h"
 #include "hardware/dma.h"
 #include "hardware/irq.h"
