@@ -329,16 +329,19 @@ class Esp32Smoke:
         if value < 0 or value > 65535:
             raise RuntimeError(f"{araw_pin} ARAW read out of range: {value}")
         self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
+        # PWM/SERVO are supported on this port; the pin-to-LEDC-channel
+        # mapping is profile-dependent, so assert the command paths are
+        # reachable rather than drive a specific channel.
         pwm = self.command(f"SETPIN {dout_pin}, PWM", check_error=False)
-        if "PWM not supported on this port yet" not in pwm:
-            raise RuntimeError("SETPIN PWM did not report the expected unsupported error")
-        servo = self.command("SERVO 0, 50", check_error=False)
-        if "Servo not supported on this port yet" not in servo:
-            raise RuntimeError("SERVO did not report the expected unsupported error")
+        if "Error" in pwm:
+            raise RuntimeError(f"SETPIN {dout_pin}, PWM failed: {pwm.strip()}")
+        servo = self.command("SERVO 1, OFF", check_error=False)
+        if "Error" in servo:
+            raise RuntimeError(f"SERVO 1, OFF failed: {servo.strip()}")
         self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
         self.command(f"SETPIN {din_pin}, OFF", check_error=False)
         self.command(f"SETPIN {araw_pin}, OFF", check_error=False)
-        self.pass_check("GPIO DOUT/DIN/ARAW and unsupported PWM/SERVO",
+        self.pass_check("GPIO DOUT/DIN/ARAW and PWM/SERVO command paths",
                         f"{dout_pin}, {din_pin}, {araw_pin}")
 
     def ws2812_smoke(self) -> None:
