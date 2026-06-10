@@ -39,32 +39,14 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 //      void cmd_???(void)
 //      void fun_???(void)
 //      void op_???(void)
-extern uint8_t pioTXlast[4][3];
-extern char * pioRXinterrupts[4][3];
-extern char * pioTXinterrupts[4][3];
+/* The PIO module (cmd_pio/fun_pio, the assembler, the PIO DMA channels and
+ * their interrupt/teardown state) lives in drivers/pio_rp2/; core reaches it
+ * through the queries declared in drivers/pio_rp2/pio_rp2.h. */
 /* closeMQTT is the only WEB-ish symbol core code needs to reference
  * unconditionally (ClearExternalIO calls it during teardown). The
  * strong implementation lives in MMMqtt.c on WEB builds; MM_Misc.c
  * provides a no-op fallback on every other target. */
 extern void closeMQTT(void);
-extern int piointerrupt;
-extern char * DMAinterruptRX;
-extern char * DMAinterruptTX;
-extern uint32_t dma_rx_chan;
-extern uint32_t dma_tx_chan;
-extern uint32_t dma_rx_chan2;
-extern uint32_t dma_tx_chan2;
-extern int dma_tx_pio;
-extern int dma_tx_sm;
-extern int dma_rx_pio;
-extern int dma_rx_sm;
-extern int dirOK;
-extern bool PIO0;
-extern bool PIO1;
-extern bool PIO2;
-extern uint64_t piomap[];
-
-extern uint8_t nextline[4];
 
 #define TCP_READ_BUFFER_SIZE 2048
 

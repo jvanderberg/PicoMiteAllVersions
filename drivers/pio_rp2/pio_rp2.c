@@ -1,7 +1,7 @@
 /***********************************************************************************************************************
 PicoMite MMBasic
 
-custom.c
+pio_rp2.c
 
 <COPYRIGHT HOLDERS>  Geoff Graham, Peter Mather
 Copyright (c) 2021, <COPYRIGHT HOLDERS> All rights reserved.
@@ -23,9 +23,11 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 ************************************************************************************************************************/
 /**
-* @file Custom.c
+* @file pio_rp2.c
 * @author Geoff Graham, Peter Mather
-* @brief Source for PIO, JSON and WEB MMBasic commands and function
+* @brief RP2 PIO driver: the BASIC PIO module — assembler, cmd_pio/fun_pio
+*        token entry points, PIO DMA, and the core-facing queries in
+*        pio_rp2.h
 */
 /**
  * @cond
@@ -36,22 +38,13 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "hal/hal_main_init.h"
+#include "drivers/pio_rp2/pio_rp2.h"
 #include "hardware/dma.h"
 #include "hardware/structs/bus_ctrl.h"
 #include "hardware/structs/dma.h"
 #include "hardware/irq.h"
 #include "hardware/pwm.h"
 #define STATIC static
-
-/*************************************************************************************************************************
-**************************************************************************************************************************
-IMPORTANT:
-This module is empty and should be used for your special functions and commands.  In the standard distribution this file
-will never be changed, so your code should be safe here.  You should avoid placing commands and functions in other files as
-they may be changed and you would then need to re insert your changes in a new release of the source.
-
-**************************************************************************************************************************
-**************************************************************************************************************************/
 
 /********************************************************************************************************************************************
  custom commands and functions
@@ -1768,4 +1761,99 @@ void cmd_set(void) {
 }
 void cmd_label(void) {
     call_pio("", 4);
+}
+
+/* ------------------------------------------------------------------------
+ * Core-facing queries (pio_rp2.h)
+ * ---------------------------------------------------------------------- */
+
+extern PIO port_pio_for_index(int pio_idx);
+
+/* BASIC PIO numbers map to blocks in natural order (the same mapping the
+ * PIO DMA setup uses). port_pio_for_index serves only the FIFO poll loop
+ * below, whose table indexing predates that mapping. */
+#ifdef rp2350
+static PIO pio_rp2_block(int pior) {
+    return pior == 0 ? pio0 : (pior == 1 ? pio1 : pio2);
+}
+#else
+static PIO pio_rp2_block(int pior) {
+    return pior == 0 ? pio0 : pio1;
+}
+#endif
+
+char * pio_rp2_pending_interrupt(void) {
+    if (piointerrupt) { // have any PIO interrupts been set
+        for (int pio = 0; pio < PIOMAX; pio++) {
+            PIO pioslot = port_pio_for_index(pio);
+            for (int sm = 0; sm < 4; sm++) {
+                int TXlevel = ((pioslot->flevel) >> (sm * 4)) & 0xf;
+                int RXlevel = ((pioslot->flevel) >> (sm * 4 + 4)) & 0xf;
+                if (RXlevel && pioRXinterrupts[sm][pio]) { //is there a character in the buffer and has an interrupt been set?
+                    return pioRXinterrupts[sm][pio];
+                }
+                if (TXlevel && pioTXinterrupts[sm][pio]) {
+                    int full = (pioslot->sm->shiftctrl & (1 << 30)) ? 8 : 4;
+                    if (TXlevel != full && pioTXlast[sm][pio] == full) { // was the buffer full last time and not now and is an interrupt set?
+                        pioTXlast[sm][pio] = TXlevel;
+                        return pioTXinterrupts[sm][pio];
+                    }
+                }
+                pioTXlast[sm][pio] = TXlevel;
+            }
+        }
+    }
+    if (DMAinterruptRX) {
+        if (!dma_channel_is_busy(dma_rx_chan)) {
+            PIO pio = pio_rp2_block(dma_rx_pio);
+            char * intaddr = (char *)DMAinterruptRX;
+            DMAinterruptRX = NULL;
+            pio_sm_set_enabled(pio, dma_rx_sm, false);
+            return intaddr;
+        }
+    }
+    if (DMAinterruptTX) {
+        if (!dma_channel_is_busy(dma_tx_chan)) {
+            PIO pio = pio_rp2_block(dma_tx_pio);
+            if ((pio->flevel >> (dma_tx_sm * 8) & 0xf) == 0) {
+                char * intaddr = (char *)DMAinterruptTX;
+                DMAinterruptTX = NULL;
+                pio_sm_set_enabled(pio, dma_tx_sm, false);
+                return intaddr;
+            }
+        }
+    }
+    return NULL;
+}
+
+int pio_rp2_dma_rx_busy(void) {
+    return dma_channel_is_busy(dma_rx_chan);
+}
+
+int pio_rp2_dma_tx_busy(void) {
+    return dma_channel_is_busy(dma_tx_chan);
+}
+
+void pio_rp2_dma_abort(void) {
+    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
+    if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
+    if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
+    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
+    if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
+    if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
+}
+
+void pio_rp2_teardown(void) {
+    dirOK = 2;
+    nextline[0] = 0;
+    nextline[1] = 0;
+    nextline[2] = 0;
+    nextline[3] = 99;
+    memset(pioTXlast, 0, sizeof(pioTXlast));
+    memset(pioRXinterrupts, 0, sizeof(pioRXinterrupts));
+    memset(pioTXinterrupts, 0, sizeof(pioTXinterrupts));
+    piointerrupt = 0;
+    DMAinterruptRX = NULL;
+    DMAinterruptTX = NULL;
+    pio_rp2_dma_abort();
 }

@@ -35,8 +35,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "pico_gpio_irq.h"
 //#include "upng.h"
 #include <complex.h>
-#include "pico/bootrom.h"
-#include "hardware/dma.h"
+#include "drivers/pio_rp2/pio_rp2.h"
 #include "hal/hal_adc.h"
 #include "hal/hal_cycle_counter.h"
 #include "hal/hal_flash.h"
@@ -49,8 +48,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_watchdog.h"
 #include "shared/audio/audio_option_common.h"
 #include "hardware/regs/addressmap.h" /* XIP_BASE */
-#include "hardware/pio.h"
-#include "hardware/pio_instructions.h"
 #include <malloc.h>
 #include "xregex.h"
 #include "aes.h"
@@ -101,7 +98,6 @@ extern int port_mminfo_touch_status(unsigned char * out_sret);
 extern int port_mminfo_scroll_start(int64_t * out_iret);
 extern int port_mminfo_screenbuff(int64_t * out_iret);
 extern int port_mminfo_system_spi_speed(int64_t * out_iret);
-extern PIO port_pio_for_index(int pio_idx);
 extern int port_poke_display_panel(unsigned char * p);
 extern void port_apply_default_console_colors(int default_fc, int default_bc);
 extern void port_web_print_options(void);
@@ -2165,11 +2161,11 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIO RX DMA"))) {
-            iret = dma_channel_is_busy(dma_rx_chan);
+            iret = pio_rp2_dma_rx_busy();
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIO TX DMA"))) {
-            iret = dma_channel_is_busy(dma_tx_chan);
+            iret = pio_rp2_dma_tx_busy();
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PWM COUNT"))) {
@@ -2765,48 +2761,8 @@ int checkdetailinterrupts(void) {
         PS2int = false;
         goto GotAnInterrupt;
     }
-    if (piointerrupt) { // have any PIO interrupts been set
-        for (int pio = 0; pio < PIOMAX; pio++) {
-            PIO pioinuse = port_pio_for_index(pio);
-            for (int sm = 0; sm < 4; sm++) {
-                int TXlevel = ((pioinuse->flevel) >> (sm * 4)) & 0xf;
-                int RXlevel = ((pioinuse->flevel) >> (sm * 4 + 4)) & 0xf;
-                if (RXlevel && pioRXinterrupts[sm][pio]) { //is there a character in the buffer and has an interrupt been set?
-                    intaddr = pioRXinterrupts[sm][pio];
-                    goto GotAnInterrupt;
-                }
-                if (TXlevel && pioTXinterrupts[sm][pio]) {
-                    int full = (pioinuse->sm->shiftctrl & (1 << 30)) ? 8 : 4;
-                    if (TXlevel != full && pioTXlast[sm][pio] == full) { // was the buffer full last time and not now and is an interrupt set?
-                        intaddr = pioTXinterrupts[sm][pio];
-                        pioTXlast[sm][pio] = TXlevel;
-                        goto GotAnInterrupt;
-                    }
-                }
-                pioTXlast[sm][pio] = TXlevel;
-            }
-        }
-    }
-    if (DMAinterruptRX) {
-        if (!dma_channel_is_busy(dma_rx_chan)) {
-            PIO pio = (dma_rx_pio ? pio1 : pio0);
-            intaddr = (char *)DMAinterruptRX;
-            DMAinterruptRX = NULL;
-            pio_sm_set_enabled(pio, dma_rx_sm, false);
-            goto GotAnInterrupt;
-        }
-    }
-    if (DMAinterruptTX) {
-        if (!dma_channel_is_busy(dma_tx_chan)) {
-            PIO pio = (dma_tx_pio ? pio1 : pio0);
-            if ((pio->flevel >> (dma_tx_sm * 8) & 0xf) == 0) {
-                intaddr = (char *)DMAinterruptTX;
-                DMAinterruptTX = NULL;
-                pio_sm_set_enabled(pio, dma_tx_sm, false);
-                goto GotAnInterrupt;
-            }
-        }
-    }
+    intaddr = pio_rp2_pending_interrupt();
+    if (intaddr) goto GotAnInterrupt;
 
     intaddr = hal_gui_controls_pending_interrupt();
     if (intaddr) goto GotAnInterrupt;

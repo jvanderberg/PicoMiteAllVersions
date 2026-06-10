@@ -123,7 +123,7 @@ set(PICOMITE_VM_DEVICE_SOURCES
 set(PICOMITE_LEGACY_CORE_SOURCES
 	core/mmbasic/MMBasic.c
 	core/mmbasic/Operators.c
-	core/mmbasic/Custom.c
+	drivers/pio_rp2/pio_rp2.c
 	core/mmbasic/Functions.c
 	core/mmbasic/Commands.c
 	core/mmbasic/FileIO.c

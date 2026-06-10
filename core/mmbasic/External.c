@@ -60,7 +60,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * configured, which the OPTION setter rejects on non-SSD1963 ports. */
 extern void SetBacklightSSD1963(int intensity);
 #include "pico/stdlib.h"
-#include "hardware/dma.h"
+#include "drivers/pio_rp2/pio_rp2.h"
 #include "pico_gpio_irq.h"
 
 #define ANA_AVERAGE 10
@@ -3190,28 +3190,8 @@ void MIPS16 ClearExternalIO(void) {
     keyselect = 0;
     g_myrand = NULL;
     CMM1 = 0;
-    dirOK = 2;
-    nextline[0] = 0;
-    nextline[1] = 0;
-    nextline[2] = 0;
-    nextline[3] = 99;
-    memset(pioTXlast, 0, sizeof(pioTXlast));
-    memset(pioRXinterrupts, 0, sizeof(pioRXinterrupts));
-    memset(pioTXinterrupts, 0, sizeof(pioTXinterrupts));
-    piointerrupt = 0;
-    DMAinterruptRX = NULL;
-    DMAinterruptTX = NULL;
+    pio_rp2_teardown();
     WAVInterrupt = NULL;
-    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-    if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-    if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
-    //    dma_channel_cleanup(dma_rx_chan);
-    //    dma_channel_cleanup(dma_rx_chan2);
-    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-    if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-    if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
-    //    dma_channel_cleanup(dma_tx_chan);
-    //    dma_channel_cleanup(dma_tx_chan2);
 }
 
 void __not_in_flash_func(TM_EXTI_Handler_1)(void) {

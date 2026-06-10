@@ -41,9 +41,9 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 2 | 0–4 |
-| `core/mmbasic/MM_Misc.c` | 14 | 7 | 1, 2, 3, 5 |
-| `core/mmbasic/Custom.c` | 10 | 10 | 5 |
+| `core/mmbasic/External.c` | 13 | 1 | 0–5 |
+| `core/mmbasic/MM_Misc.c` | 14 | 3 | 1, 2, 3, 5 |
+| `core/mmbasic/Custom.c` | 10 | 0 (file relocated to `drivers/pio_rp2/`) | 5 ✅ |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
 | `shared/net/MMsetwifi.c` | 3 | 3 | 6 |
@@ -51,7 +51,7 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 | `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMweb_stubs.c` | 1 | 0 | 4 ✅ |
-| **Total** | **46** | **23** | |
+| **Total** | **46** | **8** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -223,6 +223,37 @@ identity while these bodies must stay RAM-resident there.
 
 Exit: Custom.c and MM_Misc.c at zero SDK includes; the `rp2350` gate count
 in core/ drops by 37.
+
+Landed: Custom.c relocated wholesale — the file was 100% PIO, so it moved
+verbatim to `drivers/pio_rp2/pio_rp2.c` (token entry points `cmd_pio`,
+`fun_pio` and the per-instruction `cmd_jmp`/`cmd_wait`/… family included;
+AllCommands.h binds them at link time) and left core entirely, taking all
+37 `rp2350` gates and the PIO globals with it. Custom.h keeps only
+`closeMQTT` + `TCP_READ_BUFFER_SIZE`. No new stub was needed: Custom.c,
+MM_Misc.c and External.c are compiled only by the device CMake build, and
+the existing `*_peripheral_stubs.c` files already satisfy the AllCommands.h
+token symbols on non-RP ports. Core reaches the hardware through
+`drivers/pio_rp2/pio_rp2.h`: `pio_rp2_pending_interrupt()` (the
+checkdetailinterrupts probe — dispatch stays in MM_Misc.c, same pattern as
+`hal_gui_controls_pending_interrupt`), `pio_rp2_dma_rx_busy()`/`_tx_busy()`
+(MM.INFO), and `pio_rp2_teardown()` / `pio_rp2_dma_abort()` (ClearExternalIO
+and `port_runtime_abort_dma`, which dropped its `dma_*_chan` externs).
+Fixed in transit: the DMA-completion arms disabled the state machine via
+`(dma_rx_pio ? pio1 : pio0)`, which picks pio1 when the transfer was set up
+on rp2350's pio2 — now the natural-order `pio_rp2_block()` mapping that the
+DMA setup itself uses. (`port_pio_for_index` was deliberately not used: its
+rp2040 arm is reversed, encoding the FIFO poll loop's table-index space.)
+MM_Misc.c holds at 3 includes: `pico/stdlib.h` (GPIO_IRQ_EDGE_* constants
+for the pico_gpio_irq calls; `check_sys_clock_khz` for MM.INFO(VALID
+CPUSPEED) on SDK 1.x), `hardware/clocks.h` (`check_sys_clock_khz`'s SDK 2.x
+home), and `hardware/regs/addressmap.h` (XIP_BASE flash-address math in
+LOAD MODULE + MM.INFO) — the consumer-free `pico/bootrom.h` and
+`hardware/pio_instructions.h` are gone. External.c holds at 1
+(`pico/stdlib.h`, binders unchanged from the Phase 4 note). core/ `rp2350`
+gates: 47 → 10; every remaining one is outside this phase's scope (CMM2
+token rows in AllCommands.h, memory-layout constants in configuration.h /
+MMBasic.h / FileIO.h / Version.h, includes in Hardware_Includes.h) — none
+are PIO.
 
 ### Phase 6 — WiFi chip isolation
 
