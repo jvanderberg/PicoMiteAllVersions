@@ -103,6 +103,17 @@ static void esp32_runtime_gui_service(void) {
 }
 
 static void esp32_runtime_service(void) {
+    /* CheckAbort/check_interrupt call this after EVERY interpreted
+     * statement, and the body is expensive: ProcessWeb(0) polls five
+     * sockets through the LWIP core lock and the console read is a
+     * driver call. Unthrottled it costs ~0.85 ms per statement with
+     * WiFi up — the whole interpreter ran at LWIP-poll speed. 1 ms is
+     * tighter than any consumer needs (telnet output self-gates at
+     * 5 ms, audio buffers hold >10 ms, Ctrl-C latency 1 ms). */
+    static int64_t next_service_us;
+    int64_t now = esp_timer_get_time();
+    if (now < next_service_us) return;
+    next_service_us = now + 1000;
     esp32_runtime_pump_input();
     esp32_runtime_gui_service();
     /* Cooperative decode pump for file playback during interpreter polls. */
