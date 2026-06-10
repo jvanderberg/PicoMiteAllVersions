@@ -41,17 +41,17 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 
 | File | Baseline | Now | Phase |
 |---|---|---|---|
-| `core/mmbasic/External.c` | 13 | 13 | 0–4 |
+| `core/mmbasic/External.c` | 13 | 9 | 0–4 |
 | `core/mmbasic/MM_Misc.c` | 14 | 14 | 1, 2, 3, 5 |
 | `core/mmbasic/Custom.c` | 10 | 10 | 5 |
-| `core/mmbasic/XModem.c` | 1 | 1 | 0 |
-| `core/mmbasic/Draw.h` | 1 | 1 | 0 |
+| `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
+| `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
 | `shared/net/MMsetwifi.c` | 3 | 3 | 6 |
 | `shared/net/MMtelnet.c` | 1 | 1 | 6 |
-| `shared/net/MMtftp.c` | 1 | 1 | 0 |
-| `shared/net/MMntp.c` | 1 | 1 | 0 |
+| `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
+| `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMweb_stubs.c` | 1 | 1 | 4 |
-| **Total** | **46** | **46** | |
+| **Total** | **46** | **38** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -77,7 +77,7 @@ batch end, plus `buildesp32.sh` / pc386 where the port is touched. Extractions
 are verbatim transplants — behavior-preserving, no re-derivation;
 simplification is a separate commit after tests pass.
 
-### Phase 0 — dead code and one-liners (no new contracts)
+### Phase 0 — dead code and one-liners (no new contracts) — ✅ CLOSED
 
 1. Delete `set_PWM` from External.c (dead: no header declaration, no callers).
 2. Drop the unused `pico/time.h` include from MMntp.c.
@@ -90,6 +90,18 @@ simplification is a separate commit after tests pass.
    over the host console already has no meaning there).
 
 Exit: XModem.c, Draw.h, MMtftp.c, MMntp.c at zero. Scoreboard 46 → 42.
+
+Closed at 46 → 38: deleting `set_PWM` also freed four External.c includes
+(`hardware/clocks.h`, `hardware/structs/pwm.h`, `hardware/structs/pads_bank0.h`,
+`hardware/sync.h`). The raw-mode contract landed as `hal/hal_serial_console.h`
+(device backend `ports/pico_sdk_common/hal_serial_console_pico.c`; pc386 stubs
+keep transfers on the buffered console). The XMODEM transfer engine's abort
+paths route through `xmodem_error()`, which restores the console RX interrupt
+before `error()` longjmps — a failed transfer no longer silences a UART
+console. `ports/pico_sdk_compat/hardware/uart.h` is now consumer-free.
+MMntp.c additionally moved `time_us_64()` → `hal_time_us_64()` (its include
+carried that one live symbol). `validate_all.sh` green incl. all 14 device
+variants + RAM baseline; pc386 builds; pinned clang-format clean.
 
 ### Phase 1 — PWM closeout
 

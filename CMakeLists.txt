@@ -242,6 +242,7 @@ set(PICOMITE_PICO_SDK_HAL_SOURCES
 	ports/pico_sdk_common/pico_clock.c
 	ports/pico_sdk_common/pico_timer.c
 	ports/pico_sdk_common/pico_console.c
+	ports/pico_sdk_common/hal_serial_console_pico.c
 	ports/pico_sdk_common/pico_fault.c
 	ports/pico_sdk_common/pico_program_flash.c
 	ports/pico_sdk_common/pico_cfunction_bridge.c

@@ -27,8 +27,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "Hardware_Includes.h"
 #include "hal/hal_calendar.h"
 #include "hal/hal_net.h"
+#include "hal/hal_time.h"
 #include "shared/net/mm_net_ntp_hal.h"
-#include "pico/time.h"
 
 #define NTP_SERVER "pool.ntp.org"
 #define NTP_PORT 123
@@ -51,7 +51,7 @@ static void pico_ntp_apply(uint32_t unix_seconds, MMFLOAT adjust_hours) {
     TimeOffsetToUptime = get_epoch(utc->tm_year + 1900, utc->tm_mon + 1,
                                    utc->tm_mday, utc->tm_hour, utc->tm_min,
                                    utc->tm_sec) -
-                         time_us_64() / 1000000;
+                         hal_time_us_64() / 1000000;
 }
 
 void cmd_ntp(unsigned char * tp) {

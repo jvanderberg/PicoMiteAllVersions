@@ -4,7 +4,7 @@
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "hal/hal_net.h"
-#include "pico/time.h"
+#include "hal/hal_time.h"
 #include "shared/net/mm_net_tftp.h"
 
 #define PICO_TFTP_PORT 69
@@ -117,7 +117,7 @@ void pico_tftp_poll(void) {
                                         sizeof packet, &len);
         if (rc == HAL_NET_WOULD_BLOCK) {
             if (pico_tftp_session.active && idle_polls++ < 20) {
-                sleep_us(1000);
+                hal_time_sleep_us(1000);
                 continue;
             }
             return;

@@ -34,13 +34,24 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "hal/hal_serial_console.h"
 #include "hal/hal_time.h"
-#include "hardware/uart.h"
 
 void xmodemTransmit(char * p, int fnbr);
 void xmodemReceive(char * sp, int maxbytes, int fnbr, int crunch);
 int FindFreeFileNbr(void);
 bool rcvnoint;
+
+/* Abort a transfer with an error message, restoring the serial console's
+ * receive interrupt first: error() longjmps back to the prompt, so any
+ * raw-mode mask still in place would silence the console for good. */
+static void xmodem_error(char * msg) {
+    if (rcvnoint) {
+        hal_serial_console_raw_exit();
+        rcvnoint = false;
+    }
+    error(msg);
+}
 
 /*  @endcond */
 
@@ -107,19 +118,16 @@ void MIPS16 cmd_xmodem(void) {
         if (!InitSDCard()) return;
         fnbr = FindFreeFileNbr();
         fname = (char *)getFstring(cmdline); // get the file name
-        if (Option.SerialConsole) {
-            rcvnoint = true;
-            uart_set_irq_enables((Option.SerialConsole & 3) == 1 ? uart0 : uart1, false, false);
-        } else
-            rcvnoint = false;
         if (rcv) {
             if (!BasicFileOpen(fname, fnbr, FA_WRITE | FA_CREATE_ALWAYS)) return;
+            rcvnoint = hal_serial_console_raw_enter();
             xmodemReceive(NULL, 0, fnbr, false);
-            if (rcvnoint) uart_set_irq_enables((Option.SerialConsole & 3) == 1 ? uart0 : uart1, true, false);
+            if (rcvnoint) hal_serial_console_raw_exit();
         } else {
             if (!BasicFileOpen(fname, fnbr, FA_READ)) return;
+            rcvnoint = hal_serial_console_raw_enter();
             xmodemTransmit(NULL, fnbr);
-            if (rcvnoint) uart_set_irq_enables((Option.SerialConsole & 3) == 1 ? uart0 : uart1, true, false);
+            if (rcvnoint) hal_serial_console_raw_exit();
         }
         FileClose(fnbr);
     }
@@ -145,9 +153,9 @@ int _inbyte(int timeout) {
             }
         }
     } else {
-        while (hal_time_us_64() < timer && !uart_is_readable((Option.SerialConsole & 3) == 1 ? uart0 : uart1)) {
+        while (hal_time_us_64() < timer && !hal_serial_console_raw_readable()) {
         }
-        if (hal_time_us_64() < timer) return uart_getc((Option.SerialConsole & 3) == 1 ? uart0 : uart1);
+        if (hal_time_us_64() < timer) return hal_serial_console_raw_getc();
     }
     return -1;
 }
@@ -155,7 +163,7 @@ char _outbyte(char c, int f) {
     if (!rcvnoint)
         SerialConsolePutC(c, f);
     else
-        uart_putc_raw((Option.SerialConsole & 3) == 1 ? uart0 : uart1, c);
+        hal_serial_console_raw_putc(c);
     return c;
 }
 
@@ -232,14 +240,14 @@ void xmodemReceive(char * sp, int maxbytes, int fnbr, int crunch) {
                     _outbyte(ACK, 1);
                     ;
                     if (sp != NULL) {
-                        if (maxbytes <= 0) error("Not enough memory");
+                        if (maxbytes <= 0) xmodem_error("Not enough memory");
                         *sp++ = 0; // terminate the data
                     }
                     return; // no more data
                 case CAN:
                     flushinput();
                     _outbyte(ACK, 1);
-                    error("Cancelled by remote");
+                    xmodem_error("Cancelled by remote");
                     break;
                 default:
                     break;
@@ -250,7 +258,7 @@ void xmodemReceive(char * sp, int maxbytes, int fnbr, int crunch) {
         _outbyte(CAN, 1);
         _outbyte(CAN, 1);
         _outbyte(CAN, 1);
-        error("Remote did not respond"); // no sync
+        xmodem_error("Remote did not respond"); // no sync
 
     start_recv:
         trychar = 0;
@@ -289,7 +297,7 @@ void xmodemReceive(char * sp, int maxbytes, int fnbr, int crunch) {
                 _outbyte(CAN, 1);
                 _outbyte(CAN, 1);
                 _outbyte(CAN, 1);
-                error("Too many errors");
+                xmodem_error("Too many errors");
             }
             _outbyte(ACK, 1);
             continue;
@@ -322,7 +330,7 @@ void xmodemTransmit(char * p, int fnbr) {
                         _outbyte(ACK, 1);
                         ;
                         flushinput();
-                        error("Cancelled by remote");
+                        xmodem_error("Cancelled by remote");
                     }
                     break;
                 default:
@@ -337,7 +345,7 @@ void xmodemTransmit(char * p, int fnbr) {
         _outbyte(CAN, 1);
         ;
         flushinput();
-        error("Remote did not respond"); // no sync
+        xmodem_error("Remote did not respond"); // no sync
 
         // send a packet
         while (1) {
@@ -385,7 +393,7 @@ void xmodemTransmit(char * p, int fnbr) {
                             _outbyte(ACK, 1);
                             ;
                             flushinput();
-                            error("Cancelled by remote");
+                            xmodem_error("Cancelled by remote");
                             break;
                         case NAK: // receiver got a corrupt block
                         default:
@@ -398,7 +406,7 @@ void xmodemTransmit(char * p, int fnbr) {
                 _outbyte(CAN, 1);
                 _outbyte(CAN, 1);
                 flushinput();
-                error("Too many errors");
+                xmodem_error("Too many errors");
             }
 
             // finished sending - send end of text
@@ -409,7 +417,7 @@ void xmodemTransmit(char * p, int fnbr) {
                 }
                 flushinput();
                 if (c == ACK) return;
-                error("Error closing");
+                xmodem_error("Error closing");
             }
         }
     }

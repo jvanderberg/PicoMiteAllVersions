@@ -56,17 +56,13 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 extern void SetBacklightSSD1963(int intensity);
 #include "hardware/watchdog.h"
 #include "pico/stdlib.h"
-#include "hardware/clocks.h"
 #include "hardware/pwm.h"
 //#include "hardware/gpio.h"
 #include "hardware/adc.h"
 #include "hardware/structs/systick.h"
-#include "hardware/structs/pwm.h"
-#include "hardware/structs/pads_bank0.h"
 #include "hardware/structs/adc.h"
 #include "hardware/dma.h"
 #include <hardware/structs/ioqspi.h>
-#include <hardware/sync.h>
 #include <hardware/structs/sio.h>
 #include "pico_gpio_irq.h"
 
@@ -1849,179 +1845,6 @@ void IRSendSignal(int pin, int half_cycles) {
     while (half_cycles--) {
         PinSetBit(pin, LATINV);
         uSec(13);
-    }
-}
-void MIPS16 set_PWM(int slice, MMFLOAT duty1, MMFLOAT duty2, int high1, int high2, int delaystart) {
-    if (slice == 0 && PWM0Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 0 && PWM0Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    /* fast_timer_active is always false on RP2040 (no fast-timer driver),
-     * so this check never fires there and stays a simple runtime condition. */
-    if (slice == 0 && fast_timer_active) error("Channel 0 in use for fast timer");
-    if (slice == 1 && PWM1Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 1 && PWM1Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 2 && PWM2Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 2 && PWM2Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 3 && PWM3Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 3 && PWM3Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 4 && PWM4Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 4 && PWM4Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 5 && PWM5Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 5 && PWM5Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 6 && PWM6Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 6 && PWM6Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 7 && PWM7Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 7 && PWM7Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 8 && PWM8Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 8 && PWM8Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 9 && PWM9Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 9 && PWM9Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 10 && PWM10Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 10 && PWM10Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 11 && PWM11Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 11 && PWM11Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 0 && PWM0Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM0Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 0 && PWM0Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM0Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 1 && PWM1Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM1Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 1 && PWM1Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM1Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 2 && PWM2Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM2Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 2 && PWM2Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM2Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 3 && PWM3Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM3Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 3 && PWM3Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM3Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 4 && PWM4Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM4Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 4 && PWM4Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM4Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 5 && PWM5Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM5Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 5 && PWM5Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM5Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 6 && PWM6Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM6Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 6 && PWM6Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM6Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 7 && PWM7Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM7Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 7 && PWM7Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM7Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 8 && PWM8Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM8Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 8 && PWM8Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM8Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 9 && PWM9Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM9Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 9 && PWM9Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM9Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 10 && PWM10Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM10Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 10 && PWM10Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM10Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 11 && PWM11Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM11Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 11 && PWM11Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM11Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 0 && slice0 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice0 = 1;
-    }
-    if (slice == 1 && slice1 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice1 = 1;
-    }
-    if (slice == 2 && slice2 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice2 = 1;
-    }
-    if (slice == 3 && slice3 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice3 = 1;
-    }
-    if (slice == 4 && slice4 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice4 = 1;
-    }
-    if (slice == 5 && slice5 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice5 = 1;
-    }
-    if (slice == 6 && slice6 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice6 = 1;
-    }
-    if (slice == 7 && slice7 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice7 = 1;
-    }
-    if (slice == 8 && slice8 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice8 = 1;
-    }
-    if (slice == 9 && slice9 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice9 = 1;
-    }
-    if (slice == 10 && slice10 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice10 = 1;
-    }
-    if (slice == 11 && slice11 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice11 = 1;
     }
 }
 

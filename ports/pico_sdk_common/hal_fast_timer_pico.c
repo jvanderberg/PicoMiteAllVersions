@@ -19,8 +19,8 @@
 #include "hal/hal_fast_timer.h"
 
 /* Mirrors whether PWM slice 0 is claimed by the fast timer. The shared
- * PWM layer (runtime/vm/vm_sys_pwm.c) and set_PWM consult it to block
- * BASIC PWM/SERVO use of channel 0 while a measurement is running. */
+ * PWM layer (runtime/vm/vm_sys_pwm.c) consults it to block BASIC
+ * PWM/SERVO use of channel 0 while a measurement is running. */
 extern bool fast_timer_active;
 
 bool hal_fast_timer_available(void) {
