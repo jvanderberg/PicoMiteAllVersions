@@ -51,10 +51,18 @@ static void MMB_HOT_FUNC(runtime_abort_common)(
 
     if ((adapter->flags & MMBASIC_RUNTIME_ABORT_FLAG_CHECK_ABORT) &&
         mmbasic_runtime_abort_requested(adapter->abort_flag)) {
-        if (adapter->before_abort) adapter->before_abort();
-        if (adapter->flags & MMBASIC_RUNTIME_ABORT_FLAG_DO_END_LONGJMP) {
-            do_end(false);
-            longjmp(mark, 1);
+        /* A break that arrives before the REPL/run loop has armed `mark`
+         * (e.g. console input during boot) has nowhere to jump; discard it
+         * rather than longjmp through an uninitialised buffer. */
+        if ((adapter->flags & MMBASIC_RUNTIME_ABORT_FLAG_DO_END_LONGJMP) &&
+            !mark_armed) {
+            if (adapter->abort_flag) *adapter->abort_flag = 0;
+        } else {
+            if (adapter->before_abort) adapter->before_abort();
+            if (adapter->flags & MMBASIC_RUNTIME_ABORT_FLAG_DO_END_LONGJMP) {
+                do_end(false);
+                longjmp(mark, 1);
+            }
         }
     }
 

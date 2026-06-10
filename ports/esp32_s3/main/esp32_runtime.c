@@ -62,6 +62,10 @@ static inline CommandToken esp32_commandtbl_decode(const unsigned char * p) {
 }
 
 static void esp32_runtime_pump_input(void) {
+    /* No 1 kHz timer IRQ on this port — synthesize CursorTimer from the
+     * monotonic clock so ShowCursor's blink math works (editor poll path). */
+    CursorTimer = (int)((esp_timer_get_time() / 1000) %
+                        (CURSOR_OFF + CURSOR_ON));
     int c = esp32_console_read_byte_nonblock();
     if (c < 0) return;
     if (c == 0x03 /* Ctrl-C */) {

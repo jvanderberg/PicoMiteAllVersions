@@ -111,10 +111,12 @@ unsigned char * subfun[MAXSUBFUN];        // table used to locate all subroutine
 char CurrentSubFunName[MAXVARLEN + 1];    // the name of the current sub or fun
 char CurrentInterruptName[MAXVARLEN + 1]; // the name of the current interrupt function
 jmp_buf jmprun;
-jmp_buf mark;                     // longjump to recover from an error and abort
-jmp_buf ErrNext;                  // longjump to recover from an error and continue
-unsigned char inpbuf[STRINGSIZE]; // used to store user keystrokes until we have a line
-unsigned char tknbuf[STRINGSIZE]; // used to store the tokenised representation of the users input line
+jmp_buf mark;                       // longjump to recover from an error and abort
+volatile int mark_armed = 0;        // set once mark holds a live setjmp target
+volatile int error_in_recovery = 0; // error() is inside do_end(); suppress nested do_end
+jmp_buf ErrNext;                    // longjump to recover from an error and continue
+unsigned char inpbuf[STRINGSIZE];   // used to store user keystrokes until we have a line
+unsigned char tknbuf[STRINGSIZE];   // used to store the tokenised representation of the users input line
 //unsigned char lastcmd[STRINGSIZE];                                           // used to store the last command in case it is needed by the EDIT command
 unsigned char PromptString[MAXPROMPTLEN]; // the prompt for input, an empty string means use the default
 int ProgramChanged;                       // true if the program in memory has been changed and not saved
@@ -3372,7 +3374,19 @@ void MIPS16 error(char * msg, ...) {
     MMPrintString(tstr);
     port_error_show_lcd_banner(line_num, p, MMErrMsg);
     cmdline = NULL;
-    do_end(false);
+    // an error raised by do_end's own cleanup must not re-enter do_end —
+    // that recursion overflows the stack. The flag is cleared at the
+    // REPL's setjmp landing.
+    if (!error_in_recovery) {
+        error_in_recovery = 1;
+        do_end(false);
+        error_in_recovery = 0;
+    }
+    if (!mark_armed) {
+        // fatal pre-REPL error: nowhere to jump, restart instead
+        extern void SoftReset(void);
+        SoftReset();
+    }
     longjmp(mark, 1); // jump back to the input prompt
 }
 
