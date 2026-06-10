@@ -46,12 +46,12 @@ Baseline measured 2026-06-09 on `main` (post GPIO/I²C/PWM/SERVO unification).
 | `core/mmbasic/Custom.c` | 10 | 0 (file relocated to `drivers/pio_rp2/`) | 5 ✅ |
 | `core/mmbasic/XModem.c` | 1 | 0 | 0 ✅ |
 | `core/mmbasic/Draw.h` | 1 | 0 | 0 ✅ |
-| `shared/net/MMsetwifi.c` | 3 | 3 | 6 |
-| `shared/net/MMtelnet.c` | 1 | 1 | 6 |
+| `shared/net/MMsetwifi.c` | 3 | 0 | 6 ✅ |
+| `shared/net/MMtelnet.c` | 1 | 0 | 6 ✅ |
 | `shared/net/MMtftp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMntp.c` | 1 | 0 | 0 ✅ |
 | `shared/net/MMweb_stubs.c` | 1 | 0 | 4 ✅ |
-| **Total** | **46** | **8** | |
+| **Total** | **46** | **4** | |
 
 ## Current state (verified) — what the shims still carry
 
@@ -255,7 +255,7 @@ token rows in AllCommands.h, memory-layout constants in configuration.h /
 MMBasic.h / FileIO.h / Version.h, includes in Hardware_Includes.h) — none
 are PIO.
 
-### Phase 6 — WiFi chip isolation
+### Phase 6 — WiFi chip isolation — ✅ CLOSED
 
 Blocked on the contract shape in `network-core-plan.md`; land the hooks where
 that design puts the link-layer boundary.
@@ -267,6 +267,26 @@ that design puts the link-layer boundary.
    pattern: real on CYW43 ports, no-op elsewhere).
 
 Exit: shared/net at zero SDK includes and zero `cyw43_*` calls.
+
+Closed: the boundary slots already existed in `hal_net.h` — bring-up is
+`hal_net_init()` (the lwIP backend now runs the verbatim
+`cyw43_pio_divider_for_clk_sys` gSPI guard, then `cyw43_arch_init`,
+mapping 0 → `HAL_NET_OK`; previously its `hal_net_init` was a trivial OK
+with no Pico caller) and the ProcessWeb pump is `hal_net_poll()` (already
+`cyw43_arch_poll()` per the network-core design). MMsetwifi.c's lone
+`CYW43_LINK_UP` comparison became the backend predicate
+`net_lwip_tcpip_link_up()` — status values from `hal_net_tcpip_status()`
+are backend-specific, so the "fully up" test belongs beside them. The LED
+landed as `hal_heartbeat_led_get/put` with a new
+`drivers/heartbeat/heartbeat_cyw43.c` (WiFi ports link it instead of
+heartbeat_stub.c; stub/real carry no-ops); blink cadence stays verbatim in
+MMtelnet.c's ProcessWeb. MMtelnet.c's `time_us_64` had been declared only
+via the removed cyw43 header — moved to `hal_time_us_64()` (MMntp
+precedent). shared/ and core/ now grep clean of `cyw43`. Scoreboard
+46 → 4 (core/ MM_Misc.c 3 + External.c 1 remain). Host 291/291, purity
+green, full WiFi device builds green: WEB, picocalc_wifi_rp2040,
+picocalc_wifi_rp2350, DVIWIFIRP2350 (the CYW43_PIO_CLOCK_DIV_DYNAMIC
+shape that compiles the moved divider).
 
 ### Phase 7 — delete the shims, ratchet the gate
 

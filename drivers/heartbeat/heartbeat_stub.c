@@ -1,7 +1,7 @@
 /*
  * drivers/heartbeat/heartbeat_stub.c — heartbeat-LED no-op stub.
- * Linked on ports where the onboard LED is owned by another
- * peripheral (CYW43 radio on WiFi ports, host-platform display, etc.).
+ * Linked on ports with no MMBasic-owned heartbeat LED (host family,
+ * pc386). WiFi ports link heartbeat_cyw43.c instead.
  */
 
 #include "MMBasic_Includes.h"
@@ -14,6 +14,12 @@ void hal_heartbeat_assert_supported(void) {
     error("Invalid configuration");
 }
 
-void hal_heartbeat_init_pins(void) {
-    /* Web rp2040: CYW43 owns GPIO 23/24/25 — leave them for the radio. */
+void hal_heartbeat_init_pins(void) {}
+
+int hal_heartbeat_led_get(void) {
+    return 0;
+}
+
+void hal_heartbeat_led_put(int on) {
+    (void)on;
 }

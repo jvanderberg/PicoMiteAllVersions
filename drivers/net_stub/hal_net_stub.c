@@ -52,6 +52,10 @@ int hal_net_tcpip_status(void) {
     return HAL_NET_UNSUPPORTED;
 }
 
+int hal_net_link_up(void) {
+    return 0;
+}
+
 int hal_net_ip_address(char * out, size_t out_len) {
     if (out && out_len) out[0] = 0;
     return HAL_NET_UNSUPPORTED;

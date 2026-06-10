@@ -1,8 +1,8 @@
 /*
  * drivers/heartbeat/heartbeat_real.c — real heartbeat-LED toggle.
  * Linked on ports with an onboard heartbeat LED owned by GPIO.
- * Mutually exclusive with heartbeat_stub.c (linked on Web rp2040
- * etc., where the LED is owned by the CYW43 module).
+ * Mutually exclusive with heartbeat_cyw43.c (WiFi ports, LED on the
+ * CYW43 module) and heartbeat_stub.c (no LED).
  */
 
 #include "MMBasic_Includes.h"
@@ -33,4 +33,14 @@ void hal_heartbeat_init_pins(void) {
         hal_pin_set_dir(PinDef[HEARTBEATpin].GPno, HAL_PIN_DIR_OUT);
         ExtCurrentConfig[PinDef[HEARTBEATpin].pin] = EXT_HEARTBEAT;
     }
+}
+
+/* Cadence on GPIO-LED ports is hal_heartbeat_tick(); the raw led hooks
+ * are only driven by poll loops on CYW43 ports. */
+int hal_heartbeat_led_get(void) {
+    return 0;
+}
+
+void hal_heartbeat_led_put(int on) {
+    (void)on;
 }
