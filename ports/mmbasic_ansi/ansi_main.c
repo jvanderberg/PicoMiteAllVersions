@@ -297,8 +297,10 @@ static int run_script(const char * filename, int use_interpreter) {
                                             MMBASIC_RUNTIME_RUN_FLAG_PREPARE_PROGRAM);
     } else {
         if (setjmp(mark) == 0) {
+            mark_armed = 1;
             bc_run_source_string(source, filename);
         } else {
+            error_in_recovery = 0;
             rc = MMErrMsg[0] ? 1 : 0;
         }
     }

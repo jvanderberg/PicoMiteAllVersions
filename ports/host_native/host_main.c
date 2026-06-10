@@ -322,9 +322,11 @@ static int run_interpreter(char * output, int outsize) {
     mmbasic_runtime_port_begin();
     PrepareProgram(1);
     if (setjmp(mark) == 0) {
+        mark_armed = 1;
         ExecuteProgram(ProgMemory);
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
+        error_in_recovery = 0;
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     }
 
@@ -350,9 +352,11 @@ static int run_bytecode_vm_source(const char * source, const char * source_name,
     MMerrno = 0;
     mmbasic_runtime_port_begin();
     if (setjmp(mark) == 0) {
+        mark_armed = 1;
         bc_run_source_string(source, source_name);
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     } else {
+        error_in_recovery = 0;
         result = host_runtime_timed_out() ? 2 : (MMErrMsg[0] ? 1 : 0);
     }
 
@@ -682,9 +686,11 @@ int main(int argc, char ** argv) {
         MMerrno = 0;
         mmbasic_runtime_port_begin();
         if (setjmp(mark) == 0) {
+            mark_armed = 1;
             bc_run_immediate(immediate_line);
             rc = MMErrMsg[0] ? 1 : 0;
         } else {
+            error_in_recovery = 0;
             rc = MMErrMsg[0] ? 1 : 0;
         }
         host_runtime_finish();

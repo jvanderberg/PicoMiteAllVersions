@@ -3374,18 +3374,22 @@ void MIPS16 error(char * msg, ...) {
     MMPrintString(tstr);
     port_error_show_lcd_banner(line_num, p, MMErrMsg);
     cmdline = NULL;
+    if (!mark_armed) {
+        // fatal pre-REPL error: nowhere to jump, and do_end would tear
+        // down subsystems that are not initialised yet — restart instead.
+        // SoftReset is a no-op on hosted ports, so back it with abort()
+        // rather than longjmp through a zeroed buffer.
+        extern void SoftReset(void);
+        SoftReset();
+        abort();
+    }
     // an error raised by do_end's own cleanup must not re-enter do_end —
     // that recursion overflows the stack. The flag is cleared at the
-    // REPL's setjmp landing.
+    // setjmp(mark) landing sites.
     if (!error_in_recovery) {
         error_in_recovery = 1;
         do_end(false);
         error_in_recovery = 0;
-    }
-    if (!mark_armed) {
-        // fatal pre-REPL error: nowhere to jump, restart instead
-        extern void SoftReset(void);
-        SoftReset();
     }
     longjmp(mark, 1); // jump back to the input prompt
 }
