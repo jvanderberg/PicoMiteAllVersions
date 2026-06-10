@@ -2,9 +2,9 @@
 #
 # Used by both the octal (ports/esp32_s3) and quad (ports/esp32_s3_quad)
 # ports, each combined with its own sdkconfig.psram.* fragment. Everything
-# here is identical across PSRAM line modes — including WiFi, which is
-# configured to run from internal RAM so it works on octal, quad, and
-# no-PSRAM boards alike (see "WiFi" below).
+# here is identical across PSRAM line modes — including WiFi, whose working
+# memory prefers PSRAM at runtime and falls back to internal RAM, so it
+# works on octal, quad, and no-PSRAM boards alike (see "WiFi" below).
 
 # --- Console ----------------------------------------------------------------
 # Use the chip's built-in USB Serial/JTAG controller for stdio. Same USB-C
@@ -42,13 +42,21 @@ CONFIG_ESP_WIFI_ENABLED=y
 CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_0=y
 CONFIG_BT_ENABLED=n
 
-# --- WiFi: internal-RAM buffers (PSRAM-independent) -------------------------
-# WiFi buffers come from internal RAM, NOT SPIRAM, so WiFi works whether the
-# board has octal, quad, or no PSRAM. On a board where PSRAM init fails this
-# avoids the cascade where WiFi could not allocate its buffers and bailed
-# ("WiFi init failed"). The cost on PSRAM boards is negligible: MMBasic wants
-# PSRAM for its heap, not for WiFi buffering, and this port's networking is
-# console/telnet/web + simple TCP, not high-throughput streaming.
+# --- WiFi: PSRAM-preferred working memory, internal-RAM DMA buffers ---------
+# SPIRAM_TRY_ALLOCATE_WIFI_LWIP is a runtime preference, not a hard PSRAM
+# dependency: wifi_malloc/lwIP allocate via heap_caps_*_prefer(SPIRAM,
+# INTERNAL), so on a no-PSRAM board (or after a PSRAM init failure under
+# SPIRAM_IGNORE_NOTFOUND) every allocation falls back to internal RAM and
+# WiFi still comes up. On PSRAM boards it moves the driver's ~50+ KB of
+# control/management memory off the ~120 KB internal heap — without it,
+# esp_wifi_init exhausts internal RAM and fails allocating its static RX
+# buffers ("wifi:malloc buffer fail / Expected to init 6 rx buffer").
+# DMA-bound buffers (static RX, TX frames) always come from internal RAM
+# via the blob's *_internal allocator hooks regardless of this option.
+# With SPIRAM_IGNORE_NOTFOUND set, Kconfig keeps the TX path in the
+# no-PSRAM shape (dynamic TX, no cache-TX buffers), which is what lets
+# one image serve PSRAM and no-PSRAM boards alike.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 # CONFIG_ESP_WIFI_STATIC_TX_BUFFER is not set

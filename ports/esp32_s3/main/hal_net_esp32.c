@@ -310,7 +310,10 @@ static int esp32_net_wifi_ensure_ready(void) {
     err = esp_event_loop_create_default();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return HAL_NET_ERR;
 
-    wifi_sta_netif = esp_netif_create_default_wifi_sta();
+    /* A previous attempt may have created the netif and then failed in
+     * esp_wifi_init (e.g. out of internal RAM); the default STA netif key
+     * is unique, so never create it twice. */
+    if (!wifi_sta_netif) wifi_sta_netif = esp_netif_create_default_wifi_sta();
     if (!wifi_sta_netif) return HAL_NET_ERR;
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
