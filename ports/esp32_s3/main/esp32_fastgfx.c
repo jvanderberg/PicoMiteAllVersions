@@ -55,12 +55,24 @@ static void fastgfx_sleep_to_fps(void) {
 
 static void fastgfx_free_lcd_buffers(void) {
     if (s_back) {
-        heap_caps_free(s_back);
-        s_back = NULL;
+        if ((PSRAMsize && s_back >= (uint8_t *)PSRAMbase &&
+             s_back < (uint8_t *)(PSRAMbase + PSRAMsize)) ||
+            (s_back >= MMHeap && s_back < MMHeap + heap_memory_size)) {
+            FreeMemorySafe((void **)&s_back);
+        } else {
+            heap_caps_free(s_back);
+            s_back = NULL;
+        }
     }
     if (s_front) {
-        heap_caps_free(s_front);
-        s_front = NULL;
+        if ((PSRAMsize && s_front >= (uint8_t *)PSRAMbase &&
+             s_front < (uint8_t *)(PSRAMbase + PSRAMsize)) ||
+            (s_front >= MMHeap && s_front < MMHeap + heap_memory_size)) {
+            FreeMemorySafe((void **)&s_front);
+        } else {
+            heap_caps_free(s_front);
+            s_front = NULL;
+        }
     }
 }
 
@@ -99,13 +111,16 @@ static void fastgfx_create_scanout(void) {
 static void fastgfx_create_lcd(void) {
     size_t bytes = lcd_buf_size();
     if (bytes == 0) error("Display not configured");
-    s_back = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    s_front = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_back = (uint8_t *)TryGetMemory((int)bytes);
+    s_front = (uint8_t *)TryGetMemory((int)bytes);
+    if (!s_back) s_back = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_front) s_front = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_back || !s_front) {
         fastgfx_free_lcd_buffers();
         error("NEM[fastgfx:bufs] want=%x2", (int)bytes);
     }
     esp32_ili9341_lcd_snapshot_rgb121(s_front);
+    memcpy(s_back, s_front, bytes);
     WriteBuf = s_back;
     setframebuffer();
     s_mode = ESP32_FASTGFX_LCD;

@@ -149,8 +149,15 @@ void hal_i2c_keypad_periodic_scan(uint64_t mSecTimer) {
     (void)mSecTimer;
 }
 
-/* The I²C keypad controller has no local GPIO-matrix pins to reserve. */
+/* GP0/GP1 carry the keypad MCU's UART on the PicoCalc mainboard.
+ * Driving GP0 (any output mode holds it low — a permanent UART break)
+ * crashes the MCU: it floods the I²C bus with garbage scancodes that
+ * the console executes as keystrokes, then stops ACKing until a full
+ * power cycle. Reserve both pins so SETPIN refuses them. */
 void hal_i2c_keypad_reserve_io(void) {
+    if (Option.PSRAM_CS_PIN != PINMAP[0])
+        ExtCfg(PINMAP[0], EXT_BOOT_RESERVED, 0);
+    ExtCfg(PINMAP[1], EXT_BOOT_RESERVED, 0);
 }
 
 /* PicoCalc routes the LCD backlight through the keypad-controller's

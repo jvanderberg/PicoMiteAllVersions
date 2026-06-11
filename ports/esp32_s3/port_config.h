@@ -13,9 +13,9 @@
  * port_config.h into a build error instead of a silent eval-to-zero. */
 #define HAL_PORT_CONFIG_INCLUDED 1
 
-/* Chip-level: ESP32-S3.  GPIO 0..48 exist on the chip.  The port does not
- * expose RP2040-style PWM slices or PIO blocks; general PWM/servo commands
- * still error explicitly. OPTION AUDIO left,right uses I2S PDM TX. */
+/* Chip-level: ESP32-S3. GPIO 0..48 exist on the chip. The port does not
+ * expose RP2040-style PWM slices or PIO blocks; BASIC PWM/SERVO uses the
+ * ESP32 LEDC backend. OPTION AUDIO left,right uses I2S PDM TX. */
 #define HAL_PORT_PWM_SLICE_COUNT 0
 #define HAL_PORT_GPIO_COUNT 49
 #define HAL_PORT_PIO_COUNT 0

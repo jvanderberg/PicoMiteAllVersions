@@ -151,7 +151,19 @@ void hal_keyboard_routinechecks_pump(void) {
     /* I²C keyboard polling — alternates between the two read phases
      * once per KEYCHECKTIME to avoid blocking on the I²C bus. */
     static int read = 0;
+    /* Dead-keypad backoff: a keypad MCU that stops ACKing makes every
+     * poll block for the full I²C timeout, starving the console. After
+     * three consecutive failures, retry only every ~5 s until the MCU
+     * answers again. */
+    static int kbd_fail_run = 0;
+    static int kbd_backoff = 0;
     if (Option.KeyboardConfig == CONFIG_I2C && KeyCheck == 0) {
+        KeyCheck = KEYCHECKTIME;
+        if (kbd_backoff > 0) {
+            kbd_backoff--;
+            return;
+        }
+        extern int mmI2Cvalue; /* nonzero = last I²C transfer failed */
         if (read == 0) {
             CheckI2CKeyboard(0, 0);
             read = 1;
@@ -159,6 +171,11 @@ void hal_keyboard_routinechecks_pump(void) {
             CheckI2CKeyboard(0, 1);
             read = 0;
         }
-        KeyCheck = KEYCHECKTIME;
+        if (mmI2Cvalue) {
+            if (kbd_fail_run < 3) kbd_fail_run++;
+            if (kbd_fail_run >= 3) kbd_backoff = 5000 / KEYCHECKTIME;
+        } else {
+            kbd_fail_run = 0;
+        }
     }
 }

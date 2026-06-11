@@ -298,10 +298,16 @@ class PicoSmoke:
         path = join_drive(self.drive, f"{self.prefix}_gfx.bas")
         self.write_program(path, display_program())
         self.run_program(f'RUN "{path}"', "PICO_DISPLAY_SMOKE_OK", timeout=self.long_timeout)
-        self.note("display/framebuffer", True, "PIXEL readback and framebuffer copy/merge")
+        self.note("display/framebuffer/FASTGFX", True, "PIXEL readback, framebuffer copy/merge, FASTGFX swap")
 
     def web_smoke(self) -> None:
         print("=== web ===", flush=True)
+        # Non-WiFi builds reject MM.INFO(WIFI STATUS) with a Syntax error;
+        # probe first so the section skips instead of failing on them.
+        probe = self.command("PRINT MM.INFO(WIFI STATUS)", check_error=False)
+        if "Error" in probe:
+            self.note("WEB quick status", True, "skipped: non-WiFi build")
+            return
         if self.connect_command:
             self.command(self.connect_command, timeout=self.long_timeout)
         status = self.command('PRINT "PICO_WIFI_STATUS=" + STR$(MM.INFO(WIFI STATUS))')
@@ -733,6 +739,18 @@ def display_program() -> list[str]:
         'IF p% \\ 65536 > 80 THEN ERROR "framebuffer merge r"',
         'IF (p% \\ 256) MOD 256 > 80 THEN ERROR "framebuffer merge g"',
         'IF p% MOD 256 < 180 THEN ERROR "framebuffer merge b"',
+        "ON ERROR SKIP : FASTGFX CLOSE",
+        "FASTGFX CREATE",
+        "FASTGFX FPS 1000",
+        "CLS RGB(BLACK)",
+        "PIXEL 5, 5, RGB(RED)",
+        "p% = PIXEL(5, 5)",
+        'IF p% \\ 65536 < 180 THEN ERROR "fastgfx red r"',
+        'IF (p% \\ 256) MOD 256 > 80 THEN ERROR "fastgfx red g"',
+        'IF p% MOD 256 > 80 THEN ERROR "fastgfx red b"',
+        "FASTGFX SWAP",
+        "FASTGFX SYNC",
+        "FASTGFX CLOSE",
         'PRINT "PICO_DISPLAY_SMOKE_OK"',
     ]
 

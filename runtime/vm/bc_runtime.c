@@ -404,7 +404,9 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
     VMRUN_DBG("VM: execute\r\n");
 
     jmp_buf saved_mark;
+    jmp_buf saved_err_next;
     memcpy(saved_mark, mark, sizeof(jmp_buf));
+    memcpy(saved_err_next, ErrNext, sizeof(jmp_buf));
 
     /* Point ProgMemory at the bridge's tokenised program buffer for the
      * duration of the VM run. Bridged interpreter commands that scan
@@ -429,6 +431,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
 
     ProgMemory = saved_prog_memory;
     memcpy(mark, saved_mark, sizeof(jmp_buf));
+    memcpy(ErrNext, saved_err_next, sizeof(jmp_buf));
 
     bc_vm_free(vm);
     bc_compiler_free(cs);

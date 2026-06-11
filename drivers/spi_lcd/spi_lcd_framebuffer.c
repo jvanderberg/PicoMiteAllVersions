@@ -130,6 +130,7 @@ void closeframebuffer(char layer) {
     if (LayerBuf) FreeMemory(LayerBuf);
     if (FrameBuf || LayerBuf) restorepanel();
     FrameBuf = NULL;
+    LayerBuf = NULL;
     WriteBuf = NULL;
 }
 void copyframetoscreen(uint8_t * s, int xstart, int xend, int ystart, int yend, int odd) {

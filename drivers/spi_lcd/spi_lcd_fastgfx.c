@@ -46,6 +46,17 @@ static int fastgfx_dma_chan = -1;
 static uint32_t fastgfx_frame_us = 0;     // target frame time in microseconds (0 = unlimited)
 static uint64_t fastgfx_last_swap_us = 0; // timestamp of last swap
 
+static void fastgfx_free_buffers(void) {
+    if (FastGFXBackBuf) {
+        BC_FREE(FastGFXBackBuf);
+        FastGFXBackBuf = NULL;
+    }
+    if (FastGFXFrontBuf) {
+        BC_FREE(FastGFXFrontBuf);
+        FastGFXFrontBuf = NULL;
+    }
+}
+
 // Shared ping-pong line buffers for RGB565 conversion (max 320 pixels * 2 bytes)
 // Used by both FASTGFX and FRAMEBUFFER FAST merge paths.
 static uint16_t fastgfx_linebuf[2][320];
@@ -352,10 +363,7 @@ void bc_fastgfx_create(void) {
             dma_channel_unclaim(fastgfx_dma_chan);
             fastgfx_dma_chan = -1;
         }
-        BC_FREE(FastGFXBackBuf);
-        BC_FREE(FastGFXFrontBuf);
-        FastGFXBackBuf = NULL;
-        FastGFXFrontBuf = NULL;
+        fastgfx_free_buffers();
         fastgfx_active = false;
         restorepanel();
     }
@@ -365,6 +373,7 @@ void bc_fastgfx_create(void) {
     if (!FastGFXBackBuf || !FastGFXFrontBuf) {
         unsigned int _u = 0, _f = 0, _r = 0, _t = 0;
         heap_scan_stats(&_u, &_f, &_r, &_t);
+        fastgfx_free_buffers();
         error("NEM[fastgfx:bufs] want=%x2 used=%/% free=% run=%",
               (int)(HRes * VRes / 2),
               (int)_u, (int)_t, (int)_f, (int)_r);
@@ -389,29 +398,27 @@ void bc_fastgfx_close(void) {
         dma_channel_unclaim(fastgfx_dma_chan);
         fastgfx_dma_chan = -1;
     }
-    BC_FREE(FastGFXBackBuf);
-    BC_FREE(FastGFXFrontBuf);
-    FastGFXBackBuf = NULL;
-    FastGFXFrontBuf = NULL;
+    fastgfx_free_buffers();
     fastgfx_active = false;
     restorepanel();
 }
 
 void bc_fastgfx_reset(void) {
-    if (!fastgfx_active) return;
-    while (!fastgfx_done) {
-        __dmb();
+    if (fastgfx_active) {
+        while (!fastgfx_done) {
+            __dmb();
+        }
+        restorepanel();
     }
     if (fastgfx_dma_chan >= 0) {
         dma_channel_unclaim(fastgfx_dma_chan);
         fastgfx_dma_chan = -1;
     }
-    BC_FREE(FastGFXBackBuf);
-    BC_FREE(FastGFXFrontBuf);
-    FastGFXBackBuf = NULL;
-    FastGFXFrontBuf = NULL;
+    fastgfx_free_buffers();
     fastgfx_active = false;
-    restorepanel();
+    fastgfx_done = true;
+    fastgfx_frame_us = 0;
+    fastgfx_last_swap_us = 0;
 }
 
 void bc_fastgfx_set_fps(int fps) {

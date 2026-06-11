@@ -78,7 +78,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "pico/stdlib.h"
 #include "hardware/irq.h"
 #include "hardware/claim.h"
-#define PIO_NUM(pio) ((pio) == pio0 ? 0 : (pio1 ? 1 : 2))
 #define CLKMIN ((Option.CPU_Speed * 125) >> 13)
 #define CLKMAX (Option.CPU_Speed * 1000)
 
@@ -120,6 +119,25 @@ int piointerrupt = 0;
 uint8_t nextline[4] = {0};
 static int pioinuse = 99;
 extern bool PIO2, PIO1, PIO0;
+static void pio_rp2_dma_abort_pair(uint32_t chan, uint32_t ctrl_chan) {
+    uint32_t mask = (1u << chan) | (1u << ctrl_chan);
+    /*
+     * RP2350-E5: chained channels can retrigger during abort unless the
+     * channel EN bits are cleared and CHAIN_TO is neutralized first. This is
+     * harmless on RP2040 and also makes NEW/teardown deterministic after
+     * continuous PIO DMA ring transfers.
+     */
+    hw_write_masked(&dma_hw->ch[chan].al1_ctrl,
+                    chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB,
+                    DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS | DMA_CH0_CTRL_TRIG_EN_BITS);
+    hw_write_masked(&dma_hw->ch[ctrl_chan].al1_ctrl,
+                    ctrl_chan << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB,
+                    DMA_CH0_CTRL_TRIG_CHAIN_TO_BITS | DMA_CH0_CTRL_TRIG_EN_BITS);
+    dma_hw->abort = mask;
+    if (dma_channel_is_busy(chan)) dma_channel_abort(chan);
+    if (dma_channel_is_busy(ctrl_chan)) dma_channel_abort(ctrl_chan);
+    dma_hw->intr = mask;
+}
 static inline uint32_t pio_sm_calc_wrap(uint wrap_target, uint wrap) {
     uint32_t calc = 0;
     //    valid_params_if(PIO, wrap < PIO_INSTRUCTION_COUNT);
@@ -312,15 +330,11 @@ void MIPS16 cmd_pio(void) {
     if (tp) {
         getargs(&tp, 13, (unsigned char *)",");
         if (checkstring(argv[0], (unsigned char *)"OFF")) {
-            dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-            if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-            if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
+            pio_rp2_dma_abort_pair(dma_rx_chan, dma_rx_chan2);
             return;
         }
         if (DMAinterruptRX || dma_channel_is_busy(dma_rx_chan) || dma_channel_is_busy(dma_rx_chan2)) {
-            dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-            if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-            if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
+            pio_rp2_dma_abort_pair(dma_rx_chan, dma_rx_chan2);
         }
         if (argc < 7) error("Syntax");
         int pior = getint(argv[0], 0, PIOMAX - 1);
@@ -360,10 +374,6 @@ void MIPS16 cmd_pio(void) {
         dma_channel_config c = dma_channel_get_default_config(dma_rx_chan);
         channel_config_set_read_increment(&c, false);
         channel_config_set_transfer_data_size(&c, dmasize);
-        if (dma_rx_pio == 2)
-            channel_config_set_dreq(&c, 20 + sm);
-        else
-            channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
         channel_config_set_dreq(&c, pio_get_dreq(pio, sm, false));
         if (argc == 13) {
             int size = getinteger(argv[12]);
@@ -413,15 +423,11 @@ void MIPS16 cmd_pio(void) {
     if (tp) {
         getargs(&tp, 13, (unsigned char *)",");
         if (checkstring(argv[0], (unsigned char *)"OFF")) {
-            dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-            if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-            if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
+            pio_rp2_dma_abort_pair(dma_tx_chan, dma_tx_chan2);
             return;
         }
         if (DMAinterruptTX || dma_channel_is_busy(dma_tx_chan) || dma_channel_is_busy(dma_tx_chan2)) {
-            dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-            if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-            if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
+            pio_rp2_dma_abort_pair(dma_tx_chan, dma_tx_chan2);
         }
         if (argc < 7) error("Syntax");
         int pior = getint(argv[0], 0, PIOMAX - 1);
@@ -460,11 +466,7 @@ void MIPS16 cmd_pio(void) {
         }
         dma_channel_config c = dma_channel_get_default_config(dma_tx_chan);
         channel_config_set_write_increment(&c, false);
-        if (dma_tx_pio == 2)
-            channel_config_set_dreq(&c, 16 + sm);
-        else
-            channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
-
+        channel_config_set_dreq(&c, pio_get_dreq(pio, sm, true));
         channel_config_set_transfer_data_size(&c, dmasize);
         if (argc == 13) {
             int size = getinteger(argv[12]);
@@ -1340,7 +1342,7 @@ void MIPS16 cmd_pio(void) {
         if (argc > 11 && *argv[12]) start = getint(argv[12], 0, 31);
         if (argc > 13 && *argv[14]) sideout = getint(argv[14], 0, 1);
         if (argc > 15 && *argv[16]) setout = getint(argv[16], 0, 1);
-        if (argc > 171 && *argv[18]) outout = getint(argv[18], 0, 1);
+        if (argc > 17 && *argv[18]) outout = getint(argv[18], 0, 1);
         pio_init(pior, sm, pinctrl, execctrl, shiftctrl, start, clock, sideout, setout, outout);
         return;
     }
@@ -1835,12 +1837,8 @@ int pio_rp2_dma_tx_busy(void) {
 }
 
 void pio_rp2_dma_abort(void) {
-    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-    if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-    if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
-    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-    if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-    if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
+    pio_rp2_dma_abort_pair(dma_rx_chan, dma_rx_chan2);
+    pio_rp2_dma_abort_pair(dma_tx_chan, dma_tx_chan2);
 }
 
 void pio_rp2_teardown(void) {

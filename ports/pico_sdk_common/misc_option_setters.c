@@ -50,9 +50,16 @@ int MIPS16 port_misc_option_setter(unsigned char * cmdline) {
         pin1 = getinteger(argv[0]);
         if (!code) pin1 = codemap(pin1);
         if (IsInvalidPin(pin1)) error("Invalid pin");
-        if (ExtCurrentConfig[pin1] != EXT_NOT_CONFIG) error("Pin | is in use", pin1);
         if (!(pin1 == 1 || pin1 == 11 || pin1 == 25 || pin1 == 62))
             error("Invalid pin for PSRAM chip select (GP0,GP8,GP19,GP47)");
+        if (ExtCurrentConfig[pin1] != EXT_NOT_CONFIG) {
+            bool picocalc_gp0_keypad_reservation =
+                Option.KeyboardConfig == CONFIG_I2C &&
+                pin1 == PINMAP[0] &&
+                ExtCurrentConfig[pin1] == EXT_BOOT_RESERVED;
+            if (!picocalc_gp0_keypad_reservation)
+                error("Pin | is in use", pin1);
+        }
         Option.PSRAM_CS_PIN = pin1;
         SaveOptions();
         _excep_code = RESET_COMMAND;
