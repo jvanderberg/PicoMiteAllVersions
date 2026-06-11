@@ -292,7 +292,7 @@ static int run_script(const char * filename, int use_interpreter) {
 
     if (use_interpreter) {
         rc = mmbasic_runtime_run_source(NULL, source,
-                                        MMBASIC_SOURCE_FLAGS_BATCH_LOAD |
+                                        MMBASIC_SOURCE_FLAGS_HOST_LOAD |
                                             MMBASIC_RUNTIME_RUN_FLAG_CLEAR_RUNTIME |
                                             MMBASIC_RUNTIME_RUN_FLAG_PREPARE_PROGRAM);
     } else {

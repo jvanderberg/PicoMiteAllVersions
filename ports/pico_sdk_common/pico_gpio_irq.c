@@ -71,8 +71,12 @@ static void __not_in_flash_func(pico_gpio_irq_dispatch)(void) {
     }
 }
 
+void pico_gpio_irq_set_highest_priority(void) {
+    irq_set_priority(IO_IRQ_BANK0, 0);
+}
+
 void __not_in_flash_func(pico_gpio_irq_set_enabled)(unsigned int gpio,
-                                                    uint32_t events,
+                                                    uint32_t edge_mask,
                                                     bool enabled) {
     /* Install our shared handler the first time anyone registers a
      * pin. Guarded against a two-core race even though PicoMite
@@ -97,6 +101,11 @@ void __not_in_flash_func(pico_gpio_irq_set_enabled)(unsigned int gpio,
         pico_gpio_registered_mask &= ~(1ull << gpio);
     restore_interrupts(save);
 
+    /* Translate the HAL edge vocabulary to the SDK's event bits — the
+     * numeric values differ (HAL_PIN_EDGE_RISE=1/FALL=2 vs the SDK's
+     * EDGE_FALL=4/EDGE_RISE=8). */
+    uint32_t events = ((edge_mask & HAL_PIN_EDGE_RISE) ? GPIO_IRQ_EDGE_RISE : 0u) |
+                      ((edge_mask & HAL_PIN_EDGE_FALL) ? GPIO_IRQ_EDGE_FALL : 0u);
     gpio_set_irq_enabled(gpio, events, enabled);
     if (enabled) irq_set_enabled(IO_IRQ_BANK0, true);
 }

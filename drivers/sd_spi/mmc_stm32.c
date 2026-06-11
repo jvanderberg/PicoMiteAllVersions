@@ -1041,11 +1041,12 @@ void InitReservedIO(void) {
     if (Option.PSRAM_CS_PIN) {
         ExtCfg(Option.PSRAM_CS_PIN, EXT_BOOT_RESERVED, 0);
     }
-    /* PicoCalc keypad-matrix pin reservation. Real on PicoCalc-flavoured
-	 * rp2350 PicoMite (drivers/i2c_picocalc_kbd/i2c_keypad_real.c
-	 * sets HAL_PORT_HAS_I2C_KEYPAD=1); stub no-op elsewhere. */
-    hal_i2c_keypad_reserve_io();
 #endif
+    /* PicoCalc keypad pin reservation (GP0/GP1 = keypad MCU UART).
+	 * Real on the four PicoCalc ports, rp2040 and rp2350 alike
+	 * (drivers/i2c_picocalc_kbd/i2c_keypad_real.c); stub no-op
+	 * elsewhere. */
+    hal_i2c_keypad_reserve_io();
     /* Pure-VGA scanout recovery from soft reset. Real impl in the
 	 * VGA-only side of the port_sources.cmake split (vga_qvga_modes.c);
 	 * stub no-op on HDMI / non-VGA ports. */
@@ -1207,7 +1208,18 @@ char * pinsearch(int pin) {
 	 * 0 and the runtime guards (`Option.X &&`) keep the body
 	 * unreached. */
     int ssd = PinDef[Option.SSD_DATA].GPno;
-    if (Option.LCD_CD && pin == Option.LCD_CD)
+#ifdef rp2350
+    if (Option.PSRAM_CS_PIN && pin == Option.PSRAM_CS_PIN)
+        strcpy(buff, "PSRAM CS");
+    /* PicoCalc: GP0/GP1 are the keypad MCU's UART (see
+     * hal_i2c_keypad_reserve_io). */
+    else if (Option.KeyboardConfig == CONFIG_I2C && (pin == PINMAP[0] || pin == PINMAP[1]))
+        strcpy(buff, "KEYPAD MCU UART");
+#else
+    if (Option.KeyboardConfig == CONFIG_I2C && (pin == PINMAP[0] || pin == PINMAP[1]))
+        strcpy(buff, "KEYPAD MCU UART");
+#endif
+    else if (Option.LCD_CD && pin == Option.LCD_CD)
         strcpy(buff, "LCD DC");
     else if (Option.LCD_CS && pin == Option.LCD_CS)
         strcpy(buff, "LCD CS");
@@ -1344,8 +1356,6 @@ char * pinsearch(int pin) {
 	 * runtime guards keep them unreached on non-PicoCalc rp2350
 	 * ports. PINMAP[] is sized 48 on every rp2350 port so the
 	 * indexing is safe to share. */
-    else if (pin == Option.PSRAM_CS_PIN)
-        strcpy(buff, "PSRAM CS");
     else if (Option.LOCAL_KEYBOARD && pin == PINMAP[24])
         strcpy(buff, "KEYBOARD C1");
     else if (Option.LOCAL_KEYBOARD && pin == PINMAP[26])

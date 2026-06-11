@@ -150,3 +150,8 @@ void hal_pin_bank_xor_mask(uint64_t mask) {
     for (uint32_t pin = 1; pin <= 17; pin++)
         if (mask & (1ull << pin)) hal_pin_toggle(pin);
 }
+
+/* No boot button on PC hardware. */
+bool hal_pin_bootsel_pressed(void) {
+    return false;
+}

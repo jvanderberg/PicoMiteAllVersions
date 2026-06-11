@@ -2,14 +2,6 @@
 
 #include <string.h>
 
-#if defined(__has_include)
-#if __has_include("pico.h")
-#include "pico.h"
-#elif __has_include("pico/platform.h")
-#include "pico/platform.h"
-#endif
-#endif
-
 #include "MMBasic_Includes.h"
 #include "MM_Misc.h"
 #include "Memory.h"

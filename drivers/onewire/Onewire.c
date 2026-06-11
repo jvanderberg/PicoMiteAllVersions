@@ -57,7 +57,6 @@ option) any later version.
 #include "hardware/gpio.h"
 #define FALSE 0
 #define TRUE 1
-#define PinRead(a) gpio_get(PinDef[a].GPno)
 
 void owReset(unsigned char * p);
 void owWrite(unsigned char * p);

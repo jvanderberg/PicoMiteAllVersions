@@ -78,7 +78,7 @@ target_sources(PicoMite PRIVATE
     ${CMAKE_SOURCE_DIR}/drivers/psram_heap/psram.c
     ${CMAKE_SOURCE_DIR}/third_party/upng/upng.c
     ${CMAKE_SOURCE_DIR}/drivers/audio_mp3/audio_mp3_real.c
-    ${CMAKE_SOURCE_DIR}/drivers/heartbeat/heartbeat_stub.c
+    ${CMAKE_SOURCE_DIR}/drivers/heartbeat/heartbeat_cyw43.c
     ${CMAKE_SOURCE_DIR}/drivers/psram_heap/psram_heap_real.c
     ${CMAKE_SOURCE_DIR}/drivers/upng_sprite/upng_sprite.c
 
@@ -129,7 +129,8 @@ target_compile_options(PicoMite PRIVATE                                         
 # Use the SDK's runtime-tunable divider mode (CYW43_PIO_CLOCK_DIV_DYNAMIC)
 # and pick the smallest int divider that keeps gSPI ≤ 45 MHz at boot
 # based on the actual clock_get_hz(clk_sys) value (see
-# shared/net/MMsetwifi.c::cyw43_pio_divider_for_clk_sys).  This adapts to whatever
+# drivers/net_lwip_raw/hal_net_lwip.c::cyw43_pio_divider_for_clk_sys).
+# This adapts to whatever
 # OPTION CPUSPEED the user has set without leaving headroom on the
 # table at low CPU speeds — at 252 MHz we now run gSPI at 42 MHz
 # instead of the previous fixed 31 MHz.

@@ -58,7 +58,7 @@ void MouseKBDIntEnable(int status) {
         PinSetBit(MOUSE_DATA, TRISSET);  // data low
         if (!CallBackEnabled) {
             CallBackEnabled = 64;
-            pico_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true);
+            pico_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, HAL_PIN_EDGE_FALL, true);
         } else {
             CallBackEnabled |= 64;
             gpio_set_irq_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, true);
@@ -68,7 +68,7 @@ void MouseKBDIntEnable(int status) {
         PinSetBit(MOUSE_DATA, TRISSET);  // data low
         if (CallBackEnabled == 64) {
             CallBackEnabled = 0;
-            pico_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[MOUSE_CLOCK].GPno, HAL_PIN_EDGE_FALL, false);
         } else {
             gpio_set_irq_enabled(PinDef[MOUSE_CLOCK].GPno, GPIO_IRQ_EDGE_FALL, false);
             CallBackEnabled &= (~64);

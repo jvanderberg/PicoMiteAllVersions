@@ -28,7 +28,6 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 ************************************************************************************************************************/
 #ifndef SPI_LCD_HEADER
 #define SPI_LCD_HEADER
-#include "hardware/spi.h"
 
 extern void ConfigDisplaySPI(unsigned char * p);
 extern void InitDisplaySPI(int InitOnly);
@@ -64,8 +63,9 @@ extern void DrawBitmapSPISCR(int x1, int y1, int width, int height, int scale, i
 extern void ReadBufferSPISCR(int x1, int y1, int x2, int y2, unsigned char * p);
 extern void ScrollLCDSPISCR(int lines);
 extern void set_cs(void);
-extern void __not_in_flash_func(spi_write_fast)(spi_inst_t * spi, const uint8_t * src, size_t len);
-extern void __not_in_flash_func(spi_finish)(spi_inst_t * spi);
+/* spi_write_fast / spi_finish (raw spi_inst_t fast-path writes) are RP
+ * driver internals; the RP TUs that share them declare them alongside
+ * their hardware/spi.h include. */
 #define SSD1331_COLORORDER_RGB
 #define SSD1331_CMD_DRAWLINE 0x21
 #define SSD1331_CMD_DRAWRECT 0x22

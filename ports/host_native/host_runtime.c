@@ -6,7 +6,7 @@
  * stdin/stdout console routing (MMInkey, MMgetchar, putConsole,
  * MMputchar, MMPrintString, SerialConsolePutC), REPL state flags
  * (host_repl_mode), the hardware-world global backing store (Option,
- * FontTable, PinDef, inttbl, dma_hw, watchdog_hw, etc. — zero-initialised
+ * FontTable, PinDef, inttbl, etc. — zero-initialised
  * because nothing drives them on host), and the calendar shim wrappers
  * shims that preserve UTC semantics around host_platform.h's rename.
  *
@@ -77,8 +77,6 @@ extern void host_fastgfx_reset_state(void);
 /* Hardware / system state */
 uint32_t _excep_code = 0;
 uint64_t _persistent = 0;
-uint32_t ADC_dma_chan = 0;
-uint32_t ADC_dma_chan2 = 0;
 bool ADCDualBuffering = 0;
 volatile unsigned int AHRSTimer = 0;
 volatile int ConsoleTxBufHead = 0;
@@ -301,8 +299,6 @@ volatile MMFLOAT * volatile a3float = NULL, * volatile a4float = NULL;
 uint32_t ADCmax = 0;
 char * ADCInterrupt = NULL;
 short * ADCbuffer = NULL;
-volatile uint8_t * adcint = NULL;
-uint8_t *adcint1 = NULL, *adcint2 = NULL;
 unsigned char * KeypadInterrupt = NULL;
 MMFLOAT ADCscale[4] = {0}, ADCbottom[4] = {0};
 
@@ -368,15 +364,6 @@ uint16_t tilebcols[80 * 40] = {0};
 int MOUSE_CLOCK = 0, MOUSE_DATA = 0;
 
 volatile uint64_t IRoffset = 0;
-
-/* dma_hw and watchdog_hw - dummy storage for host build.
- * Commands.c accesses dma_hw->intf0 etc, so provide enough storage. */
-#include "hardware/dma.h"
-#include "hardware/structs/watchdog.h"
-static dma_hw_t _dma_hw_store = {0};
-static watchdog_hw_t _wdog_hw_store = {0};
-dma_hw_t * dma_hw = &_dma_hw_store;
-watchdog_hw_t * watchdog_hw = &_wdog_hw_store;
 
 /* Pixel primitive used by the rest of this file (draw_line, glyph, etc.).
  * Keeps the same signature as the old static inline so call sites are
@@ -1005,13 +992,6 @@ int port_mminfo_scroll_start(int64_t * out_iret) {
 int port_mminfo_screenbuff(int64_t * out_iret) {
     (void)out_iret;
     return 0;
-}
-
-/* PIO interrupt-poll lookup — host has no PIO. */
-#include "hardware/pio.h"
-PIO port_pio_for_index(int pio_idx) {
-    (void)pio_idx;
-    return NULL;
 }
 
 /* POKE DISPLAY raw panel write — host has no display panel. */

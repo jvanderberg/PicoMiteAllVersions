@@ -10,3 +10,7 @@ void hal_watchdog_disable(void) {
 void hal_watchdog_enable_ms(unsigned int ms, int pause_on_debug) {
     watchdog_enable(ms, pause_on_debug);
 }
+
+void hal_watchdog_reboot(void) {
+    watchdog_enable(1, 1);
+}

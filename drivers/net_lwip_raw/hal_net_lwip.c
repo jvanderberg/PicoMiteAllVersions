@@ -12,7 +12,9 @@
 #include <string.h>
 
 #include "hal/hal_net.h"
+#include "hardware/clocks.h"
 #include "pico/cyw43_arch.h"
+#include "pico/cyw43_driver.h"
 #include "pico/time.h"
 #include "lwip/dhcp.h"
 #include "lwip/dns.h"
@@ -137,8 +139,31 @@ uint32_t hal_net_capabilities(void) {
            HAL_NET_CAP_UDP_SEND | HAL_NET_CAP_MQTT_PLAIN;
 }
 
+#if CYW43_PIO_CLOCK_DIV_DYNAMIC
+/* CYW43 gSPI tops out at ~50 MHz.  Pick the smallest integer divider
+ * that keeps clk_sys/div under 45 MHz so we leave a little margin and
+ * the same divider is safe across small clock-source jitter.  Called
+ * before cyw43_arch_init so the bus initialises with the right rate
+ * for whatever Option.CPU_Speed the user has persisted.
+ *
+ * Examples:
+ *   252 MHz → div 6 → 42.0 MHz gSPI
+ *   315 MHz → div 7 → 45.0 MHz
+ *   378 MHz → div 9 → 42.0 MHz
+ *   126 MHz → div 3 → 42.0 MHz   (low-power modes still safe) */
+static void cyw43_pio_divider_for_clk_sys(void) {
+    uint32_t clk_hz = clock_get_hz(clk_sys);
+    uint32_t div = (clk_hz + 44999999u) / 45000000u;
+    if (div < 2) div = 2; /* SDK minimum */
+    cyw43_set_pio_clock_divisor((uint16_t)div, 0);
+}
+#endif
+
 int hal_net_init(void) {
-    return HAL_NET_OK;
+#if CYW43_PIO_CLOCK_DIV_DYNAMIC
+    cyw43_pio_divider_for_clk_sys();
+#endif
+    return cyw43_arch_init() == 0 ? HAL_NET_OK : HAL_NET_ERR;
 }
 
 int hal_net_tls_set_ca(const void * pem, size_t len) {
@@ -524,6 +549,11 @@ int hal_net_wifi_status(void) {
 
 int hal_net_tcpip_status(void) {
     return cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA);
+}
+
+int hal_net_link_up(void) {
+    return cyw43_tcpip_link_status(&cyw43_state, CYW43_ITF_STA) ==
+           CYW43_LINK_UP;
 }
 
 int hal_net_ip_address(char * out, size_t out_len) {

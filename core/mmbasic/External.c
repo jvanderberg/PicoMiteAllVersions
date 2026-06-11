@@ -35,13 +35,18 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "Hardware_Includes.h"
 #include "port_config.h"
 #include "hal/hal_time.h"
+#include "hal/hal_adc.h"
 #include "hal/hal_pin.h"
+#include "hal/hal_cycle_counter.h"
 #include "hal/hal_fast_timer.h"
+#include "hal/hal_pwm.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_gui_controls.h"
+#include "hal/hal_display_backlight.h"
 #include "hal/hal_display_oled_spi.h"
 #include "hal/hal_heartbeat.h"
 #include "hal/hal_i2c_keypad.h"
+#include "hal/hal_watchdog.h"
 #include "vm_sys_pwm.h"
 #include "vm_sys_pin.h"
 #include "i2c_config.h"
@@ -54,20 +59,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * setBacklight() means the call only fires when an SSD-class panel is
  * configured, which the OPTION setter rejects on non-SSD1963 ports. */
 extern void SetBacklightSSD1963(int intensity);
-#include "hardware/watchdog.h"
-#include "pico/stdlib.h"
-#include "hardware/clocks.h"
-#include "hardware/pwm.h"
-//#include "hardware/gpio.h"
-#include "hardware/adc.h"
-#include "hardware/structs/systick.h"
-#include "hardware/structs/pwm.h"
-#include "hardware/structs/pads_bank0.h"
-#include "hardware/structs/adc.h"
-#include "hardware/dma.h"
-#include <hardware/structs/ioqspi.h>
-#include <hardware/sync.h>
-#include <hardware/structs/sio.h>
+#include "drivers/pio_rp2/pio_rp2.h"
 #include "pico_gpio_irq.h"
 
 #define ANA_AVERAGE 10
@@ -194,13 +186,8 @@ char * ADCInterrupt;
 volatile MMFLOAT * volatile a1float = NULL, * volatile a2float = NULL, * volatile a3float = NULL, * volatile a4float = NULL;
 volatile int ADCpos = 0;
 float frequency;
-uint32_t ADC_dma_chan = ADC_DMA;
-uint32_t ADC_dma_chan2 = ADC_DMA2;
 short * ADCbuffer = NULL;
 void PWMoff(int slice);
-volatile uint8_t * adcint = NULL;
-uint8_t * adcint1 = NULL;
-uint8_t * adcint2 = NULL;
 MMFLOAT ADCscale[4], ADCbottom[4];
 extern void mouse0close(void);
 //Vector to CFunction routine called every command (ie, from the BASIC interrupt checker)
@@ -238,18 +225,18 @@ int codecheck(unsigned char * line) {
         return 4;
     return 0;
 }
-/* PWM-wrap ISR used by the RP2350 fast-timer path. Installed only by
- * the rp2350 fast-timer driver; on other ports the function sits unused
- * in flash (linker -gc-sections drops it). */
-void __not_in_flash_func(on_pwm_wrap_1)(void) {
-    pwm_clear_irq(0);
+/* PWM-wrap callback used by the RP2350 fast-timer path. Installed only
+ * by the rp2350 fast-timer driver, which acknowledges the wrap IRQ
+ * before invoking it; on other ports the function sits unused in flash
+ * (linker -gc-sections drops it). */
+void PORT_TIMING_CRITICAL_FUNC(on_pwm_wrap_1)(void) {
     INT5Count++;
 }
 
 void SoftReset(void) {
     _excep_code = SOFT_RESET;
     hal_keyboard_quiesce_for_reset();
-    watchdog_enable(1, 1);
+    hal_watchdog_reboot();
     while (1);
 }
 void PORT_RAM_FUNC(PinSetBit)(int pin, unsigned int offset) {
@@ -443,28 +430,28 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     ClearPin(pin); //disable the link to any special functions
     if (pin == Option.INT1pin) {
         if (CallBackEnabled == 2)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~2);
     }
     if (pin == Option.INT2pin) {
         if (CallBackEnabled == 4)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~4);
     }
     if (pin == Option.INT3pin) {
         if (CallBackEnabled == 8)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~8);
     }
     if (pin == Option.INT4pin) {
         if (CallBackEnabled == 16)
-            pico_gpio_irq_set_enabled(PinDef[pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~16);
@@ -631,22 +618,19 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     case EXT_CNT_IN:
     case EXT_FREQ_IN: // same as counting, so fall through
     case EXT_PER_IN:  // same as counting, so fall through
-        edge = GPIO_IRQ_EDGE_RISE;
-        if (cfg == EXT_CNT_IN && option == 2) edge = GPIO_IRQ_EDGE_FALL;
-        if (cfg == EXT_CNT_IN && option >= 3) edge = GPIO_IRQ_EDGE_FALL | GPIO_IRQ_EDGE_RISE;
+        edge = HAL_PIN_EDGE_RISE;
+        if (cfg == EXT_CNT_IN && option == 2) edge = HAL_PIN_EDGE_FALL;
+        if (cfg == EXT_CNT_IN && option >= 3) edge = HAL_PIN_EDGE_BOTH;
         if (option == 1 || option == 4) hal_pin_set_pulls(PinDef[pin].GPno, HAL_PIN_PULL_DOWN);
         if (option == 2 || option == 5) hal_pin_set_pulls(PinDef[pin].GPno, HAL_PIN_PULL_UP);
-        irq_set_priority(IO_IRQ_BANK0, 0);
+        pico_gpio_irq_set_highest_priority();
         PinSetBit(pin, TRISSET);
         if (pin == Option.INT1pin) {
             if (!CallBackEnabled) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 2;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 2;
             }
             INT1Count = INT1Value = 0;
@@ -661,10 +645,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 4;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 4;
             }
             INT2Count = INT2Value = 0;
@@ -679,10 +660,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 8;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 8;
             }
             INT3Count = INT3Value = 0;
@@ -697,10 +675,7 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
                 pico_gpio_irq_set_enabled(PinDef[pin].GPno, edge, true);
                 CallBackEnabled = 16;
             } else {
-                hal_pin_irq_set_edge(PinDef[pin].GPno,
-                                     ((edge & GPIO_IRQ_EDGE_RISE) ? HAL_PIN_EDGE_RISE : 0) |
-                                         ((edge & GPIO_IRQ_EDGE_FALL) ? HAL_PIN_EDGE_FALL : 0),
-                                     true);
+                hal_pin_irq_set_edge(PinDef[pin].GPno, edge, true);
                 CallBackEnabled |= 16;
             }
             INT4Count = INT4Value = 0;
@@ -934,23 +909,15 @@ void MIPS16 ExtCfg(int pin, int cfg, int option) {
     }
     uSec(2);
 }
-extern int adc_clk_div;
 int64_t PORT_RAM_FUNC(ExtInp)(int pin) {
     if (ExtCurrentConfig[pin] == EXT_ANA_IN || ExtCurrentConfig[pin] == EXT_ADCRAW) {
-        if (adc_clk_div != adc_hw->div) {
-            SetADCFreq(500000.0);
-        }
+        hal_adc_restore_default_clock();
 
         if (last_adc != pin) {
             last_adc = pin;
-            adc_select_input(PinDef[pin].ADCpin);
+            hal_pin_adc_select(PinDef[pin].ADCpin);
         }
-        int a = adc_read();
-        if (adc_hw->cs & (ADC_CS_ERR_STICKY_BITS | ADC_CS_ERR_BITS)) {
-            hw_set_bits(&adc_hw->cs, ADC_CS_ERR_STICKY_BITS);
-            a = -1;
-        }
-        return a;
+        return hal_adc_read_single();
     } else if (ExtCurrentConfig[pin] == EXT_FREQ_IN || ExtCurrentConfig[pin] == EXT_PER_IN) {
         // select input channel
         if (pin == Option.INT1pin) return INT1Value;
@@ -1388,27 +1355,6 @@ process:
         InterruptUsed = true;
     }
 }
-/*
- * @cond
- * The following section will be excluded from the documentation.
- */
-bool __no_inline_not_in_flash_func(bb_get_bootsel_button)() {
-    const uint CS_PIN_INDEX = 1;
-    fileio_flash_write_begin();
-    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
-                    GPIO_OVERRIDE_LOW << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
-                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-    for (volatile int i = 0; i < 100; ++i);
-    bool button_state = !(sio_hw->gpio_hi_in & (1u << CS_PIN_INDEX));
-    hw_write_masked(&ioqspi_hw->io[CS_PIN_INDEX].ctrl,
-                    GPIO_OVERRIDE_NORMAL << IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_LSB,
-                    IO_QSPI_GPIO_QSPI_SS_CTRL_OEOVER_BITS);
-    fileio_flash_write_end();
-
-    return button_state;
-}
-/*  @endcond */
-
 void fun_pin(void) {
     char code;
     int pin, i, j, b[ANA_AVERAGE];
@@ -1427,7 +1373,7 @@ void fun_pin(void) {
         return;
     }
     if (checkstring(ep, (unsigned char *)"BOOTSEL")) {
-        iret = bb_get_bootsel_button();
+        iret = hal_pin_bootsel_pressed();
         targ = T_INT;
         return;
     }
@@ -1770,7 +1716,7 @@ void cmd_ir(void) {
     if (checkstring(cmdline, (unsigned char *)"CLOSE")) {
         if (IrState == IR_CLOSED) error("Not Open");
         if (CallBackEnabled == 1)
-            pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         else
             hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         IrInterrupt = NULL;
@@ -1828,7 +1774,7 @@ void IrInit(void) {
     ExtCfg(IRpin, EXT_IR, 0);
     ExtCfg(IRpin, EXT_COM_RESERVED, 0);
     if (!CallBackEnabled) {
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, true);
         CallBackEnabled = 1;
     } else {
         hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, true);
@@ -1849,179 +1795,6 @@ void IRSendSignal(int pin, int half_cycles) {
     while (half_cycles--) {
         PinSetBit(pin, LATINV);
         uSec(13);
-    }
-}
-void MIPS16 set_PWM(int slice, MMFLOAT duty1, MMFLOAT duty2, int high1, int high2, int delaystart) {
-    if (slice == 0 && PWM0Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 0 && PWM0Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    /* fast_timer_active is always false on RP2040 (no fast-timer driver),
-     * so this check never fires there and stays a simple runtime condition. */
-    if (slice == 0 && fast_timer_active) error("Channel 0 in use for fast timer");
-    if (slice == 1 && PWM1Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 1 && PWM1Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 2 && PWM2Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 2 && PWM2Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 3 && PWM3Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 3 && PWM3Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 4 && PWM4Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 4 && PWM4Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 5 && PWM5Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 5 && PWM5Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 6 && PWM6Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 6 && PWM6Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 7 && PWM7Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 7 && PWM7Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 8 && PWM8Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 8 && PWM8Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 9 && PWM9Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 9 && PWM9Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 10 && PWM10Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 10 && PWM10Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 11 && PWM11Apin == 99 && duty1 >= 0.0) error("Pin not set for PWM");
-    if (slice == 11 && PWM11Bpin == 99 && duty2 >= 0.0) error("Pin not set for PWM");
-    if (slice == 0 && PWM0Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM0Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 0 && PWM0Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM0Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 1 && PWM1Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM1Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 1 && PWM1Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM1Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 2 && PWM2Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM2Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 2 && PWM2Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM2Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 3 && PWM3Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM3Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 3 && PWM3Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM3Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 4 && PWM4Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM4Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 4 && PWM4Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM4Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 5 && PWM5Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM5Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 5 && PWM5Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM5Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 6 && PWM6Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM6Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 6 && PWM6Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM6Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 7 && PWM7Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM7Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 7 && PWM7Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM7Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 8 && PWM8Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM8Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 8 && PWM8Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM8Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 9 && PWM9Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM9Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 9 && PWM9Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM9Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 10 && PWM10Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM10Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 10 && PWM10Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM10Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 11 && PWM11Apin != 99 && duty1 >= 0.0) {
-        ExtCfg(PWM11Apin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_A, high1);
-    }
-    if (slice == 11 && PWM11Bpin != 99 && duty2 >= 0.0) {
-        ExtCfg(PWM11Bpin, EXT_COM_RESERVED, 0);
-        pwm_set_chan_level(slice, PWM_CHAN_B, high2);
-    }
-    if (slice == 0 && slice0 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice0 = 1;
-    }
-    if (slice == 1 && slice1 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice1 = 1;
-    }
-    if (slice == 2 && slice2 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice2 = 1;
-    }
-    if (slice == 3 && slice3 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice3 = 1;
-    }
-    if (slice == 4 && slice4 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice4 = 1;
-    }
-    if (slice == 5 && slice5 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice5 = 1;
-    }
-    if (slice == 6 && slice6 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice6 = 1;
-    }
-    if (slice == 7 && slice7 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice7 = 1;
-    }
-    if (slice == 8 && slice8 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice8 = 1;
-    }
-    if (slice == 9 && slice9 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice9 = 1;
-    }
-    if (slice == 10 && slice10 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice10 = 1;
-    }
-    if (slice == 11 && slice11 == 0) {
-        if (!delaystart) pwm_set_enabled(slice, true);
-        slice11 = 1;
     }
 }
 
@@ -2098,7 +1871,7 @@ void PWMoff(int slice) {
     if (slice == 11 && PWM11Bpin != 99 && ExtCurrentConfig[PWM11Bpin] < EXT_BOOT_RESERVED) {
         ExtCfg(PWM11Bpin, EXT_NOT_CONFIG, 0);
     }
-    pwm_set_enabled(slice, false);
+    hal_pwm_stop(slice);
 }
 /* Unified backlight set. Signature is (level, setfrequency) on every
  * target; PicoCalc ports write the keypad-controller I2C register
@@ -2119,18 +1892,7 @@ void setBacklight(int level, int setfrequency) {
      * NEXTGEN so the clause just short-circuits there. */
     if (((Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) || Option.DISPLAY_TYPE >= NEXTGEN || (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL)) && Option.DISPLAY_BL) {
         MMFLOAT frequency = setfrequency ? (MMFLOAT)setfrequency : (Option.DISPLAY_TYPE == ILI9488W ? 1000.0 : 50000.0);
-        int wrap = (Option.CPU_Speed * 1000) / frequency;
-        int high = (int)((MMFLOAT)Option.CPU_Speed / frequency * level * 10.0);
-        int div = 1;
-        while (wrap > 65535) {
-            wrap >>= 1;
-            if (level >= 0.0) high >>= 1;
-            div <<= 1;
-        }
-        wrap--;
-        if (div != 1) pwm_set_clkdiv(BacklightSlice, (float)div);
-        pwm_set_wrap(BacklightSlice, wrap);
-        pwm_set_chan_level(BacklightSlice, BacklightChannel, high);
+        hal_display_backlight_set(level, frequency);
     } else if (Option.DISPLAY_TYPE <= I2C_PANEL) {
         level *= 255;
         level /= 100;
@@ -2747,34 +2509,34 @@ void fun_dev(void) {
  * @cond
  * The following section will be excluded from the documentation.
  */
-void __not_in_flash_func(bitstream)(int gppin, unsigned int * data, int num) {
+void PORT_TIMING_CRITICAL_FUNC(bitstream)(int gppin, unsigned int * data, int num) {
     for (int i = 0; i < num; i++) {
         hal_pin_bank_xor_mask(gppin);
         shortpause(data[i])
     }
 }
-void __not_in_flash_func(serialtx)(int gppin, unsigned char * string, int bittime) {
+void PORT_TIMING_CRITICAL_FUNC(serialtx)(int gppin, unsigned char * string, int bittime) {
     int mask;
     int count = 0;
     while (count++ < string[0]) {
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         hal_pin_bank_clr_mask(gppin); // send the start bit
         mask = 1;
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         for (mask = 1; mask < 0x100; mask <<= 1) {
             if (string[count] & mask) {       // check the bit to send
                 hal_pin_bank_set_mask(gppin); // send the start bit
             } else {
                 hal_pin_bank_clr_mask(gppin); // send the start bit
             }
-            while (systick_hw->cvr > bittime) {
+            while (hal_cycle_remaining() > bittime) {
             };
-            systick_hw->cvr = 0;
+            hal_cycle_restart();
         }
         hal_pin_bank_set_mask(gppin); // send the start bit
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
     }
 }
@@ -2783,25 +2545,25 @@ unsigned short FloatToUint32(MMFLOAT x) {
         error("Number range");
     return (x >= 0 ? (unsigned int)(x + 0.5) : (unsigned int)(x - 0.5));
 }
-int __not_in_flash_func(serialrx)(int gppin, unsigned char * string, int timeout, int bittime, int half, int maxchars, char * termchars) {
+int PORT_TIMING_CRITICAL_FUNC(serialrx)(int gppin, unsigned char * string, int timeout, int bittime, int half, int maxchars, char * termchars) {
     int i, c, count = 0;
     while (1) {
         while (hal_pin_bank_read_all() & gppin) {    // wait for the start bit
             if (readusclock() >= timeout) return -1; // return if there is a timeout
         }
-        systick_hw->cvr = 0;
-        while (systick_hw->cvr > half) {
+        hal_cycle_restart();
+        while (hal_cycle_remaining() > half) {
         };
-        systick_hw->cvr = 0;
+        hal_cycle_restart();
         if (hal_pin_bank_read_all() & gppin) continue; // go around again if not low
         c = 0;
         for (i = 0; i < 8; i++) {
-            while (systick_hw->cvr > bittime) {
+            while (hal_cycle_remaining() > bittime) {
             };
-            systick_hw->cvr = 0;
+            hal_cycle_restart();
             c |= (((hal_pin_bank_read_all() & gppin) ? 1 : 0) << i); // and add this bit in
         }
-        while (systick_hw->cvr > bittime) {
+        while (hal_cycle_remaining() > bittime) {
         };
         if (!(hal_pin_bank_read_all() & gppin)) continue; // a framing error if not high
         count++;
@@ -2906,8 +2668,8 @@ void cmd_device(void) {
         if (argc > 9 && *argv[10]) maxchars = getint(argv[10], 1, 255);
         if (argc == 13) termchars = (char *)getstring(argv[12]);
         writeusclock(0);
-        int bittime = 16777215 + 12 - (ticks_per_second / baudrate);
-        int half = 16777215 + 12 - (ticks_per_second / (baudrate << 1));
+        int bittime = (int)hal_cycle_reload() + 12 - (ticks_per_second / baudrate);
+        int half = (int)hal_cycle_reload() + 12 - (ticks_per_second / (baudrate << 1));
         if (!(hal_pin_bank_read_all() & gppin)) error("Framing error");
         fileio_flash_write_begin();
         int istat = serialrx(gppin, string, timeout, bittime, half, maxchars, termchars);
@@ -2935,7 +2697,7 @@ void cmd_device(void) {
         if (!(ExtCurrentConfig[pin] == EXT_DIG_OUT || ExtCurrentConfig[pin] == EXT_NOT_CONFIG)) error("Pin %/| is not off or an output", pin, pin);
         if (ExtCurrentConfig[pin] == EXT_NOT_CONFIG) ExtCfg(pin, EXT_DIG_OUT, 0);
         hal_pin_bank_set_mask(gppin); // send the start bit
-        int bittime = 16777215 + 12 - (ticks_per_second / baudrate);
+        int bittime = (int)hal_cycle_reload() + 12 - (ticks_per_second / baudrate);
         fileio_flash_write_begin();
         serialtx(gppin, string, bittime);
         fileio_flash_write_end();
@@ -2972,7 +2734,7 @@ void cmd_device(void) {
             }
         }
         for (i = 0; i < num; i++) {
-            data[i] = 16777215 + setuptime - ((data[i] * ticks_per_millisecond) / 1000);
+            data[i] = (int)hal_cycle_reload() + setuptime - ((data[i] * ticks_per_millisecond) / 1000);
         }
         //        data[0]+=((ticks_per_millisecond/2000)+(250000-Option.CPU_Speed)/1000);
         fileio_flash_write_begin();
@@ -2986,13 +2748,10 @@ void cmd_device(void) {
  * @cond
  * The following section will be excluded from the documentation.
  */
-void __not_in_flash_func(ADCint)() {
-    // Clear the interrupt request for DMA control channel
-    dma_hw->ints1 = (1u << ADC_dma_chan);
-    if (adcint == adcint2)
-        adcint = adcint1;
-    else
-        adcint = adcint2;
+/* Runs from the capture IRQ each time a continuous-mode (ADC RUN) buffer
+ * fills; checkdetailinterrupts dispatches the BASIC ADC interrupt off the
+ * flag. */
+static void PORT_RAM_FUNC(ADCBufferSwapped)(void) {
     ADCDualBuffering = true;
 }
 /*  @endcond */
@@ -3006,7 +2765,7 @@ void cmd_adc(void) {
         if (!(argc == 3 || argc == 5)) error("Syntax");
         int nbr = getint(argv[2], 1, HAL_PORT_ADC_CHANNEL_MAX);
         frequency = (float)getnumber(argv[0]) * nbr;
-        if (frequency < ADC_CLK_SPEED / 65536.0 / 96.0 || frequency > ADC_CLK_SPEED / 96.0) error("Invalid frequency");
+        if (!hal_adc_clock_valid(frequency)) error("Invalid frequency");
         /* ADC pin reserve. rp2350a==true on RP2040 / RP2040-WEB /
          * RP2350A: channels live on pin slots 31/32/34(/44). RP2350B
          * (rp2350a==false): channels on slots 55/56/57/58. nbr is
@@ -3066,7 +2825,8 @@ void cmd_adc(void) {
         if (!(argc == 3)) error("Argument count");
         ADCmax = 0;
         ADCpos = 0;
-        adcint1 = adcint2 = NULL;
+        uint8_t * adcint1 = NULL;
+        uint8_t * adcint2 = NULL;
         int64_t * adcval = NULL;
         /* parseintegerarray's dim-array type differs by chip (int on
          * RP2350, short on RP2040) to match each platform's native
@@ -3080,58 +2840,7 @@ void cmd_adc(void) {
         adcint2 = (uint8_t *)adcval;
         if (card1 != ADCmax) error("Array size mismatch %,%", card1, ADCmax);
         ADCmax *= 8;
-        dma_channel_cleanup(ADC_dma_chan);
-        dma_channel_cleanup(ADC_dma_chan2);
-        hal_pin_adc_init();
-        adc_set_round_robin(ADCopen == 1 ? 1 : ADCopen == 2 ? 3
-                                           : ADCopen == 3   ? 7
-                                                            : 15);
-        adc_fifo_setup(
-            true,  // Write each completed conversion to the sample FIFO
-            true,  // Enable DMA data request (DREQ)
-            1,     // DREQ (and IRQ) asserted when at least 1 sample present
-            false, // We won't see the ERR bit because of 8 bit reads; disable.
-            true   // Shift each sample to 8 bits when pushing to FIFO
-        );
-        adcint = adcint1;
-        SetADCFreq(frequency);
-        // Set up the DMA to start transferring data as soon as it appears in FIFO
-        dma_channel_config cfg = dma_channel_get_default_config(ADC_dma_chan);
-
-        // Reading from constant address, writing to incrementing byte addresses
-        channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
-        channel_config_set_read_increment(&cfg, false);
-        channel_config_set_write_increment(&cfg, true);
-        channel_config_set_irq_quiet(&cfg, false);
-        channel_config_set_dreq(&cfg, DREQ_ADC);
-        channel_config_set_chain_to(&cfg, ADC_dma_chan2);
-        dma_channel_configure(ADC_dma_chan, &cfg,
-                              adcint,        // dst
-                              &adc_hw->fifo, // src
-                              ADCmax,        // transfer count
-                              false          // start immediately
-        );
-        dma_channel_config c2 = dma_channel_get_default_config(ADC_dma_chan2); //Get configurations for control channel
-        channel_config_set_transfer_data_size(&c2, DMA_SIZE_32);               //Set control channel data transfer size to 32 bits
-        channel_config_set_read_increment(&c2, false);                         //Set control channel read increment to false
-        channel_config_set_write_increment(&c2, false);                        //Set control channel write increment to false
-        channel_config_set_dreq(&c2, 0x3F);
-        //                                channel_config_set_chain_to(&c2, dma_tx_chan);
-        dma_channel_configure(ADC_dma_chan2,
-                              &c2,
-                              &dma_hw->ch[ADC_dma_chan].al2_write_addr_trig,
-                              &adcint,
-                              1,
-                              false); //Configure control channel
-        dma_channel_set_irq1_enabled(ADC_dma_chan, true);
-
-        // set DMA IRQ handler
-        irq_set_exclusive_handler(DMA_IRQ_1, ADCint);
-        // set highest IRQ priority
-        irq_set_enabled(DMA_IRQ_1, true);
-        dma_start_channel_mask(1u << ADC_dma_chan2);
-        adc_run(true);
-        adcint = adcint2;
+        hal_adc_capture_run(ADCopen, frequency, adcint1, adcint2, ADCmax, ADCBufferSwapped);
         ADCDualBuffering = false;
         return;
     }
@@ -3141,7 +2850,7 @@ void cmd_adc(void) {
         getargs(&tp, 1, (unsigned char *)",");
         if (!ADCopen) error("Not open");
         float localfrequency = (float)getnumber(argv[0]) * ADCopen;
-        if (localfrequency < ADC_CLK_SPEED / 65536.0 / 96.0 || localfrequency > ADC_CLK_SPEED / 96.0) error("Invalid frequency");
+        if (!hal_adc_clock_valid(localfrequency)) error("Invalid frequency");
         frequency = localfrequency;
         return;
     }
@@ -3200,45 +2909,14 @@ void cmd_adc(void) {
         }
         ADCmax++;
         ADCbuffer = GetMemory(ADCmax * ADCopen * 2);
-        hal_pin_adc_init();
-        adc_set_round_robin(ADCopen == 1 ? 1 : ADCopen == 2 ? 3
-                                           : ADCopen == 3   ? 7
-                                                            : 15);
-        adc_fifo_setup(
-            true,  // Write each completed conversion to the sample FIFO
-            true,  // Enable DMA data request (DREQ)
-            1,     // DREQ (and IRQ) asserted when at least 1 sample present
-            false, // We won't see the ERR bit because of 8 bit reads; disable.
-            false  // Shift each sample to 8 bits when pushing to FIFO
-        );
-        SetADCFreq(frequency);
-        // Set up the DMA to start transferring data as soon as it appears in FIFO
-        dma_channel_config cfg = dma_channel_get_default_config(ADC_dma_chan);
+        hal_adc_capture_start(ADCopen, frequency, (uint16_t *)ADCbuffer, ADCmax * ADCopen);
 
-        // Reading from constant address, writing to incrementing byte addresses
-        channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-        channel_config_set_read_increment(&cfg, false);
-        channel_config_set_write_increment(&cfg, true);
-        channel_config_set_irq_quiet(&cfg, true);
-
-        // Pace transfers based on availability of ADC samples
-        channel_config_set_dreq(&cfg, DREQ_ADC);
-
-        dma_channel_configure(ADC_dma_chan, &cfg,
-                              (uint8_t *)ADCbuffer, // dst
-                              &adc_hw->fifo,        // src
-                              ADCmax * ADCopen,     // transfer count
-                              true                  // start immediately
-        );
-        adc_run(true);
-
-        // Once DMA finishes, stop any new conversions from starting, and clean up
-        // the FIFO in case the ADC was still mid-conversion.
+        // Once the transfer finishes, hal_adc_capture_complete stops new
+        // conversions from starting and cleans up the FIFO in case the ADC
+        // was still mid-conversion.
         if (!ADCInterrupt) {
-            while (dma_channel_is_busy(ADC_dma_chan)) tight_loop_contents();
-            __compiler_memory_barrier();
-            adc_run(false);
-            adc_fifo_drain();
+            while (!hal_adc_capture_complete()) {
+            }
             int k = 0;
             for (int i = 0; i < ADCmax; i++) {
                 for (int j = 0; j < ADCopen; j++) {
@@ -3258,12 +2936,7 @@ void cmd_adc(void) {
     tp = checkstring(cmdline, (unsigned char *)"CLOSE");
     if (tp) {
         if (!ADCopen) error("Not open");
-        irq_set_enabled(DMA_IRQ_1, false);
-        dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
-        dma_channel_abort(ADC_dma_chan);
-        dma_channel_abort(ADC_dma_chan2);
-        adc_set_round_robin(0);
-        SetADCFreq(500000);
+        hal_adc_capture_end();
         /* rp2350a==true matches both RP2040 (always true) and RP2350A
          * (30-pin variant): ADC channels live on GP26..29 == pin slots
          * 31/32/34/44. RP2350B exposes the same channels via GP40..43
@@ -3280,7 +2953,6 @@ void cmd_adc(void) {
             if (ADCopen >= 4) ExtCfg(58, EXT_NOT_CONFIG, 0);
         }
         ADCopen = 0;
-        adcint = adcint1 = adcint2 = NULL;
         ADCDualBuffering = false;
         dmarunning = false;
         last_adc = 99;
@@ -3288,16 +2960,6 @@ void cmd_adc(void) {
         return;
     }
     error("Syntax");
-}
-void SetADCFreq(float frequency) {
-    //Our ADC clock is running at ADC_CLK_SPEED (in Hz) so we need to stretch the time to produce the required frequency
-    //The time delta for our frequency is 1/frequency*96 - 1/(ADC_CLK_SPEED) seconds
-    //This must be added to clk_div as a number of CPU clock ticks i.e. delta/(1/ADC_CLK_SPEED)
-    //Plus we need to add 95 to cater for the actual time taken for the conversion
-    double delta = 1.0 / (frequency * 96.0) - 1.0 / ((double)ADC_CLK_SPEED);
-    float div = delta / (1.0 / ((double)ADC_CLK_SPEED)) * 96.0 + 95.0;
-    if (div <= 96.0) div = 0;
-    adc_set_clkdiv(div);
 }
 
 /*
@@ -3314,35 +2976,35 @@ void MIPS16 ClearExternalIO(void) {
     cameraclose();
     InterruptUsed = false;
     InterruptReturn = NULL;
-    irq_set_enabled(DMA_IRQ_1, false);
+    hal_adc_capture_end();
     hal_fast_timer_disable();
     closeframebuffer('A');
     if (CallBackEnabled == 1)
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 1) {
         hal_pin_irq_set_edge(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~1);
     }
     if (CallBackEnabled == 2)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 2) {
         hal_pin_irq_set_edge(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~2);
     }
     if (CallBackEnabled == 4)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 4) {
         hal_pin_irq_set_edge(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~4);
     }
     if (CallBackEnabled == 8)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 8) {
         hal_pin_irq_set_edge(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~8);
     }
     if (CallBackEnabled == 16)
-        pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
     else if (CallBackEnabled & 16) {
         hal_pin_irq_set_edge(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
         CallBackEnabled &= (~16);
@@ -3369,7 +3031,7 @@ void MIPS16 ClearExternalIO(void) {
     SPIClose();
     SPI2Close();
     if (IRpin != 99) {
-        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+        pico_gpio_irq_set_enabled(PinDef[IRpin].GPno, HAL_PIN_EDGE_BOTH, false);
         IrInterrupt = NULL;
         ExtCfg(IRpin, EXT_NOT_CONFIG, 0);
     }
@@ -3488,8 +3150,6 @@ void MIPS16 ClearExternalIO(void) {
         if (ADCopen >= 4) ExtCfg(58, EXT_NOT_CONFIG, 0);
     }
     ADCopen = 0;
-    adc_set_round_robin(0);
-    SetADCFreq(500000);
     KeyInterrupt = NULL;
     OnKeyGOSUB = NULL;
     hal_keyboard_on_external_io_clear();
@@ -3517,37 +3177,11 @@ void MIPS16 ClearExternalIO(void) {
     keyselect = 0;
     g_myrand = NULL;
     CMM1 = 0;
-    dirOK = 2;
-    nextline[0] = 0;
-    nextline[1] = 0;
-    nextline[2] = 0;
-    nextline[3] = 99;
-    memset(pioTXlast, 0, sizeof(pioTXlast));
-    memset(pioRXinterrupts, 0, sizeof(pioRXinterrupts));
-    memset(pioTXinterrupts, 0, sizeof(pioTXinterrupts));
-    piointerrupt = 0;
-    DMAinterruptRX = NULL;
-    DMAinterruptTX = NULL;
+    pio_rp2_teardown();
     WAVInterrupt = NULL;
-    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-    if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-    if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
-    //    dma_channel_cleanup(dma_rx_chan);
-    //    dma_channel_cleanup(dma_rx_chan2);
-    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-    if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-    if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
-    //    dma_channel_cleanup(dma_tx_chan);
-    //    dma_channel_cleanup(dma_tx_chan2);
-    dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
-    if (dma_channel_is_busy(ADC_dma_chan)) dma_channel_abort(ADC_dma_chan);
-    if (dma_channel_is_busy(ADC_dma_chan2)) dma_channel_abort(ADC_dma_chan2);
-    //    dma_channel_cleanup(ADC_dma_chan);
-    //    dma_channel_cleanup(ADC_dma_chan2);
-    adcint = adcint1 = adcint2 = NULL;
 }
 
-void __not_in_flash_func(TM_EXTI_Handler_1)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_1)(void) {
     if (ExtCurrentConfig[Option.INT1pin] == EXT_PER_IN) {
         if (--INT1Timer <= 0) {
             INT1Value = INT1Count;
@@ -3563,7 +3197,7 @@ void __not_in_flash_func(TM_EXTI_Handler_1)(void) {
 }
 
 // perform the counting functions for INT2
-void __not_in_flash_func(TM_EXTI_Handler_2)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_2)(void) {
     if (ExtCurrentConfig[Option.INT2pin] == EXT_PER_IN) {
         if (--INT2Timer <= 0) {
             INT2Value = INT2Count;
@@ -3579,7 +3213,7 @@ void __not_in_flash_func(TM_EXTI_Handler_2)(void) {
 }
 
 // perform the counting functions for INT3
-void __not_in_flash_func(TM_EXTI_Handler_3)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_3)(void) {
     if (ExtCurrentConfig[Option.INT3pin] == EXT_PER_IN) {
         if (--INT3Timer <= 0) {
             INT3Value = INT3Count;
@@ -3595,7 +3229,7 @@ void __not_in_flash_func(TM_EXTI_Handler_3)(void) {
 }
 
 // perform the counting functions for INT4
-void __not_in_flash_func(TM_EXTI_Handler_4)(void) {
+void PORT_TIMING_CRITICAL_FUNC(TM_EXTI_Handler_4)(void) {
     if (ExtCurrentConfig[Option.INT4pin] == EXT_PER_IN) {
         if (--INT4Timer <= 0) {
             INT4Value = INT4Count;
@@ -3609,7 +3243,7 @@ void __not_in_flash_func(TM_EXTI_Handler_4)(void) {
             INT4Count++;
     }
 }
-void MIPS16 __not_in_flash_func(IRHandler)(void) {
+void MIPS16 PORT_TIMING_CRITICAL_FUNC(IRHandler)(void) {
     int ElapsedMicroSec;
     static unsigned int LastIrBits;
     ElapsedMicroSec = readIRclock();
@@ -3685,7 +3319,7 @@ void MIPS16 __not_in_flash_func(IRHandler)(void) {
         break;
     }
 }
-void __not_in_flash_func(gpio_callback)(uint gpio, uint32_t events) {
+void PORT_TIMING_CRITICAL_FUNC(gpio_callback)(unsigned int gpio, uint32_t events) {
     hal_keyboard_on_gpio_edge(gpio);
     if (gpio == PinDef[IRpin].GPno) IRHandler();
     if (gpio == PinDef[Option.INT1pin].GPno) TM_EXTI_Handler_1();

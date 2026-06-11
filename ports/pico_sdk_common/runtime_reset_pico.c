@@ -5,33 +5,21 @@
 
 #include <stdint.h>
 
-#include "hardware/dma.h"
 #include "hardware/irq.h"
 #include "hardware/structs/watchdog.h"
 
-extern uint32_t dma_rx_chan;
-extern uint32_t dma_rx_chan2;
-extern uint32_t dma_tx_chan;
-extern uint32_t dma_tx_chan2;
-extern uint32_t ADC_dma_chan;
-extern uint32_t ADC_dma_chan2;
+#include "drivers/pio_rp2/pio_rp2.h"
+#include "hal/hal_adc.h"
 
 void port_runtime_disable_watchdog(void) {
     hw_clear_bits(&watchdog_hw->ctrl, WATCHDOG_CTRL_ENABLE_BITS);
 }
 
 void port_runtime_abort_dma(void) {
-    irq_set_enabled(DMA_IRQ_1, false);
+    /* ADC capture DMA (incl. its DMA_IRQ_1 completion IRQ) is owned by
+     * the hal_adc backend. */
+    hal_adc_capture_end();
 
-    dma_hw->abort = ((1u << dma_rx_chan2) | (1u << dma_rx_chan));
-    if (dma_channel_is_busy(dma_rx_chan)) dma_channel_abort(dma_rx_chan);
-    if (dma_channel_is_busy(dma_rx_chan2)) dma_channel_abort(dma_rx_chan2);
-
-    dma_hw->abort = ((1u << dma_tx_chan2) | (1u << dma_tx_chan));
-    if (dma_channel_is_busy(dma_tx_chan)) dma_channel_abort(dma_tx_chan);
-    if (dma_channel_is_busy(dma_tx_chan2)) dma_channel_abort(dma_tx_chan2);
-
-    dma_hw->abort = ((1u << ADC_dma_chan2) | (1u << ADC_dma_chan));
-    if (dma_channel_is_busy(ADC_dma_chan)) dma_channel_abort(ADC_dma_chan);
-    if (dma_channel_is_busy(ADC_dma_chan2)) dma_channel_abort(ADC_dma_chan2);
+    /* The PIO RX/TX DMA channel pairs are owned by the PIO driver. */
+    pio_rp2_dma_abort();
 }

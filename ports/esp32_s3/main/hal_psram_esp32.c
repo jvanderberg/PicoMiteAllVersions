@@ -58,6 +58,8 @@ uintptr_t PSRAMbase = 0;
 static void * s_psram_slab = NULL;
 static size_t s_psram_slab_bytes = 0;
 
+extern const unsigned int psmap_size_bytes;
+
 void hal_psram_init(void) {
     if (s_psram_slab != NULL) return; /* idempotent */
 
@@ -111,7 +113,11 @@ void hal_psram_init(void) {
         return;
     }
 
-    const size_t heap_bytes = slab_bytes - overhead;
+    const size_t heap_capacity =
+        ((size_t)psmap_size_bytes / sizeof(unsigned int)) *
+        (size_t)PAGESPERWORD * (size_t)PAGESIZE;
+    size_t heap_bytes = slab_bytes - overhead;
+    if (heap_bytes > heap_capacity) heap_bytes = heap_capacity;
     s_psram_slab = slab;
     s_psram_slab_bytes = slab_bytes;
     PSRAMbase = (uintptr_t)slab;

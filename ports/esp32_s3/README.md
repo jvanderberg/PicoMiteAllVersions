@@ -378,11 +378,11 @@ Working on hardware:
 - Runtime USB role switching between USB Serial/JTAG console and USB HID host keyboard.
 - VGA over LCD_CAM, including 3-bit Serial Wombat wiring, 640 x 480, 320 x 240, and 320 x 240 dithered modes.
 - `PLAY TONE` / `PLAY SOUND` / `PLAY NOTE` over external I2S DAC or I2S PDM TX via the shared synthesizer (see [Audio](#audio)).
-- `porttools/esp32_fs_vm_smoke.py` default smoke, opt-in flash/VAR persistence, and network conformance have passed on hardware.
+- `porttools/esp32_fs_vm_smoke.py` default smoke, opt-in flash/VAR persistence, display performance, GUI controls, SD, web console, and network conformance have passed on hardware. See the ESP32-S3 smoke runbook in [`../../docs/esp32-s3-smoke-test-runbook.md`](../../docs/esp32-s3-smoke-test-runbook.md).
 
 Still stubbed or incomplete:
 
-- BASIC-visible GPIO DOUT/DIN/ARAW is hardware-smoked. PWM/servo are still explicit unsupported paths.
+- BASIC-visible GPIO DOUT/DIN/ARAW and PWM/SERVO over LEDC are hardware-smoked. Board features can reserve channels, for example the Freenove LCD backlight reserves channel 0.
 - MIDI, ARRAY, and STREAM playback are not wired.
 - BLE/Bluetooth and OTA are not implemented.
 
@@ -390,9 +390,11 @@ Still stubbed or incomplete:
 
 Host-side smoke tooling lives in [`../../porttools`](../../porttools/README.md).
 Use `basic_serial.py` for prompt-driven command checks and
-`esp32_fs_vm_smoke.py` for the Stage G0 device smoke suite. The network suite
-chains to `network_conformance.py`; `esp32_tcp_smoke.py` remains available for
-narrow TCP client request/stream checks.
+`esp32_fs_vm_smoke.py` for the Stage G0 device smoke suite. The ordered
+hardware flow is documented in
+[`../../docs/esp32-s3-smoke-test-runbook.md`](../../docs/esp32-s3-smoke-test-runbook.md).
+The network suite chains to `network_conformance.py`; `esp32_tcp_smoke.py`
+remains available for narrow TCP client request/stream checks.
 
 Known-good quick checks:
 
@@ -419,6 +421,5 @@ The ESP32 port owns its runtime/peripheral surface in `main/esp32_*.c` and `main
 
 Known remaining cleanup:
 
-- BASIC-visible GPIO uses ESP32-owned `vm_sys_pin_esp32.c` plus the Metro pin table. PWM/servo remains future work.
-- Legacy Pico SDK `hardware/*` compatibility headers come from neutral `ports/pico_sdk_compat/`.
+- BASIC-visible GPIO uses the ESP32 pin table with the shared pin/PWM syscall layer and the ESP32 LEDC PWM backend.
 - The build defines `MMBASIC_ESP32` only; the temporary `MMBASIC_HOST` compile-mode tag has been removed.

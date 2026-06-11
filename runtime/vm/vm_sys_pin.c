@@ -351,7 +351,9 @@ int64_t vm_sys_pin_read(int64_t encoded_pin) {
         if (ADCDualBuffering || dmarunning) error("ADC in use");
         hal_pin_adc_init();
         hal_pin_adc_select(PinDef[pin].ADCpin);
-        last_adc = PinDef[pin].ADCpin;
+        /* last_adc caches the BASIC pin whose channel is selected, so the
+         * interpreter's ExtInp can skip a redundant re-select. */
+        last_adc = pin;
         return hal_pin_adc_read();
     }
     error("Pin not configured");

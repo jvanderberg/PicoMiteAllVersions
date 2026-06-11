@@ -192,6 +192,87 @@ shopt -u nullglob
 ESP32_CMAKE=ports/esp32_s3/main/CMakeLists.txt
 ESP32_PLATFORM=ports/esp32_s3/main/esp32_platform.h
 
+# SDK-clean scope (sdk-compat-retirement-plan.md, terminal gate): every file
+# under core/ and shared/ must compile against hal/*.h contracts only —
+# zero Pico-SDK header includes, zero `_hw->` register-window access, zero
+# cyw43_* vendor calls. The compat shim directories (ports/pico_sdk_compat/,
+# ports/host_native/pico/) are deleted, so a reintroduced include is also a
+# hard build error on every non-Pico port; this check catches it earlier and
+# on the Pico ports too (where the real SDK headers would mask it).
+SDK_CLEAN_DIRS=(core shared runtime)
+
+# `#include` of any Pico-SDK header: hardware/..., pico/..., or bare pico.h.
+SDK_INCLUDE_RE='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"](hardware/|pico/|pico\.h)'
+
+# Register-window tokens (SDK `*_hw->`/`*_hw[` access and the PIO instance
+# structs). Word-boundary grep over comment-stripped source; an identifier
+# that merely embeds one of these tokens (e.g. my_dma_hw_copy) does not match.
+SDK_HW_TOKENS=(
+  adc_hw pwm_hw systick_hw sio_hw ioqspi_hw dma_hw watchdog_hw clocks_hw
+  uart0_hw uart1_hw spi0_hw spi1_hw i2c0_hw i2c1_hw timer_hw xip_ctrl_hw
+  bus_ctrl_hw padsbank0_hw pads_qspi_hw io_bank0_hw qmi_hw usb_hw
+  powman_hw ticks_hw accessctrl_hw hstx_ctrl_hw hstx_fifo_hw
+  resets_hw rtc_hw rosc_hw xosc_hw otp_hw
+  pio0 pio1 pio2
+)
+
+# Vendor WiFi-chip calls.
+SDK_CYW43_RE='\bcyw43_[A-Za-z0-9_]+[[:space:]]*\('
+
+# Strip // and /* */ comments plus string literals so prose mentioning a
+# token (e.g. a comment explaining where pwm_hw access moved) doesn't trip
+# the gate. Limitation: a multi-line string literal containing a token line
+# could still match, and a token built by macro pasting won't — the deleted
+# shim dirs make the latter a build error anyway.
+strip_comments() {
+  sed -E 's/"([^"\\]|\\.)*"//g; s|//.*$||' "$1" | awk '
+    BEGIN { inc = 0 }
+    {
+      line = $0; out = ""
+      while (length(line) > 0) {
+        if (inc) {
+          p = index(line, "*/")
+          if (p == 0) { line = ""; break }
+          line = substr(line, p + 2); inc = 0
+        } else {
+          p = index(line, "/*")
+          if (p == 0) { out = out line; line = ""; break }
+          out = out substr(line, 1, p - 1)
+          line = substr(line, p + 2); inc = 1
+        }
+      }
+      print out
+    }'
+}
+
+check_file_sdk_clean() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  local inc_hits
+  inc_hits="$(grep -nE "$SDK_INCLUDE_RE" "$file" || true)"
+  if [[ -n "$inc_hits" ]]; then
+    echo "HAL-PURITY FAIL: $file includes Pico-SDK headers (core/shared must use hal/*.h only)"
+    echo "$inc_hits" | sed 's/^/    /'
+    fail=1
+  fi
+  local stripped hw_alt hw_hits
+  stripped="$(strip_comments "$file")"
+  hw_alt="$(IFS='|'; echo "${SDK_HW_TOKENS[*]}")"
+  hw_hits="$(printf '%s\n' "$stripped" | grep -nE "\\b(${hw_alt})\\b" || true)"
+  if [[ -n "$hw_hits" ]]; then
+    echo "HAL-PURITY FAIL: $file touches SDK register windows (\${token}_hw / pio instances)"
+    echo "$hw_hits" | sed 's/^/    /'
+    fail=1
+  fi
+  local cyw_hits
+  cyw_hits="$(printf '%s\n' "$stripped" | grep -nE "$SDK_CYW43_RE" || true)"
+  if [[ -n "$cyw_hits" ]]; then
+    echo "HAL-PURITY FAIL: $file calls cyw43_* vendor functions"
+    echo "$cyw_hits" | sed 's/^/    /'
+    fail=1
+  fi
+}
+
 # Files tracked informationally (report counts, do not fail).
 INFO_FILES=(
   core/mmbasic/Draw.c
@@ -419,6 +500,16 @@ else
   if [[ $fail -eq $pre_fail ]]; then
     echo "    (all ESP32 port files clean)"
   fi
+fi
+
+echo
+echo "SDK-clean scope (core/ + shared/: no Pico-SDK includes, register windows, or cyw43_* calls):"
+pre_fail=$fail
+while IFS= read -r f; do
+  check_file_sdk_clean "$f"
+done < <(find "${SDK_CLEAN_DIRS[@]}" -type f \( -name '*.c' -o -name '*.h' \) | sort)
+if [[ $fail -eq $pre_fail ]]; then
+  echo "    (core/ and shared/ are SDK-clean)"
 fi
 
 echo

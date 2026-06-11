@@ -33,6 +33,7 @@
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "hardware/gpio.h"
+#include "hardware/spi.h"
 #include "VS1053.h"
 #include "vs1053b-patches.h"
 #define LOG(...)

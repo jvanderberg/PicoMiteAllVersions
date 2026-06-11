@@ -75,6 +75,7 @@
 #define HAL_PORT_HAS_MP3 0
 
 #define PORT_RAM_FUNC(name) name
+#define PORT_TIMING_CRITICAL_FUNC(name) name
 
 /* Placement for MMBasic's hot interpreter functions. Host has no
  * flash/RAM distinction — everything is normal RAM. */

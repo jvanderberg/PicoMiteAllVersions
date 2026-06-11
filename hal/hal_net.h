@@ -76,6 +76,10 @@ int hal_net_wifi_set_credentials(const char * ssid, const char * pass,
 int hal_net_wifi_connect(uint32_t timeout_ms);
 int hal_net_wifi_status(void);
 int hal_net_tcpip_status(void);
+/* True when the TCP/IP link is fully up. hal_net_tcpip_status() reports
+ * backend-specific status values for MM.INFO; shared code asks this
+ * predicate instead of comparing against vendor constants. */
+int hal_net_link_up(void);
 int hal_net_ip_address(char * out, size_t out_len);
 int hal_net_wifi_scan(char * out, size_t out_len, size_t * written,
                       int print_to_console);

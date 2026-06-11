@@ -137,6 +137,25 @@ int hal_pwm_set_duty(int channel, int which, float duty_pct) {
     return 0;
 }
 
+int hal_pwm_query(int channel, uint32_t * top, uint32_t * level_a,
+                  uint32_t * level_b) {
+    if (channel < 0 || channel >= HAL_PWM_ESP32_CHANNELS) return -1;
+    if (s_duty_res[channel] == 0) return -1;
+    /* LEDC counter units: the timer wraps at 2^res, so the largest compare
+     * value is 2^res - 1 and the levels are the channels' current duty
+     * registers. */
+    if (top) *top = (1u << s_duty_res[channel]) - 1u;
+    if (level_a)
+        *level_a = ledc_get_duty(
+            LEDC_LOW_SPEED_MODE,
+            (ledc_channel_t)esp32_pwm_ledc_channel(channel, 0));
+    if (level_b)
+        *level_b = ledc_get_duty(
+            LEDC_LOW_SPEED_MODE,
+            (ledc_channel_t)esp32_pwm_ledc_channel(channel, 1));
+    return 0;
+}
+
 void hal_pwm_sync_channel(int channel, float duty_pct) {
     if (channel < 0 || channel >= HAL_PWM_ESP32_CHANNELS) return;
     if (duty_pct < 0.0f) return;

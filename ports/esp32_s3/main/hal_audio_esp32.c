@@ -84,7 +84,6 @@ static bool s_es8311;
 /* Audio-DMA channel globals referenced by core SOUND/ADC bookkeeping.
  * The shared synth path does not use them, but the symbols must exist. */
 uint32_t dma_tx_chan = 0, dma_rx_chan = 0, dma_tx_chan2 = 0, dma_rx_chan2 = 0;
-uint32_t ADC_dma_chan = 0, ADC_dma_chan2 = 0;
 bool ADCDualBuffering = 0;
 bool dmarunning = 0;
 

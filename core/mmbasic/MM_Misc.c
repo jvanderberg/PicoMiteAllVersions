@@ -29,33 +29,24 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "runtime/runtime.h"
 #include "shared/net/mm_net_interrupts.h"
 #include "port_config.h"
-#include "pico/stdlib.h"
-#include "hardware/clocks.h"
 #include <time.h>
 #include "pico_gpio_irq.h"
 //#include "upng.h"
 #include <complex.h>
-#include "pico/bootrom.h"
-#include "hardware/structs/systick.h"
-#include "hardware/structs/watchdog.h"
-#include "hardware/structs/pwm.h"
-#include "hardware/dma.h"
-#include "hardware/adc.h"
-#include "hardware/pwm.h"
+#include "drivers/pio_rp2/pio_rp2.h"
+#include "hal/hal_adc.h"
+#include "hal/hal_cycle_counter.h"
 #include "hal/hal_flash.h"
 #include "hal/hal_time.h"
 #include "hal/hal_pin.h"
+#include "hal/hal_pwm.h"
+#include "hal/hal_display_backlight.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_gui_controls.h"
 #include "hal/hal_watchdog.h"
 #include "shared/audio/audio_option_common.h"
-#include "hardware/regs/addressmap.h" /* XIP_BASE */
-#include "hardware/spi.h"
-#include "hardware/pio.h"
-#include "hardware/pio_instructions.h"
 #include <malloc.h>
 #include "xregex.h"
-#include "hardware/structs/pwm.h"
 #include "aes.h"
 #include "OptionCommands.h"
 
@@ -103,7 +94,10 @@ extern int port_mminfo_interrupts(int64_t * out_iret);
 extern int port_mminfo_touch_status(unsigned char * out_sret);
 extern int port_mminfo_scroll_start(int64_t * out_iret);
 extern int port_mminfo_screenbuff(int64_t * out_iret);
-extern PIO port_pio_for_index(int pio_idx);
+extern int port_mminfo_system_spi_speed(int64_t * out_iret);
+extern int port_mminfo_valid_cpuspeed(uint32_t speed_khz);
+/* CPU address of the flash MOD-buffer region (XIP window + offset). */
+extern char * port_modbuff_address(void);
 extern int port_poke_display_panel(unsigned char * p);
 extern void port_apply_default_console_colors(int default_fc, int default_bc);
 extern void port_web_print_options(void);
@@ -153,7 +147,6 @@ static inline CommandToken commandtbl_decode(const unsigned char * p) {
     return ((CommandToken)(p[0] & 0x7f)) | ((CommandToken)(p[1] & 0x7f) << 7);
 }
 extern int busfault;
-//#include "pico/stdio_usb/reset_interface.h"
 const char * OrientList[] = {"LANDSCAPE", "PORTRAIT", "RLANDSCAPE", "RPORTRAIT"};
 const char * KBrdList[] = {"", "US", "FR", "GR", "IT", "BE", "UK", "ES"};
 extern const void * const CallTable[];
@@ -1184,19 +1177,7 @@ void MIPS16 cmd_option(void) {
             }
         }
         if (Option.DISPLAY_BL) {
-            MMFLOAT frequency = 1000.0, duty = Option.BackLightLevel;
-            int wrap = (Option.CPU_Speed * 1000) / frequency;
-            int high = (int)((MMFLOAT)Option.CPU_Speed / frequency * duty * 10.0);
-            int div = 1;
-            while (wrap > 65535) {
-                wrap >>= 1;
-                if (duty >= 0.0) high >>= 1;
-                div <<= 1;
-            }
-            wrap--;
-            if (div != 1) pwm_set_clkdiv(BacklightSlice, (float)div);
-            pwm_set_wrap(BacklightSlice, wrap);
-            pwm_set_chan_level(BacklightSlice, BacklightChannel, high);
+            hal_display_backlight_set(Option.BackLightLevel, 1000.0);
         }
         port_apply_default_console_colors(Option.DefaultFC, Option.DefaultBC);
         Option.DISPLAY_CONSOLE = true;
@@ -1310,7 +1291,7 @@ void MIPS16 cmd_option(void) {
                 Option.modbuff = true;
                 SaveOptions();
                 ResetFlashStorage(1);
-                modbuff = (char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH));
+                modbuff = port_modbuff_address();
                 _excep_code = RESET_COMMAND;
                 SoftReset();
             } else
@@ -1495,25 +1476,25 @@ void MIPS16 cmd_option(void) {
     if (tp) {
         int pin1, pin2, pin3, pin4;
         if (CallBackEnabled == 2)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 2) {
             hal_pin_irq_set_edge(PinDef[Option.INT1pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~2);
         }
         if (CallBackEnabled == 4)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 4) {
             hal_pin_irq_set_edge(PinDef[Option.INT2pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~4);
         }
         if (CallBackEnabled == 8)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 8) {
             hal_pin_irq_set_edge(PinDef[Option.INT3pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~8);
         }
         if (CallBackEnabled == 16)
-            pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, false);
+            pico_gpio_irq_set_enabled(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
         else if (CallBackEnabled & 16) {
             hal_pin_irq_set_edge(PinDef[Option.INT4pin].GPno, HAL_PIN_EDGE_BOTH, false);
             CallBackEnabled &= (~16);
@@ -1720,7 +1701,7 @@ void MIPS16 fun_info(void) {
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"ADC"))) {
         targ = T_INT;
-        iret = ((adcint == adcint1 && adcint) ? 1 : ((adcint == adcint2 && adcint) ? 2 : 0));
+        iret = hal_adc_capture_buffer();
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"BATTERY"))) {
         iret = port_picocalc_battery_pct();
@@ -1966,7 +1947,7 @@ void MIPS16 fun_info(void) {
         targ = T_STR;
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"MODBUFF ADDRESS"))) {
-        iret = (int64_t)((uint32_t)(char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH)));
+        iret = (int64_t)((uint32_t)port_modbuff_address());
         targ = T_INT;
         return;
     } else if ((tp = checkstring(ep, (unsigned char *)"MODIFIED"))) {
@@ -2179,11 +2160,11 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIO RX DMA"))) {
-            iret = dma_channel_is_busy(dma_rx_chan);
+            iret = pio_rp2_dma_rx_busy();
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIO TX DMA"))) {
-            iret = dma_channel_is_busy(dma_tx_chan);
+            iret = pio_rp2_dma_tx_busy();
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PWM COUNT"))) {
@@ -2191,7 +2172,9 @@ void MIPS16 fun_info(void) {
              * true): only 0..7 accessible. rp2350b: 0..11. */
             int max_slice = rp2350a ? 7 : (HAL_PORT_PWM_SLICE_COUNT - 1);
             int channel = getint(tp, 0, max_slice);
-            iret = pwm_hw->slice[channel].top;
+            uint32_t top;
+            if (hal_pwm_query(channel, &top, NULL, NULL) != 0) error("Number out of bounds");
+            iret = top;
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PWM DUTY"))) {
@@ -2200,10 +2183,9 @@ void MIPS16 fun_info(void) {
             int max_slice = rp2350a ? 7 : (HAL_PORT_PWM_SLICE_COUNT - 1);
             int channel = getint(argv[0], 0, max_slice);
             int AorB = getint(argv[2], 0, 1);
-            if (AorB)
-                iret = ((pwm_hw->slice[channel].cc) >> 16);
-            else
-                iret = (pwm_hw->slice[channel].cc & 0xFFFF);
+            uint32_t level_a, level_b;
+            if (hal_pwm_query(channel, NULL, &level_a, &level_b) != 0) error("Number out of bounds");
+            iret = AorB ? level_b : level_a;
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"PIN"))) {
@@ -2298,13 +2280,7 @@ void MIPS16 fun_info(void) {
             targ = T_STR;
             return;
         } else if (checkstring(ep, (unsigned char *)"SPI SPEED")) {
-            SPISpeedSet(Option.DISPLAY_TYPE);
-            if (PinDef[Option.SYSTEM_CLK].mode & SPI0SCK) {
-                iret = spi_get_baudrate(spi0);
-            } else if (PinDef[Option.SYSTEM_CLK].mode & SPI1SCK) {
-                iret = spi_get_baudrate(spi1);
-            } else
-                error("System SPI not configured");
+            if (!port_mminfo_system_spi_speed(&iret)) error("System SPI not configured");
             targ = T_INT;
             return;
         } else if (checkstring(ep, (unsigned char *)"STACK")) {
@@ -2312,7 +2288,7 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"SYSTICK"))) {
-            iret = (int64_t)(uint32_t)systick_hw->cvr;
+            iret = (int64_t)hal_cycle_remaining();
             targ = T_INT;
             return;
         } else if (checkstring(ep, (unsigned char *)"SYSTEM HEAP")) {
@@ -2367,10 +2343,8 @@ void MIPS16 fun_info(void) {
             targ = T_INT;
             return;
         } else if ((tp = checkstring(ep, (unsigned char *)"VALID CPUSPEED"))) {
-            iret = 1;
             uint32_t speed = getint(tp, MIN_CPU, MAX_CPU);
-            uint vco, postdiv1, postdiv2;
-            if (!check_sys_clock_khz(speed, &vco, &postdiv1, &postdiv2)) iret = 0;
+            iret = port_mminfo_valid_cpuspeed(speed);
             targ = T_INT;
             return;
         } else
@@ -2784,48 +2758,8 @@ int checkdetailinterrupts(void) {
         PS2int = false;
         goto GotAnInterrupt;
     }
-    if (piointerrupt) { // have any PIO interrupts been set
-        for (int pio = 0; pio < PIOMAX; pio++) {
-            PIO pioinuse = port_pio_for_index(pio);
-            for (int sm = 0; sm < 4; sm++) {
-                int TXlevel = ((pioinuse->flevel) >> (sm * 4)) & 0xf;
-                int RXlevel = ((pioinuse->flevel) >> (sm * 4 + 4)) & 0xf;
-                if (RXlevel && pioRXinterrupts[sm][pio]) { //is there a character in the buffer and has an interrupt been set?
-                    intaddr = pioRXinterrupts[sm][pio];
-                    goto GotAnInterrupt;
-                }
-                if (TXlevel && pioTXinterrupts[sm][pio]) {
-                    int full = (pioinuse->sm->shiftctrl & (1 << 30)) ? 8 : 4;
-                    if (TXlevel != full && pioTXlast[sm][pio] == full) { // was the buffer full last time and not now and is an interrupt set?
-                        intaddr = pioTXinterrupts[sm][pio];
-                        pioTXlast[sm][pio] = TXlevel;
-                        goto GotAnInterrupt;
-                    }
-                }
-                pioTXlast[sm][pio] = TXlevel;
-            }
-        }
-    }
-    if (DMAinterruptRX) {
-        if (!dma_channel_is_busy(dma_rx_chan)) {
-            PIO pio = (dma_rx_pio ? pio1 : pio0);
-            intaddr = (char *)DMAinterruptRX;
-            DMAinterruptRX = NULL;
-            pio_sm_set_enabled(pio, dma_rx_sm, false);
-            goto GotAnInterrupt;
-        }
-    }
-    if (DMAinterruptTX) {
-        if (!dma_channel_is_busy(dma_tx_chan)) {
-            PIO pio = (dma_tx_pio ? pio1 : pio0);
-            if ((pio->flevel >> (dma_tx_sm * 8) & 0xf) == 0) {
-                intaddr = (char *)DMAinterruptTX;
-                DMAinterruptTX = NULL;
-                pio_sm_set_enabled(pio, dma_tx_sm, false);
-                goto GotAnInterrupt;
-            }
-        }
-    }
+    intaddr = pio_rp2_pending_interrupt();
+    if (intaddr) goto GotAnInterrupt;
 
     intaddr = hal_gui_controls_pending_interrupt();
     if (intaddr) goto GotAnInterrupt;
@@ -2861,10 +2795,7 @@ int checkdetailinterrupts(void) {
         }
     }
     if (ADCInterrupt && dmarunning) {
-        if (!dma_channel_is_busy(ADC_dma_chan)) {
-            __compiler_memory_barrier();
-            adc_run(false);
-            adc_fifo_drain();
+        if (hal_adc_capture_complete()) {
             int k = 0;
             for (int i = 0; i < ADCmax; i++) {
                 for (int j = 0; j < ADCopen; j++) {

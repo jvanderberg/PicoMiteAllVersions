@@ -18,7 +18,6 @@
 #include "shared/net/mm_net_web_cmd.h"
 #include "shared/net/mm_net_wifi_cmd.h"
 #include "lwip/ip4_addr.h"
-#include "pico/cyw43_arch.h"
 #define CJSON_NESTING_LIMIT 100
 
 extern char id_out[12];
@@ -162,37 +161,14 @@ int port_setter_pico_pins(unsigned char * cmdline) {
     return 0;
 }
 
-/* REPL-startup WiFi init: cyw43_arch_init + WebConnect. */
+/* REPL-startup WiFi init: chip bring-up via hal_net_init + WebConnect.
+ * The CYW43 bring-up (gSPI clock divider for the persisted CPU speed,
+ * cyw43_arch_init) lives in drivers/net_lwip_raw/hal_net_lwip.c. */
 #include "hal/hal_main_init.h"
-#include "hardware/clocks.h"
-#include "pico/cyw43_driver.h"
 extern int startupcomplete;
 
-#if CYW43_PIO_CLOCK_DIV_DYNAMIC
-/* CYW43 gSPI tops out at ~50 MHz.  Pick the smallest integer divider
- * that keeps clk_sys/div under 45 MHz so we leave a little margin and
- * the same divider is safe across small clock-source jitter.  Called
- * before cyw43_arch_init so the bus initialises with the right rate
- * for whatever Option.CPU_Speed the user has persisted.
- *
- * Examples:
- *   252 MHz → div 6 → 42.0 MHz gSPI
- *   315 MHz → div 7 → 45.0 MHz
- *   378 MHz → div 9 → 42.0 MHz
- *   126 MHz → div 3 → 42.0 MHz   (low-power modes still safe) */
-static void cyw43_pio_divider_for_clk_sys(void) {
-    uint32_t clk_hz = clock_get_hz(clk_sys);
-    uint32_t div = (clk_hz + 44999999u) / 45000000u;
-    if (div < 2) div = 2; /* SDK minimum */
-    cyw43_set_pio_clock_divisor((uint16_t)div, 0);
-}
-#endif
-
 void port_repl_wifi_arch_init_and_connect(void) {
-#if CYW43_PIO_CLOCK_DIV_DYNAMIC
-    cyw43_pio_divider_for_clk_sys();
-#endif
-    if (cyw43_arch_init() == 0) {
+    if (hal_net_init() == HAL_NET_OK) {
         startupcomplete = 1;
         WebConnect();
     }
@@ -249,8 +225,7 @@ static void pico_web_scan_cmd(unsigned char * arg) {
 }
 
 static int pico_web_is_connected(void) {
-    return WIFIconnected &&
-           hal_net_tcpip_status() == CYW43_LINK_UP;
+    return WIFIconnected && hal_net_link_up();
 }
 
 static int pico_web_mqtt_cmd(unsigned char * line) {

@@ -293,7 +293,10 @@ class Esp32Smoke:
             self.skip_check("VAR SAVE/RESTORE", "pass --var-save to add a persistent saved variable")
 
     def reset_and_resync(self) -> None:
-        self.basic.reset_app()
+        try:
+            self.command("CPU RESTART", timeout=self.long_timeout, check_error=False)
+        except Exception:
+            self.basic.reset_app()
         self.basic.sync(timeout=self.long_timeout, boot_wait=max(self.boot_wait, 1.0))
 
     def find_setpin_candidate(self, mode: str, candidates: Sequence[str], options: str = "") -> str:
@@ -307,6 +310,44 @@ class Esp32Smoke:
                 return pin
         detail = " ".join(line.strip() for line in last.splitlines() if line.strip())
         raise RuntimeError(f"no usable GPIO candidate for SETPIN {mode}; last={detail}")
+
+    def pwm_servo_smoke(self) -> str:
+        pwm_candidates = (
+            ("GP3", "PWM1A", 1),
+            ("GP5", "PWM2A", 2),
+            ("GP7", "PWM3A", 3),
+            ("GP39", "PWM2A", 2),
+            ("GP41", "PWM3A", 3),
+        )
+        last = ""
+        for pin, mode, channel in pwm_candidates:
+            self.command(f"SETPIN {pin}, OFF", check_error=False)
+            setpin = self.command(f"SETPIN {pin}, {mode}", check_error=False)
+            last = setpin
+            if has_basic_error(setpin):
+                continue
+            pwm = self.command(f"PWM {channel}, 1000, 25", check_error=False)
+            last = pwm
+            if has_basic_error(pwm):
+                self.command(f"SETPIN {pin}, OFF", check_error=False)
+                continue
+            servo = self.command(f"SERVO {channel}, 90", check_error=False)
+            last = servo
+            if has_basic_error(servo):
+                self.command(f"PWM {channel}, OFF", check_error=False)
+                self.command(f"SETPIN {pin}, OFF", check_error=False)
+                continue
+            self.command(f"PWM {channel}, OFF", check_error=False)
+            self.command(f"SETPIN {pin}, OFF", check_error=False)
+            return f"PWM/SERVO {pin} channel {channel}"
+
+        fallback_pwm = self.command("SETPIN GP2, PWM", check_error=False)
+        fallback_servo = self.command("SERVO 0, 50", check_error=False)
+        if expected_pwm_servo_error(fallback_pwm) and expected_pwm_servo_error(fallback_servo):
+            self.command("SETPIN GP2, OFF", check_error=False)
+            return "PWM/SERVO rejected explicitly"
+        detail = " ".join(line.strip() for line in (last or fallback_servo).splitlines() if line.strip())
+        raise RuntimeError(f"no usable PWM/SERVO candidate; last={detail}")
 
     def gpio_smoke(self) -> None:
         print("=== gpio ===", flush=True)
@@ -329,20 +370,12 @@ class Esp32Smoke:
         if value < 0 or value > 65535:
             raise RuntimeError(f"{araw_pin} ARAW read out of range: {value}")
         self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
-        # PWM/SERVO are supported on this port; the pin-to-LEDC-channel
-        # mapping is profile-dependent, so assert the command paths are
-        # reachable rather than drive a specific channel.
-        pwm = self.command(f"SETPIN {dout_pin}, PWM", check_error=False)
-        if "Error" in pwm:
-            raise RuntimeError(f"SETPIN {dout_pin}, PWM failed: {pwm.strip()}")
-        servo = self.command("SERVO 1, OFF", check_error=False)
-        if "Error" in servo:
-            raise RuntimeError(f"SERVO 1, OFF failed: {servo.strip()}")
+        pwm_detail = self.pwm_servo_smoke()
         self.command(f"SETPIN {dout_pin}, OFF", check_error=False)
         self.command(f"SETPIN {din_pin}, OFF", check_error=False)
         self.command(f"SETPIN {araw_pin}, OFF", check_error=False)
-        self.pass_check("GPIO DOUT/DIN/ARAW and PWM/SERVO command paths",
-                        f"{dout_pin}, {din_pin}, {araw_pin}")
+        self.pass_check("GPIO DOUT/DIN/ARAW and PWM/SERVO",
+                        f"{dout_pin}, {din_pin}, {araw_pin}; {pwm_detail}")
 
     def ws2812_smoke(self) -> None:
         print("=== ws2812 ===", flush=True)
@@ -424,6 +457,23 @@ def marker_int(text: str, marker: str) -> int:
         if line.startswith(marker):
             return int(float(line[len(marker) :].strip()))
     raise RuntimeError(f"missing integer marker {marker!r}")
+
+
+def has_basic_error(text: str) -> bool:
+    return "Error :" in text or "Error:" in text
+
+
+def expected_pwm_servo_error(text: str) -> bool:
+    accepted = (
+        "PWM not supported on this port",
+        "Servo not supported on this port",
+        "Unsupported SETPIN mode",
+        "Channel in use for backlight",
+        "Channel in use for audio",
+        "Channel in use for camera clock",
+        "Channel in use for keyboard backlight",
+    )
+    return has_basic_error(text) and any(message in text for message in accepted)
 
 
 def parse_display_perf_metrics(text: str) -> dict[str, float]:

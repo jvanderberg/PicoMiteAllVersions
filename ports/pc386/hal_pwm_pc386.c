@@ -42,6 +42,15 @@ int hal_pwm_set_duty(int channel, int which, float duty_pct) {
     return -1;
 }
 
+int hal_pwm_query(int channel, uint32_t * top, uint32_t * level_a,
+                  uint32_t * level_b) {
+    (void)channel;
+    (void)top;
+    (void)level_a;
+    (void)level_b;
+    return -1;
+}
+
 void hal_pwm_sync_channel(int channel, float duty_pct) {
     (void)channel;
     (void)duty_pct;

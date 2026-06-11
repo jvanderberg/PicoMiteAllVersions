@@ -24,10 +24,11 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 ************************************************************************************************************************/
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "hal/hal_heartbeat.h"
 #include "hal/hal_net.h"
+#include "hal/hal_time.h"
 #include "shared/net/mm_net_lifecycle.h"
 #include "shared/net/mm_net_telnet_rx.h"
-#include "pico/cyw43_arch.h"
 //#define DEBUG_printf printf
 #define DEBUG_printf
 
@@ -157,9 +158,9 @@ void pico_telnet_poll(int mode) {
                 pico_telnet_close_conn();
             break;
         }
-        if (mode && pico_telnet_conn && time_us_64() > flushtimer) {
+        if (mode && pico_telnet_conn && hal_time_us_64() > flushtimer) {
             TelnetPutC(0, -1);
-            flushtimer = time_us_64() + 5000;
+            flushtimer = hal_time_us_64() + 5000;
         }
     }
 }
@@ -177,13 +178,13 @@ void __not_in_flash_func(ProcessWeb)(int mode) {
     static int testcount = 0;
     static int lastonoff = 0;
     static uint64_t lastheartmsec = 0;
-    uint64_t timenow = time_us_64();
+    uint64_t timenow = hal_time_us_64();
     if (!WIFIconnected && startupcomplete) goto flashonly;
     mm_net_lifecycle_poll(&hooks, mode, 0);
     if (testcount == 0 || timenow > lastusec) {
         lastusec = timenow + 1000;
         testcount = 0;
-        if (startupcomplete) cyw43_arch_poll();
+        if (startupcomplete) hal_net_poll();
     }
     testcount++;
     if (testcount == 100) testcount = 0;
@@ -192,7 +193,7 @@ flashonly:;
     if (Option.NoHeartbeat) {
         if (lastonoff != 2) {
             if (startupcomplete) {
-                if (cyw43_arch_gpio_get(CYW43_WL_GPIO_LED_PIN)) cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+                if (hal_heartbeat_led_get()) hal_heartbeat_led_put(0);
                 lastonoff = 2;
             }
         }
@@ -201,9 +202,9 @@ flashonly:;
         if (timenow - lastheartmsec > (WIFIconnected ? 500000 : 1000000) && startupcomplete) {
             lastheartmsec = timenow;
             if (lastonoff)
-                cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+                hal_heartbeat_led_put(1);
             else
-                cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+                hal_heartbeat_led_put(0);
             lastonoff ^= 1;
         }
     }

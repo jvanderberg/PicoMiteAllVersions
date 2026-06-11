@@ -20,8 +20,6 @@
 /* Hardware / system state */
 uint32_t _excep_code = 0;
 uint64_t _persistent = 0;
-uint32_t ADC_dma_chan = 0;
-uint32_t ADC_dma_chan2 = 0;
 bool ADCDualBuffering = 0;
 volatile unsigned int AHRSTimer = 0;
 volatile int ConsoleTxBufHead = 0;
@@ -245,8 +243,6 @@ volatile MMFLOAT * volatile a3float = NULL, * volatile a4float = NULL;
 uint32_t ADCmax = 0;
 char * ADCInterrupt = NULL;
 short * ADCbuffer = NULL;
-volatile uint8_t * adcint = NULL;
-uint8_t *adcint1 = NULL, *adcint2 = NULL;
 unsigned char * KeypadInterrupt = NULL;
 MMFLOAT ADCscale[4] = {0}, ADCbottom[4] = {0};
 
@@ -309,11 +305,3 @@ uint16_t tilebcols[80 * 40] = {0};
 int MOUSE_CLOCK = 0, MOUSE_DATA = 0;
 
 volatile uint64_t IRoffset = 0;
-
-/* dma_hw / watchdog_hw stubs — Commands.c references their fields. */
-#include "hardware/dma.h"
-#include "hardware/structs/watchdog.h"
-static dma_hw_t pc386_dma_store = {0};
-static watchdog_hw_t pc386_wdog_store = {0};
-dma_hw_t * dma_hw = &pc386_dma_store;
-watchdog_hw_t * watchdog_hw = &pc386_wdog_store;

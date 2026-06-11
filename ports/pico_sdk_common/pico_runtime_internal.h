@@ -63,7 +63,6 @@ extern void ProcessWeb(int mode);
 extern void TelnetPutC(int c, int flush);
 extern int wifi_serial_telnet_configured(void);
 
-extern int adc_clk_div;
 extern char banner[64];
 extern volatile unsigned int ClassicTimer;
 extern volatile unsigned int KeyCheck;

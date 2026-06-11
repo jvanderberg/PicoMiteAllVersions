@@ -21,6 +21,8 @@
 #ifndef HAL_PWM_H
 #define HAL_PWM_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +60,16 @@ int hal_pwm_set_duty(int channel, int which, float duty_pct);
  * resume on the same edge. */
 void hal_pwm_sync_channel(int channel, float duty_pct);
 void hal_pwm_sync_commit(void);
+
+/* Read back `channel`'s counter state for MM.INFO: `*top` receives the
+ * counter wrap value and `*level_a` / `*level_b` the compare levels of the
+ * two outputs. Any out-pointer may be NULL when the caller does not want
+ * that value. Units are backend-defined counter ticks (on RP the raw slice
+ * TOP register and the two CC register halves). Returns 0 on success, or
+ * negative errno when the channel is out of range or the backend has no
+ * readable counter state for it. */
+int hal_pwm_query(int channel, uint32_t * top, uint32_t * level_a,
+                  uint32_t * level_b);
 
 /* Stop `channel`, disabling its output(s) and releasing the pad(s). Safe
  * to call on a channel that is not running (no-op). */

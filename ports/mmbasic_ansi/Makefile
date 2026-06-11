@@ -12,7 +12,6 @@ CC = gcc
 PORT_DIR  := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 REPO_ROOT := $(abspath $(PORT_DIR)/../..)
 HOST_DIR  := $(REPO_ROOT)/ports/host_native
-PICO_COMPAT_DIR := $(REPO_ROOT)/ports/pico_sdk_compat
 SIM_VM_DIR := $(REPO_ROOT)/ports/vm_sys_sim
 BUILD_DIR := $(PORT_DIR)/build
 VERSION_FILE := $(REPO_ROOT)/VERSION
@@ -41,7 +40,7 @@ CFLAGS = -std=gnu11 -g -O2 -Wall -Wno-unused-variable -Wno-unused-function \
          -DMMBA_RELEASE_VERSION=\"$(MMBA_RELEASE_VERSION)\" \
          -include host_platform.h \
          $(THIRD_PARTY_CFLAGS) \
-         -I$(PORT_DIR) -I$(HOST_DIR) -I$(PICO_COMPAT_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/peripheral -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
+         -I$(PORT_DIR) -I$(HOST_DIR) -I$(REPO_ROOT)/core/mmbasic -I$(REPO_ROOT)/runtime/vm -I$(REPO_ROOT)/shared/gfx -I$(REPO_ROOT)/shared/peripheral -I$(REPO_ROOT)/shared/audio -I$(REPO_ROOT)/shared/mmbasic -I$(REPO_ROOT)/drivers/bmp_decoder -I$(REPO_ROOT)/drivers/gps -I$(REPO_ROOT)/drivers/gui_controls -I$(REPO_ROOT)/drivers/gui_touch -I$(REPO_ROOT)/drivers/i2c_bus -I$(REPO_ROOT)/drivers/onewire -I$(REPO_ROOT)/drivers/psram_heap -I$(REPO_ROOT)/drivers/serial -I$(REPO_ROOT)/drivers/spi_bus -I$(REPO_ROOT)/drivers/spi_lcd -I$(REPO_ROOT)/drivers/ssd1963 -I$(REPO_ROOT) \
          -MMD -MP
 
 UNAME_S := $(shell uname -s 2>/dev/null)

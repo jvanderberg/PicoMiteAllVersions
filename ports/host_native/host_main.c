@@ -30,7 +30,6 @@ char * getcwd(char * buf, size_t size);
 #include "vm_sys_pin.h"
 #include "vm_sys_file.h"
 #include "vm_host_fat.h"
-#include "hardware/flash.h"
 #include "host_fs.h"
 #include "runtime/runtime.h"
 

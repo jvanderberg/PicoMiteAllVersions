@@ -202,6 +202,17 @@ void hal_pin_bank_set_mask(uint64_t mask);
 void hal_pin_bank_clr_mask(uint64_t mask);
 void hal_pin_bank_xor_mask(uint64_t mask);
 
+/* -----------------------------------------------------------------------
+ * Board boot button (BASIC: PIN(BOOTSEL)).
+ *
+ * Samples the board's boot/BOOTSEL pushbutton and returns true while it
+ * is held. On RP boards the button shares the QSPI flash CS line, so the
+ * backend briefly quiesces flash to read it. Ports without a boot button
+ * return false.
+ * ---------------------------------------------------------------------- */
+
+bool hal_pin_bootsel_pressed(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -41,7 +41,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #endif
 #if !defined(INCLUDE_COMMAND_TABLE) && !defined(INCLUDE_TOKEN_TABLE)
 #ifndef DRAW_H_INCL
-#include "hardware/gpio.h"
+#include "hal/hal_pin.h"
 
 #define RGB(red, green, blue) (unsigned int)(((red & 0b11111111) << 16) | ((green & 0b11111111) << 8) | (blue & 0b11111111))
 #define swap(a, b) \
@@ -114,7 +114,7 @@ extern volatile short low_y, high_y, low_x, high_x;
 #define WATCHDOG_TIMEOUT 9998  // reset caused by the watchdog timer
 #define PIN_RESTART 9997       // reset caused by entering 0 at the PIN prompt
 #define RESTART_NOAUTORUN 9996 // reset required after changing the LCD or touch config
-#define PinRead(a) gpio_get(PinDef[a].GPno)
+#define PinRead(a) hal_pin_read_fast(PinDef[a].GPno)
 #define VMaxV 480
 #define VMaxH 640
 extern int GetJustification(char * p, int * jh, int * jv, int * jo);

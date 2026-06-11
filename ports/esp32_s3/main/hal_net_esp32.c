@@ -547,6 +547,10 @@ int hal_net_tcpip_status(void) {
     return WIFIconnected ? 1 : wifi_last_status;
 }
 
+int hal_net_link_up(void) {
+    return WIFIconnected != 0;
+}
+
 int hal_net_ip_address(char * out, size_t out_len) {
     if (!out || out_len == 0) return HAL_NET_ERR;
     out[0] = 0;

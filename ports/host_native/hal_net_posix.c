@@ -192,6 +192,10 @@ int hal_net_tcpip_status(void) {
     return 1;
 }
 
+int hal_net_link_up(void) {
+    return 1;
+}
+
 int hal_net_ip_address(char * out, size_t out_len) {
     if (!out || out_len == 0) return HAL_NET_ERR;
     snprintf(out, out_len, "127.0.0.1");

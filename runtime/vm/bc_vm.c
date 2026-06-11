@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <math.h>
+#include <setjmp.h>
 
 #include "bytecode.h"
 #include "bc_alloc.h"
@@ -30,6 +31,9 @@
 #ifndef __not_in_flash_func
 #define __not_in_flash_func(func) func
 #endif
+
+extern jmp_buf ErrNext;
+extern int OptionErrorSkip;
 
 /* Zero-length MMBasic string for uninitialized string variables */
 static uint8_t vm_empty_string[1] = {0};
@@ -409,8 +413,8 @@ void bc_vm_error(BCVMState * vm, const char * msg, ...) {
     vsnprintf(buf, sizeof(buf), msg, ap);
     va_end(ap);
 
-    /* Dump VM state for debugging before the longjmp */
-    bc_dump_vm_state(vm);
+    /* Skipped errors are normal control flow for ON ERROR SKIP/IGNORE. */
+    if (!OptionErrorSkip) bc_dump_vm_state(vm);
 
     /* Format with line number and call MMBasic's error() which longjmps */
     char errbuf[320];
@@ -1645,8 +1649,10 @@ static void bc_vm_execute_syscall(BCVMState * vm, uint16_t sysid, uint8_t argc,
  * bc_vm_execute — main dispatch loop using computed goto
  * ====================================================================== */
 void bc_vm_execute(BCVMState * vm) {
+    jmp_buf saved_err_next;
+    memcpy(saved_err_next, ErrNext, sizeof(jmp_buf));
 
-    /* ---- Helper macros ---- */
+/* ---- Helper macros ---- */
 #define DISPATCH() goto * dispatch_table[*vm->pc++]
 
 #define READ_U8() (*vm->pc++)
@@ -1953,6 +1959,11 @@ void bc_vm_execute(BCVMState * vm) {
         [OP_END] = &&op_end,
         [OP_HALT] = &&op_halt,
     };
+
+    if (setjmp(ErrNext) != 0) {
+        if (OptionErrorSkip > 0) OptionErrorSkip--;
+        ClearTempMemory();
+    }
 
     /* ---- Begin dispatch ---- */
     DISPATCH();
@@ -5293,10 +5304,12 @@ op_checkint:
     DISPATCH();
 
 op_end:
+    memcpy(ErrNext, saved_err_next, sizeof(jmp_buf));
     return;
 
 op_halt:
     vm_output(vm, "STOP\r\n");
+    memcpy(ErrNext, saved_err_next, sizeof(jmp_buf));
     return;
 
 op_invalid:

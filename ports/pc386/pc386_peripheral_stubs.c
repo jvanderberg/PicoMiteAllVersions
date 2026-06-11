@@ -224,31 +224,24 @@ void cmd_update(void) {}
 void cmd_wait(void) {}
 void cmd_wrap(void) {}
 void cmd_wraptarget(void) {}
-/* cmd_xmodem now comes from core/mmbasic/XModem.c (which we add to
- * CORE_SRCS). It calls _outbyte/_inbyte which dispatch via getConsole()
- * (real impl in pc386_runtime.c) and SerialConsolePutC. The Pico-SDK
- * uart_* references in XModem.c are gated by Option.SerialConsole != 0,
- * which is never set on pc386, so the stubs below are link-only. */
-#include "hardware/uart.h"
-static uart_inst_t pc386_uart0_dummy, pc386_uart1_dummy;
-uart_inst_t * uart0 = &pc386_uart0_dummy;
-uart_inst_t * uart1 = &pc386_uart1_dummy;
-void uart_set_irq_enables(uart_inst_t * u, bool rx, bool tx) {
-    (void)u;
-    (void)rx;
-    (void)tx;
-}
-void uart_putc_raw(uart_inst_t * u, char c) {
-    (void)u;
-    (void)c;
-}
-bool uart_is_readable(uart_inst_t * u) {
-    (void)u;
+/* cmd_xmodem comes from core/mmbasic/XModem.c (in CORE_SRCS). It calls
+ * _outbyte/_inbyte which dispatch via getConsole() (real impl in
+ * pc386_runtime.c) and SerialConsolePutC. pc386 has no UART serial
+ * console, so raw mode never engages and transfers stay on that
+ * buffered console path. */
+#include "hal/hal_serial_console.h"
+bool hal_serial_console_raw_enter(void) {
     return false;
 }
-char uart_getc(uart_inst_t * u) {
-    (void)u;
+void hal_serial_console_raw_exit(void) {}
+bool hal_serial_console_raw_readable(void) {
+    return false;
+}
+int hal_serial_console_raw_getc(void) {
     return 0;
+}
+void hal_serial_console_raw_putc(char c) {
+    (void)c;
 }
 
 /* ------------------------------------------------------------------ */

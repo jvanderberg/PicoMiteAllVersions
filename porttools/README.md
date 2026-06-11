@@ -82,7 +82,7 @@ python3.11 porttools/basic_serial.py \
   --long-timeout 10 \
   --cmd 'UPDATE FIRMWARE' || true
 sleep 3
-picotool load -v -x build_web2350_picocalc/PicoMite.uf2
+picotool load -v -x build_picocalc_wifi_rp2350/PicoMite.uf2
 ```
 
 Use `UPDATE FIRMWARE` for the PicoCalc flash loop whenever the BASIC prompt is
@@ -159,11 +159,15 @@ python3.11 porttools/basic_serial.py \
 
 ## `esp32_fs_vm_smoke.py`
 
-`esp32_fs_vm_smoke.py` is the ESP32-S3 Metro hardware smoke suite for the
+`esp32_fs_vm_smoke.py` is the ESP32-S3 hardware smoke suite for the
 prompt, `MM.INFO`, A: LittleFS, BASIC file I/O, program load/save/run paths,
 the bytecode VM, GPIO/ADC pins, and opt-in persistent/visual/network checks.
 It writes short BASIC programs to A:, runs them, checks success markers, and
 removes generated files unless `--keep-files` is used.
+
+For the ordered Freenove bringup sequence across flash, PSRAM, display, GUI,
+SD, WiFi, and web console smokes, see
+[`docs/esp32-s3-smoke-test-runbook.md`](../docs/esp32-s3-smoke-test-runbook.md).
 
 Default run:
 
@@ -200,9 +204,11 @@ Implemented checks:
   VM-side file I/O, and a Sieve of Eratosthenes benchmark that verifies 168
   primes up to 1000.
 - `gpio`: probes a conservative board-safe GPIO candidate for DOUT/DIN/ARAW,
-  then verifies current `SETPIN ..., PWM` and `SERVO` unsupported errors remain explicit.
+  then exercises ESP32 PWM/SERVO on a non-reserved LEDC channel when available.
+  Older or restricted images may instead pass by returning an explicit
+  unsupported or reserved-channel error.
 - `flash`: opt-in flash-slot persistence using `FLASH ERASE`, `FLASH SAVE`,
-  RTS reset/resync, `FLASH LOAD`, `RUN`, `FLASH RUN`, and slot cleanup.
+  `CPU RESTART`/resync, `FLASH LOAD`, `RUN`, `FLASH RUN`, and slot cleanup.
   `VAR SAVE`/`VAR RESTORE` is additionally gated by `--var-save` because it
   leaves a persistent saved variable.
 - `ws2812`: GP46 onboard NeoPixel red/green/blue/off command sequence. The
@@ -402,6 +408,10 @@ timers, `RUN`, `FRUN`, the bytecode VM, WEB status, and integer math. It writes
 short BASIC programs to the target drive, runs them on the board, checks their
 success markers, and removes the generated programs unless `--keep-files` is
 used.
+
+For the full Pico/PicoCalc hardware validation matrix, including flashing,
+PSRAM, SD, PIO, FASTGFX, and WiFi/network tiers, see
+[`docs/pico-smoke-test-runbook.md`](../docs/pico-smoke-test-runbook.md).
 
 Default run against the Pico internal filesystem:
 

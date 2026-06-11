@@ -123,7 +123,7 @@ set(PICOMITE_VM_DEVICE_SOURCES
 set(PICOMITE_LEGACY_CORE_SOURCES
 	core/mmbasic/MMBasic.c
 	core/mmbasic/Operators.c
-	core/mmbasic/Custom.c
+	drivers/pio_rp2/pio_rp2.c
 	core/mmbasic/Functions.c
 	core/mmbasic/Commands.c
 	core/mmbasic/FileIO.c
@@ -221,7 +221,9 @@ set(PICOMITE_PICO_SDK_HAL_SOURCES
 	ports/pico_sdk_common/hal_random_pico.c
 	ports/pico_sdk_common/hal_watchdog_pico.c
 	ports/pico_sdk_common/hal_pin_pico.c
+	ports/pico_sdk_common/hal_adc_pico.c
 	ports/pico_sdk_common/hal_pwm_pico.c
+	ports/pico_sdk_common/hal_display_backlight_pico.c
 	ports/pico_sdk_common/hal_i2c_pico.c
 	ports/pico_sdk_common/hal_ws2812_pico.c
 	ports/pico_sdk_common/pico_gpio_irq.c
@@ -242,6 +244,7 @@ set(PICOMITE_PICO_SDK_HAL_SOURCES
 	ports/pico_sdk_common/pico_clock.c
 	ports/pico_sdk_common/pico_timer.c
 	ports/pico_sdk_common/pico_console.c
+	ports/pico_sdk_common/hal_serial_console_pico.c
 	ports/pico_sdk_common/pico_fault.c
 	ports/pico_sdk_common/pico_program_flash.c
 	ports/pico_sdk_common/pico_cfunction_bridge.c

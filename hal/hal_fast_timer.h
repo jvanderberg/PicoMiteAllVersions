@@ -9,10 +9,12 @@
  * `hal_fast_timer_available()` reports false on RP2040 and
  * `hal_fast_timer_configure()` is a no-op returning false.
  *
- * The ISR body (increment INT5Count, clear the IRQ) lives in the core
- * External.c path and is wired in by `hal_fast_timer_configure()` on
- * RP2350. Core sees a single callable surface; preprocessor gating for
- * `PWM_IRQ_WRAP_1` / `pwm_set_irq1_enabled` stays on the impl side.
+ * The callback body (increment INT5Count) lives in the core External.c
+ * path and is wired in by `hal_fast_timer_configure()` on RP2350. The
+ * impl acknowledges the wrap interrupt before invoking the callback, so
+ * the callback contains no hardware access. Core sees a single callable
+ * surface; preprocessor gating for `PWM_IRQ_WRAP_1` /
+ * `pwm_set_irq1_enabled` stays on the impl side.
  *
  * Global HAL conventions apply (see hal/CONTRACT.md).
  */
@@ -34,12 +36,13 @@ extern "C" {
 bool hal_fast_timer_available(void);
 
 /* Configure PWM slice 0 as a fast counter with the given wrap value and
- * install the wrap-IRQ handler. The handler increments the `INT5Count`
- * global and clears the IRQ. Returns true on success, false on ports that
- * don't support the feature (no-op on RP2040).
+ * install the wrap-IRQ handler. Returns true on success, false on ports
+ * that don't support the feature (no-op on RP2040).
  *
- * `isr_fn` is the ISR body core wants wired up. On RP2350 this is stored
- * behind PWM_IRQ_WRAP_1; on RP2040 it's ignored.
+ * `isr_fn` is the callback core wants run on each wrap (it increments the
+ * `INT5Count` global). The impl owns interrupt acknowledgment and calls
+ * `isr_fn` once per wrap. On RP2350 this is wired behind PWM_IRQ_WRAP_1;
+ * on RP2040 it's ignored.
  */
 bool hal_fast_timer_configure(uint32_t wrap_count, void (*isr_fn)(void));
 

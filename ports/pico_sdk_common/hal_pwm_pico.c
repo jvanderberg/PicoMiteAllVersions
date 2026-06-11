@@ -87,6 +87,16 @@ int hal_pwm_set_duty(int channel, int which, float duty_pct) {
     return 0;
 }
 
+int hal_pwm_query(int channel, uint32_t * top, uint32_t * level_a,
+                  uint32_t * level_b) {
+    if (channel < 0 || channel > hal_pwm_max_slice())
+        return -1;
+    if (top) *top = pwm_hw->slice[channel].top;
+    if (level_a) *level_a = (pwm_hw->slice[channel].cc & 0xFFFF);
+    if (level_b) *level_b = ((pwm_hw->slice[channel].cc) >> 16);
+    return 0;
+}
+
 void hal_pwm_sync_channel(int channel, float duty_pct) {
     if (channel < 0 || channel > hal_pwm_max_slice())
         return;

@@ -98,3 +98,6 @@ void hal_pin_bank_clr_mask(uint64_t m) {
 void hal_pin_bank_xor_mask(uint64_t m) {
     (void)m;
 }
+bool hal_pin_bootsel_pressed(void) {
+    return false;
+}

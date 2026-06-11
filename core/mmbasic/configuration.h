@@ -313,13 +313,10 @@ extern uint8_t PSRAMpin;
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif
-// QVGA PIO and state machines
+/* QVGA PIO block index. The piomap[] pin bookkeeping in the VGA ports'
+ * port_defaults.c is keyed on it; the PIO instance lookup (QVGA_PIO)
+ * lives with its consumer in drivers/vga_pio/vga_qvga_modes.c. */
 #define QVGA_PIO_NUM 0
-#ifdef rp2350
-#define QVGA_PIO (QVGA_PIO_NUM == 0 ? pio0 : (QVGA_PIO_NUM == 1 ? pio1 : pio2))
-#else
-#define QVGA_PIO (QVGA_PIO_NUM == 0 ? pio0 : pio1)
-#endif
 /* ScreenBuffer is an alias for FRAMEBUFFER. On rp2350 PICOMITE it
  * points at the NEXTGEN MEM332 shadow buffer; on every other target
  * FRAMEBUFFER is either NULL or the VGA/HDMI scanout buffer. Defining

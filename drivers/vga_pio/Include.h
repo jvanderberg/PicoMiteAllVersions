@@ -78,7 +78,6 @@ typedef unsigned char Bool;
 #include "hardware/flash.h"
 #include "hardware/adc.h"
 #include "hardware/exception.h"
-#include "hardware/structs/systick.h"
 #include "hardware/structs/scb.h"
 #include "hardware/vreg.h"
 #include <pico/bootrom.h>

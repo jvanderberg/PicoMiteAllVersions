@@ -44,6 +44,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #ifndef EXTERNAL_HEADER
 #define EXTERNAL_HEADER
 
+#include "hal/hal_cycle_counter.h" /* shortpause() below expands to its inlines */
+
 #define NBR_PULSE_SLOTS 5 // number of concurrent pulse commands, each entry is 8 bytes
 
 extern unsigned char * InterruptReturn;
@@ -215,7 +217,6 @@ extern int BacklightSlice, BacklightChannel;
  * backlight hardware the values stay at their init sentinel (-1) and the
  * control paths that read them are guarded elsewhere. */
 extern int KeyboardlightSlice, KeyboardlightChannel;
-extern void SetADCFreq(float frequency);
 /* Unified backlight setter — PicoCalc ports ignore the
  * frequency; other variants map it to the backlight PWM's wrap. */
 extern void setBacklight(int level, int frequency);
@@ -224,7 +225,7 @@ extern void setBacklight(int level, int frequency);
  * knowing the length (which differs by chip: 30 on RP2040 / WEB,
  * 48 on RP2350 variants). */
 extern const uint8_t PINMAP[];
-void gpio_callback(uint gpio, uint32_t events);
+void gpio_callback(unsigned int gpio, uint32_t events);
 // for CheckPin() action can be set to:
 #define CP_CHECKALL 0b0000        // abort with an error if invalid, in use or reserved
 #define CP_NOABORT 0b0001         // the function will not abort with an error
@@ -232,16 +233,16 @@ void gpio_callback(uint gpio, uint32_t events);
 #define CP_IGNORE_RESERVED 0b0100 // the function will ignore reserved pins (EXT_COM_RESERVED and EXT_BOOT_RESERVED)
 #define CP_IGNORE_BOOTRES 0b1000  // the function will ignore the boot reserved pins (EXT_BOOT_RESERVED)
 #define setuptime (12 - (Option.CPU_Speed - 250000) / 50000)
-#define shortpause(a)                 \
-    {                                 \
-        systick_hw->cvr = 0;          \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        asm("NOP");                   \
-        while (systick_hw->cvr > a) { \
-        };                            \
+#define shortpause(a)                       \
+    {                                       \
+        hal_cycle_restart();                \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        asm("NOP");                         \
+        while (hal_cycle_remaining() > a) { \
+        };                                  \
     }
 extern int CheckPin(int pin, int action);
 extern unsigned int CFuncInt1;
@@ -330,12 +331,7 @@ extern bool dmarunning;
 extern int last_adc;
 extern bool ADCDualBuffering;
 extern char * ADCInterrupt;
-extern uint32_t ADC_dma_chan;
-extern uint32_t ADC_dma_chan2;
 extern short * ADCbuffer;
-extern volatile uint8_t * adcint;
-extern uint8_t * adcint1;
-extern uint8_t * adcint2;
 void IrInit(void);
 void IrReset(void);
 void IRSendSignal(int pin, int half_cycles);

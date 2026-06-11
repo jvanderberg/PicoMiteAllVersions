@@ -16,6 +16,10 @@
 #include "hal/hal_pin.h"
 #include "hal/hal_option_setters.h"
 #include "hardware/pio.h"
+#include "hardware/spi.h"
+#include "pico/stdlib.h"              /* check_sys_clock_khz (SDK 1.x home) */
+#include "hardware/clocks.h"          /* check_sys_clock_khz (SDK 2.x home) */
+#include "hardware/regs/addressmap.h" /* XIP_BASE */
 
 #if !defined(MMBASIC_HOST)
 
@@ -46,9 +50,16 @@ int MIPS16 port_misc_option_setter(unsigned char * cmdline) {
         pin1 = getinteger(argv[0]);
         if (!code) pin1 = codemap(pin1);
         if (IsInvalidPin(pin1)) error("Invalid pin");
-        if (ExtCurrentConfig[pin1] != EXT_NOT_CONFIG) error("Pin | is in use", pin1);
         if (!(pin1 == 1 || pin1 == 11 || pin1 == 25 || pin1 == 62))
             error("Invalid pin for PSRAM chip select (GP0,GP8,GP19,GP47)");
+        if (ExtCurrentConfig[pin1] != EXT_NOT_CONFIG) {
+            bool picocalc_gp0_keypad_reservation =
+                Option.KeyboardConfig == CONFIG_I2C &&
+                pin1 == PINMAP[0] &&
+                ExtCurrentConfig[pin1] == EXT_BOOT_RESERVED;
+            if (!picocalc_gp0_keypad_reservation)
+                error("Pin | is in use", pin1);
+        }
         Option.PSRAM_CS_PIN = pin1;
         SaveOptions();
         _excep_code = RESET_COMMAND;
@@ -184,6 +195,36 @@ int MIPS16 port_mminfo_scroll_start(int64_t * out_iret) {
 }
 int MIPS16 port_mminfo_screenbuff(int64_t * out_iret) {
     return port_setter_screenbuff(out_iret);
+}
+
+/* MM.INFO SPI SPEED — reprogram the system SPI for the active display
+ * (SPISpeedSet) and report the achieved baudrate in Hz. Returns 0 when
+ * no hardware SPI instance maps to the system clock pin. */
+int MIPS16 port_mminfo_system_spi_speed(int64_t * out_iret) {
+    SPISpeedSet(Option.DISPLAY_TYPE);
+    if (PinDef[Option.SYSTEM_CLK].mode & SPI0SCK) {
+        *out_iret = spi_get_baudrate(spi0);
+        return 1;
+    }
+    if (PinDef[Option.SYSTEM_CLK].mode & SPI1SCK) {
+        *out_iret = spi_get_baudrate(spi1);
+        return 1;
+    }
+    return 0;
+}
+
+/* MM.INFO(VALID CPUSPEED n) — 1 if the PLL can synthesise the requested
+ * sysclk, 0 otherwise. */
+int MIPS16 port_mminfo_valid_cpuspeed(uint32_t speed_khz) {
+    uint vco, postdiv1, postdiv2;
+    return check_sys_clock_khz(speed_khz, &vco, &postdiv1, &postdiv2) ? 1 : 0;
+}
+
+/* CPU address of the flash MOD-buffer region: the XIP window plus the
+ * page-rounded top of system flash (OPTION MODBUFF / MM.INFO(MODBUFF
+ * ADDRESS); the audio driver computes the same address). */
+char * port_modbuff_address(void) {
+    return (char *)(XIP_BASE + RoundUpK4(TOP_OF_SYSTEM_FLASH));
 }
 
 /* POKE DISPLAY <args> raw command/data byte sequence. Dispatches by
