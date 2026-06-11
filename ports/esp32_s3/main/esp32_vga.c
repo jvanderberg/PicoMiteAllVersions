@@ -618,3 +618,10 @@ void esp32_vga_print_options(void) {
     MMPrintString(drive);
     PRet();
 }
+
+/* Console-byte sink for ports with a char-cell VGA console (classic
+ * ESP32). The S3 VGA console renders through DisplayPutC instead, so the
+ * hook is a no-op here. */
+void esp32_vga_console_putc(int c) {
+    (void)c;
+}

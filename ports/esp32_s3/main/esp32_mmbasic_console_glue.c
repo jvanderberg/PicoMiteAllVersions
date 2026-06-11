@@ -87,11 +87,17 @@ char SerialConsolePutC(char c, int flush) {
     return c;
 }
 
+/* Per-port VGA console sink. The classic-ESP32 char-cell text console
+ * consumes every console byte through this; ports whose VGA path renders
+ * through DisplayPutC (S3 LCD_CAM) provide a no-op. */
+extern void esp32_vga_console_putc(int c);
+
 void putConsole(int c, int flush) {
     if (OptionConsole & 2) {
         DisplayPutC((char)c);
         if (flush) esp32_ili9341_lcd_flush_pending();
     }
+    esp32_vga_console_putc(c);
     if (OptionConsole & 1) SerialConsolePutC((char)c, flush);
 }
 
@@ -241,12 +247,15 @@ int MMgetchar(void) {
     return mmbasic_console_normalise_byte(c);
 }
 
-/* Console RX/TX rings — Pico ports drive these from the UART IRQ. ESP32
- * USB Serial/JTAG goes through esp32_console_init's VFS routing instead,
- * so the rings stay unused. The buffer + head/tail symbols still need to
- * exist because core code reads them as state. CONSOLE_RX_BUF_SIZE comes
- * from configuration.h via HAL_PORT_CONSOLE_RX_BUF_SIZE; TX has its own
- * fixed CONSOLE_TX_BUF_SIZE. */
+/* Console RX/TX rings — Pico ports drive these from the UART IRQ. On
+ * ESP32 the RX ring is fed by two pollers: the telnet service and the
+ * runtime abort pump (esp32_runtime_pump_input, which drains the raw
+ * transport while a program runs, raising MMAbort on the break key and
+ * banking other bytes here for INKEY$/MMgetchar to pop). All producers
+ * and consumers run on the MMBasic task, so no IRQ-style locking is
+ * needed. CONSOLE_RX_BUF_SIZE comes from configuration.h via
+ * HAL_PORT_CONSOLE_RX_BUF_SIZE; TX has its own fixed
+ * CONSOLE_TX_BUF_SIZE. */
 volatile char ConsoleRxBuf[CONSOLE_RX_BUF_SIZE] = {0};
 volatile int ConsoleRxBufHead = 0;
 volatile int ConsoleRxBufTail = 0;

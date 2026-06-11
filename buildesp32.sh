@@ -1,24 +1,26 @@
 #!/usr/bin/env bash
-# Build an ESP32-S3 port. Opt-in: ESP-IDF is heavyweight and not part of the
+# Build an ESP32 port. Opt-in: ESP-IDF is heavyweight and not part of the
 # default host/device build gate.
 #
-# Each ports/esp32_s3* directory is a self-contained ESP-IDF project and can be
+# Each ports/esp32_* directory is a self-contained ESP-IDF project and can be
 # built directly the standard way:
 #   . ~/esp/esp-idf/export.sh
-#   cd ports/<port> && idf.py set-target esp32s3 && idf.py build
-# This wrapper just adds the repo-wide HAL purity gate and the IDF env.
+#   cd ports/<port> && idf.py set-target <chip> && idf.py build
+# This wrapper just adds the repo-wide HAL purity gate, the IDF env, and the
+# per-port chip target (esp32_cyd -> esp32, esp32_s3* -> esp32s3).
 #
 # Usage:
 #   ./buildesp32.sh [<port>] [idf.py args...]
-#     <port>  directory under ports/ — esp32_s3 (octal) or esp32_s3_quad
-#             (quad); or 'all' to build every ports/esp32_s3* project.
-#             Defaults to esp32_s3.
+#     <port>  directory under ports/ — esp32_s3 (octal), esp32_s3_quad
+#             (quad), or esp32_cyd (classic ESP32); or 'all' to build every
+#             ports/esp32_* project. Defaults to esp32_s3.
 #
 # Examples:
 #   ./buildesp32.sh                       # build ports/esp32_s3
 #   ./buildesp32.sh esp32_s3_quad         # build the quad port
+#   ./buildesp32.sh esp32_cyd             # build the classic-ESP32 CYD port
 #   ./buildesp32.sh esp32_s3 fullclean    # pass args through to idf.py
-#   ./buildesp32.sh all                   # build both ESP32-S3 ports
+#   ./buildesp32.sh all                   # build every ESP32 port
 #
 # Environment:
 #   IDF_PATH=/path/to/esp-idf    # defaults to ~/esp/esp-idf
@@ -76,8 +78,12 @@ for p in "${ports[@]}"; do
     printf '=== Building ports/%s ===\n' "$p"
     (
         cd "$port_dir"
+        case "$p" in
+            esp32_cyd) chip="esp32" ;;
+            *) chip="esp32s3" ;;
+        esac
         if [ ! -f sdkconfig ]; then
-            idf.py set-target esp32s3
+            idf.py set-target "$chip"
         fi
         if [ "$#" -eq 0 ]; then
             idf.py build

@@ -40,6 +40,12 @@
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 
+/* Chip-specific PDM TX slot shape for OPTION AUDIO left,right: the
+ * DAC-style slot configuration only exists on I2S hardware v2, so each
+ * chip's port links its own provider (esp32_audio_pdm_slot_s3.c on S3,
+ * esp32_cyd_audio_pdm_slot.c on classic ESP32). */
+extern i2s_pdm_tx_slot_config_t esp32_audio_pdm_tx_slot_config(void);
+
 #define AUDIO_RATE HAL_PORT_AUDIO_SAMPLE_RATE
 #define FRAMES_PER_CHUNK 256 /* stereo frames per write */
 #define AUDIO_I2S_PORT I2S_NUM_1
@@ -661,8 +667,7 @@ void hal_audio_init(void) {
         }
         i2s_pdm_tx_config_t pdm_cfg = {
             .clk_cfg = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(default_rate),
-            .slot_cfg = I2S_PDM_TX_SLOT_DAC_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                           I2S_SLOT_MODE_STEREO),
+            .slot_cfg = esp32_audio_pdm_tx_slot_config(),
             .gpio_cfg = {
                 .clk = I2S_GPIO_UNUSED,
                 .dout = left_gpio,

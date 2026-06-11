@@ -26,7 +26,8 @@
 #include "esp32_option_ext.h"
 
 extern jmp_buf mark;
-extern unsigned char flash_prog_buf[];
+extern unsigned char * flash_prog_buf;
+extern void esp32_flash_prog_buf_init(void);
 extern const uint8_t * flash_progmemory;
 extern void flash_range_erase(uint32_t off, uint32_t count);
 extern void esp32_console_init(void);
@@ -132,11 +133,12 @@ void app_main(void) {
     hal_psram_init();
 
     /* MMBasic boot. flash_prog_buf is sized MAX_PROG_SIZE + 4096 in
-     * esp32_compat.c; the constructor 0xff-fills both the program region
+     * esp32_compat.c; the init 0xff-fills both the program region
      * and the trailer to mirror erased-flash semantics. PrepareProgramExt
      * walks past the program terminator looking for 0xff as the "end of
      * program / start of CFunction area" sentinel — non-0xff bytes there
      * cause it to deref garbage. */
+    esp32_flash_prog_buf_init();
     flash_progmemory = flash_prog_buf;
     esp32_mmbasic_console_glue_init();
 
