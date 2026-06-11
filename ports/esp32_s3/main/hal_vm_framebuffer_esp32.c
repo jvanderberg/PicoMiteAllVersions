@@ -296,6 +296,11 @@ static void esp32_fb_free(unsigned char ** p) {
     }
 }
 
+/* In VGA modes FrameBuf/LayerBuf alias the VGA driver's framebuffer; only
+ * buffers allocated by hal_vm_framebuffer_create/_layer may be freed here. */
+static bool s_fb_owned;
+static bool s_layer_owned;
+
 static void esp32_fb_merge_region(int x0, int y0, int w, int h, uint8_t transparent) {
     if (!FrameBuf || !LayerBuf) return;
     if (w <= 0 || h <= 0) return;
@@ -437,14 +442,18 @@ void hal_vm_framebuffer_shutdown_runtime(void) {
     esp32_fb_clear_pending_copy();
     int frame_display_owned = esp32_fb_vga_display_owned(FrameBuf);
     int layer_display_owned = esp32_fb_vga_display_owned(LayerBuf);
-    if ((WriteBuf == FrameBuf && !frame_display_owned) ||
-        (WriteBuf == LayerBuf && !layer_display_owned))
+    if ((WriteBuf == FrameBuf && s_fb_owned && !frame_display_owned) ||
+        (WriteBuf == LayerBuf && s_layer_owned && !layer_display_owned))
         restorepanel();
-    if (!frame_display_owned)
+    if (s_fb_owned && !frame_display_owned) {
         esp32_fb_free(&FrameBuf);
-    if (!layer_display_owned)
+        esp32_fb_free(&ShadowBuf);
+        s_fb_owned = false;
+    }
+    if (s_layer_owned && !layer_display_owned) {
         esp32_fb_free(&LayerBuf);
-    esp32_fb_free(&ShadowBuf);
+        s_layer_owned = false;
+    }
     fb_dma_chan = -1;
 }
 
@@ -473,6 +482,7 @@ void hal_vm_framebuffer_create(int fast) {
     }
     FrameBuf = frame;
     ShadowBuf = shadow;
+    s_fb_owned = true;
     if (ShadowBuf) memset(ShadowBuf, 0xff, bytes);
 }
 void hal_vm_framebuffer_layer(int hc, int c) {
@@ -484,6 +494,7 @@ void hal_vm_framebuffer_layer(int hc, int c) {
     if (LayerBuf && !(vga && esp32_fb_vga_display_owned(LayerBuf))) error("Layer already exists");
     if (bytes == 0) error("Display not configured");
     LayerBuf = esp32_fb_alloc(bytes, "gfx:layer");
+    s_layer_owned = true;
     memset(LayerBuf, vga ? (int)transparent : (int)(transparent | (transparent << 4)), bytes);
 }
 void hal_vm_framebuffer_write(char w) {
@@ -510,18 +521,22 @@ void hal_vm_framebuffer_close(char w) {
     if (w == 0) w = 'A';
     esp32_fb_stop_merge();
     esp32_fb_clear_pending_copy();
-    if ((w == 'A' || w == 'F') && FrameBuf) {
+    if ((w == 'A' || w == 'F') && FrameBuf && s_fb_owned) {
         int display_owned = esp32_fb_vga_display_owned(FrameBuf);
         if (WriteBuf == FrameBuf && !display_owned) restorepanel();
         if (!display_owned) {
             esp32_fb_free(&FrameBuf);
             esp32_fb_free(&ShadowBuf);
+            s_fb_owned = false;
         }
     }
-    if ((w == 'A' || w == 'L') && LayerBuf) {
+    if ((w == 'A' || w == 'L') && LayerBuf && s_layer_owned) {
         int display_owned = esp32_fb_vga_display_owned(LayerBuf);
         if (WriteBuf == LayerBuf && !display_owned) restorepanel();
-        if (!display_owned) esp32_fb_free(&LayerBuf);
+        if (!display_owned) {
+            esp32_fb_free(&LayerBuf);
+            s_layer_owned = false;
+        }
     }
     if (w != 'A' && w != 'F' && w != 'L') error("Syntax");
 }

@@ -429,6 +429,14 @@ int esp32_vga_apply_default_options_if_unset(void) {
 
 void setmode(int mode, bool clear) {
     if (!vga_lcdcam_s3_active()) return;
+    /* do_end() restores the screen mode from DISPLAY_TYPE, which is not a
+     * VGA screen mode when another display (e.g. the web console's
+     * DISP_USER) owns the panel; ignore those rather than error, since
+     * error() runs do_end() and a failure here would recurse. */
+    mode = esp32_vga_mode_from_internal(mode);
+    if (mode != ESP32_VGA_MODE_640X480 && mode != ESP32_VGA_MODE_320X240 &&
+        mode != ESP32_VGA_MODE_320X240_DITHER)
+        return;
     if (!esp32_vga_apply_mode(mode, clear)) error("Invalid mode");
 }
 

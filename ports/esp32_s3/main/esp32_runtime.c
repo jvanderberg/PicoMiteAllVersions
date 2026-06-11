@@ -62,6 +62,10 @@ static inline CommandToken esp32_commandtbl_decode(const unsigned char * p) {
 }
 
 static void esp32_runtime_pump_input(void) {
+    /* No 1 kHz timer IRQ on this port — synthesize CursorTimer from the
+     * monotonic clock so ShowCursor's blink math works (editor poll path). */
+    CursorTimer = (int)((esp_timer_get_time() / 1000) %
+                        (CURSOR_OFF + CURSOR_ON));
     int c = esp32_console_read_byte_nonblock();
     if (c < 0) return;
     if (c == 0x03 /* Ctrl-C */) {
@@ -99,12 +103,34 @@ static void esp32_runtime_gui_service(void) {
 }
 
 static void esp32_runtime_service(void) {
-    esp32_runtime_pump_input();
-    esp32_runtime_gui_service();
-    /* Cooperative decode pump for file playback during interpreter polls. */
-    audio_runtime_service();
-    mmbasic_runtime_poll_service_once(&s_network_service_active,
-                                      esp32_runtime_network_service);
+    /* CheckAbort/check_interrupt call this after EVERY interpreted
+     * statement, so everything here is time-gated — unthrottled it cost
+     * ~0.85 ms per statement and the interpreter ran at LWIP-poll speed.
+     *
+     * Two cadences: console/GUI/audio are microseconds per call and run
+     * at 1 kHz (bounds Ctrl-C latency at 1 ms). ProcessWeb is the
+     * expensive one — five BSD-socket polls through the LWIP core lock,
+     * around a millisecond per call with WiFi associated — so even at
+     * 1 kHz it ate half the CPU. 10 ms costs at most ~10% and nothing
+     * needs it faster: telnet output self-gates at 5 ms, runtime telnet
+     * input at 10 ms is imperceptible, and the interactive console's
+     * blocking-input path calls ProcessWeb directly, ungated. */
+    static int64_t next_console_us;
+    static int64_t next_net_us;
+    int64_t now = esp_timer_get_time();
+    if (now >= next_console_us) {
+        next_console_us = now + 1000;
+        esp32_runtime_pump_input();
+        esp32_runtime_gui_service();
+        /* Cooperative decode pump for file playback during interpreter
+         * polls. */
+        audio_runtime_service();
+    }
+    if (now >= next_net_us) {
+        next_net_us = now + 10000;
+        mmbasic_runtime_poll_service_once(&s_network_service_active,
+                                          esp32_runtime_network_service);
+    }
 }
 
 static void esp32_runtime_before_abort(void) {

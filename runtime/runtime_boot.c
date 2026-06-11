@@ -66,7 +66,10 @@ int mmbasic_runtime_run_source(const mm_runtime_adapter * port,
     if (flags & MMBASIC_RUNTIME_RUN_FLAG_PREPARE_PROGRAM) PrepareProgram(1);
 
     if (setjmp(mark) == 0) {
+        mark_armed = 1;
         ExecuteProgram(ProgMemory);
+    } else {
+        error_in_recovery = 0;
     }
 
     return MMErrMsg[0] ? 1 : 0;
