@@ -1652,8 +1652,8 @@ void bc_vm_execute(BCVMState * vm) {
     jmp_buf saved_err_next;
     memcpy(saved_err_next, ErrNext, sizeof(jmp_buf));
 
-    /* ---- Helper macros ---- */
-    #define DISPATCH() goto * dispatch_table[*vm->pc++]
+/* ---- Helper macros ---- */
+#define DISPATCH() goto * dispatch_table[*vm->pc++]
 
 #define READ_U8() (*vm->pc++)
 #define READ_U16() ({ uint16_t _v; memcpy(&_v, vm->pc, 2); vm->pc += 2; _v; })
