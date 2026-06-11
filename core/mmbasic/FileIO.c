@@ -3168,7 +3168,14 @@ void MIPS16 cmd_files(void) {
         hal_ff_closedir(&djd);
     } else {
         lfs_dir_close(&lfs, &lfs_dir);
-        IntToStr(ts, Option.FlashSize - (Option.modbuff ? 1024 * Option.modbuffsize : 0) - RoundUpK4(TOP_OF_SYSTEM_FLASH) - lfs_fs_size(&lfs) * 4096, 10);
+        /* Free space from the mounted filesystem's own geometry: ports size
+         * the A: drive differently (Pico carves it from the program flash,
+         * ESP32 mounts a dedicated partition), and the lfs config is where
+         * each port records the result. */
+        IntToStr(ts,
+                 (int64_t)(lfs.cfg->block_count - lfs_fs_size(&lfs)) *
+                     lfs.cfg->block_size,
+                 10);
         MMPrintString(", ");
         MMPrintString(ts);
         MMPrintString(" bytes free");

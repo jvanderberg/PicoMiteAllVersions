@@ -1,28 +1,31 @@
 /*
- * ports/esp32_s3/port_config.h - port-config for the ESP32-S3 build.
+ * ports/esp32_cyd/port_config.h - port-config for the classic ESP32 CYD build.
  *
  * Port-scoped compile-time constants. Every value is defined here rather
- * than inherited from host_native, so ESP32's hardware shape is explicit.
+ * than inherited from another port, so this port's hardware shape is
+ * explicit.
  */
 
-#ifndef ESP32_S3_PORT_CONFIG_H
-#define ESP32_S3_PORT_CONFIG_H
+#ifndef ESP32_CYD_PORT_CONFIG_H
+#define ESP32_CYD_PORT_CONFIG_H
 
 /* Sentinel for hal/hal_port_assert.h: every TU that uses HAL_PORT_HAS_* in
  * a #if directive can include hal_port_assert.h to turn a missing
  * port_config.h into a build error instead of a silent eval-to-zero. */
 #define HAL_PORT_CONFIG_INCLUDED 1
 
-/* Chip-level: ESP32-S3. GPIO 0..48 exist on the chip. The port does not
+/* Chip-level: classic ESP32. GPIO 0..39 exist on the chip (with holes:
+ * 20, 24, 28..31 are not bonded, 34..39 are input-only). The port does not
  * expose RP2040-style PWM slices or PIO blocks; BASIC PWM/SERVO uses the
- * ESP32 LEDC backend. OPTION AUDIO left,right uses I2S PDM TX. */
+ * ESP32 LEDC backend. */
 #define HAL_PORT_PWM_SLICE_COUNT 0
-#define HAL_PORT_GPIO_COUNT 49
+#define HAL_PORT_GPIO_COUNT 40
 #define HAL_PORT_PIO_COUNT 0
 #define HAL_PORT_PULLDOWN_NEEDS_RESET 0
 
 /* ADC OPEN streaming is not wired on ESP32. BASIC SETPIN ...,ARAW uses the
- * ESP32-S3 pin table and hal_pin_esp32.c directly, so this remains zero. */
+ * classic-ESP32 pin table and hal_pin_esp32.c directly, so this remains
+ * zero. */
 #define HAL_PORT_ADC_CHANNEL_MAX 0
 #define HAL_PORT_BACKLIGHT_VIA_KEYPAD_I2C 0
 
@@ -41,23 +44,24 @@
  * Pico WEB compile path, so it stays disabled here. */
 #define HAL_PORT_HAS_WIFI 0
 #define HAL_PORT_HAS_GUICONTROLS 1
-#define HAL_PORT_GUI_MAX_CONTROLS 64
+/* Small GUI-control cap: the control table is static DRAM, and classic
+ * ESP32 has roughly a third of the S3's internal RAM for it. */
+#define HAL_PORT_GUI_MAX_CONTROLS 16
 #define HAL_PORT_KEYBOARD_USB_HOST 0
 #define HAL_PORT_HAS_I2C_KEYPAD 0
 
-/* I2C and audio constants are compile-time defaults for shared code paths.
- * The current ESP32 stdio scope links stubs for these feature areas. */
+/* I2C and audio constants are compile-time defaults for shared code paths. */
 #define HAL_PORT_I2C_TIMEOUT_MS 5
 #define HAL_PORT_I2C_SLOW_HZ 100000
 #define HAL_PORT_AUDIO_FLAC_MAX_BASE_HZ 44100
 #define HAL_PORT_AUDIO_MOD_BUFFER_SIZE 6144
 #define HAL_PORT_HAS_MP3 0
 
-/* Compile-time fallback I2S DAC pins (e.g. MAX98357A, PCM5102, UDA1334). PLAY
- * TONE / SOUND / NOTE synthesize 16-bit stereo PCM (shared/audio/synth_pcm.c).
- * OPTION AUDIO can switch the saved configuration to either standard I2S
- * or I2S PDM TX.
- * Factory-reset profiles decide whether any audio pins are enabled. */
+/* Compile-time fallback I2S DAC pins (e.g. MAX98357A, PCM5102, UDA1334).
+ * PLAY TONE / SOUND / NOTE synthesize 16-bit stereo PCM
+ * (shared/audio/synth_pcm.c). OPTION AUDIO can switch the saved
+ * configuration to either standard I2S or I2S PDM TX. Factory-reset
+ * profiles decide whether any audio pins are enabled. */
 #define HAL_PORT_AUDIO_SAMPLE_RATE 44100
 #define HAL_PORT_AUDIO_I2S_BCLK_PIN 5 /* bit clock  (BCLK/SCK) */
 #define HAL_PORT_AUDIO_I2S_WS_PIN 6   /* word select (LRCLK/WS) */
@@ -71,7 +75,7 @@
 #define HAL_PORT_FRAMEBUFFER_TRAILER_BYTES 0
 #define HAL_PORT_ALLMEMORY_ALIGN 256
 
-#define HAL_PORT_DEVICE_NAME "MMBasic ESP32-S3"
+#define HAL_PORT_DEVICE_NAME "MMBasic ESP32"
 
 /* Ports without SPI LCD still need this as a compile-time expression for
  * shared display code that is linked with stubs. */
@@ -84,30 +88,30 @@
  * deterministic seed the port had before this config was made explicit. */
 #define HAL_PORT_RANDOMIZE_DEFAULT_SEED() ((int64_t)42)
 
-/* Banner identifies the port to anyone connected to the USB Serial/JTAG
- * console. */
-#define MMBASIC_BANNER_NAME "MMBasic Anywhere (esp32-s3)"
+/* Banner identifies the port to anyone connected to the UART console. */
+#define MMBASIC_BANNER_NAME "MMBasic Anywhere (esp32-cyd)"
 
-#define MMBASIC_BANNER_TRAILER "ESP32-S3 REPL.\r\n\r\n"
+#define MMBASIC_BANNER_TRAILER "ESP32 REPL.\r\n\r\n"
 
-/* 48 KB MMBasic heap while WiFi is enabled. ESP32-S3 has 512 KB internal
- * SRAM split across dram0_0_seg / dram0_1_seg / etc.; AllMemory has to
- * land in a single contiguous segment, so dram0_0_seg (which holds .bss
- * for this component) is the limiting resource. WiFi consumes enough
- * internal DRAM that the old larger stdio heap no longer links.
- * ESP32 bytecode compiler scratch tables allocate from ESP-IDF internal
- * heap, but VM runtime allocations still come from this MMBasic heap.
- * The board has ESP-IDF-managed Octal PSRAM available to explicit
- * heap_caps users only. Do not route AllMemory there implicitly. */
-#define HAL_PORT_HEAP_MEMORY_SIZE (48 * 1024)
+/* 32 KB MMBasic heap while WiFi is enabled. Classic ESP32 has 520 KB of
+ * internal SRAM with roughly 300 KB usable as DRAM, and the static
+ * dram0_0 segment (which holds AllMemory and the variable table) is the
+ * scarcest slice of it, so the heap is smaller than the S3's 48 KB.
+ * MAX_PROG_SIZE follows this value (configuration.h), sizing the
+ * heap-allocated program mirror in esp32_compat.c to match. Bytecode
+ * compiler scratch tables allocate from the ESP-IDF internal heap, but VM
+ * runtime allocations still come from this MMBasic heap. */
+#define HAL_PORT_HEAP_MEMORY_SIZE (32 * 1024)
 
-/* Stage-D per-port memory + clock + MMBasic-table values. The flash
- * offsets remain the legacy 1 MB values because FileIO.c still computes
- * absolute offsets; esp32_flash_storage.c translates them to the mmslots
- * partition at the port boundary. */
-#define HAL_PORT_MAX_CPU 420000
+/* Per-port memory + clock + MMBasic-table values. The flash offsets remain
+ * the legacy 1 MB values because FileIO.c still computes absolute offsets;
+ * esp32_flash_storage.c translates them to the mmslots partition at the
+ * port boundary. */
+#define HAL_PORT_MAX_CPU 240000
 #define HAL_PORT_MIN_CPU 48000
-#define HAL_PORT_MAX_VARS 512
+/* 256 variables: the variable table is 56 bytes per slot of static DRAM
+ * (g_vartbl), so the table is half the S3's. */
+#define HAL_PORT_MAX_VARS 256
 #define HAL_PORT_MAX_SUBFUN 256
 #define HAL_PORT_FLASH_TARGET_OFFSET (1024 * 1024)
 #define HAL_PORT_FLASH_TARGET_OFFSET_USB (1024 * 1024)
@@ -115,16 +119,13 @@
 #define HAL_PORT_MAGIC_KEY_USB 0xE1799B93
 #define HAL_PORT_HEAP_TOP 0
 #define HAL_PORT_HEAP_TOP_USB 0
-/* WiFi-capable port: telnet delivers data in TCP segments (lwIP MSS
- * ~1460 on ESP32-S3). The 256-byte ring used by non-WiFi ports
- * overflows on long single-segment bursts before MMgetline can drain,
- * silently dropping the tail of the line. Match the WiFi-port pattern
- * in configuration.h (CONSOLE_RX_BUF_SIZE = TCP_MSS on `HAL_PORT_HAS_WIFI`
- * ports) by reserving a similar-sized buffer here; ESP32-S3 PSRAM gives
- * us the headroom for free. */
+/* WiFi-capable port: telnet delivers data in TCP segments (lwIP MSS ~1460).
+ * The 256-byte ring used by non-WiFi ports overflows on long single-segment
+ * bursts before MMgetline can drain, silently dropping the tail of the
+ * line, so reserve a TCP_MSS-sized buffer here. */
 #define HAL_PORT_CONSOLE_RX_BUF_SIZE 1536
 #define HAL_PORT_PIOMAX 0
-#define HAL_PORT_NBR_PINS 49
+#define HAL_PORT_NBR_PINS 40
 
 /* ESP32 has no RP2040 PIO blocks. */
 #define HAL_PORT_PIO0_CLAIMED false
@@ -135,17 +136,17 @@
 #define BC_CRASH_INFO_ATTR
 
 /* Minimum SPIRAM held back from the MMBasic slab for ESP-IDF's own later
- * use. hal_psram_esp32.c sizes the slab from the PSRAM actually detected at
- * boot (largest free SPIRAM block minus max(avail/8, this floor)), so there
- * is no per-board slab-size constant — the heap follows the chip, whatever
- * its capacity or line mode. */
+ * use. Most CYD boards have no PSRAM at all (hal_psram_esp32.c then
+ * publishes PSRAMbase/PSRAMsize = 0); WROVER-based clones get the same
+ * detect-at-boot slab sizing as the S3 ports. */
 #define HAL_PORT_PSRAM_RESERVE_MIN (128u * 1024u)
 
 /* Slot region size for `RAM SAVE` / `RAM LOAD` numbered slots. The shared
  * formula PSRAMblock = PSRAMbase + PSRAMsize + 0x60000 puts this past the
  * heap region, so hal_psram_esp32.c allocates a physical slab of
  * heap + 0x60000 + HAL_PORT_PSRAM_BLOCK_SIZE bytes and publishes only the
- * heap portion as PSRAMsize so Memory.c's bitmap allocator stays within it. */
+ * heap portion as PSRAMsize so Memory.c's bitmap allocator stays within
+ * it. */
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
 /* Compiler-table sizes. */
@@ -154,6 +155,6 @@
 /* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
  * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,
  * which never reads EXT_ANA_IN, so MM.SUPPLY reports -1. */
-#define HAL_PORT_SUPPLY_ADC_PIN 44
+#define HAL_PORT_SUPPLY_ADC_PIN 0
 
-#endif /* ESP32_S3_PORT_CONFIG_H */
+#endif /* ESP32_CYD_PORT_CONFIG_H */

@@ -570,13 +570,16 @@ void fun_tilde(void) {
         iret = _persistent;
         break;
     /* MM.SUPPLY — supply-voltage read via external ADC pin or the
-		 * PicoCalc keypad bridge. On WEB the ADC pin is consumed by
-		 * the CYW43 SPI, ExtCurrentConfig[44]==EXT_ANA_IN is false
-		 * and Option.LOCAL_KEYBOARD is false, so the runtime check
-		 * below falls through to fret = -1.0 — the function returns
-		 * "no external supply reading" without needing a target gate. */
+		 * PicoCalc keypad bridge. HAL_PORT_SUPPLY_ADC_PIN is the PinDef[]
+		 * slot of the supply ADC input (GP29 on RP2 boards); ports with
+		 * no supply-rail ADC point it at slot 0, the NULL row, which
+		 * never reads EXT_ANA_IN. On WEB the ADC pin is consumed by
+		 * the CYW43 SPI, the EXT_ANA_IN check is false and
+		 * Option.LOCAL_KEYBOARD is false, so the runtime check below
+		 * falls through to fret = -1.0 — the function returns "no
+		 * external supply reading" without needing a target gate. */
     case MMSUPPLY:
-        if (ExtCurrentConfig[44] == EXT_ANA_IN || Option.LOCAL_KEYBOARD) {
+        if (ExtCurrentConfig[HAL_PORT_SUPPLY_ADC_PIN] == EXT_ANA_IN || Option.LOCAL_KEYBOARD) {
             hal_pin_adc_init();
             /* rp2350a is unconditionally true on rp2040 (stubbed in
 		         * PicoMite.c), so the ternary reduces to channel 3 there;

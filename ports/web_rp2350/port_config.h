@@ -142,4 +142,9 @@
 /* Compiler-table sizes. */
 #include "../bc_tables_rp2350.h"
 
+/* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
+ * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,
+ * which never reads EXT_ANA_IN, so MM.SUPPLY reports -1. */
+#define HAL_PORT_SUPPLY_ADC_PIN 44
+
 #endif /* PORT_CONFIG_H */

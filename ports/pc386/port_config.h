@@ -66,4 +66,9 @@
 /* Compiler-table sizes are inherited from host_native/port_config.h:
  * rp2350-class tables are a better RAM fit here than host-sized tables. */
 
+/* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
+ * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,
+ * which never reads EXT_ANA_IN, so MM.SUPPLY reports -1. */
+#define HAL_PORT_SUPPLY_ADC_PIN 44
+
 #endif /* PC386_PORT_CONFIG_H */
