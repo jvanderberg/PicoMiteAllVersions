@@ -72,6 +72,10 @@ bool vga_i2s_start(const int8_t data_gpio[8], vga_i2s_line_fill_fn fill, void * 
  * pins (left as plain GPIO inputs). Safe to call when not active. */
 void vga_i2s_stop(void);
 
+/* Swap the line-fill callback while the scanout runs (mode switches).
+ * Takes effect on the next line interrupt. */
+void vga_i2s_set_fill(vga_i2s_line_fill_fn fill, void * ctx);
+
 bool vga_i2s_is_active(void);
 
 #ifdef __cplusplus

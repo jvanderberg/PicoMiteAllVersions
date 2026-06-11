@@ -361,6 +361,14 @@ void vga_i2s_stop(void) {
     s_vga.active = false;
 }
 
+void vga_i2s_set_fill(vga_i2s_line_fill_fn fill, void * ctx) {
+    static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    portENTER_CRITICAL(&mux);
+    s_vga.fill_ctx = ctx;
+    s_vga.fill = fill;
+    portEXIT_CRITICAL(&mux);
+}
+
 bool vga_i2s_is_active(void) {
     return s_vga.active;
 }

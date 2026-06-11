@@ -72,7 +72,15 @@ int port_editor_vt100_enabled(void) {
  * through unchanged, with line endings handled by the IDF VFS settings
  * in esp32_console_init. */
 
+/* Per-port VGA console sink: a glass terminal that mirrors the serial
+ * console byte stream (including the SSPrintString-only VT100 escapes
+ * that never reach DisplayPutC). The classic-ESP32 char-cell text
+ * console consumes these; ports whose VGA renders through DisplayPutC
+ * (S3 LCD_CAM) provide a no-op. Hooked at the top of SerialConsolePutC. */
+extern void esp32_vga_console_putc(int c);
+
 char SerialConsolePutC(char c, int flush) {
+    esp32_vga_console_putc((unsigned char)c);
     if (Option.Telnet != -1 && esp32_usb_role_is_serial()) {
         esp32_console_write_bytes(&c, 1);
         if (flush) fflush(stdout);
@@ -87,17 +95,11 @@ char SerialConsolePutC(char c, int flush) {
     return c;
 }
 
-/* Per-port VGA console sink. The classic-ESP32 char-cell text console
- * consumes every console byte through this; ports whose VGA path renders
- * through DisplayPutC (S3 LCD_CAM) provide a no-op. */
-extern void esp32_vga_console_putc(int c);
-
 void putConsole(int c, int flush) {
     if (OptionConsole & 2) {
         DisplayPutC((char)c);
         if (flush) esp32_ili9341_lcd_flush_pending();
     }
-    esp32_vga_console_putc(c);
     if (OptionConsole & 1) SerialConsolePutC((char)c, flush);
 }
 

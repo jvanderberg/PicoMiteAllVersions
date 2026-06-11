@@ -35,6 +35,7 @@ list(APPEND PORT_LOCAL_SRCS
     ${CYD_MAIN_DIR}/esp32_cyd_usb_stub.c
     ${CYD_MAIN_DIR}/esp32_cyd_vga.c
     ${CYD_MAIN_DIR}/esp32_cyd_vga_text.c
+    ${CYD_MAIN_DIR}/esp32_cyd_vga_mode1.c
     ${REPO_ROOT}/drivers/vga_i2s_esp32/vga_i2s_esp32.c
     ${CYD_MAIN_DIR}/esp32_cyd_pin_tables.c
     ${CYD_MAIN_DIR}/esp32_cyd_i2c_slave_stub.c

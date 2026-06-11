@@ -60,7 +60,7 @@ static volatile bool s_txt_active;
 /* Nibble -> 4-pixel byte mask, in scanout (swizzled) byte order: entry
  * bit3..bit0 = pixels x..x+3, expanded to 0xFF per lit pixel. Lives in
  * DRAM (not flash .rodata): the fill ISR reads it. */
-static DRAM_ATTR const uint32_t s_mask4[16] = {
+DRAM_ATTR const uint32_t esp32_vga_mask4[16] = {
     VGA_I2S_PACK4(0x00, 0x00, 0x00, 0x00),
     VGA_I2S_PACK4(0x00, 0x00, 0x00, 0xFF),
     VGA_I2S_PACK4(0x00, 0x00, 0xFF, 0x00),
@@ -100,9 +100,9 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
             bits = st->font[(c - st->first_char) * VGATXT_FONT_H + grow];
         uint32_t fgw = fg[col] * 0x01010101u;
         uint32_t bgw = bg[col] * 0x01010101u;
-        uint32_t m = s_mask4[bits >> 4];
+        uint32_t m = esp32_vga_mask4[bits >> 4];
         *out++ = (fgw & m) | (bgw & ~m);
-        m = s_mask4[bits & 0x0F];
+        m = esp32_vga_mask4[bits & 0x0F];
         *out++ = (fgw & m) | (bgw & ~m);
     }
 }
@@ -328,4 +328,10 @@ void esp32_vga_text_stop(void) {
 
 bool esp32_vga_text_active(void) {
     return s_txt_active;
+}
+
+/* Re-point the scanout at the text console (graphics mode -> MODE 3).
+ * The cell planes were kept, so the console resumes with its history. */
+void esp32_vga_text_resume_fill(void) {
+    if (s_txt_active) vga_i2s_set_fill(vgatxt_fill, &s_txt);
 }

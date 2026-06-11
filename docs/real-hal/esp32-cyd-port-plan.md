@@ -451,14 +451,38 @@ header pins 5/3):
   (SGR 24-bit colours, cursor motion, clears), hooked into `putConsole`
   beside the serial sink.
 
-Still to do: the MODE numbering and `setmode`/`MODE` integration
-(currently the console starts via `OPTION VGA` only and `MODE` errors),
-MODE 1 (1bpp 640x480 graphics) and MODE 2 (RGB222 320x240) presentation,
-boot persistence of the VGA option, pin-list option form and a board
-profile, Wi-Fi mutual exclusion for the graphics modes, wider console
-fonts (any width divisible by 4: 12x20, 16x24), scroll tearing (replace
-the scroll memmove with a row-remap table), and the line-editor redraw
-chatter visible in serial transcripts (cosmetic, predates VGA).
+Screen modes (implemented and hardware-validated 2026-06-11):
+
+- `MODE 1` — 640x480 1bpp graphics (`esp32_cyd_vga_mode1.c`): bit-packed
+  framebuffer (38.4 KB on demand), full draw-hook set with the port-wide
+  3-bytes-per-pixel RGB888 buffer contract, fg/bg latched from the console
+  colours, mask-LUT expansion in the fill ISR.
+- `MODE 2` — 320x240 **16-colour** graphics (revised from the RGB222
+  64-colour sketch): the 4bpp RGB121 framebuffer (38.4 KB) drives the
+  shared Draw.c `*16` primitive family unchanged; the fill ISR maps
+  nibbles through the shared `colours[]` palette to RGB222 with
+  pixel/line doubling. 16 colours matches VGA PicoMite MODE 2, and 4bpp
+  fits classic-ESP32 DRAM (the 77 KB byte-per-pixel buffer did not: the
+  largest free block measured 73.7 KB).
+- `MODE 3` — the char-cell console; graphics-mode exits and allocation
+  failures always land here, never a dead screen.
+- `DISPLAY_TYPE`/`Option.DISPLAY_TYPE` carry SCREENMODE1/2 during
+  graphics (runtime only, never saved): the graphics commands gate on
+  `Option.DISPLAY_TYPE` and do_end's `DISPLAY_TYPE - SCREENMODE1 + 1`
+  round-trips the mode number. Mode switches free the outgoing
+  framebuffer before allocating the next (two cannot coexist).
+- Wi-Fi mutual exclusion: boot-with-Wi-Fi lands in MODE 3; `MODE 1/2`
+  error while `WIFIconnected`; verified both directions on hardware.
+- The glass-terminal hook moved from `putConsole` to `SerialConsolePutC`
+  so the MODE 3 console mirrors the full serial byte stream (including
+  SSPrintString-only VT100 escapes).
+
+Still to do: boot persistence of the VGA option, the pin-list option form
+and a board profile, wider console fonts (any width divisible by 4:
+12x20, 16x24), scroll tearing (replace the scroll memmove with a
+row-remap table), Wi-Fi-radio-on-but-unconnected slipping past the
+`WIFIconnected` gate, and the line-editor redraw chatter visible in
+serial transcripts (cosmetic, predates VGA).
 
 ### Design notes (original sketch)
 
