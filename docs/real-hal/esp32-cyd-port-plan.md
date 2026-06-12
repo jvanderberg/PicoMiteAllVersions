@@ -486,6 +486,17 @@ GPIOs, validated output-capable, `OPTION LIST` round-trips it); and full
 COLOURCODE highlighting and `COLOUR` both need (verified green on
 glass).
 
+Filesystem performance (measured 2026-06-11): LittleFS directory-read
+cost grows with write churn (~10 ms/entry fresh -> 40+ ms after heavy
+writes; the metadata log is walked per read until compaction), and FILES
+re-walks the whole directory once per printed line (deliberate
+O(1)-memory selection sort), multiplying that into tens of seconds. The
+per-boot demo rewrites were the main churn driver (now version-stamped
+away). Next: a read-once flist[] in cmd_files bounded by
+HAL_PORT_FILES_MAX makes listing cost churn-independent; also evaluate
+lfs_fs_gc for proactive compaction, and note the VGA scanout ISR adds
+~4x to raw flash-op cost (secondary, plan-noted).
+
 Still to do: `OPTION WIFI "",""` should actively disconnect instead of
 needing a reboot before the graphics modes unlock, a VGA board profile,
 wider console fonts (any width divisible by 4: 12x20, 16x24), scroll
