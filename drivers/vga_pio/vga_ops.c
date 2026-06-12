@@ -222,3 +222,7 @@ void hal_vga_ops_retile_for_font(void) {
         hal_editor_tile_paint_saved(0, X_TILE, y, fc, bc);
     }
 }
+
+void hal_vga_ops_set_retile_for_font_callback(void (*callback)(void)) {
+    (void)callback;
+}

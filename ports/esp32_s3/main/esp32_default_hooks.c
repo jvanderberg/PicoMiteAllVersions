@@ -52,7 +52,13 @@ void port_bc_crash_save_fault_regs(BCCrashInfo * info) {
 /* clear_runtime / error display — frame-buffer / LCD-banner no-ops on a
  * stdio-only port. */
 void port_clear_runtime_display_reset(void) {}
-void port_error_restore_console_surface(void) {}
+static void (*s_error_restore_console_surface_callback)(void) = NULL;
+void port_error_restore_console_surface(void) {
+    if (s_error_restore_console_surface_callback) s_error_restore_console_surface_callback();
+}
+void port_set_error_restore_console_surface_callback(void (*callback)(void)) {
+    s_error_restore_console_surface_callback = callback;
+}
 void port_error_show_lcd_banner(int line_num, const char * source_line, const char * err_msg) {
     (void)line_num;
     (void)source_line;

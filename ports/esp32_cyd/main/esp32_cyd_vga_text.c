@@ -12,7 +12,7 @@
  * putConsole) and pass a small VT100/ANSI interpreter covering what
  *MMBasic's prompt, CLS, and colour handling actually emit: CR LF BS TAB,
  * CSI m (SGR reset / 24-bit fg/bg), CSI H/f/A/B/C/D cursor motion,
- * CSI J/K clears, and the ?25 cursor-visibility toggles (ignored).
+ * CSI J/K clears, and the ?25 cursor-visibility toggles.
  *
  * The glyph bitmaps are copied out of the flash-resident MMBasic font at
  * start: the fill ISR runs from IRAM and must not touch flash-mapped data
@@ -26,6 +26,7 @@
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
+#include "shared/gfx/gfx_console_shared.h"
 
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -53,6 +54,8 @@ typedef struct {
     int parm[8];
     int nparm;
     bool priv;
+    bool cursor_enabled;
+    bool cursor_requested;
 } vgatxt_state_t;
 
 static vgatxt_state_t s_txt;
@@ -99,6 +102,9 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
     const uint8_t * bg = st->bg + base;
     uint32_t * out = (uint32_t *)dst;
     const uint8_t * at = st->at + base;
+    const bool cursor_row = st->cursor_enabled && st->cursor_requested &&
+                            CursorTimer <= CURSOR_ON && row == st->cy &&
+                            grow >= VGATXT_FONT_H - 2;
     for (int col = 0; col < VGATXT_COLS; col++) {
         unsigned c = ch[col];
         unsigned bits = 0;
@@ -106,6 +112,7 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
             bits = st->font[(c - st->first_char) * VGATXT_FONT_H + grow];
         if ((at[col] & VGATXT_ATTR_UNDERLINE) && grow == VGATXT_FONT_H - 1)
             bits = 0xFF;
+        if (cursor_row && col == st->cx) bits = 0xFF;
         uint32_t fgw = fg[col] * 0x01010101u;
         uint32_t bgw = bg[col] * 0x01010101u;
         uint32_t m = esp32_vga_mask4[bits >> 4];
@@ -214,7 +221,13 @@ static void vgatxt_sgr(void) {
 static void vgatxt_csi(uint8_t final) {
     int p0 = s_txt.nparm > 0 ? s_txt.parm[0] : 0;
     int p1 = s_txt.nparm > 1 ? s_txt.parm[1] : 0;
-    if (s_txt.priv) return; /* ?25h / ?25l cursor visibility: ignored */
+    if (s_txt.priv) {
+        if (p0 == 25) {
+            if (final == 'h') s_txt.cursor_enabled = true;
+            if (final == 'l') s_txt.cursor_enabled = false;
+        }
+        return;
+    }
     switch (final) {
     case 'm':
         if (s_txt.nparm == 0) {
@@ -345,6 +358,12 @@ static void vgatxt_free(void) {
     memset(&s_txt, 0, sizeof(s_txt));
 }
 
+static int vgatxt_show_cursor(int show) {
+    if (!s_txt_active) return 0;
+    s_txt.cursor_requested = show != 0;
+    return 1;
+}
+
 int esp32_vga_text_start(const int8_t data_gpio[8]) {
     if (s_txt_active) return 1;
 
@@ -369,6 +388,8 @@ int esp32_vga_text_start(const int8_t data_gpio[8]) {
     s_txt.cur_fg = VGATXT_DEFAULT_FG;
     s_txt.cur_bg = VGATXT_DEFAULT_BG;
     s_txt.cur_attr = 0;
+    s_txt.cursor_enabled = true;
+    s_txt.cursor_requested = false;
     vgatxt_clear_cells(0, VGATXT_CELLS);
     s_txt.cx = 0;
     s_txt.cy = 0;
@@ -379,11 +400,13 @@ int esp32_vga_text_start(const int8_t data_gpio[8]) {
         return 0;
     }
     s_txt_active = true;
+    gfx_console_set_cursor_hook(vgatxt_show_cursor);
     return 1;
 }
 
 void esp32_vga_text_stop(void) {
     if (!s_txt_active) return;
+    gfx_console_set_cursor_hook(NULL);
     s_txt_active = false;
     vga_i2s_stop();
     vgatxt_free();
@@ -393,8 +416,16 @@ bool esp32_vga_text_active(void) {
     return s_txt_active;
 }
 
+void esp32_vga_text_cursor_hook_enable(bool enable) {
+    if (!s_txt_active) return;
+    gfx_console_set_cursor_hook(enable ? vgatxt_show_cursor : NULL);
+}
+
 /* Re-point the scanout at the text console (graphics mode -> MODE 3).
  * The cell planes were kept, so the console resumes with its history. */
 void esp32_vga_text_resume_fill(void) {
-    if (s_txt_active) vga_i2s_set_fill(vgatxt_fill, &s_txt);
+    if (s_txt_active) {
+        vga_i2s_set_fill(vgatxt_fill, &s_txt);
+        esp32_vga_text_cursor_hook_enable(true);
+    }
 }

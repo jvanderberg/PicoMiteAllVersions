@@ -76,6 +76,20 @@ static void fastgfx_free_lcd_buffers(void) {
     }
 }
 
+static uint8_t * fastgfx_alloc_scanout_buffer(size_t bytes) {
+    uint8_t * p =
+        (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!p) p = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p;
+}
+
+static void fastgfx_free_scanout_buffer(void) {
+    if (s_back) {
+        heap_caps_free(s_back);
+    }
+    s_back = NULL;
+}
+
 static void fastgfx_reset_state(int clear_fps) {
     if (s_mode == ESP32_FASTGFX_SCANOUT && s_saved_writebuf) {
         WriteBuf = s_saved_writebuf;
@@ -83,10 +97,7 @@ static void fastgfx_reset_state(int clear_fps) {
     } else if (s_mode == ESP32_FASTGFX_LCD) {
         restorepanel();
     }
-    if (s_mode == ESP32_FASTGFX_SCANOUT && s_back) {
-        bc_free(s_back);
-        s_back = NULL;
-    }
+    if (s_mode == ESP32_FASTGFX_SCANOUT) fastgfx_free_scanout_buffer();
     fastgfx_free_lcd_buffers();
     s_mode = ESP32_FASTGFX_NONE;
     if (clear_fps) s_frame_us = 0;
@@ -100,7 +111,7 @@ static void fastgfx_scanout_present(void) {
 }
 
 static void fastgfx_create_scanout(void) {
-    s_back = (uint8_t *)bc_alloc((size_t)framebuffersize);
+    s_back = fastgfx_alloc_scanout_buffer((size_t)framebuffersize);
     if (!s_back) error("FASTGFX: out of memory");
     memcpy(s_back, (const void *)FRAMEBUFFER, framebuffersize);
     s_saved_writebuf = WriteBuf;

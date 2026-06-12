@@ -48,7 +48,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include <math.h>
 void flist(int, int, int);
 //void clearprog(void);
-extern void bc_run_source_string(const char * source, const char * source_name);
+extern int bc_run_source_string(const char * source, const char * source_name);
 /* WEB stack teardown hooks — real impls in MMtcpserver.c /
  * MMTCPclient.c, no-op stubs in MMweb_stubs.c / host_peripheral_stubs.c. */
 extern void cleanserver(void);

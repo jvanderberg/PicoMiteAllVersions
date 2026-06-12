@@ -16,10 +16,11 @@ void cmd_frun(void) {
     error("FRUN not available in this build");
 }
 
-void bc_run_source_string(const char * source, const char * source_name) {
+int bc_run_source_string(const char * source, const char * source_name) {
     (void)source;
     (void)source_name;
     error("FRUN not available in this build");
+    return 0;
 }
 
 void * bc_alloc(size_t size) {

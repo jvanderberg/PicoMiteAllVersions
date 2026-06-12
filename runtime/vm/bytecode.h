@@ -984,7 +984,7 @@ void bc_vm_error(BCVMState * vm, const char * msg, ...);
 void bc_vm_release_arrays(BCVMState * vm);
 
 /* Commands */
-void bc_run_source_string(const char * source, const char * source_name);
+int bc_run_source_string(const char * source, const char * source_name);
 int bc_try_compile_line(const char * line);
 void bc_run_immediate(const char * line);
 void bc_run_file(const char * filename);

@@ -3279,6 +3279,7 @@ void MIPS16 error(char * msg, ...) {
     int saved_prompt_bc = PromptBC;
 
     LoadOptions(); // make sure that the option struct is in a clean state
+    port_error_restore_console_surface(); // ports may need to re-assert runtime-only display state
     ApplyDefaultConsoleColours();
     PromptFont = saved_prompt_font;
     PromptFC = saved_prompt_fc;
@@ -3288,8 +3289,6 @@ void MIPS16 error(char * msg, ...) {
     OptionConsole = 1;
     if (Option.DISPLAY_CONSOLE) {
         OptionConsole = 3;
-        port_error_restore_console_surface(); // VGA retargets WriteBuf/DisplayBuf to FRAMEBUFFER;
-                                              // SPI-LCD calls restorepanel().
         SetFont(PromptFont);
         gui_fcolour = PromptFC;
         gui_bcolour = PromptBC;

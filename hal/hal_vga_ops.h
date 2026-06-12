@@ -40,6 +40,7 @@ int hal_vga_ops_handle_layer_clear(void);
  * retile the per-tile fg/bg colour arrays so the entire screen picks
  * up the new tile height. No-op on non-VGA. */
 void hal_vga_ops_retile_for_font(void);
+void hal_vga_ops_set_retile_for_font_callback(void (*callback)(void));
 
 /* VGA/HDMI scanline-zero wait: used by rendering benchmarks and demos
  * to align to the top-of-frame so drawing doesn't tear visibly. Spins

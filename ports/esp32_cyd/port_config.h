@@ -149,11 +149,11 @@
  * it. */
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
-/* Compiler-table sizes: the RP2040 set. The compiler's transient
+/* Compiler-table sizes: a classic-ESP32 CYD set. The compiler's transient
  * allocations must fit the internal heap left over at FRUN time
- * (~48 KB with the VGA console up, in MODE 3); the RP2350 tables
- * assume far more headroom than classic ESP32 has. */
-#include "../bc_tables_rp2040.h"
+ * with the VGA console up in MODE 3; even the RP2040 tables assume
+ * more headroom than a no-PSRAM classic ESP32 has after IDF and VGA. */
+#include "../bc_tables_esp32_cyd.h"
 
 /* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
  * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,

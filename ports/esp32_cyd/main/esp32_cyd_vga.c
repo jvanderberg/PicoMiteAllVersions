@@ -48,6 +48,7 @@
 /* Core framebuffer + draw-pointer globals (defined in Draw.c / state). */
 extern short HRes, VRes, DisplayHRes, DisplayVRes;
 extern short CurrentX, CurrentY;
+extern short gui_font_width, gui_font_height;
 extern int ScreenSize;
 extern uint32_t framebuffersize;
 extern unsigned char *WriteBuf, *DisplayBuf, *FrameBuf, *LayerBuf, *SecondFrame, *SecondLayer, *FRAMEBUFFER;
@@ -68,6 +69,8 @@ extern void esp32_vga_mode1_fill(int y, uint8_t * dst, void * ctx);
 extern void esp32_vga_mode1_bind_draw(void);
 extern void esp32_vga_mode1_set_colours(uint8_t fg_px, uint8_t bg_px);
 extern void esp32_vga_text_resume_fill(void);
+extern void esp32_vga_text_cursor_hook_enable(bool enable);
+extern void port_set_error_restore_console_surface_callback(void (*callback)(void));
 
 /* Bus bits 0..7 = B0 B1 G0 G1 R0 R1 HS VS. */
 static const int8_t s_vga_default_pins[8] = {4, 5, 18, 19, 21, 22, 23, 15};
@@ -220,6 +223,7 @@ extern bool esp32_vga_text_active(void);
 #define VGA_MODE2_STRIDE (VGA_MODE2_W / 2) /* 4bpp packed */
 
 static void vga_console_geometry(void);
+static int vga_apply_mode(int mode, bool clear, const char ** errmsg);
 
 static int s_vga_mode = 3;   /* valid while the text console is active */
 static uint8_t * s_gfx_fb;   /* MODE 1/2 framebuffer (heap, on demand) */
@@ -340,6 +344,58 @@ static void vga_point_framebuffers_at(uint8_t * fb) {
     FrameBuf = LayerBuf = SecondFrame = SecondLayer = NULL;
 }
 
+static void vga_bind_graphics_runtime(int mode) {
+    vga_point_framebuffers_at(s_gfx_fb);
+    if (mode == 1) {
+        HRes = DisplayHRes = VGA_I2S_HRES;
+        VRes = DisplayVRes = VGA_I2S_VRES;
+        ScreenSize = (VGA_I2S_HRES / 8) * VGA_I2S_VRES;
+        framebuffersize = (uint32_t)ScreenSize;
+        DISPLAY_TYPE = SCREENMODE1;
+        Option.DISPLAY_TYPE = SCREENMODE1;
+        esp32_vga_mode1_set_colours(vga_px_from_rgb888(gui_fcolour),
+                                    vga_px_from_rgb888(gui_bcolour));
+        esp32_vga_mode1_bind_draw();
+        esp32_vga_text_cursor_hook_enable(false);
+        vga_i2s_set_fill(esp32_vga_mode1_fill, NULL);
+    } else {
+        vga_build_lut121();
+        HRes = DisplayHRes = VGA_MODE2_W;
+        VRes = DisplayVRes = VGA_MODE2_H;
+        ScreenSize = VGA_MODE2_STRIDE * VGA_MODE2_H;
+        framebuffersize = (uint32_t)ScreenSize;
+        DISPLAY_TYPE = SCREENMODE2;
+        Option.DISPLAY_TYPE = SCREENMODE2;
+        DrawRectangle = DrawRectangle16;
+        DrawBitmap = DrawBitmap16;
+        ScrollLCD = ScrollLCD16;
+        DrawBuffer = DrawBuffer16;
+        ReadBuffer = ReadBuffer16;
+        DrawBufferFast = DrawBuffer16Fast;
+        ReadBufferFast = ReadBuffer16Fast;
+        DrawPixel = DrawPixel16;
+        esp32_vga_text_cursor_hook_enable(false);
+        vga_i2s_set_fill(vga_mode2_fill, NULL);
+    }
+    Option.DISPLAY_CONSOLE = 1;
+    OptionConsole = 3;
+    Option.Width = HRes / gui_font_width;
+    Option.Height = VRes / gui_font_height;
+}
+
+static void vga_error_restore_console_surface(void) {
+    if (!esp32_vga_text_active()) return;
+    if (s_vga_mode == 3) {
+        esp32_vga_text_resume_fill();
+        vga_console_geometry();
+    } else if (s_gfx_fb) {
+        vga_bind_graphics_runtime(s_vga_mode);
+    } else {
+        const char * msg;
+        (void)vga_apply_mode(3, false, &msg);
+    }
+}
+
 /* Switch screen mode. Returns 0 with *errmsg set on failure (the caller
  * decides whether to error() — setmode from do_end must stay silent). */
 static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
@@ -400,44 +456,8 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
     memset(fb, 0, bytes);
     s_gfx_fb = fb;
     vga_display_state_save();
-    vga_point_framebuffers_at(fb);
-
-    if (mode == 1) {
-        HRes = DisplayHRes = VGA_I2S_HRES;
-        VRes = DisplayVRes = VGA_I2S_VRES;
-        ScreenSize = (int)bytes;
-        DISPLAY_TYPE = SCREENMODE1;
-        Option.DISPLAY_TYPE = SCREENMODE1; /* runtime only - never saved:
-                                            * graphics commands gate on it */
-        esp32_vga_mode1_set_colours(vga_px_from_rgb888(gui_fcolour),
-                                    vga_px_from_rgb888(gui_bcolour));
-        esp32_vga_mode1_bind_draw();
-        vga_i2s_set_fill(esp32_vga_mode1_fill, NULL);
-    } else {
-        vga_build_lut121();
-        HRes = DisplayHRes = VGA_MODE2_W;
-        VRes = DisplayVRes = VGA_MODE2_H;
-        ScreenSize = (int)bytes;
-        DISPLAY_TYPE = SCREENMODE2;
-        Option.DISPLAY_TYPE = SCREENMODE2; /* runtime only - never saved */
-        DrawRectangle = DrawRectangle16;
-        DrawBitmap = DrawBitmap16;
-        ScrollLCD = ScrollLCD16;
-        DrawBuffer = DrawBuffer16;
-        ReadBuffer = ReadBuffer16;
-        DrawBufferFast = DrawBuffer16Fast;
-        ReadBufferFast = ReadBuffer16Fast;
-        DrawPixel = DrawPixel16;
-        vga_i2s_set_fill(vga_mode2_fill, NULL);
-    }
-    framebuffersize = (uint32_t)bytes;
+    vga_bind_graphics_runtime(mode);
     CurrentX = CurrentY = 0;
-    /* Pixel console on the framebuffer while a graphics mode is up; the
-     * console/editor geometry follows the mode's character cells. */
-    Option.DISPLAY_CONSOLE = 1;
-    OptionConsole = 3;
-    Option.Width = HRes / gui_font_width;
-    Option.Height = VRes / gui_font_height;
     s_vga_mode = mode;
     return 1;
 }
@@ -446,6 +466,8 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
 /* The glass terminal is 80x40; the console/editor geometry must match
  * (and must be re-asserted when graphics modes hand the screen back). */
 static void vga_console_geometry(void) {
+    HRes = DisplayHRes = VGA_I2S_HRES;
+    VRes = DisplayVRes = VGA_I2S_VRES;
     Option.Width = 80;
     Option.Height = 40;
     /* The glass terminal mirrors the serial console byte stream through
@@ -461,6 +483,7 @@ static void vga_console_geometry(void) {
 }
 
 static void vga_console_start(const int8_t pins[8]) {
+    port_set_error_restore_console_surface_callback(vga_error_restore_console_surface);
     if (vga_i2s_is_active() && !esp32_vga_text_active())
         vga_disable(); /* test card -> console */
     if (esp32_vga_text_active()) {
@@ -550,6 +573,7 @@ void esp32_vga_print_options(void) {
  * always the MODE 3 console — the safety floor, and the only mode that
  * coexists with a configured Wi-Fi connection. */
 void esp32_vga_display_init(void) {
+    port_set_error_restore_console_surface_callback(vga_error_restore_console_surface);
     int8_t pins[8];
     if (!vga_pins_from_option(pins)) return;
     memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
@@ -570,6 +594,10 @@ bool vga_lcdcam_s3_active(void) {
 
 uint8_t * vga_lcdcam_s3_framebuffer(void) {
     return NULL;
+}
+
+int esp32_cyd_vga_packed_active(void) {
+    return esp32_vga_text_active() && s_vga_mode == 2 && s_gfx_fb != NULL;
 }
 
 /* Commands.c calls setmode from cmd_new/do_end with

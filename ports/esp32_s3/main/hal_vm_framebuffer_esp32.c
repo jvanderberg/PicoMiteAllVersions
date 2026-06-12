@@ -43,6 +43,7 @@ extern int esp32_ili9341_lcd_restore_panel(void);
 extern int esp32_ili9341_lcd_ready(void);
 extern void esp32_ili9341_lcd_flush_pending(void);
 extern void esp32_ili9341_lcd_scroll(int lines);
+extern int esp32_cyd_vga_packed_active(void);
 extern int esp32_fastgfx_active(void);
 extern void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src,
                                                   int xstart, int xend,
@@ -246,6 +247,10 @@ static size_t esp32_fb_bytes(void) {
     return (size_t)HRes * (size_t)VRes / 2u;
 }
 
+static int esp32_fb_packed_display_active(void) {
+    return esp32_ili9341_lcd_ready() || esp32_cyd_vga_packed_active();
+}
+
 static uint8_t esp32_fb_rgb121(uint32_t c) {
     return (uint8_t)(((c & 0x800000u) >> 20) |
                      ((c & 0x00C000u) >> 13) |
@@ -407,6 +412,10 @@ static void esp32_fb_copy_to_screen(uint8_t * src) {
         hal_vga_ops_fastgfx_present();
         return;
     }
+    if (esp32_cyd_vga_packed_active()) {
+        if (DisplayBuf && src != DisplayBuf) memcpy(DisplayBuf, src, esp32_fb_bytes());
+        return;
+    }
     copyframetoscreen(src, 0, HRes - 1, 0, VRes - 1, 0);
     if (ShadowBuf) memcpy(ShadowBuf, src, esp32_fb_bytes());
 }
@@ -466,7 +475,7 @@ void hal_vm_framebuffer_create(int fast) {
     unsigned char * frame = NULL;
     unsigned char * shadow = NULL;
     int vga = vga_lcdcam_s3_active();
-    if (!vga && !esp32_ili9341_lcd_ready()) error("FRAMEBUFFER requires active ILI9341 display");
+    if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
     if (FrameBuf && !(vga && esp32_fb_vga_display_owned(FrameBuf))) error("Framebuffer already exists");
     if (bytes == 0) error("Display not configured");
@@ -489,7 +498,7 @@ void hal_vm_framebuffer_layer(int hc, int c) {
     size_t bytes = esp32_fb_bytes();
     uint8_t transparent = esp32_fb_transparent_colour(hc, c);
     int vga = vga_lcdcam_s3_active();
-    if (!vga && !esp32_ili9341_lcd_ready()) error("FRAMEBUFFER requires active ILI9341 display");
+    if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
     if (LayerBuf && !(vga && esp32_fb_vga_display_owned(LayerBuf))) error("Layer already exists");
     if (bytes == 0) error("Display not configured");
@@ -593,6 +602,9 @@ void hal_vm_framebuffer_copy(char from, char to, int bg) {
 
     if (from == 'N') {
         if (vga_lcdcam_s3_active()) {
+            if (!DisplayBuf) error("Invalid on this display");
+            s = DisplayBuf;
+        } else if (esp32_cyd_vga_packed_active()) {
             if (!DisplayBuf) error("Invalid on this display");
             s = DisplayBuf;
         } else {
@@ -699,6 +711,10 @@ void setframebuffer(void) {
 }
 void restorepanel(void) {
     if (vga_lcdcam_s3_active()) {
+        WriteBuf = DisplayBuf;
+        return;
+    }
+    if (esp32_cyd_vga_packed_active()) {
         WriteBuf = DisplayBuf;
         return;
     }

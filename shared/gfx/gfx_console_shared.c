@@ -18,6 +18,12 @@
 __attribute__((weak)) void port_display_render_begin(void) {}
 __attribute__((weak)) void port_display_render_end(void) {}
 
+static int (*s_cursor_hook)(int show);
+
+void gfx_console_set_cursor_hook(int (*hook)(int show)) {
+    s_cursor_hook = hook;
+}
+
 /******************************************************************************************
  Print a char on the LCD display
  Any characters not in the font will print as a space.
@@ -216,6 +222,7 @@ void DisplayPutC(char c) {
 void ShowCursor(int show) {
     static int visible = false;
     int newstate;
+    if (s_cursor_hook && s_cursor_hook(show)) return;
     if (!Option.DISPLAY_CONSOLE) return;
     newstate = ((CursorTimer <= CURSOR_ON) && show); // what should be the state of the cursor?
     if (visible == newstate) return;                 // we can skip the rest if the cursor is already in the correct state

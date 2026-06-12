@@ -15,5 +15,6 @@
 void GUIPrintChar(int fnt, int fc, int bc, char c, int orientation);
 void DisplayPutC(char c);
 void ShowCursor(int show);
+void gfx_console_set_cursor_hook(int (*hook)(int show));
 
 #endif

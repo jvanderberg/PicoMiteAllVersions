@@ -168,7 +168,7 @@ void bc_run_diag_dump(const char * reason) {
  * boundary, so this path must free only its own allocations and must not reset
  * the heap wholesale.
  */
-void bc_run_source_string_ex(const char * source, const char * source_name, int is_immediate);
+int bc_run_source_string_ex(const char * source, const char * source_name, int is_immediate);
 
 /* Free the source buffer between compile and runtime-table allocation.
  * Each port must provide exactly one strong definition. Heap-tight
@@ -182,12 +182,13 @@ void port_bc_runtime_free_source(const char ** source);
  * through hal_fs_*, so any port with a real HAL gets file I/O for free
  * here — no per-port indirection. */
 
-void bc_run_source_string(const char * source, const char * source_name) {
-    bc_run_source_string_ex(source, source_name, 0);
+int bc_run_source_string(const char * source, const char * source_name) {
+    return bc_run_source_string_ex(source, source_name, 0);
 }
 
-void bc_run_source_string_ex(const char * source, const char * source_name, int is_immediate) {
+int bc_run_source_string_ex(const char * source, const char * source_name, int is_immediate) {
     int err;
+    volatile int source_released = 0;
     if (!is_immediate) {
         bc_fastgfx_reset();
         vm_sys_file_reset();
@@ -216,7 +217,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
               (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
-        return;
+        return 0;
     }
     memset(cs, 0, sizeof(BCCompiler));
     memset(vm, 0, sizeof(BCVMState));
@@ -246,7 +247,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
               (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
-        return;
+        return 0;
     }
     VMRUN_DBG("VM: compiler alloc ok\r\n");
     bc_run_diag_note_vm_stage(BC_RUN_VM_COMPILER_ALLOC_OK,
@@ -288,7 +289,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
         BC_FREE(vm);
         if (!is_immediate) bc_bridge_release_subfun_buffer();
         error("$", msg);
-        return;
+        return 0;
     }
     VMRUN_DBGF("VM: compile ok code=%u const=%u slots=%u subs=%u data=%u meta=%u\r\n",
                (unsigned)cs->code_len, (unsigned)cs->const_count, (unsigned)cs->slot_count,
@@ -329,7 +330,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
               (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
-        return;
+        return 0;
     }
     VMRUN_DBG("VM: compact ok\r\n");
     bc_run_diag_note_vm_stage(BC_RUN_VM_COMPACT_OK,
@@ -359,13 +360,14 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
             BC_FREE(vm);
             bc_release_source(&source);
             error("FRUN: out of memory (bridge sub table)");
-            return;
+            return 0;
         }
     }
 
     /* Source no longer needed on device — free before VM runtime tables
      * allocate. Host leaves source to the caller (existing contract). */
     bc_release_source(&source);
+    source_released = (source == NULL);
 
     bc_crash_checkpoint(BC_CK_VM_ALLOC, "bc_vm_alloc");
     if (bc_vm_alloc(vm) != 0) {
@@ -387,7 +389,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
               (int)bc_alloc_fail_size, (int)bc_alloc_fail_pages,
               (int)bc_alloc_fail_used, (int)bc_alloc_fail_total,
               (int)bc_alloc_fail_free, (int)bc_alloc_fail_longest);
-        return;
+        return source_released;
     }
     VMRUN_DBG("VM: runtime alloc ok\r\n");
     bc_run_diag_note_vm_stage(BC_RUN_VM_RUNTIME_ALLOC_OK,
@@ -446,6 +448,7 @@ void bc_run_source_string_ex(const char * source, const char * source_name, int 
     vm_sys_graphics_reset();
     bc_fastgfx_reset();
     bc_crash_clear();
+    return source_released;
 }
 
 /*
@@ -513,7 +516,7 @@ int bc_try_compile_line(const char * line) {
  */
 void bc_run_immediate(const char * line) {
     bc_alloc_reset();
-    bc_run_source_string_ex(line, "<immediate>", 1);
+    (void)bc_run_source_string_ex(line, "<immediate>", 1);
 }
 
 /*
@@ -575,10 +578,9 @@ void cmd_frun(void) {
     ClearRuntime(true);
 
     char * source = bc_load_source_via_hal(fname_buf);
-    bc_run_source_string(source, fname_buf);
-    /* On heap-tight ports the hook inside bc_run_source_string already
-     * freed source; on host it's a no-op there and we own the release. */
-    if (source) FreeMemory((unsigned char *)source);
+    if (!bc_run_source_string(source, fname_buf)) {
+        FreeMemory((unsigned char *)source);
+    }
 }
 
 /*
