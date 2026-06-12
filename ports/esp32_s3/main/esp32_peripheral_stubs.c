@@ -151,6 +151,13 @@ void printoptions(void) {
     esp32_touch_calibrate_print_option();
     hal_gui_controls_print_options();
     i2c_config_print_option();
+    if (Option.ColourCode == true) MMPrintString("OPTION COLOURCODE ON\r\n");
+    if (Option.continuation) MMPrintString("OPTION CONTINUATION LINES ON\r\n");
+    if (Option.Tab != 2) {
+        char line[24];
+        snprintf(line, sizeof(line), "OPTION TAB %d\r\n", Option.Tab);
+        MMPrintString(line);
+    }
     if (Option.SD_CS) {
         MMPrintString("OPTION SDCARD ");
         MMPrintString((char *)PinDef[Option.SD_CS].pinname);
@@ -644,8 +651,6 @@ void cmd_watchdog(void) {}
 void cmd_wrap(void) {}
 
 void cmd_wraptarget(void) {}
-
-void cmd_xmodem(void) {}
 
 void disable_sd(void) {}
 

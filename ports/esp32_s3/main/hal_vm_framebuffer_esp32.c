@@ -43,7 +43,7 @@ extern int esp32_ili9341_lcd_restore_panel(void);
 extern int esp32_ili9341_lcd_ready(void);
 extern void esp32_ili9341_lcd_flush_pending(void);
 extern void esp32_ili9341_lcd_scroll(int lines);
-extern int esp32_cyd_vga_packed_active(void);
+extern int esp32_packed_vga_active(void);
 extern int esp32_fastgfx_active(void);
 extern void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src,
                                                   int xstart, int xend,
@@ -248,7 +248,7 @@ static size_t esp32_fb_bytes(void) {
 }
 
 static int esp32_fb_packed_display_active(void) {
-    return esp32_ili9341_lcd_ready() || esp32_cyd_vga_packed_active();
+    return esp32_ili9341_lcd_ready() || esp32_packed_vga_active();
 }
 
 static uint8_t esp32_fb_rgb121(uint32_t c) {
@@ -274,7 +274,7 @@ static int esp32_fb_vga_display_owned(unsigned char * p) {
 }
 
 static int esp32_fb_cyd_display_owned(unsigned char * p) {
-    if (!p || !esp32_cyd_vga_packed_active()) return 0;
+    if (!p || !esp32_packed_vga_active()) return 0;
     return p == FRAMEBUFFER || p == DisplayBuf;
 }
 
@@ -369,7 +369,7 @@ static void esp32_fb_merge_region(int x0, int y0, int w, int h, uint8_t transpar
             }
             out[bx] = merged;
         }
-        if (esp32_cyd_vga_packed_active()) {
+        if (esp32_packed_vga_active()) {
             uint8_t * dst = DisplayBuf + (size_t)y * row_bytes;
             int bx = x1 / 2;
             int bx_end = x2 / 2;
@@ -432,7 +432,7 @@ static void esp32_fb_copy_to_screen(uint8_t * src) {
         hal_vga_ops_fastgfx_present();
         return;
     }
-    if (esp32_cyd_vga_packed_active()) {
+    if (esp32_packed_vga_active()) {
         if (DisplayBuf && src != DisplayBuf) memcpy(DisplayBuf, src, esp32_fb_bytes());
         return;
     }
@@ -502,7 +502,7 @@ void hal_vm_framebuffer_create(int fast) {
     unsigned char * frame = NULL;
     unsigned char * shadow = NULL;
     int vga = vga_lcdcam_s3_active();
-    int cyd = esp32_cyd_vga_packed_active();
+    int cyd = esp32_packed_vga_active();
     if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
     if (FrameBuf && !esp32_fb_display_owned(FrameBuf)) error("Framebuffer already exists");
@@ -649,7 +649,7 @@ void hal_vm_framebuffer_copy(char from, char to, int bg) {
         if (vga_lcdcam_s3_active()) {
             if (!DisplayBuf) error("Invalid on this display");
             s = DisplayBuf;
-        } else if (esp32_cyd_vga_packed_active()) {
+        } else if (esp32_packed_vga_active()) {
             if (!DisplayBuf) error("Invalid on this display");
             s = DisplayBuf;
         } else {
@@ -759,7 +759,7 @@ void restorepanel(void) {
         WriteBuf = DisplayBuf;
         return;
     }
-    if (esp32_cyd_vga_packed_active()) {
+    if (esp32_packed_vga_active()) {
         WriteBuf = DisplayBuf;
         return;
     }

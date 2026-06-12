@@ -596,7 +596,7 @@ uint8_t * vga_lcdcam_s3_framebuffer(void) {
     return NULL;
 }
 
-int esp32_cyd_vga_packed_active(void) {
+int esp32_packed_vga_active(void) {
     return esp32_vga_text_active() && s_vga_mode == 2 && s_gfx_fb != NULL;
 }
 

@@ -115,7 +115,7 @@ int mmbasic_tokenise_source_to_progmem(const char * source, unsigned flags) {
     pm = ProgMemory;
     line = source;
     if (flags & MMBASIC_SOURCE_FLAG_CONTINUATION_LINES) {
-        continuation = Option.continuation;
+        continuation = Option.continuation ? Option.continuation : '_';
     }
 
     while (*line) {

@@ -450,6 +450,10 @@ void cmd_mode(void) {
     setmode(mode, true);
 }
 
+int esp32_packed_vga_active(void) {
+    return false;
+}
+
 /* Parse one GPIO token (plain chip GPIO number) into a stored pin index. */
 static int parse_vga_gpio(unsigned char * arg) {
     /* Accept either a "GPn" pin name or a raw chip GPIO number, matching

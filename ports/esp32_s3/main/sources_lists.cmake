@@ -34,6 +34,7 @@ set(CORE_SRCS
     ${REPO_ROOT}/core/mmbasic/MMBasic_Print.c
     ${REPO_ROOT}/core/mmbasic/MMBasic_REPL.c
     ${REPO_ROOT}/core/mmbasic/MMBasic_Prompt.c
+    ${REPO_ROOT}/core/mmbasic/XModem.c
     ${REPO_ROOT}/core/mmbasic/Editor.c
     ${REPO_ROOT}/shared/gfx/gfx_box_shared.c
     ${REPO_ROOT}/shared/gfx/gfx_circle_shared.c
@@ -162,6 +163,7 @@ set(BC_SRCS
 set(PORT_LOCAL_SRCS
     app_main.c                              # IDF entry, MMBasic boot, REPL
     esp32_console.c                         # USB Serial/JTAG read/write (raw bytes)
+    hal_serial_console_esp32.c              # raw byte console HAL for XMODEM
     esp32_mmbasic_console_glue.c            # MMPrintString / MMInkey + ring state (MMputchar / MMgetline are shared)
     esp32_usb_role.c                        # OPTION USB SERIAL/KEYBOARD persisted role selection
     esp32_usb_keyboard.c                    # USB host HID boot-keyboard input queue
@@ -256,4 +258,3 @@ _esp32_prefix_relative(DRIVER_STUBS       ${ESP32_S3_MAIN_DIR} ${DRIVER_STUBS})
 _esp32_prefix_relative(BC_SRCS            ${ESP32_S3_MAIN_DIR} ${BC_SRCS})
 _esp32_prefix_relative(PORT_LOCAL_SRCS    ${ESP32_S3_MAIN_DIR} ${PORT_LOCAL_SRCS})
 _esp32_prefix_relative(EMBED_DEMOS        ${ESP32_S3_MAIN_DIR} ${EMBED_DEMOS})
-
