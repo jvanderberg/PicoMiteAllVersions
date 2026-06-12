@@ -280,7 +280,7 @@ static void mmbasic_main_task(void * arg) {
 }
 
 void app_main(void) {
-    xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", 16384, NULL, 1,
+    xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", 32768, NULL, 1,
                             NULL, 0);
     /* Returning lets the IDF delete the main task. */
 }
