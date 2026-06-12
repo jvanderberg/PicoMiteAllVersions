@@ -93,14 +93,14 @@
 
 #define MMBASIC_BANNER_TRAILER "ESP32 REPL.\r\n\r\n"
 
-/* 56 KB MMBasic heap. Classic ESP32 has 520 KB of internal SRAM with
+/* 48 KB MMBasic heap (RUN capacity vs FRUN compile headroom balance). Classic ESP32 has 520 KB of internal SRAM with
  * roughly 300 KB usable as DRAM, and the static dram0_0 segment (which
  * holds AllMemory and the variable table) is the scarcest slice of it.
  * MAX_PROG_SIZE is pinned separately below so growing the heap does not
  * move the program mirror, the mmslots flash layout, or the saved-option
  * validation. Bytecode compiler scratch tables allocate from the ESP-IDF
  * internal heap, but VM runtime allocations come from this heap. */
-#define HAL_PORT_HEAP_MEMORY_SIZE (56 * 1024)
+#define HAL_PORT_HEAP_MEMORY_SIZE (48 * 1024)
 #define MAX_PROG_SIZE (32 * 1024)
 
 /* Per-port memory + clock + MMBasic-table values. The flash offsets remain
@@ -149,8 +149,11 @@
  * it. */
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
-/* Compiler-table sizes. */
-#include "../bc_tables_rp2350.h"
+/* Compiler-table sizes: the RP2040 set. The compiler's transient
+ * allocations must fit the internal heap left over at FRUN time
+ * (~48 KB with the VGA console up, in MODE 3); the RP2350 tables
+ * assume far more headroom than classic ESP32 has. */
+#include "../bc_tables_rp2040.h"
 
 /* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
  * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,
