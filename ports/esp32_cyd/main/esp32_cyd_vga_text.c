@@ -42,11 +42,12 @@ typedef struct {
     uint8_t * ch;   /* character codes */
     uint8_t * fg;   /* foreground pixel byte per cell */
     uint8_t * bg;   /* background pixel byte per cell */
+    uint8_t * at;   /* per-cell attributes (VGATXT_ATTR_*) */
     uint8_t * font; /* glyph rows, 12 bytes per char, index 0 = first_char */
     uint8_t first_char;
     uint8_t char_count;
     int cx, cy;
-    uint8_t cur_fg, cur_bg;
+    uint8_t cur_fg, cur_bg, cur_attr;
     /* ANSI escape state. */
     int esc; /* 0 none, 1 saw ESC, 2 in CSI */
     int parm[8];
@@ -82,6 +83,10 @@ DRAM_ATTR const uint32_t esp32_vga_mask4[16] = {
 #define VGATXT_DEFAULT_FG VGA_I2S_RGB222(3, 3, 3)
 #define VGATXT_DEFAULT_BG VGA_I2S_RGB222(0, 0, 0)
 
+/* The editor draws its status separator as SGR 4 underline across a row
+ * of spaces; underline renders as the glyph cell's bottom row in fg. */
+#define VGATXT_ATTR_UNDERLINE 0x01
+
 /* ---- scanout fill (ISR context) ---- */
 
 static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
@@ -93,11 +98,14 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
     const uint8_t * fg = st->fg + base;
     const uint8_t * bg = st->bg + base;
     uint32_t * out = (uint32_t *)dst;
+    const uint8_t * at = st->at + base;
     for (int col = 0; col < VGATXT_COLS; col++) {
         unsigned c = ch[col];
         unsigned bits = 0;
         if (c >= st->first_char && c < (unsigned)(st->first_char + st->char_count))
             bits = st->font[(c - st->first_char) * VGATXT_FONT_H + grow];
+        if ((at[col] & VGATXT_ATTR_UNDERLINE) && grow == VGATXT_FONT_H - 1)
+            bits = 0xFF;
         uint32_t fgw = fg[col] * 0x01010101u;
         uint32_t bgw = bg[col] * 0x01010101u;
         uint32_t m = esp32_vga_mask4[bits >> 4];
@@ -113,6 +121,18 @@ static void vgatxt_clear_cells(int from, int count) {
     memset(s_txt.ch + from, ' ', count);
     memset(s_txt.fg + from, s_txt.cur_fg, count);
     memset(s_txt.bg + from, s_txt.cur_bg, count);
+    memset(s_txt.at + from, 0, count);
+}
+
+/* Reverse scroll: shift everything down one row, blank the top (VT100
+ * Reverse Index at the top row — the editor scrolls the view this way). */
+static void vgatxt_scroll_down(void) {
+    int keep = VGATXT_CELLS - VGATXT_COLS;
+    memmove(s_txt.ch + VGATXT_COLS, s_txt.ch, keep);
+    memmove(s_txt.fg + VGATXT_COLS, s_txt.fg, keep);
+    memmove(s_txt.bg + VGATXT_COLS, s_txt.bg, keep);
+    memmove(s_txt.at + VGATXT_COLS, s_txt.at, keep);
+    vgatxt_clear_cells(0, VGATXT_COLS);
 }
 
 static void vgatxt_scroll(void) {
@@ -120,6 +140,7 @@ static void vgatxt_scroll(void) {
     memmove(s_txt.ch, s_txt.ch + VGATXT_COLS, keep);
     memmove(s_txt.fg, s_txt.fg + VGATXT_COLS, keep);
     memmove(s_txt.bg, s_txt.bg + VGATXT_COLS, keep);
+    memmove(s_txt.at, s_txt.at + VGATXT_COLS, keep);
     vgatxt_clear_cells(keep, VGATXT_COLS);
 }
 
@@ -137,6 +158,7 @@ static void vgatxt_put_glyph(uint8_t c) {
     s_txt.ch[i] = c;
     s_txt.fg[i] = s_txt.cur_fg;
     s_txt.bg[i] = s_txt.cur_bg;
+    s_txt.at[i] = s_txt.cur_attr;
     s_txt.cx++;
 }
 
@@ -159,6 +181,11 @@ static void vgatxt_sgr(void) {
         if (p == 0) {
             s_txt.cur_fg = VGATXT_DEFAULT_FG;
             s_txt.cur_bg = VGATXT_DEFAULT_BG;
+            s_txt.cur_attr = 0;
+        } else if (p == 4) {
+            s_txt.cur_attr |= VGATXT_ATTR_UNDERLINE;
+        } else if (p == 24) {
+            s_txt.cur_attr &= (uint8_t)~VGATXT_ATTR_UNDERLINE;
         } else if (p >= 30 && p <= 37) {
             s_txt.cur_fg = vgatxt_ansi(p - 30, 0);
         } else if (p >= 90 && p <= 97) {
@@ -250,8 +277,20 @@ void esp32_vga_console_putc(int ic) {
             s_txt.nparm = 0;
             s_txt.priv = false;
             memset(s_txt.parm, 0, sizeof(s_txt.parm));
-        } else
-            s_txt.esc = 0;
+            return;
+        }
+        s_txt.esc = 0;
+        if (c == 'M') { /* Reverse Index: up, scrolling at the top row */
+            if (s_txt.cy > 0)
+                s_txt.cy--;
+            else
+                vgatxt_scroll_down();
+        } else if (c == 'D') { /* Index: down, scrolling at the bottom */
+            if (s_txt.cy < VGATXT_ROWS - 1)
+                s_txt.cy++;
+            else
+                vgatxt_scroll();
+        }
         return;
     }
     if (s_txt.esc == 2) {
@@ -301,6 +340,7 @@ static void vgatxt_free(void) {
     heap_caps_free(s_txt.ch);
     heap_caps_free(s_txt.fg);
     heap_caps_free(s_txt.bg);
+    heap_caps_free(s_txt.at);
     heap_caps_free(s_txt.font);
     memset(&s_txt, 0, sizeof(s_txt));
 }
@@ -316,8 +356,9 @@ int esp32_vga_text_start(const int8_t data_gpio[8]) {
     s_txt.ch = heap_caps_malloc(VGATXT_CELLS, caps);
     s_txt.fg = heap_caps_malloc(VGATXT_CELLS, caps);
     s_txt.bg = heap_caps_malloc(VGATXT_CELLS, caps);
+    s_txt.at = heap_caps_malloc(VGATXT_CELLS, caps);
     s_txt.font = heap_caps_malloc((size_t)fp[3] * VGATXT_FONT_H, caps);
-    if (!s_txt.ch || !s_txt.fg || !s_txt.bg || !s_txt.font) {
+    if (!s_txt.ch || !s_txt.fg || !s_txt.bg || !s_txt.at || !s_txt.font) {
         vgatxt_free();
         return 0;
     }
@@ -327,6 +368,7 @@ int esp32_vga_text_start(const int8_t data_gpio[8]) {
 
     s_txt.cur_fg = VGATXT_DEFAULT_FG;
     s_txt.cur_bg = VGATXT_DEFAULT_BG;
+    s_txt.cur_attr = 0;
     vgatxt_clear_cells(0, VGATXT_CELLS);
     s_txt.cx = 0;
     s_txt.cy = 0;

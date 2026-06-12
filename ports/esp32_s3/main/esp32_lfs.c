@@ -138,13 +138,24 @@ static const struct embedded_demo s_demos[] = {
 };
 
 static void populate_demos(void) {
+    /* The refresh-class demos track the firmware image, but rewriting
+     * them on every boot churns the directory's metadata log until every
+     * directory read crawls (observed: a day of bring-up boots took a
+     * 13-entry scan from ~10 ms to seconds). A version stamp stored as a
+     * root attribute (invisible to FILES) skips the rewrites when the
+     * firmware hasn't changed. */
+    const char * ver = MMBA_RELEASE_VERSION " " __DATE__ " " __TIME__;
+    char stamp[64] = {0};
+    lfs_ssize_t sl = lfs_getattr(&lfs, "/", 'V', stamp, sizeof(stamp) - 1);
+    int refresh_demos = !(sl > 0 && strncmp(stamp, ver, sizeof(stamp) - 1) == 0);
+
     for (size_t i = 0; i < sizeof s_demos / sizeof s_demos[0]; i++) {
         const struct embedded_demo * d = &s_demos[i];
         size_t len = (size_t)(d->end - d->start);
         if (len && d->start[len - 1] == '\0') len--;
         lfs_file_t f;
         int err = lfs_file_open(&lfs, &f, d->name, LFS_O_RDONLY);
-        if (!err && !d->refresh) {
+        if (!err && (!d->refresh || !refresh_demos)) {
             lfs_soff_t existing_size = lfs_file_size(&lfs, &f);
             lfs_file_close(&lfs, &f);
             if (existing_size > 0) continue;
@@ -159,6 +170,10 @@ static void populate_demos(void) {
         lfs_file_close(&lfs, &f);
         ESP_LOGI("lfs", "wrote demo %s (%u bytes)", d->name, (unsigned)len);
     }
+
+    if (refresh_demos &&
+        lfs_setattr(&lfs, "/", 'V', ver, strlen(ver)) < 0)
+        ESP_LOGW("lfs", "demo version stamp failed");
 }
 
 int esp32_lfs_mount(void) {

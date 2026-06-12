@@ -219,6 +219,8 @@ extern bool esp32_vga_text_active(void);
 #define VGA_MODE2_H 240
 #define VGA_MODE2_STRIDE (VGA_MODE2_W / 2) /* 4bpp packed */
 
+static void vga_console_geometry(void);
+
 static int s_vga_mode = 3;   /* valid while the text console is active */
 static uint8_t * s_gfx_fb;   /* MODE 1/2 framebuffer (heap, on demand) */
 static uint8_t s_lut121[16]; /* RGB121 nibble -> RGB222|sync (ISR) */
@@ -232,6 +234,7 @@ static struct {
     int display_type;
     int option_display_type;
     unsigned char display_console;
+    short opt_width, opt_height;
     unsigned char * bufs[7];
     void (*rect)(int, int, int, int, int);
     void (*bmp)(int, int, int, int, int, int, int, unsigned char *);
@@ -282,6 +285,8 @@ static void vga_display_state_save(void) {
     s_disp_save.display_type = DISPLAY_TYPE;
     s_disp_save.option_display_type = Option.DISPLAY_TYPE;
     s_disp_save.display_console = Option.DISPLAY_CONSOLE;
+    s_disp_save.opt_width = Option.Width;
+    s_disp_save.opt_height = Option.Height;
     unsigned char * bufs[7] = {FRAMEBUFFER, WriteBuf, DisplayBuf, FrameBuf,
                                LayerBuf, SecondFrame, SecondLayer};
     memcpy(s_disp_save.bufs, bufs, sizeof(bufs));
@@ -307,6 +312,8 @@ static void vga_display_state_restore(void) {
     DISPLAY_TYPE = s_disp_save.display_type;
     Option.DISPLAY_TYPE = s_disp_save.option_display_type;
     Option.DISPLAY_CONSOLE = s_disp_save.display_console;
+    Option.Width = s_disp_save.opt_width;
+    Option.Height = s_disp_save.opt_height;
     FRAMEBUFFER = s_disp_save.bufs[0];
     WriteBuf = s_disp_save.bufs[1];
     DisplayBuf = s_disp_save.bufs[2];
@@ -350,6 +357,7 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
     if (mode == 3) {
         esp32_vga_text_resume_fill();
         vga_display_state_restore();
+        vga_console_geometry();
         heap_caps_free(s_gfx_fb);
         s_gfx_fb = NULL;
         s_vga_mode = 3;
@@ -420,14 +428,24 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
     }
     framebuffersize = (uint32_t)bytes;
     CurrentX = CurrentY = 0;
-    /* Pixel console on the framebuffer while a graphics mode is up. */
+    /* Pixel console on the framebuffer while a graphics mode is up; the
+     * console/editor geometry follows the mode's character cells. */
     Option.DISPLAY_CONSOLE = 1;
     OptionConsole = 3;
+    Option.Width = HRes / gui_font_width;
+    Option.Height = VRes / gui_font_height;
     s_vga_mode = mode;
     return 1;
 }
 
 /* Start (or restart) the text console on `pins`. */
+/* The glass terminal is 80x40; the console/editor geometry must match
+ * (and must be re-asserted when graphics modes hand the screen back). */
+static void vga_console_geometry(void) {
+    Option.Width = 80;
+    Option.Height = 40;
+}
+
 static void vga_console_start(const int8_t pins[8]) {
     if (vga_i2s_is_active() && !esp32_vga_text_active())
         vga_disable(); /* test card -> console */
@@ -442,6 +460,7 @@ static void vga_console_start(const int8_t pins[8]) {
     }
     memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
     if (!esp32_vga_text_start(s_vga_pins)) error("VGA start failed");
+    vga_console_geometry();
 }
 
 int esp32_vga_option_setter(unsigned char * line) {
@@ -520,8 +539,11 @@ void esp32_vga_display_init(void) {
     int8_t pins[8];
     if (!vga_pins_from_option(pins)) return;
     memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
-    if (!esp32_vga_text_start(s_vga_pins))
+    if (!esp32_vga_text_start(s_vga_pins)) {
         MMPrintString("VGA start failed; serial console only\r\n");
+        return;
+    }
+    vga_console_geometry();
 }
 
 void esp32_vga_reserve_option_pins(void) {}
