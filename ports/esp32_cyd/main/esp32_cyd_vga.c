@@ -408,7 +408,7 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
         if (clear && mode != 3 && s_gfx_fb) {
             memset(s_gfx_fb, 0,
                    mode == 1 ? (VGA_I2S_HRES / 8) * VGA_I2S_VRES
-                             : VGA_MODE2_W * VGA_MODE2_H);
+                             : VGA_MODE2_STRIDE * VGA_MODE2_H);
             CurrentX = CurrentY = 0;
         }
         return 1;
