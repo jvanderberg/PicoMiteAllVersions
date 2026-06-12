@@ -346,7 +346,11 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
         VRes = DisplayVRes = VGA_LCDCAM_VRES;
         ScreenSize = VGA_LCDCAM_HRES * VGA_LCDCAM_VRES;
         framebuffersize = (uint32_t)ScreenSize;
-        FRAMEBUFFER = WriteBuf = DisplayBuf = FrameBuf = LayerBuf = SecondFrame = SecondLayer = s_vga_scanout_fb;
+        /* FrameBuf/LayerBuf/Second* belong to the FRAMEBUFFER command and
+         * stay NULL until created — aliasing them to the scanout buffer
+         * locks out FASTGFX and FRAMEBUFFER CREATE. */
+        FRAMEBUFFER = WriteBuf = DisplayBuf = s_vga_scanout_fb;
+        FrameBuf = LayerBuf = SecondFrame = SecondLayer = NULL;
     } else {
         const size_t bytes = ESP32_VGA_MODE_320X240_W * ESP32_VGA_MODE_320X240_H;
         if (!s_vga_logical_fb) {
@@ -358,7 +362,8 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
         VRes = DisplayVRes = ESP32_VGA_MODE_320X240_H;
         ScreenSize = (int)bytes;
         framebuffersize = (uint32_t)ScreenSize;
-        FRAMEBUFFER = WriteBuf = DisplayBuf = FrameBuf = LayerBuf = SecondFrame = SecondLayer = s_vga_logical_fb;
+        FRAMEBUFFER = WriteBuf = DisplayBuf = s_vga_logical_fb;
+        FrameBuf = LayerBuf = SecondFrame = SecondLayer = NULL;
     }
 
     Option.DISPLAY_TYPE = esp32_vga_display_type_for_mode(mode);
