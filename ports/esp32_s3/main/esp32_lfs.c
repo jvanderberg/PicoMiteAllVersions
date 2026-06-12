@@ -27,9 +27,23 @@
 
 static const esp_partition_t * s_part = NULL;
 
+/* Memory-mapped read window over the whole partition. Raw
+ * esp_partition_read stalls both cores around a cache-disabled SPI
+ * transaction (~50-100 us of fixed ceremony per call), and LittleFS
+ * metadata traversal issues storms of them; reads through the mapped,
+ * cache-backed window are plain memcpys. Writes/erases stay on the raw
+ * API — the flash driver invalidates the affected cached range, so the
+ * window stays coherent. NULL = mapping failed, raw reads as fallback. */
+static const uint8_t * s_mmap_base;
+static esp_partition_mmap_handle_t s_mmap_handle;
+
 static int esp_lfs_read(const struct lfs_config * c, lfs_block_t block,
                         lfs_off_t off, void * buf, lfs_size_t size) {
     (void)c;
+    if (s_mmap_base) {
+        memcpy(buf, s_mmap_base + (size_t)block * BLOCK_SIZE + off, size);
+        return 0;
+    }
     if (!s_part) return LFS_ERR_IO;
     if (esp_partition_read(s_part, block * BLOCK_SIZE + off, buf, size) != ESP_OK)
         return LFS_ERR_IO;
@@ -189,6 +203,15 @@ int esp32_lfs_mount(void) {
         ESP_LOGI("lfs", "lfsdata partition: size=%lu, %lu blocks",
                  (unsigned long)s_part->size,
                  (unsigned long)pico_lfs_cfg.block_count);
+        const void * mp = NULL;
+        if (esp_partition_mmap(s_part, 0, s_part->size,
+                               ESP_PARTITION_MMAP_DATA, &mp,
+                               &s_mmap_handle) == ESP_OK) {
+            s_mmap_base = mp;
+            ESP_LOGI("lfs", "partition mapped for reads");
+        } else {
+            ESP_LOGW("lfs", "mmap failed; raw partition reads");
+        }
     }
     int err = lfs_mount(&lfs, &pico_lfs_cfg);
     int formatted = 0;
