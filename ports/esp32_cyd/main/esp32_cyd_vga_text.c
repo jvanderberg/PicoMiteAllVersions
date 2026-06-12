@@ -144,11 +144,32 @@ static uint8_t vgatxt_rgb888(int r, int g, int b) {
     return VGA_I2S_RGB222(r >> 6, g >> 6, b >> 6);
 }
 
+/* Classic ANSI 8-colour palette as RGB222 pixel bytes: index order
+ * black, red, green, yellow, blue, magenta, cyan, white. The editor's
+ * COLOURCODE highlighting uses these (SGR 30..37). */
+static uint8_t vgatxt_ansi(int idx, int bright) {
+    int v = bright ? 3 : 2;
+    return VGA_I2S_RGB222((idx & 1) ? v : 0, (idx & 2) ? v : 0,
+                          (idx & 4) ? v : 0);
+}
+
 static void vgatxt_sgr(void) {
     for (int i = 0; i < s_txt.nparm; i++) {
         int p = s_txt.parm[i];
         if (p == 0) {
             s_txt.cur_fg = VGATXT_DEFAULT_FG;
+            s_txt.cur_bg = VGATXT_DEFAULT_BG;
+        } else if (p >= 30 && p <= 37) {
+            s_txt.cur_fg = vgatxt_ansi(p - 30, 0);
+        } else if (p >= 90 && p <= 97) {
+            s_txt.cur_fg = vgatxt_ansi(p - 90, 1);
+        } else if (p == 39) {
+            s_txt.cur_fg = VGATXT_DEFAULT_FG;
+        } else if (p >= 40 && p <= 47) {
+            s_txt.cur_bg = vgatxt_ansi(p - 40, 0);
+        } else if (p >= 100 && p <= 107) {
+            s_txt.cur_bg = vgatxt_ansi(p - 100, 1);
+        } else if (p == 49) {
             s_txt.cur_bg = VGATXT_DEFAULT_BG;
         } else if ((p == 38 || p == 48) && i + 4 < s_txt.nparm &&
                    s_txt.parm[i + 1] == 2) {

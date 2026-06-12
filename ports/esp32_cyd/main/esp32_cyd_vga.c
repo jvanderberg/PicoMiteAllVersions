@@ -2,11 +2,15 @@
  * esp32_cyd_vga.c — classic-ESP32 VGA surface over the I2S scanout driver
  * (drivers/vga_i2s_esp32).
  *
- * Current surface:
- *   OPTION VGA TEST     bring the scanout up on the default pin map with a
- *                       test card (colour bars, white border, moving line)
- *                       — the bring-up/diagnostic image.
- *   OPTION VGA DISABLE  stop the scanout and release pins/RAM.
+ * Option surface (persisted in the Option.extensions[] VGA region and
+ * applied at boot — esp32_vga_display_init brings the console up in
+ * MODE 3 automatically when configured):
+ *   OPTION VGA                          enable on the default pin map
+ *   OPTION VGA r1,r0,g1,g0,b1,b0,hs,vs  enable on explicit chip GPIOs
+ *                                       (MSB first per colour channel)
+ *   OPTION VGA TEST [RED|GREEN|BLUE|WHITE|LADDER]
+ *                                       diagnostic test cards (not saved)
+ *   OPTION VGA DISABLE                  stop, release, clear saved config
  *
  * Default pin map (bus bit -> chip GPIO), matching the documented VGA666
  * wiring: B0=4 B1=5 G0=18 G1=19 R0=21 R1=22 HSync=23 VSync=15.
@@ -38,7 +42,8 @@
 
 #include "vga_i2s_esp32.h"
 
-#include "SPI-LCD.h" /* SCREENMODEn DISPLAY_TYPE values */
+#include "SPI-LCD.h"          /* SCREENMODEn DISPLAY_TYPE values */
+#include "esp32_option_ext.h" /* Option.extensions[] VGA region */
 
 /* Core framebuffer + draw-pointer globals (defined in Draw.c / state). */
 extern short HRes, VRes, DisplayHRes, DisplayVRes;
@@ -66,6 +71,50 @@ extern void esp32_vga_text_resume_fill(void);
 
 /* Bus bits 0..7 = B0 B1 G0 G1 R0 R1 HS VS. */
 static const int8_t s_vga_default_pins[8] = {4, 5, 18, 19, 21, 22, 23, 15};
+
+/* Active pin map (bus-bit order) while VGA is up. */
+static int8_t s_vga_pins[8];
+
+/* ---- persisted configuration ----
+ * Option.extensions[ESP32_OPTION_VGA_EXT_BASE + i] holds the chip GPIO
+ * for bus bit i; ESP32_OPTION_VGA_VSYNC holds the enable magic. Saved
+ * with SaveOptions(), so the configuration survives CPU RESTART and
+ * power cycles; boot validates before applying. */
+#define VGA_OPTION_MAGIC 0x56 /* 'V' */
+
+/* User-facing argument order r1,r0,g1,g0,b1,b0,hs,vs -> bus bit. */
+static const uint8_t s_vga_arg_to_bit[8] = {5, 4, 3, 2, 1, 0, 6, 7};
+
+static int vga_gpio_output_ok(int gpio) {
+    if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) return 0;
+    int slot = (int)PINMAP[gpio];
+    if (slot < 1 || slot > NBRPINS) return 0;
+    if (PinDef[slot].mode & UNUSED) return 0;
+    if (!(PinDef[slot].mode & DIGITAL_OUT)) return 0;
+    return 1;
+}
+
+static int vga_pins_from_option(int8_t out[8]) {
+    if (ESP32_OPTION_VGA_VSYNC != VGA_OPTION_MAGIC) return 0;
+    for (int i = 0; i < 8; i++) {
+        int gpio = ESP32_OPTION_VGA_DATA[i];
+        if (!vga_gpio_output_ok(gpio)) return 0;
+        out[i] = (int8_t)gpio;
+    }
+    return 1;
+}
+
+static void vga_store_option(const int8_t pins[8]) {
+    for (int i = 0; i < 8; i++) ESP32_OPTION_VGA_DATA[i] = (unsigned char)pins[i];
+    ESP32_OPTION_VGA_VSYNC = VGA_OPTION_MAGIC;
+    SaveOptions();
+}
+
+static void vga_clear_option(void) {
+    for (int i = 0; i < 8; i++) ESP32_OPTION_VGA_DATA[i] = 0;
+    ESP32_OPTION_VGA_VSYNC = 0;
+    SaveOptions();
+}
 
 /* ---- test card ----
  * Two pre-swizzled template lines built at start: the colour-bar line
@@ -308,7 +357,7 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
     }
 
     if (WIFIconnected) {
-        *errmsg = "Graphics modes need Wi-Fi off";
+        *errmsg = "Graphics modes need Wi-Fi off (OPTION WIFI \"\",\"\" then reboot)";
         return 0;
     }
 
@@ -378,6 +427,23 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
     return 1;
 }
 
+/* Start (or restart) the text console on `pins`. */
+static void vga_console_start(const int8_t pins[8]) {
+    if (vga_i2s_is_active() && !esp32_vga_text_active())
+        vga_disable(); /* test card -> console */
+    if (esp32_vga_text_active()) {
+        if (memcmp(pins, s_vga_pins, sizeof(s_vga_pins)) == 0)
+            return; /* already up on these pins */
+        if (s_vga_mode != 3) {
+            const char * msg;
+            (void)vga_apply_mode(3, false, &msg);
+        }
+        esp32_vga_text_stop();
+    }
+    memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
+    if (!esp32_vga_text_start(s_vga_pins)) error("VGA start failed");
+}
+
 int esp32_vga_option_setter(unsigned char * line) {
     unsigned char * tp = checkstring(line, (unsigned char *)"VGA");
     if (!tp) return 0;
@@ -405,30 +471,58 @@ int esp32_vga_option_setter(unsigned char * line) {
         }
         esp32_vga_text_stop();
         vga_disable();
+        vga_clear_option();
         return 1;
     }
     skipspace(tp);
     if (!*tp || *tp == '\'') {
-        /* Bare OPTION VGA: the char-cell text console on the default
-         * pin map. */
-        if (vga_i2s_is_active() && !esp32_vga_text_active())
-            vga_disable(); /* test card -> console */
-        if (!esp32_vga_text_start(s_vga_default_pins))
-            error("VGA start failed");
+        /* Bare OPTION VGA: the default pin map. */
+        vga_console_start(s_vga_default_pins);
+        vga_store_option(s_vga_default_pins);
         return 1;
     }
-    error("OPTION VGA [TEST|DISABLE]");
-    return 1;
+    {
+        /* OPTION VGA r1,r0,g1,g0,b1,b0,hsync,vsync — chip GPIO numbers. */
+        int8_t pins[8];
+        getargs(&tp, 15, (unsigned char *)",");
+        if (argc != 15) error("OPTION VGA r1,r0,g1,g0,b1,b0,hsync,vsync");
+        for (int i = 0; i < 8; i++) {
+            int gpio = (int)getinteger(argv[i * 2]);
+            if (!vga_gpio_output_ok(gpio)) error("Invalid pin");
+            pins[s_vga_arg_to_bit[i]] = (int8_t)gpio;
+        }
+        for (int i = 0; i < 8; i++)
+            for (int j = i + 1; j < 8; j++)
+                if (pins[i] == pins[j]) error("Duplicate pin");
+        vga_console_start(pins);
+        vga_store_option(pins);
+        return 1;
+    }
 }
 
 void esp32_vga_print_options(void) {
-    if (esp32_vga_text_active())
-        MMPrintString("OPTION VGA\r\n");
-    else if (vga_i2s_is_active())
+    if (esp32_vga_text_active()) {
+        char buf[64];
+        snprintf(buf, sizeof buf, "OPTION VGA %d,%d,%d,%d,%d,%d,%d,%d\r\n",
+                 s_vga_pins[5], s_vga_pins[4], s_vga_pins[3], s_vga_pins[2],
+                 s_vga_pins[1], s_vga_pins[0], s_vga_pins[6], s_vga_pins[7]);
+        MMPrintString(buf);
+    } else if (vga_i2s_is_active()) {
         MMPrintString("OPTION VGA TEST\r\n");
+    }
 }
 
-void esp32_vga_display_init(void) {}
+/* Boot bring-up: apply the persisted configuration (called from app_main
+ * after the console glue and options are loaded). The boot screen mode is
+ * always the MODE 3 console — the safety floor, and the only mode that
+ * coexists with a configured Wi-Fi connection. */
+void esp32_vga_display_init(void) {
+    int8_t pins[8];
+    if (!vga_pins_from_option(pins)) return;
+    memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
+    if (!esp32_vga_text_start(s_vga_pins))
+        MMPrintString("VGA start failed; serial console only\r\n");
+}
 
 void esp32_vga_reserve_option_pins(void) {}
 

@@ -477,12 +477,22 @@ Screen modes (implemented and hardware-validated 2026-06-11):
   so the MODE 3 console mirrors the full serial byte stream (including
   SSPrintString-only VT100 escapes).
 
-Still to do: boot persistence of the VGA option, the pin-list option form
-and a board profile, wider console fonts (any width divisible by 4:
-12x20, 16x24), scroll tearing (replace the scroll memmove with a
-row-remap table), Wi-Fi-radio-on-but-unconnected slipping past the
-`WIFIconnected` gate, and the line-editor redraw chatter visible in
-serial transcripts (cosmetic, predates VGA).
+Also implemented (2026-06-11, second pass): boot persistence — the pin
+map lives in the Option.extensions[] VGA region and
+`esp32_vga_display_init` brings the MODE 3 console up automatically at
+boot; the pin-list form `OPTION VGA r1,r0,g1,g0,b1,b0,hsync,vsync` (chip
+GPIOs, validated output-capable, `OPTION LIST` round-trips it); and full
+16-colour ANSI SGR in the glass terminal, which is what the editor's
+COLOURCODE highlighting and `COLOUR` both need (verified green on
+glass).
+
+Still to do: `OPTION WIFI "",""` should actively disconnect instead of
+needing a reboot before the graphics modes unlock, a VGA board profile,
+wider console fonts (any width divisible by 4: 12x20, 16x24), scroll
+tearing (replace the scroll memmove with a row-remap table),
+Wi-Fi-radio-on-but-unconnected slipping past the `WIFIconnected` gate,
+and the line-editor redraw chatter visible in serial transcripts
+(cosmetic, predates VGA).
 
 ### Design notes (original sketch)
 
