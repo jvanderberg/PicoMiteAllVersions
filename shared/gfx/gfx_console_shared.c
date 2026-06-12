@@ -156,6 +156,10 @@ void GUIPrintChar(int fnt, int fc, int bc, char c, int orientation) {
 void DisplayPutC(char c) {
 
     if (!Option.DISPLAY_CONSOLE) return;
+    if (HRes <= 0) return; // no display geometry: the right-margin wrap below
+                           // would CRLF on every char and tab expansion
+                           // ('\t' loops until a tab stop is reached) would
+                           // never terminate
     // if it is printable and it is going to take us off the right hand end of the screen do a CRLF
     if (c >= FontTable[gui_font >> 4][2] && c < FontTable[gui_font >> 4][2] + FontTable[gui_font >> 4][3]) {
         if (CurrentX + gui_font_width > HRes) {

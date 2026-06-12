@@ -332,8 +332,12 @@ static void vga_display_state_restore(void) {
 }
 
 static void vga_point_framebuffers_at(uint8_t * fb) {
-    FRAMEBUFFER = WriteBuf = DisplayBuf = FrameBuf = LayerBuf = SecondFrame =
-        SecondLayer = fb;
+    FRAMEBUFFER = WriteBuf = DisplayBuf = fb;
+    /* FrameBuf/LayerBuf (and the Second* pair) belong to the FRAMEBUFFER
+     * command — NULL until the user creates them. Aliasing them to the
+     * scanout buffer makes FASTGFX's "FRAMEBUFFER is active" guard fire
+     * unconditionally and FRAMEBUFFER CREATE think one already exists. */
+    FrameBuf = LayerBuf = SecondFrame = SecondLayer = NULL;
 }
 
 /* Switch screen mode. Returns 0 with *errmsg set on failure (the caller
@@ -444,6 +448,16 @@ static int vga_apply_mode(int mode, bool clear, const char ** errmsg) {
 static void vga_console_geometry(void) {
     Option.Width = 80;
     Option.Height = 40;
+    /* The glass terminal mirrors the serial console byte stream through
+     * the SerialConsolePutC hook — the GFX display console must be off.
+     * These fields arrive stale from flash when options were saved while
+     * a graphics mode was up: with no framebuffer this boot, DisplayPutC
+     * would run against HRes=0 (its right-margin wrap then loops forever
+     * on tab expansion) and ScrollLCD would scribble on freed memory. */
+    Option.DISPLAY_CONSOLE = 0;
+    OptionConsole = 1;
+    DISPLAY_TYPE = 0;
+    Option.DISPLAY_TYPE = 0;
 }
 
 static void vga_console_start(const int8_t pins[8]) {
