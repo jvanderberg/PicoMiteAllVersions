@@ -32,12 +32,13 @@ int bc_compiler_alloc(BCCompiler * cs) {
     cs->locals = (BCLocalVar *)BC_COMPILER_ALLOC(BC_MAX_LOCALS * sizeof(BCLocalVar));
     cs->code = (uint8_t *)BC_COMPILER_ALLOC(BC_MAX_CODE);
     cs->constants = (BCConstant *)BC_COMPILER_ALLOC(BC_MAX_CONSTANTS * sizeof(BCConstant));
+    cs->const_pool = (uint8_t *)BC_COMPILER_ALLOC(BC_MAX_CONST_BYTES);
     cs->slots = (BCSlot *)BC_COMPILER_ALLOC(BC_MAX_SLOTS * sizeof(BCSlot));
     cs->subfuns = (BCSubFun *)BC_COMPILER_ALLOC(BC_MAX_SUBFUNS * sizeof(BCSubFun));
     cs->subfun_locals_base = (uint16_t *)BC_COMPILER_ALLOC(BC_MAX_SUBFUNS * sizeof(uint16_t));
     cs->local_meta = (BCLocalMeta *)BC_COMPILER_ALLOC(BC_MAX_LOCAL_META * sizeof(BCLocalMeta));
     cs->data_pool = (BCDataItem *)BC_COMPILER_ALLOC(BC_MAX_DATA_ITEMS * sizeof(BCDataItem));
-    if (!cs->code || !cs->constants || !cs->slots || !cs->subfuns ||
+    if (!cs->code || !cs->constants || !cs->const_pool || !cs->slots || !cs->subfuns ||
         !cs->subfun_locals_base ||
         !cs->fixups || !cs->linemap || !cs->labelmap || !cs->nest_stack || !cs->locals ||
         !cs->local_meta ||
@@ -61,6 +62,12 @@ void bc_compiler_free(BCCompiler * cs) {
             BC_COMPILER_FREE(cs->constants);
         else
             BC_FREE(cs->constants);
+    }
+    if (cs->const_pool) {
+        if (bc_compile_owns(cs->const_pool))
+            BC_COMPILER_FREE(cs->const_pool);
+        else
+            BC_FREE(cs->const_pool);
     }
     if (cs->slots) {
         if (bc_compile_owns(cs->slots))
@@ -191,6 +198,7 @@ int bc_compiler_compact(BCCompiler * cs) {
     }
 
     COMPACT(constants, cs->const_count, BCConstant);
+    COMPACT(const_pool, cs->const_pool_len, uint8_t);
     COMPACT(slots, cs->slot_count, BCSlot);
     COMPACT(subfuns, cs->subfun_count, BCSubFun);
     COMPACT(subfun_locals_base, cs->subfun_count, uint16_t);
@@ -409,7 +417,7 @@ uint16_t bc_add_constant_string(BCCompiler * cs, const uint8_t * data, int len) 
     /* Check for a duplicate first */
     for (uint16_t i = 0; i < cs->const_count; i++) {
         if (cs->constants[i].len == (uint16_t)len &&
-            memcmp(cs->constants[i].data, data, len) == 0) {
+            memcmp(BC_CONST_PTR(cs, &cs->constants[i]), data, len) == 0) {
             return i;
         }
     }
@@ -419,12 +427,19 @@ uint16_t bc_add_constant_string(BCCompiler * cs, const uint8_t * data, int len) 
         return 0xFFFF;
     }
 
-    uint16_t idx = cs->const_count++;
     int copy_len = len;
     if (copy_len > STRINGSIZE - 1) copy_len = STRINGSIZE - 1;
-    memcpy(cs->constants[idx].data, data, copy_len);
-    cs->constants[idx].data[copy_len] = '\0';
+    if (cs->const_pool_len + (uint32_t)copy_len + 1 > BC_MAX_CONST_BYTES) {
+        bc_set_error(cs, "String constant pool full (max %d bytes)", BC_MAX_CONST_BYTES);
+        return 0xFFFF;
+    }
+
+    uint16_t idx = cs->const_count++;
+    cs->constants[idx].off = cs->const_pool_len;
+    memcpy(cs->const_pool + cs->const_pool_len, data, copy_len);
+    cs->const_pool[cs->const_pool_len + copy_len] = '\0';
     cs->constants[idx].len = (uint16_t)copy_len;
+    cs->const_pool_len += (uint32_t)copy_len + 1;
     return idx;
 }
 

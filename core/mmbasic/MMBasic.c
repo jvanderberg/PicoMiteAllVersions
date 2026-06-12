@@ -3278,7 +3278,7 @@ void MIPS16 error(char * msg, ...) {
     int saved_prompt_fc = PromptFC;
     int saved_prompt_bc = PromptBC;
 
-    LoadOptions(); // make sure that the option struct is in a clean state
+    LoadOptions();                        // make sure that the option struct is in a clean state
     port_error_restore_console_surface(); // ports may need to re-assert runtime-only display state
     ApplyDefaultConsoleColours();
     PromptFont = saved_prompt_font;

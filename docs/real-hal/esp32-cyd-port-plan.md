@@ -15,6 +15,58 @@ programs un-interruptible; the pump now drains to `ConsoleRxBuf` like the
 Pico UART IRQ), and `FILES` free-bytes using Pico flash-layout math instead
 of the mounted lfs geometry. Remaining phases gated on the CYD board.
 
+Devkit re-smoke 2026-06-12 (full `esp32_fs_vm_smoke.py info fs program vm
+flash gpio` set, abort-pump stray-byte/Ctrl-C test, MODE 1/2/3 sweep with
+pixel readback, WEB SCAN): all suites pass after four fixes. (1)
+`esp32_vga_reserve_option_pins` was an empty stub — SETPIN could hijack a
+live scanout pin; it now reserves the persisted pin map via
+`ExtCurrentConfig[slot] = EXT_BOOT_RESERVED`, with release on `OPTION VGA
+DISABLE` and re-pin. (2) `MM.INFO$(ID)` hardcoded "ESP32-S3" in the shared
+peripheral stubs; it now reads `esp_chip_info()`. (3) The VM string-constant
+pool stored each entry as a full STRINGSIZE array, so the 16-entry CYD cap
+was both too small for ordinary programs (the smoke's ~18 literals) and
+unraisable inside the MODE 3 heap window; `BCConstant` is now an
+offset/length pair into a shared `BC_MAX_CONST_BYTES` byte pool (all ports;
+host suites pass), and CYD carries 48 entries + 3.5 KB pool for less upfront
+footprint than the old 16x260 table. (4) The smoke's ARAW/PWM pin candidates
+were S3-only; classic-ESP32 ADC1/LEDC pins (GP32/GP33 et al.) are now in the
+candidate lists. Network conformance not re-run (no Wi-Fi credentials
+persisted on the board after reflash). Confirmed on hardware: with the radio
+on but unconnected, `MODE 2` slips the `WIFIconnected` gate and fails with a
+raw NEM error (lands safely in MODE 3) — already on the still-to-do list.
+
+Same-day follow-up: the VGA-console + Wi-Fi coexistence the paragraph above
+relies on had regressed — measured budget on the devkit: 70.5 KB free IDF
+heap bare, MODE 3 console 29.9 KB, Wi-Fi stack 39.3 KB, leaving ~1.3 KB, so
+`WEB CONNECT` failed whenever the console was up (the 32 KB interpreter-stack
+fix landed after the Phase 8 smoke and consumed the old margin). Recovered
+~12.3 KB: scanout ring 8 -> 4 line buffers (the 220 us slack predates the
+core-1 ISR move; now ~110 us), `ESP_WIFI_STATIC_RX_BUFFER_NUM` 6 -> 3, the
+console's attribute plane packed to an underline bitmap (1 bit/cell), and
+MQTT trimmed for the small heap (4608-byte task stack via
+`MQTT_USE_CUSTOM_CONFIG`, 512-byte buffers, SSL/WebSocket transports off —
+the last also freed ~11 KB of the near-full app partition). Boot now
+auto-connects with the glass console up at ~13 KB steady-state free, and
+`network_conformance.py all` passes 7/7 with `--reset-before-suite`; a
+single-boot `all` run passes 6/7, with MQTT-last failing because the
+tcp-server/udp suites deliberately leave their listeners resident — that is
+the board's genuine capacity edge with the console on, not a defect. The
+ring and RX trims need an eyeball on real glass under Wi-Fi traffic for
+glitch bands.
+
+ESP32-S3 revalidation 2026-06-12: the classic-chip portability commit
+(`c52791a`) moved `flash_prog_buf` from `.bss` to a boot-time heap alloc,
+which boot-looped the S3 — the request needs 53,248 contiguous internal
+bytes but the S3 heap's largest region after the interpreter-task split is
+51,200 (113 KB free total; a region split, not exhaustion). Fixed with the
+GetSystemMemory pattern: internal first, PSRAM spill-over (no-PSRAM chips
+have no SPIRAM region and keep the internal path), plus an informative
+abort that logs need/free/largest. With that, the S3 passes
+`network_conformance.py all` 7/7 single-boot and the full
+`esp32_fs_vm_smoke.py` set including the VM suite (constant-pool redesign)
+and the PSRAM march; `MM.INFO$(ID)` reports the correct chip via
+`esp_chip_info()` on both chips.
+
 Plan baseline: re-evaluated 2026-06-11 against `main` @ `a1ad0ed`
 — the SDK-compat retirement, SPI-LCD generalization Tracks A and B, the ESP32
 runtime-service gate, and the Wi-Fi SPIRAM allocator have all merged. The only

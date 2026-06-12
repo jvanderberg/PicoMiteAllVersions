@@ -18,6 +18,7 @@
 #include <string.h>
 #include <time.h>
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include "MMBasic_Includes.h"
@@ -48,7 +49,22 @@ void esp32_flash_prog_buf_init(void) {
     if (flash_prog_buf) return;
     flash_prog_buf = heap_caps_malloc(MAX_PROG_SIZE + FLASH_PROG_TRAILER,
                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!flash_prog_buf) abort();
+    /* PSRAM spill-over, mirroring GetSystemMemory: on the S3 the internal
+     * heap is split across SRAM regions and cannot host this block
+     * contiguously alongside the interpreter task stack. Interpreter and
+     * file-op access is task-context with cache enabled, so PSRAM is a
+     * valid home; no-PSRAM chips have no SPIRAM region and skip this. */
+    if (!flash_prog_buf)
+        flash_prog_buf = heap_caps_malloc(MAX_PROG_SIZE + FLASH_PROG_TRAILER,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!flash_prog_buf) {
+        ESP_LOGE("esp32_compat",
+                 "flash_prog_buf alloc failed: need=%u internal8 free=%u largest=%u",
+                 (unsigned)(MAX_PROG_SIZE + FLASH_PROG_TRAILER),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        abort();
+    }
     memset(flash_prog_buf, 0xff, MAX_PROG_SIZE + FLASH_PROG_TRAILER);
 }
 

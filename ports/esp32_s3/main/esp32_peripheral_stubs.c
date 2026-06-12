@@ -17,6 +17,7 @@
 #include <limits.h>
 #include <setjmp.h>
 #include "esp_heap_caps.h"
+#include "esp_chip_info.h"
 #include "esp_mac.h"
 #include "esp_private/esp_clk.h"
 #include "esp_system.h"
@@ -39,6 +40,27 @@
 extern void port_print_supported_boards(void);
 extern int port_factory_reset_board(unsigned char * p);
 extern const char * port_pin_reserved_label(int pin);
+
+/* MM.INFO(ID) chip prefix: this file is shared by every ESP32-family port,
+ * so the name comes from the silicon, not a compile-time constant. */
+static const char * esp32_chip_name(void) {
+    esp_chip_info_t info;
+    esp_chip_info(&info);
+    switch (info.model) {
+    case CHIP_ESP32:
+        return "ESP32";
+    case CHIP_ESP32S2:
+        return "ESP32-S2";
+    case CHIP_ESP32S3:
+        return "ESP32-S3";
+    case CHIP_ESP32C3:
+        return "ESP32-C3";
+    case CHIP_ESP32C6:
+        return "ESP32-C6";
+    default:
+        return "ESP32";
+    }
+}
 
 /* esp32_parse_pin_arg — converts a "GPn" textual pin argument (or raw pin
  * number) to the VM's internal pin index. Used by cmd_setpin / fun_pin and
@@ -805,12 +827,13 @@ void fun_info(void) {
         return;
     }
     if (checkstring(ep, (unsigned char *)"ID")) {
+        const char * chip = esp32_chip_name();
         uint8_t mac[6] = {0};
         if (esp_efuse_mac_get_default(mac) == ESP_OK) {
-            snprintf((char *)sret, STRINGSIZE, "ESP32-S3 %02X:%02X:%02X:%02X:%02X:%02X",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            snprintf((char *)sret, STRINGSIZE, "%s %02X:%02X:%02X:%02X:%02X:%02X",
+                     chip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         } else {
-            strcpy((char *)sret, "ESP32-S3");
+            strcpy((char *)sret, chip);
         }
         CtoM(sret);
         targ = T_STR;

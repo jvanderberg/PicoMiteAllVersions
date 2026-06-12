@@ -119,6 +119,18 @@ static void vga_clear_option(void) {
     SaveOptions();
 }
 
+/* Mark the scanout pins reserved in ExtCurrentConfig so SETPIN/PWM/COM
+ * cannot reroute a live VGA wire; releasing restores EXT_NOT_CONFIG. */
+static void vga_set_pin_reservation(const int8_t pins[8], bool reserve) {
+    for (int i = 0; i < 8; i++) {
+        int gpio = pins[i];
+        if (gpio < 0 || gpio >= HAL_PORT_GPIO_COUNT) continue;
+        int slot = (int)PINMAP[gpio];
+        if (slot < 1 || slot > NBRPINS) continue;
+        ExtCurrentConfig[slot] = reserve ? EXT_BOOT_RESERVED : EXT_NOT_CONFIG;
+    }
+}
+
 /* ---- test card ----
  * Two pre-swizzled template lines built at start: the colour-bar line
  * (with white border columns baked in) and a solid white line. The fill
@@ -494,9 +506,11 @@ static void vga_console_start(const int8_t pins[8]) {
             (void)vga_apply_mode(3, false, &msg);
         }
         esp32_vga_text_stop();
+        vga_set_pin_reservation(s_vga_pins, false);
     }
     memcpy(s_vga_pins, pins, sizeof(s_vga_pins));
     if (!esp32_vga_text_start(s_vga_pins)) error("VGA start failed");
+    vga_set_pin_reservation(s_vga_pins, true);
     vga_console_geometry();
 }
 
@@ -525,8 +539,10 @@ int esp32_vga_option_setter(unsigned char * line) {
             const char * msg;
             (void)vga_apply_mode(3, false, &msg);
         }
+        bool was_active = esp32_vga_text_active();
         esp32_vga_text_stop();
         vga_disable();
+        if (was_active) vga_set_pin_reservation(s_vga_pins, false);
         vga_clear_option();
         return 1;
     }
@@ -584,7 +600,13 @@ void esp32_vga_display_init(void) {
     vga_console_geometry();
 }
 
-void esp32_vga_reserve_option_pins(void) {}
+/* Runtime-init hook (shared app_main): re-mark the persisted scanout pins
+ * reserved after ExtCurrentConfig is cleared. */
+void esp32_vga_reserve_option_pins(void) {
+    int8_t pins[8];
+    if (!vga_pins_from_option(pins)) return;
+    vga_set_pin_reservation(pins, true);
+}
 
 /* ---- legacy S3 entry points still referenced by shared sources ---- */
 

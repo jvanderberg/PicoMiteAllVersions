@@ -9,7 +9,11 @@
 #define BC_TABLES_ESP32_CYD_H
 
 #define BC_MAX_CODE (10 * 1024)
-#define BC_MAX_CONSTANTS 16
+/* Offset/length entries into a shared byte pool: 48 entries + 3.5 KB of
+ * string bytes total under 4 KB upfront, inside the MODE 3 heap window.
+ * Ordinary small programs reach ~20 distinct string literals. */
+#define BC_MAX_CONSTANTS 48
+#define BC_MAX_CONST_BYTES 3584
 #define BC_MAX_SLOTS 64
 #define BC_MAX_SUBFUNS 16
 #define BC_MAX_FIXUPS 128

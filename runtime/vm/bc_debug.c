@@ -517,7 +517,7 @@ void bc_disassemble(BCCompiler * cs) {
             pc += 2;
             if (idx < cs->const_count) {
                 dbg_print("  %04X: %-16s [%d] \"%.30s\"\r\n", start, name, idx,
-                          (const char *)cs->constants[idx].data);
+                          (const char *)BC_CONST_PTR(cs, &cs->constants[idx]));
             } else {
                 dbg_print("  %04X: %-16s [%d] ???\r\n", start, name, idx);
             }

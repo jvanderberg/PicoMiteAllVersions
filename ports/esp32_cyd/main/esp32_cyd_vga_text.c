@@ -43,7 +43,7 @@ typedef struct {
     uint8_t * ch;   /* character codes */
     uint8_t * fg;   /* foreground pixel byte per cell */
     uint8_t * bg;   /* background pixel byte per cell */
-    uint8_t * at;   /* per-cell attributes (VGATXT_ATTR_*) */
+    uint8_t * at;   /* underline bitmap, 1 bit per cell (VGATXT_CELLS / 8) */
     uint8_t * font; /* glyph rows, 12 bytes per char, index 0 = first_char */
     uint8_t first_char;
     uint8_t char_count;
@@ -101,7 +101,7 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
     const uint8_t * fg = st->fg + base;
     const uint8_t * bg = st->bg + base;
     uint32_t * out = (uint32_t *)dst;
-    const uint8_t * at = st->at + base;
+    const uint8_t * at = st->at + (base >> 3); /* 1 bit per cell; rows are byte-aligned (80/8) */
     const bool cursor_row = st->cursor_enabled && st->cursor_requested &&
                             CursorTimer <= CURSOR_ON && row == st->cy &&
                             grow >= VGATXT_FONT_H - 2;
@@ -110,7 +110,7 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
         unsigned bits = 0;
         if (c >= st->first_char && c < (unsigned)(st->first_char + st->char_count))
             bits = st->font[(c - st->first_char) * VGATXT_FONT_H + grow];
-        if ((at[col] & VGATXT_ATTR_UNDERLINE) && grow == VGATXT_FONT_H - 1)
+        if (grow == VGATXT_FONT_H - 1 && (at[col >> 3] & (1u << (col & 7))))
             bits = 0xFF;
         if (cursor_row && col == st->cx) bits = 0xFF;
         uint32_t fgw = fg[col] * 0x01010101u;
@@ -124,11 +124,18 @@ static void IRAM_ATTR vgatxt_fill(int y, uint8_t * dst, void * ctx) {
 
 /* ---- terminal operations (task context) ---- */
 
+/* The underline plane is a bitmap (1 bit per cell, 80-cell rows are
+ * byte-aligned), so cell ranges clear bit by bit. */
+static void vgatxt_at_clear(int from, int count) {
+    for (int i = from; i < from + count; i++)
+        s_txt.at[i >> 3] &= (uint8_t)~(1u << (i & 7));
+}
+
 static void vgatxt_clear_cells(int from, int count) {
     memset(s_txt.ch + from, ' ', count);
     memset(s_txt.fg + from, s_txt.cur_fg, count);
     memset(s_txt.bg + from, s_txt.cur_bg, count);
-    memset(s_txt.at + from, 0, count);
+    vgatxt_at_clear(from, count);
 }
 
 /* Reverse scroll: shift everything down one row, blank the top (VT100
@@ -138,7 +145,7 @@ static void vgatxt_scroll_down(void) {
     memmove(s_txt.ch + VGATXT_COLS, s_txt.ch, keep);
     memmove(s_txt.fg + VGATXT_COLS, s_txt.fg, keep);
     memmove(s_txt.bg + VGATXT_COLS, s_txt.bg, keep);
-    memmove(s_txt.at + VGATXT_COLS, s_txt.at, keep);
+    memmove(s_txt.at + VGATXT_COLS / 8, s_txt.at, keep / 8);
     vgatxt_clear_cells(0, VGATXT_COLS);
 }
 
@@ -147,7 +154,7 @@ static void vgatxt_scroll(void) {
     memmove(s_txt.ch, s_txt.ch + VGATXT_COLS, keep);
     memmove(s_txt.fg, s_txt.fg + VGATXT_COLS, keep);
     memmove(s_txt.bg, s_txt.bg + VGATXT_COLS, keep);
-    memmove(s_txt.at, s_txt.at + VGATXT_COLS, keep);
+    memmove(s_txt.at, s_txt.at + VGATXT_COLS / 8, keep / 8);
     vgatxt_clear_cells(keep, VGATXT_COLS);
 }
 
@@ -165,7 +172,10 @@ static void vgatxt_put_glyph(uint8_t c) {
     s_txt.ch[i] = c;
     s_txt.fg[i] = s_txt.cur_fg;
     s_txt.bg[i] = s_txt.cur_bg;
-    s_txt.at[i] = s_txt.cur_attr;
+    if (s_txt.cur_attr & VGATXT_ATTR_UNDERLINE)
+        s_txt.at[i >> 3] |= (uint8_t)(1u << (i & 7));
+    else
+        s_txt.at[i >> 3] &= (uint8_t)~(1u << (i & 7));
     s_txt.cx++;
 }
 
@@ -375,7 +385,7 @@ int esp32_vga_text_start(const int8_t data_gpio[8]) {
     s_txt.ch = heap_caps_malloc(VGATXT_CELLS, caps);
     s_txt.fg = heap_caps_malloc(VGATXT_CELLS, caps);
     s_txt.bg = heap_caps_malloc(VGATXT_CELLS, caps);
-    s_txt.at = heap_caps_malloc(VGATXT_CELLS, caps);
+    s_txt.at = heap_caps_malloc(VGATXT_CELLS / 8, caps);
     s_txt.font = heap_caps_malloc((size_t)fp[3] * VGATXT_FONT_H, caps);
     if (!s_txt.ch || !s_txt.fg || !s_txt.bg || !s_txt.at || !s_txt.font) {
         vgatxt_free();

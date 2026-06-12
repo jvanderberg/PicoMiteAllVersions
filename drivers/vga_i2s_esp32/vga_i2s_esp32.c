@@ -59,9 +59,12 @@
 
 #define VGA_PIXEL_HZ 25175000L
 
-/* Visible-line buffer ring. Eight buffers = ~220 us of fill slack
- * before a stalled fill ISR shows stale lines. */
-#define VGA_I2S_RING 8
+/* Visible-line buffer ring. Four buffers = ~110 us of fill slack before
+ * a stalled fill ISR shows stale lines. The fill interrupt lives on core
+ * 1 at level 3, where nothing else runs long enough to eat that slack;
+ * the no-PSRAM boards need the other four line buffers (3.2 KB) for the
+ * Wi-Fi stack to coexist with the scanout. */
+#define VGA_I2S_RING 4
 
 /* Byte values for the constant line regions: black pixels, sync bits per
  * region. (Constant regions are all one value, so the FIFO byte swizzle

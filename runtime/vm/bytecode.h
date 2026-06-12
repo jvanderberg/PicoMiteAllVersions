@@ -573,6 +573,16 @@ typedef enum {
 #endif
 
 /*
+ * String-constant pool byte budget. Entries hold offsets into one shared
+ * byte pool, so the upfront compile-time footprint is BC_MAX_CONSTANTS
+ * small entries plus this pool, not BC_MAX_CONSTANTS * STRINGSIZE.
+ * Ports can override to balance entry count against pool bytes.
+ */
+#ifndef BC_MAX_CONST_BYTES
+#define BC_MAX_CONST_BYTES (BC_MAX_CONSTANTS * STRINGSIZE)
+#endif
+
+/*
  * Variable slot — compile-time record
  */
 typedef struct {
@@ -603,12 +613,16 @@ typedef struct {
 } BCSubFun;
 
 /*
- * String constant pool entry
+ * String constant pool entry — an offset/length pair into the compiler's
+ * shared const_pool byte buffer (each entry is NUL-terminated there).
  */
 typedef struct {
-    uint8_t data[STRINGSIZE];
+    uint32_t off;
     uint16_t len;
 } BCConstant;
+
+/* Pointer to a constant's bytes inside the shared pool. */
+#define BC_CONST_PTR(cs, c) ((cs)->const_pool + (c)->off)
 
 /*
  * Forward reference fixup
@@ -736,9 +750,12 @@ typedef struct {
     uint8_t * code;
     uint32_t code_len;
 
-    /* Constant pool (allocated: BC_MAX_CONSTANTS entries) */
+    /* Constant pool (allocated: BC_MAX_CONSTANTS entries + the shared
+     * BC_MAX_CONST_BYTES byte pool the entries point into) */
     BCConstant * constants;
     uint16_t const_count;
+    uint8_t * const_pool;
+    uint32_t const_pool_len;
 
     /* Global variable slots (allocated: BC_MAX_SLOTS entries) */
     BCSlot * slots;
