@@ -93,15 +93,15 @@
 
 #define MMBASIC_BANNER_TRAILER "ESP32 REPL.\r\n\r\n"
 
-/* 32 KB MMBasic heap while WiFi is enabled. Classic ESP32 has 520 KB of
- * internal SRAM with roughly 300 KB usable as DRAM, and the static
- * dram0_0 segment (which holds AllMemory and the variable table) is the
- * scarcest slice of it, so the heap is smaller than the S3's 48 KB.
- * MAX_PROG_SIZE follows this value (configuration.h), sizing the
- * heap-allocated program mirror in esp32_compat.c to match. Bytecode
- * compiler scratch tables allocate from the ESP-IDF internal heap, but VM
- * runtime allocations still come from this MMBasic heap. */
-#define HAL_PORT_HEAP_MEMORY_SIZE (32 * 1024)
+/* 56 KB MMBasic heap. Classic ESP32 has 520 KB of internal SRAM with
+ * roughly 300 KB usable as DRAM, and the static dram0_0 segment (which
+ * holds AllMemory and the variable table) is the scarcest slice of it.
+ * MAX_PROG_SIZE is pinned separately below so growing the heap does not
+ * move the program mirror, the mmslots flash layout, or the saved-option
+ * validation. Bytecode compiler scratch tables allocate from the ESP-IDF
+ * internal heap, but VM runtime allocations come from this heap. */
+#define HAL_PORT_HEAP_MEMORY_SIZE (56 * 1024)
+#define MAX_PROG_SIZE (32 * 1024)
 
 /* Per-port memory + clock + MMBasic-table values. The flash offsets remain
  * the legacy 1 MB values because FileIO.c still computes absolute offsets;

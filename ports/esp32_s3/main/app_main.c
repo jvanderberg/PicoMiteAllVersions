@@ -105,7 +105,13 @@ static void esp32_keyboard_mode_recovery(void) {
     MMPrintString("\r\nUSB keyboard not enumerated yet; staying in USB KEYBOARD mode\r\n");
 }
 
-void app_main(void) {
+/* The interpreter runs on its own task whose stack comes from the
+ * post-scheduler heap (the large D/IRAM region). The IDF main task only
+ * spawns it and exits, so its stack — allocated from the small early-boot
+ * DRAM pool before the big regions join the heap — can stay tiny
+ * (CONFIG_ESP_MAIN_TASK_STACK_SIZE), leaving that pool to .bss. */
+static void mmbasic_main_task(void * arg) {
+    (void)arg;
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
     /* Crash-recovery boot. A crash-class reset carries the counter
@@ -271,4 +277,10 @@ void app_main(void) {
     /* MMBasic_RunPromptLoop is its own setjmp loop — it longjmps back
      * to its own `mark` on error / Ctrl-C / END / NEW. We don't return. */
     mmbasic_runtime_enter_repl(NULL, 0);
+}
+
+void app_main(void) {
+    xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", 16384, NULL, 1,
+                            NULL, 0);
+    /* Returning lets the IDF delete the main task. */
 }

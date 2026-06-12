@@ -10,7 +10,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
 
 # --- Stack ------------------------------------------------------------------
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# The IDF main task only spawns the MMBasic task (whose 16 KB stack comes
+# from the post-scheduler heap) and exits; its own stack draws on the
+# small early-boot DRAM pool, which .bss otherwise needs.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 
 # --- CPU --------------------------------------------------------------------
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
