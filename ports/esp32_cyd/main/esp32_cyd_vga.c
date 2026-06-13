@@ -618,6 +618,12 @@ uint8_t * vga_lcdcam_s3_framebuffer(void) {
     return NULL;
 }
 
+/* The classic-ESP32 VGA path (I2S) never holds the LCD_CAM scanout's
+ * internal reservation, so the MQTT-over-TLS memory gate never trips here. */
+bool vga_lcdcam_s3_scanout_reserved(void) {
+    return false;
+}
+
 int esp32_packed_vga_active(void) {
     return esp32_vga_text_active() && s_vga_mode == 2 && s_gfx_fb != NULL;
 }

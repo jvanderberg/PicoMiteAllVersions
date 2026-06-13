@@ -21,6 +21,7 @@ typedef enum {
     HAL_NET_UNSUPPORTED = -2,
     HAL_NET_TIMEOUT = -3,
     HAL_NET_WOULD_BLOCK = -4,
+    HAL_NET_NOMEM = -5,
 } hal_net_result_t;
 
 typedef uint16_t hal_net_tcp_server_t;

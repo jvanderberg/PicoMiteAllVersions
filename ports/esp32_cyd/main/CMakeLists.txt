@@ -18,9 +18,10 @@ list(REMOVE_ITEM PORT_LOCAL_SRCS
     # No native USB: no role switching, no host keyboard.
     ${ESP32_S3_MAIN_DIR}/esp32_usb_role.c
     ${ESP32_S3_MAIN_DIR}/esp32_usb_keyboard.c
-    # No LCD_CAM peripheral: no VGA scanout.
+    # No LCD_CAM peripheral: no VGA scanout (nor the esp_lcd RGB fork).
     ${ESP32_S3_MAIN_DIR}/esp32_vga.c
     ${REPO_ROOT}/drivers/vga_lcdcam_s3/vga_lcdcam_s3.c
+    ${REPO_ROOT}/drivers/vga_lcdcam_s3/vga_lcd_rgb_320d.c
     # S3 GPIO map -> classic 0..39 map.
     ${ESP32_S3_MAIN_DIR}/esp32_pin_tables.c
     # S3 register-level I2C slave ISR -> unsupported on classic (the

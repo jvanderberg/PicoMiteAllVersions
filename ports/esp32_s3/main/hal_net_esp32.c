@@ -32,6 +32,7 @@
 #include "nvs_flash.h"
 
 #include "hal/hal_net.h"
+#include "vga_lcdcam_s3.h" /* vga_lcdcam_s3_scanout_reserved() */
 
 #define ESP32_NET_MAX_TCP_SERVERS 4
 #define ESP32_NET_MAX_TCP_CONNS 12
@@ -1029,6 +1030,11 @@ int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
         .broker.address.transport = tls ? MQTT_TRANSPORT_OVER_SSL
                                         : MQTT_TRANSPORT_OVER_TCP,
         .broker.verification.certificate = tls && tls_ca_pem ? tls_ca_pem : NULL,
+        /* PEM length must include the terminating NUL — the same +1 the
+         * esp-tls client path uses. Without it esp-mqtt's mbedTLS PEM
+         * parse rejects the CA and the handshake fails to open. */
+        .broker.verification.certificate_len =
+            tls && tls_ca_pem ? (tls_ca_len + 1) : 0,
         .broker.verification.crt_bundle_attach =
             tls && !tls_ca_pem ? esp_crt_bundle_attach : NULL,
         .credentials.username = *slot->user ? slot->user : NULL,
@@ -1039,6 +1045,20 @@ int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
         .session.keepalive = 100,
     };
 
+    /* MQTT-over-TLS spawns its own task and runs the mbedTLS handshake
+     * from internal/DMA SRAM alongside Wi-Fi. The native VGA scanout holds
+     * 76.8 KB of that SRAM for the life of the session, leaving too little
+     * for the TLS transport to come up — it fails late with a socket
+     * select() timeout and a flood of Wi-Fi buffer warnings. Detect the
+     * unwinnable case up front and fail cleanly instead. Non-TLS MQTT,
+     * TLS HTTP, and TLS streaming all fit and are unaffected. */
+    if (tls && vga_lcdcam_s3_scanout_reserved()) {
+        ESP_LOGE("hal_net",
+                 "MQTT-over-TLS needs internal RAM the VGA scanout reserves; "
+                 "OPTION VGA DISABLE (reboot) to use it");
+        memset(slot, 0, sizeof *slot);
+        return HAL_NET_NOMEM;
+    }
     slot->client = esp_mqtt_client_init(&cfg);
     if (!slot->client) {
         memset(slot, 0, sizeof *slot);

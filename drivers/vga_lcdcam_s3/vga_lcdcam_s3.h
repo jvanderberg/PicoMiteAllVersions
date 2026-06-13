@@ -72,6 +72,11 @@ bool vga_lcdcam_s3_init(const vga_lcdcam_pins_t * pins, uint8_t ** fb_out);
 void vga_lcdcam_s3_reserve_scanout(void);
 void vga_lcdcam_s3_release_scanout(void);
 
+/* True while the 76.8 KB native-scanout reservation is held. The internal
+ * SRAM it occupies is unavailable to other heavy consumers — notably
+ * esp-mqtt's TLS transport, which then cannot allocate alongside Wi-Fi. */
+bool vga_lcdcam_s3_scanout_reserved(void);
+
 /* The live framebuffer pointer, or NULL if init has not succeeded. */
 uint8_t * vga_lcdcam_s3_framebuffer(void);
 

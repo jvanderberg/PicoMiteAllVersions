@@ -74,6 +74,12 @@ while IFS= read -r -d '' file; do
         third_party/* | ports/host_native/vendor/*)
             continue
             ;;
+        drivers/vga_lcdcam_s3/vga_lcd_rgb_320d.c)
+            # Verbatim fork of ESP-IDF's esp_lcd RGB panel driver; kept in
+            # upstream style so diffs against IDF stay legible. Not ours to
+            # restyle — same treatment as third_party.
+            continue
+            ;;
     esac
     found=1
     "$clang_format" --dry-run --Werror "$file"

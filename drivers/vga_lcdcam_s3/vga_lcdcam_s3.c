@@ -346,6 +346,10 @@ void vga_lcdcam_s3_release_scanout(void) {
     vga320d_reserved_fb_size = 0;
 }
 
+bool vga_lcdcam_s3_scanout_reserved(void) {
+    return vga320d_reserved_fb != NULL;
+}
+
 /* 76.8 KB contiguous internal SRAM only exists before the FreeRTOS
  * scheduler starts: the main/idle/timer task stacks land mid-region and
  * pin the largest free block at ~49 KB forever after (a static .bss

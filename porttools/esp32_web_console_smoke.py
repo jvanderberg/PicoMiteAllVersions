@@ -491,6 +491,28 @@ def run_editor_scroll_stress(host: str, port: int, serial_port: str,
         basic.sync(timeout=timeout)
 
 
+def prepare_web_console(serial_port: str, baud: int, timeout: float) -> bool:
+    """Precondition the device for the web-console smoke:
+      - enable OPTION WEB CONSOLE ON (the HTTP/WS server only listens when
+        it is set), rebooting to apply if it was off;
+    Returns True when the framebuffer mirror is available. It is NOT
+    available while VGA owns the draw path: drawing then lands in the VGA
+    scanout buffer, not the web-console mirror, so no FRMB frames are sent.
+    The mirror-dependent sequences must be skipped in that case."""
+    with BasicSerial(serial_port, baud) as basic:
+        basic.sync(timeout=max(timeout, 15.0))
+        opts = basic.command("OPTION LIST", timeout=timeout).clean_text
+        vga = "OPTION VGA" in opts
+        if "WEB CONSOLE ON" not in opts:
+            print("web console: enabling OPTION WEB CONSOLE ON (reboot to apply)")
+            basic.command("OPTION WEB CONSOLE ON", timeout=timeout, check_error=False)
+            basic.reset_app()
+            basic.read_for(13.0)
+            basic.sync(timeout=max(timeout, 15.0))
+            basic.command("WEB CONNECT", timeout=45.0, check_error=False)
+        return not vga
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", required=True, help="ESP32 IP address")
@@ -514,6 +536,16 @@ def main() -> int:
         help="create a long file, scroll it in EDIT over WebSocket, and validate frame boundaries",
     )
     args = parser.parse_args()
+
+    mirror_available = prepare_web_console(args.serial_port, args.baud, args.timeout)
+    if not mirror_available and (args.display_sequence or args.keyboard_sequence
+                                 or args.editor_scroll_stress):
+        print("web console: VGA owns the draw path — framebuffer mirror is "
+              "unavailable; skipping display/keyboard/editor sequences "
+              "(HTTP + WebSocket handshake still verified)")
+        args.display_sequence = False
+        args.keyboard_sequence = False
+        args.editor_scroll_stress = False
 
     if args.display_sequence:
         run_display_sequence(args.serial_port, args.baud, args.timeout)
