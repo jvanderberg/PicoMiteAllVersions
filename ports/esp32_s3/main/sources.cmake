@@ -43,6 +43,9 @@ idf_component_register(
         ${REPO_ROOT}/drivers/spi_lcd
         ${REPO_ROOT}/drivers/ssd1963
         ${REPO_ROOT}/drivers/vga_lcdcam_s3
+        # vga_lcd_rgb_320d.c is a fork of esp_lcd's RGB panel driver and
+        # needs the component's private header (esp_lcd_common.h).
+        $ENV{IDF_PATH}/components/esp_lcd/priv_include
         ${REPO_ROOT}
         ${REPO_ROOT}/third_party/aes
         ${REPO_ROOT}/third_party/cjson

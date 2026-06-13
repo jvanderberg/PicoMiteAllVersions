@@ -30,7 +30,9 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
-#include "esp_system.h" /* esp_restart */
+#include "esp_log.h"
+#include "esp_memory_utils.h" /* esp_ptr_internal */
+#include "esp_system.h"       /* esp_restart */
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
@@ -79,6 +81,7 @@ extern void ApplyDefaultConsoleColours(void);
 
 static uint8_t * s_vga_scanout_fb = NULL;
 static uint8_t * s_vga_logical_fb = NULL;
+static bool s_vga_logical_owned = false; /* heap_caps (ours) vs 320d panel's */
 static int s_vga_mode = ESP32_VGA_MODE_640X480;
 
 static uint8_t vga_sync_flags(void) {
@@ -312,8 +315,15 @@ static void esp32_vga_bind_rgb332_draw(void) {
 }
 
 static uint8_t * esp32_vga_alloc_logical_fb(size_t bytes) {
-    uint8_t * p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    /* Internal SRAM first: the bounce-fill ISR reads this buffer 60
+     * times a second, and an internal-RAM source takes PSRAM out of the
+     * scanout path entirely. */
+    uint8_t * p = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!p) p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!p) p = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+    if (p)
+        ESP_LOGI("esp32_vga", "logical fb: %u bytes, %s", (unsigned)bytes,
+                 esp_ptr_internal(p) ? "internal SRAM" : "PSRAM");
     return p;
 }
 
@@ -338,9 +348,15 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
         mode != ESP32_VGA_MODE_320X240_DITHER) return 0;
 
     if (mode == ESP32_VGA_MODE_640X480) {
+        /* Back to the console panel first: a panel-owned 320d buffer
+         * must not outlive its panel. The 640 frame buffer is also
+         * panel-owned and changes across rebuilds — re-read it. */
+        vga_lcdcam_s3_enter_640();
+        s_vga_scanout_fb = vga_lcdcam_s3_framebuffer();
         if (s_vga_logical_fb) {
-            heap_caps_free(s_vga_logical_fb);
+            if (s_vga_logical_owned) heap_caps_free(s_vga_logical_fb);
             s_vga_logical_fb = NULL;
+            s_vga_logical_owned = false;
         }
         HRes = DisplayHRes = VGA_LCDCAM_HRES;
         VRes = DisplayVRes = VGA_LCDCAM_VRES;
@@ -353,10 +369,32 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
         FrameBuf = LayerBuf = SecondFrame = SecondLayer = NULL;
     } else {
         const size_t bytes = ESP32_VGA_MODE_320X240_W * ESP32_VGA_MODE_320X240_H;
-        if (!s_vga_logical_fb) {
-            s_vga_logical_fb = esp32_vga_alloc_logical_fb(bytes);
-            if (!s_vga_logical_fb) error("Not enough memory");
-            clear = true;
+        /* Native line-doubled panel for plain 320x240: the buffer it
+         * returns is DMA-scanned with no CPU in the path. Dither stays
+         * on the 640 panel's bounce-fill expansion. */
+        uint8_t * native_fb =
+            (mode == ESP32_VGA_MODE_320X240) ? vga_lcdcam_s3_enter_320() : NULL;
+        if (mode == ESP32_VGA_MODE_320X240_DITHER || !native_fb) {
+            /* Present-fallback runs on the 640 panel. */
+            vga_lcdcam_s3_enter_640();
+            s_vga_scanout_fb = vga_lcdcam_s3_framebuffer();
+        }
+        if (native_fb) {
+            if (s_vga_logical_fb && s_vga_logical_owned) heap_caps_free(s_vga_logical_fb);
+            s_vga_logical_fb = native_fb;
+            s_vga_logical_owned = false;
+            clear = true; /* fresh panel buffer */
+        } else {
+            if (s_vga_logical_fb && !s_vga_logical_owned) {
+                /* Previous buffer was panel-owned and died with it. */
+                s_vga_logical_fb = NULL;
+            }
+            if (!s_vga_logical_fb) {
+                s_vga_logical_fb = esp32_vga_alloc_logical_fb(bytes);
+                if (!s_vga_logical_fb) error("Not enough memory");
+                s_vga_logical_owned = true;
+                clear = true;
+            }
         }
         HRes = DisplayHRes = ESP32_VGA_MODE_320X240_W;
         VRes = DisplayVRes = ESP32_VGA_MODE_320X240_H;
@@ -391,7 +429,12 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
 }
 
 void esp32_vga_display_init(void) {
-    if (!vga_configured()) return;
+    if (!vga_configured()) {
+        /* VGA is off for this session: return the boot-reserved 320d
+         * scanout buffer (76.8 KB internal) to the heap. */
+        vga_lcdcam_s3_release_scanout();
+        return;
+    }
     if (vga_lcdcam_s3_active()) return;
 
     vga_lcdcam_pins_t pins;

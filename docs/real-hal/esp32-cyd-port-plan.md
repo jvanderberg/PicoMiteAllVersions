@@ -67,6 +67,22 @@ abort that logs need/free/largest. With that, the S3 passes
 and the PSRAM march; `MM.INFO$(ID)` reports the correct chip via
 `esp_chip_info()` on both chips.
 
+S3 native line-doubled scanout 2026-06-12 (transplanted from
+`worktree-tilemap-game-engine`): MODE 2 (320x240) on the S3 now DMA-scans a
+boot-reserved internal frame buffer through per-line doubled descriptors —
+zero CPU and zero PSRAM in the path, the same stability property as the
+classic-ESP32 I2S design. Two integration fixes were needed on this branch:
+the interpreter-task split starved the CORE-init scanout reservation's
+companion (the 32 KB task stack had no contiguous block left and
+`xTaskCreatePinnedToCore` failed silently — the interpreter stack is now
+carved at CORE init right after the frame buffer, via
+`xTaskCreateStaticPinnedToCore`, with loud logging), and the fork's
+transient descriptor-mount config array now prefers PSRAM. Hardware
+validation: reservation lands internal at every boot, 5-way mode cycling
+clean, 60 s of sustained drawing + Wi-Fi + ping flood (26.8k primitives)
+with clean abort. The PSRAM-native path stays disabled (hard-wedge);
+640x480 remains on the bounce path.
+
 Plan baseline: re-evaluated 2026-06-11 against `main` @ `a1ad0ed`
 — the SDK-compat retirement, SPI-LCD generalization Tracks A and B, the ESP32
 runtime-service gate, and the Wi-Fi SPIRAM allocator have all merged. The only

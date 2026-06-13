@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "esp_private/startup_internal.h" /* ESP_SYSTEM_INIT_FN */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -279,8 +280,35 @@ static void mmbasic_main_task(void * arg) {
     mmbasic_runtime_enter_repl(NULL, 0);
 }
 
+/* The interpreter task stack is carved at CORE init, immediately after
+ * the 320d scanout reservation (priority 200): both blocks need the big
+ * contiguous SRAM region, and only before the FreeRTOS task stacks land
+ * mid-region can the heap supply 76.8 KB + 32 KB side by side. The TCB
+ * is plain .bss. */
+#define MMBASIC_TASK_STACK_BYTES 32768
+static StaticTask_t s_mmbasic_tcb;
+static StackType_t * s_mmbasic_stack;
+
+ESP_SYSTEM_INIT_FN(mmbasic_stack_carve, CORE, BIT(0), 201) {
+    s_mmbasic_stack = (StackType_t *)heap_caps_malloc(
+        MMBASIC_TASK_STACK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_EARLY_LOGI("mmbasic", "interpreter stack carve: %s",
+                   s_mmbasic_stack ? "internal SRAM" : "FAILED (late create)");
+    return ESP_OK;
+}
+
 void app_main(void) {
-    xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", 32768, NULL, 1,
-                            NULL, 0);
+    TaskHandle_t task = NULL;
+    if (s_mmbasic_stack)
+        task = xTaskCreateStaticPinnedToCore(mmbasic_main_task, "mmbasic",
+                                             MMBASIC_TASK_STACK_BYTES, NULL, 1,
+                                             s_mmbasic_stack, &s_mmbasic_tcb, 0);
+    if (!task &&
+        xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", MMBASIC_TASK_STACK_BYTES,
+                                NULL, 1, NULL, 0) != pdPASS) {
+        /* A silent return here looks like a dead board: say why. */
+        ESP_LOGE("mmbasic", "interpreter task create FAILED (need %u contiguous internal)",
+                 (unsigned)MMBASIC_TASK_STACK_BYTES);
+    }
     /* Returning lets the IDF delete the main task. */
 }

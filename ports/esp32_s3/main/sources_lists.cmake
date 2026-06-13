@@ -202,6 +202,7 @@ set(PORT_LOCAL_SRCS
     esp32_fastgfx.c                         # FASTGFX for ESP32 VGA scanout and Freenove ILI9341
     esp32_vga.c                             # OPTION VGA parser + LCD_CAM display bring-up
     ${REPO_ROOT}/drivers/vga_lcdcam_s3/vga_lcdcam_s3.c  # ESP32-S3 LCD_CAM VGA scanout (RGB332)
+    ${REPO_ROOT}/drivers/vga_lcdcam_s3/vga_lcd_rgb_320d.c # esp_lcd RGB fork: line-doubled 320-wide scanout
     ${REPO_ROOT}/drivers/draw_rgb332/draw_rgb332.c      # shared RGB332 draw primitives
     hal_time_esp32.c
     hal_random_esp32.c
