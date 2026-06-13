@@ -83,6 +83,41 @@ clean, 60 s of sustained drawing + Wi-Fi + ping flood (26.8k primitives)
 with clean abort. The PSRAM-native path stays disabled (hard-wedge);
 640x480 remains on the bounce path.
 
+Full-battery sweep 2026-06-13 across three boards, which established the
+classic chip's **memory-partition model** and cleared the way for real-CYD
+bring-up:
+
+- **Classic ESP32 devkit (no PSRAM):** core is solid — REPL, LittleFS file
+  I/O, interpreter `RUN`/program lifecycle, and the full non-TLS network
+  stack (TCP/UDP/telnet/NTP/MQTT) all pass, and every limit is hit
+  *gracefully* (clean errors, no crashes/wedges). But with Wi-Fi associated
+  the ~48 KB heap can't also fund `FRUN`'s compiler tables, a graphics-mode
+  framebuffer, or the web-console mirror — so it's **Wi-Fi OR
+  graphics/FRUN/web-console, not both**, and TLS is unsupported (no PSRAM for
+  the handshake; MQTT SSL transport compiled out). These are resource
+  ceilings, not defects. TFTP can time out while a VGA console runs (scanout
+  ISR ~4× flash cost).
+- **ESP32-S3 Freenove ILI9341 (6 MB PSRAM):** the clean confirmation —
+  *everything* passes: `FRUN`, MODE-graphics, network 36/36 incl. TFTP,
+  MQTT-over-TLS, web console. So the classic's gaps are purely the no-PSRAM
+  budget, not the shared code.
+- **Smoke infra hardened:** `esp32_tls_scan_smoke.py` is VGA-aware
+  (`--vga auto|off|on|both`: MQTT-TLS expected to pass with VGA off, fail
+  cleanly with it on); `esp32_web_console_smoke.py` now snapshots and
+  **restores** the WEB CONSOLE option (it blanks a local LCD/VGA while on —
+  found the hard way on the Freenove). An attempted I2C master↔slave loopback
+  smoke was dropped: the bench-test pins (GP14/GP42) aren't on the CYD/
+  Freenove headers, and GP1/2/3 are analog-only, so it can't be wired there.
+
+**Real CYD bring-up is the next step.** Everything Phases 5-7 build on is now
+validated on shipping silicon: the shared SPI-LCD panel core (ILI9341 init,
+address windows, MADCTL) is exercised on the Freenove's ILI9341; XPT2046 is
+the CYD's resistive-touch counterpart to the Freenove's FT6336 capacitive
+path; SD-over-SPI shares the proven `esp32_sd_diskio.c`. The open question
+the real board answers is the no-PSRAM display path — a direct-to-panel
+presentation with no permanent framebuffer (the RP2040-Wi-Fi shape), since
+the classic CYD has the same ~48 KB budget proven above.
+
 Plan baseline: re-evaluated 2026-06-11 against `main` @ `a1ad0ed`
 — the SDK-compat retirement, SPI-LCD generalization Tracks A and B, the ESP32
 runtime-service gate, and the Wi-Fi SPIRAM allocator have all merged. The only
@@ -484,8 +519,12 @@ Two hardware stages:
    `GENERIC` profile), internal-flash LittleFS from Phase 7, and the Phase 8
    Wi-Fi/network baseline. Memory measurements for the Phase 9 policy start
    here: this board is the worst case the port must boot on.
-2. **CYD ESP32-2432S028R (expected 2026-06-12)** — adds Phases 5-6 (ILI9341,
-   XPT2046), the `CYD` profile, and SD.
+2. **CYD ESP32-2432S028R (next up, 2026-06-13)** — adds Phases 5-6 (ILI9341,
+   XPT2046), the `CYD` profile, and SD. The shared pieces are now validated
+   on shipping S3 silicon (Freenove ILI9341 + SD-over-SPI), so the real
+   new work is the no-PSRAM direct-to-panel display path: present drawing
+   straight to the ILI9341 with no permanent framebuffer, within the ~48 KB
+   heap the classic devkit proved is the budget.
 
 Working the storage and network phases ahead of the display phases inverts
 the written phase order; that is fine — the phases were ordered by

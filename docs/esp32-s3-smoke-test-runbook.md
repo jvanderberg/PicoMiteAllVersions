@@ -387,20 +387,9 @@ $PY porttools/esp32_fs_vm_smoke.py network \
 
 ### Tier 7: Web Console
 
-Enable and test the reserved web console endpoint:
-
-```sh
-$PY porttools/basic_serial.py \
-  --port "$PORT" \
-  --timeout 10 \
-  --long-timeout 60 \
-  --cmd 'WEB CONNECT "SSID","PASSWORD"' \
-  --cmd 'OPTION WEB CONSOLE ON' \
-  --cmd 'PRINT "IP=" + MM.INFO$(IP ADDRESS)' \
-  --cmd 'PRINT "PORT=" + STR$(MM.INFO(TCP PORT))'
-```
-
-Then use the printed IP address:
+The smoke manages the precondition itself: it enables `OPTION WEB CONSOLE ON`
+(rebooting to apply if it was off) and **restores the prior state on exit**,
+so it never leaves the option flipped.
 
 ```sh
 $PY porttools/esp32_web_console_smoke.py \
@@ -412,8 +401,21 @@ $PY porttools/esp32_web_console_smoke.py \
   --editor-scroll-stress
 ```
 
-If the web console smoke reports connection refused, first verify
-`MM.INFO$(IP ADDRESS)` is non-empty and `OPTION WEB CONSOLE ON` has been set.
+Two hardware facts drive the expectations:
+
+- **The web console needs PSRAM.** The display-mirror buffer is large; on a
+  no-PSRAM board it can't allocate, the HTTP/WS server never opens, and the
+  smoke sees connection refused. Skip this tier on no-PSRAM boards.
+- **Web console and a physical display console are mutually exclusive.**
+  Enabling the web console routes the display to the browser mirror and
+  blanks a local LCD/VGA screen while it is on. The smoke restores the option
+  afterward so the local screen returns — but expect the LCD to go dark
+  during the run. On a VGA board the mirror gets no frames (VGA owns the draw
+  path), so the smoke skips the display/keyboard/editor sequences and
+  verifies only HTTP + the WebSocket handshake.
+
+If the smoke reports connection refused on a PSRAM board, verify
+`MM.INFO$(IP ADDRESS)` is non-empty (Wi-Fi associated).
 
 ### Tier 8: LCD_CAM/VGA Fixture
 
@@ -461,7 +463,35 @@ LCD_CAM/VGA board:
 ./buildesp32.sh esp32_s3
 idf.py -C ports/esp32_s3 -p "$PORT" flash
 $PY porttools/esp32_fs_vm_smoke.py all --port "$PORT" --long-timeout 60
+# VGA-aware: cycles VGA off (MQTT-TLS must pass) then on (must fail cleanly
+# with "Not enough memory"), restoring the saved VGA config.
+$PY porttools/esp32_tls_scan_smoke.py --port "$PORT" --vga both --long-timeout 90 --connect-command 'WEB CONNECT "SSID","PASSWORD"'
 $PY porttools/esp32_lcdcam_vga_smoke.py --port "$PORT" --long-timeout 180
+```
+
+Classic ESP32 (no PSRAM, e.g. CYD-class devkit — built from `esp32_cyd`):
+
+The classic chip is **memory-partitioned**: with Wi-Fi associated, the ~48 KB
+heap cannot also satisfy `FRUN`'s compiler tables, a graphics-mode
+framebuffer, or the web-console mirror — and there is no PSRAM to spill into.
+So networking and graphics/FRUN are tested in **separate Wi-Fi states**, and
+several features are simply unavailable. Expectations:
+
+- TLS / MQTT-over-TLS: **unsupported** (no PSRAM for the handshake; the MQTT
+  SSL transport is compiled out). Do not run `esp32_tls_scan_smoke.py`.
+- Web console: **unavailable** (mirror buffer won't fit). Skip Tier 7.
+- `MODE 1/2` graphics and `FRUN`: only with **Wi-Fi off** (documented Wi-Fi↔
+  graphics mutual exclusion; `FRUN` compiler alloc also needs the heap).
+- TFTP can time out while a VGA console is active (the scanout ISR adds ~4× to
+  flash-write cost); other network protocols are unaffected.
+
+```sh
+./buildesp32.sh esp32_cyd
+# Phase A — networking, Wi-Fi on (no graphics/FRUN, no TLS):
+$PY porttools/network_conformance.py all --port "$PORT" --connect-command 'WEB CONNECT "SSID","PASSWORD"'
+$PY porttools/esp32_tcp_smoke.py --port "$PORT" --host <mac-ip>
+# Phase B — FRUN + graphics, Wi-Fi off (clear OPTION WIFI, reboot first):
+$PY porttools/esp32_fs_vm_smoke.py info fs program vm flash gpio --port "$PORT" --long-timeout 120
 ```
 
 ## Interpreting Failures

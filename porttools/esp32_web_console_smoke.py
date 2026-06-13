@@ -491,26 +491,55 @@ def run_editor_scroll_stress(host: str, port: int, serial_port: str,
         basic.sync(timeout=timeout)
 
 
-def prepare_web_console(serial_port: str, baud: int, timeout: float) -> bool:
-    """Precondition the device for the web-console smoke:
-      - enable OPTION WEB CONSOLE ON (the HTTP/WS server only listens when
-        it is set), rebooting to apply if it was off;
-    Returns True when the framebuffer mirror is available. It is NOT
-    available while VGA owns the draw path: drawing then lands in the VGA
-    scanout buffer, not the web-console mirror, so no FRMB frames are sent.
-    The mirror-dependent sequences must be skipped in that case."""
+def prepare_web_console(serial_port: str, baud: int, timeout: float):
+    """Precondition the device and report state for clean restore.
+
+    The HTTP/WS server only listens when OPTION WEB CONSOLE is ON, so enable
+    it (reboot to apply) if it was off. CAUTION: on the S3 the web console and
+    a physical display console are mutually exclusive — enabling the web
+    console routes the display to the browser mirror and blanks a local LCD or
+    VGA screen. The caller must restore the prior state so a local display
+    isn't left dark.
+
+    Returns (mirror_available, was_on, has_local_display):
+      mirror_available  - False while VGA owns the draw path (FRMB mirror gets
+                          no frames), so mirror-dependent sequences are skipped.
+      was_on            - whether WEB CONSOLE was already ON (if not, we enabled
+                          it and the caller must turn it back off).
+      has_local_display - whether a physical display console (LCDPANEL/VGA) is
+                          configured, i.e. enabling the web console blanked it.
+    """
     with BasicSerial(serial_port, baud) as basic:
         basic.sync(timeout=max(timeout, 15.0))
         opts = basic.command("OPTION LIST", timeout=timeout).clean_text
         vga = "OPTION VGA" in opts
-        if "WEB CONSOLE ON" not in opts:
-            print("web console: enabling OPTION WEB CONSOLE ON (reboot to apply)")
+        has_local_display = vga or "OPTION LCDPANEL" in opts
+        was_on = "WEB CONSOLE ON" in opts
+        if not was_on:
+            if has_local_display:
+                print("web console: enabling OPTION WEB CONSOLE ON — this blanks the "
+                      "local display while active; will restore it afterward")
+            else:
+                print("web console: enabling OPTION WEB CONSOLE ON (reboot to apply)")
             basic.command("OPTION WEB CONSOLE ON", timeout=timeout, check_error=False)
             basic.reset_app()
             basic.read_for(13.0)
             basic.sync(timeout=max(timeout, 15.0))
             basic.command("WEB CONNECT", timeout=45.0, check_error=False)
-        return not vga
+        return (not vga), was_on, has_local_display
+
+
+def restore_web_console_off(serial_port: str, baud: int, timeout: float) -> None:
+    """Undo a temporary OPTION WEB CONSOLE ON: disable + reboot so a local
+    display console (LCD/VGA) is reactivated. Used in a finally so the board
+    is left as it was found."""
+    print("web console: restoring OPTION WEB CONSOLE OFF (reactivating local display)")
+    with BasicSerial(serial_port, baud) as basic:
+        basic.sync(timeout=max(timeout, 15.0))
+        basic.command("OPTION WEB CONSOLE OFF", timeout=timeout, check_error=False)
+        basic.reset_app()
+        basic.read_for(13.0)
+        basic.sync(timeout=max(timeout, 15.0))
 
 
 def main() -> int:
@@ -537,7 +566,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    mirror_available = prepare_web_console(args.serial_port, args.baud, args.timeout)
+    mirror_available, was_on, _ = prepare_web_console(
+        args.serial_port, args.baud, args.timeout)
     if not mirror_available and (args.display_sequence or args.keyboard_sequence
                                  or args.editor_scroll_stress):
         print("web console: VGA owns the draw path — framebuffer mirror is "
@@ -547,20 +577,26 @@ def main() -> int:
         args.keyboard_sequence = False
         args.editor_scroll_stress = False
 
-    if args.display_sequence:
-        run_display_sequence(args.serial_port, args.baud, args.timeout)
-    check_http(args.host, args.port, "/__web_console/", b"MMBasic Web Console", args.timeout)
-    check_http(args.host, args.port, "/__web_console/app.js", b"/__web_console/ws", args.timeout)
-    validated_websocket = False
-    if args.display_sequence:
-        websocket_smoke(args.host, args.port, args.timeout, True)
-        validated_websocket = True
-    if args.keyboard_sequence:
-        run_keyboard_sequence(args.host, args.port, args.serial_port, args.baud, args.timeout)
-    if args.editor_scroll_stress:
-        run_editor_scroll_stress(args.host, args.port, args.serial_port, args.baud, args.timeout)
-    if not validated_websocket:
-        websocket_smoke(args.host, args.port, args.timeout, False)
+    try:
+        if args.display_sequence:
+            run_display_sequence(args.serial_port, args.baud, args.timeout)
+        check_http(args.host, args.port, "/__web_console/", b"MMBasic Web Console", args.timeout)
+        check_http(args.host, args.port, "/__web_console/app.js", b"/__web_console/ws", args.timeout)
+        validated_websocket = False
+        if args.display_sequence:
+            websocket_smoke(args.host, args.port, args.timeout, True)
+            validated_websocket = True
+        if args.keyboard_sequence:
+            run_keyboard_sequence(args.host, args.port, args.serial_port, args.baud, args.timeout)
+        if args.editor_scroll_stress:
+            run_editor_scroll_stress(args.host, args.port, args.serial_port, args.baud, args.timeout)
+        if not validated_websocket:
+            websocket_smoke(args.host, args.port, args.timeout, False)
+    finally:
+        # Restore the prior state: if we turned WEB CONSOLE on for the test,
+        # turn it back off so a local LCD/VGA console isn't left blanked.
+        if not was_on:
+            restore_web_console_off(args.serial_port, args.baud, args.timeout)
     print("esp32_web_console_smoke: PASS")
     return 0
 
