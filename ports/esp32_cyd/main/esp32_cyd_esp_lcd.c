@@ -17,6 +17,7 @@
 
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
@@ -34,9 +35,8 @@
 #define LCD_W 320
 #define LCD_H 240
 #define LCD_SPI_HOST SPI3_HOST
-/* esp_lcd drives writes at this clock. The CYD's matrix-routed MISO can't be
- * read reliably at 40 MHz (TFT_eSPI reads these at 20 MHz). */
-#define LCD_SPI_HZ 20000000
+/* Writes only: readback is disabled, so the MISO timing limits do not apply. */
+#define LCD_SPI_HZ 40000000
 /* Readback is intentionally disabled on CYD. A second SPI device for RAMRD can
  * leave the shared bus/DC/CS state in a form that starves the esp_lcd write
  * device, which presents as a solid white panel. */
@@ -44,18 +44,21 @@
 #define LCD_RD_INPUT_DELAY_NS 80
 #define LCD_CASET 0x2A
 #define LCD_PASET 0x2B
+#define LCD_RAMWR 0x2C
 #define LCD_RAMRD 0x2E
 #define SCRATCH_PX (LCD_W * 16) /* tile draws/reads through this many pixels */
 
 static const char * TAG = "esp_lcd";
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
+static spi_device_handle_t s_lcd; /* fast write device used after esp_lcd init */
 static spi_device_handle_t s_rd; /* NULL: readback disabled on CYD */
 static int s_dc = -1;            /* DC GPIO, toggled manually around RAMRD */
+static int s_cs = -1;
 static int s_w = LCD_W;
 static int s_h = LCD_H;
 static int s_panel_type = ST7789B;
-static uint16_t * s_scratch;  /* DMA scratch, SCRATCH_PX RGB565 pixels */
+static uint8_t * s_scratch;   /* DMA scratch, SCRATCH_PX RGB565 pixels */
 static uint8_t * s_rdbuf;     /* DMA read scratch, 1 dummy + SCRATCH_PX*3 */
 
 extern volatile int DISPLAY_TYPE;
@@ -63,12 +66,16 @@ extern unsigned char OptionConsole;
 extern const int colours[16];
 extern int RGB121map[16];
 
-/* esp_lcd ships RGB565 LSB-first; the panel wants it MSB-first, so swap. */
 static inline uint16_t rgb565(int c) {
     uint32_t v = (uint32_t)c;
-    uint16_t p = (uint16_t)(((v & 0x00f80000u) >> 8) | ((v & 0x0000fc00u) >> 5) |
-                            ((v & 0x000000f8u) >> 3));
-    return (uint16_t)((p >> 8) | (p << 8));
+    return (uint16_t)(((v & 0x00f80000u) >> 8) | ((v & 0x0000fc00u) >> 5) |
+                      ((v & 0x000000f8u) >> 3));
+}
+
+static inline void put565(uint8_t * p, int c) {
+    uint16_t v = rgb565(c);
+    p[0] = (uint8_t)(v >> 8);
+    p[1] = (uint8_t)v;
 }
 
 static int rgb121_palette_colour(uint8_t nibble) {
@@ -99,20 +106,58 @@ static int clip_rect(int * x1, int * y1, int * x2, int * y2) {
     return *x1 <= *x2 && *y1 <= *y2;
 }
 
+static void raw_tx_locked(const void * data, size_t len, int dc) {
+    if (!s_lcd || !data || len == 0) return;
+    gpio_set_level((gpio_num_t)s_dc, dc);
+    spi_transaction_t t = {0};
+    t.length = len * 8;
+    t.tx_buffer = data;
+    esp_err_t err = spi_device_polling_transmit(s_lcd, &t);
+    if (err != ESP_OK) ESP_LOGW(TAG, "spi transmit failed: %s", esp_err_to_name(err));
+}
+
+static void raw_addr_window(int x1, int y1, int x2, int y2) {
+    uint8_t b[4];
+    b[0] = (uint8_t)(x1 >> 8);
+    b[1] = (uint8_t)x1;
+    b[2] = (uint8_t)(x2 >> 8);
+    b[3] = (uint8_t)x2;
+    raw_tx_locked(&(uint8_t){LCD_CASET}, 1, 0);
+    raw_tx_locked(b, sizeof(b), 1);
+    b[0] = (uint8_t)(y1 >> 8);
+    b[1] = (uint8_t)y1;
+    b[2] = (uint8_t)(y2 >> 8);
+    b[3] = (uint8_t)y2;
+    raw_tx_locked(&(uint8_t){LCD_PASET}, 1, 0);
+    raw_tx_locked(b, sizeof(b), 1);
+    raw_tx_locked(&(uint8_t){LCD_RAMWR}, 1, 0);
+}
+
 /* Push an already-RGB565-filled region to the panel. */
-static void panel_blit(int x1, int y1, int x2, int y2, const uint16_t * px) {
-    if (s_panel) esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2 + 1, y2 + 1, px);
+static void panel_blit(int x1, int y1, int x2, int y2, const uint8_t * px) {
+    if (!s_lcd) {
+        if (s_panel) esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2 + 1, y2 + 1, px);
+        return;
+    }
+    gpio_set_level((gpio_num_t)s_cs, 0);
+    raw_addr_window(x1, y1, x2, y2);
+    raw_tx_locked(px, (size_t)(x2 - x1 + 1) * (size_t)(y2 - y1 + 1) * 2u, 1);
+    gpio_set_level((gpio_num_t)s_cs, 1);
 }
 
 static void esp_lcd_draw_rectangle(int x1, int y1, int x2, int y2, int c) {
     if (!clip_rect(&x1, &y1, &x2, &y2) || !s_scratch) return;
     int w = x2 - x1 + 1;
     int h = y2 - y1 + 1;
-    uint16_t v = rgb565(c);
+    uint8_t col[2];
+    put565(col, c);
     int rows = SCRATCH_PX / w;
     if (rows < 1) rows = 1;
     if (rows > h) rows = h;
-    for (int i = 0; i < w * rows; i++) s_scratch[i] = v;
+    for (int i = 0; i < w * rows; i++) {
+        s_scratch[i * 2] = col[0];
+        s_scratch[i * 2 + 1] = col[1];
+    }
     for (int y = 0; y < h;) {
         int n = h - y;
         if (n > rows) n = rows;
@@ -123,7 +168,7 @@ static void esp_lcd_draw_rectangle(int x1, int y1, int x2, int y2, int c) {
 
 static void esp_lcd_draw_pixel(int x, int y, int c) {
     if (x < 0 || y < 0 || x >= s_w || y >= s_h || !s_scratch) return;
-    s_scratch[0] = rgb565(c);
+    put565(s_scratch, c);
     panel_blit(x, y, x, y, s_scratch);
 }
 
@@ -137,7 +182,8 @@ static void esp_lcd_draw_bitmap(int x, int y, int width, int height, int scale,
     int cx1 = x, cy1 = y, cx2 = x + out_w - 1, cy2 = y + out_h - 1;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
     int w = cx2 - cx1 + 1;
-    uint16_t fc565 = rgb565(fc);
+    uint8_t fc565[2];
+    put565(fc565, fc);
     /* Transparent background can't be expressed in a single bitmap push, so
      * only the foreground runs are written per row. Opaque background fills
      * the whole clipped row. */
@@ -154,13 +200,17 @@ static void esp_lcd_draw_bitmap(int x, int y, int width, int height, int scale,
                     continue;
                 }
                 if (run_x < 0) run_x = px;
-                s_scratch[run_w++] = fc565;
+                s_scratch[run_w * 2] = fc565[0];
+                s_scratch[run_w * 2 + 1] = fc565[1];
+                run_w++;
             }
             if (run_w) panel_blit(run_x, py, run_x + run_w - 1, py, s_scratch);
         }
         return;
     }
-    uint16_t bc565 = rgb565(bc);
+    uint8_t fcbytes[2], bcbytes[2];
+    put565(fcbytes, fc);
+    put565(bcbytes, bc);
     int rows = SCRATCH_PX / w;
     if (rows < 1) rows = 1;
     for (int py = cy1; py <= cy2;) {
@@ -168,12 +218,15 @@ static void esp_lcd_draw_bitmap(int x, int y, int width, int height, int scale,
         if (nr > rows) nr = rows;
         for (int ry = 0; ry < nr; ry++) {
             int row = (py + ry - y) / scale;
-            uint16_t * out = s_scratch + (size_t)ry * w;
+            uint8_t * out = s_scratch + (size_t)ry * (size_t)w * 2u;
             for (int px = cx1; px <= cx2; px++) {
                 int col = (px - x) / scale;
                 int bit = row * width + col;
                 int on = (bitmap[bit / 8] >> ((total_bits - bit - 1) % 8)) & 1;
-                out[px - cx1] = on ? fc565 : bc565;
+                const uint8_t * src = on ? fcbytes : bcbytes;
+                size_t o = (size_t)(px - cx1) * 2u;
+                out[o] = src[0];
+                out[o + 1] = src[1];
             }
         }
         panel_blit(cx1, py, cx2, py + nr - 1, s_scratch);
@@ -197,10 +250,10 @@ static void esp_lcd_draw_buffer(int x1, int y1, int x2, int y2, unsigned char * 
         for (int ry = 0; ry < nr; ry++) {
             unsigned char * src = bgr + ((size_t)(py + ry - y1) * (size_t)src_w +
                                          (size_t)(cx1 - x1)) * 3u;
-            uint16_t * out = s_scratch + (size_t)ry * w;
+            uint8_t * out = s_scratch + (size_t)ry * (size_t)w * 2u;
             for (int x = 0; x < w; x++) {
                 int c = ((int)src[2] << 16) | ((int)src[1] << 8) | src[0];
-                out[x] = rgb565(c);
+                put565(out + (size_t)x * 2u, c);
                 src += 3;
             }
         }
@@ -227,7 +280,8 @@ static void esp_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2, int blank,
                 continue;
             }
             if (run_x < 0) run_x = x;
-            s_scratch[run_w++] = rgb565(rgb121_palette_colour(nibble));
+            put565(s_scratch + (size_t)run_w * 2u, rgb121_palette_colour(nibble));
+            run_w++;
         }
         if (run_w) panel_blit(run_x, y, run_x + run_w - 1, y, s_scratch);
     }
@@ -320,7 +374,7 @@ static void esp_lcd_read_buffer_fast(int x1, int y1, int x2, int y2, unsigned ch
 }
 
 int esp32_ili9341_lcd_ready(void) {
-    return s_panel != NULL && Option.DISPLAY_TYPE == s_panel_type && HRes == s_w &&
+    return (s_panel != NULL || s_lcd != NULL) && Option.DISPLAY_TYPE == s_panel_type && HRes == s_w &&
            VRes == s_h;
 }
 
@@ -476,8 +530,34 @@ void esp32_ili9341_lcd_init(void) {
     esp_lcd_panel_mirror(s_panel, landscape ^ flip, flip);
     esp_lcd_panel_disp_on_off(s_panel, true);
 
+    esp_lcd_panel_del(s_panel);
+    s_panel = NULL;
+    esp_lcd_panel_io_del(s_io);
+    s_io = NULL;
+
+    s_dc = dc;
+    s_cs = cs;
+    gpio_config_t out = {
+        .pin_bit_mask = (1ULL << (uint32_t)s_dc) | (1ULL << (uint32_t)s_cs),
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&out);
+    gpio_set_level((gpio_num_t)s_cs, 1);
+
+    spi_device_interface_config_t wr_cfg = {
+        .clock_speed_hz = LCD_SPI_HZ,
+        .mode = 0,
+        .spics_io_num = -1,
+        .queue_size = 1,
+        .flags = SPI_DEVICE_NO_DUMMY,
+    };
+    if (spi_bus_add_device(LCD_SPI_HOST, &wr_cfg, &s_lcd) != ESP_OK) {
+        ESP_LOGE(TAG, "LCD write device add failed");
+        return;
+    }
+
     if (!s_scratch)
-        s_scratch = heap_caps_malloc(SCRATCH_PX * sizeof(uint16_t),
+        s_scratch = heap_caps_malloc(SCRATCH_PX * 2u,
                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     if (s_rd && !s_rdbuf)
         s_rdbuf = heap_caps_malloc(1 + SCRATCH_PX * 3,
