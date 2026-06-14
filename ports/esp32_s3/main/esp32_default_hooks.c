@@ -93,6 +93,7 @@ void port_print_supported_boards(void) {
     MMPrintString(ESP32_BOARD_GENERIC_NAME "\r\n");
     MMPrintString(ESP32_BOARD_METRO_NAME "\r\n");
     MMPrintString(ESP32_BOARD_FREENOVE_ILI9341_NAME "\r\n");
+    MMPrintString(ESP32_BOARD_CYD_NAME "\r\n");
 }
 
 static void factory_reset_to_profile(const esp32_board_profile_t * profile) {

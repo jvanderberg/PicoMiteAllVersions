@@ -14,6 +14,7 @@
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "hal/hal_spi_lcd_bus.h"
+#include "SPI-LCD.h"
 
 #if !HAL_PORT_IS_VGA
 
@@ -39,6 +40,19 @@ int hal_spi_lcd_bus_read(uint8_t * buf, size_t len) {
     if (!lcd_rcvr_byte_multi) return 0;
     lcd_rcvr_byte_multi(buf, (int)len);
     return 1;
+}
+
+/* Drop the shared bus to the panel's read clock for the duration of a read,
+ * then restore the active display's write clock. */
+void hal_spi_lcd_bus_read_begin(void) {
+    SPISpeedSet((Option.DISPLAY_TYPE == ILI9488 || Option.DISPLAY_TYPE == ILI9488P ||
+                 Option.DISPLAY_TYPE == ST7789B || Option.DISPLAY_TYPE == ILI9481IPS)
+                    ? ST7789RSpeed
+                    : SPIReadSpeed);
+}
+
+void hal_spi_lcd_bus_read_end(void) {
+    SPISpeedSet(Option.DISPLAY_TYPE);
 }
 
 #endif /* !HAL_PORT_IS_VGA */

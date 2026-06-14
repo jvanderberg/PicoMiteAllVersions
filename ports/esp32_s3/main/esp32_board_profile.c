@@ -92,7 +92,8 @@ static const esp32_board_profile_t s_profiles[] = {
         .lcd = {ESP32_BOARD_FREENOVE_LCD_SCLK, ESP32_BOARD_FREENOVE_LCD_MOSI,
                 ESP32_BOARD_FREENOVE_LCD_MISO, ESP32_BOARD_FREENOVE_LCD_CS,
                 ESP32_BOARD_FREENOVE_LCD_DC, ESP32_BOARD_FREENOVE_LCD_RST,
-                ESP32_BOARD_FREENOVE_LCD_BL, ESP32_BOARD_FREENOVE_LCD_SPI_HZ},
+                ESP32_BOARD_FREENOVE_LCD_BL, ESP32_BOARD_FREENOVE_LCD_SPI_HZ,
+                ILI9341, LANDSCAPE, 1},
         .touch = {ESP32_BOARD_FREENOVE_TOUCH_SDA, ESP32_BOARD_FREENOVE_TOUCH_SCL,
                   ESP32_BOARD_FREENOVE_TOUCH_INT, ESP32_BOARD_FREENOVE_TOUCH_RST},
         .audio = {ESP32_AUDIO_SINK_ES8311, ESP32_BOARD_FREENOVE_AUDIO_MCLK,
@@ -103,6 +104,34 @@ static const esp32_board_profile_t s_profiles[] = {
                   ESP32_BOARD_FREENOVE_AUDIO_I2C_SDA,
                   ESP32_BOARD_FREENOVE_AUDIO_I2C_SCL,
                   ESP32_BOARD_FREENOVE_ES8311_ADDR},
+        .ws2812_pin = ESP32_BOARD_PROFILE_NO_PIN,
+    },
+    {
+        .id = ESP32_BOARD_PROFILE_ID_CYD,
+        .configure_name = ESP32_BOARD_CYD_NAME,
+        .device_name = ESP32_BOARD_CYD_DEVICE_NAME,
+        .platform_name = ESP32_BOARD_CYD_NAME,
+        .has_sd = 1,
+        .has_lcd = 1,
+        .has_touch = 0,
+        .has_audio = 0,
+        .has_ws2812 = 0,
+        .sd = {ESP32_BOARD_CYD_SD_SCLK, ESP32_BOARD_CYD_SD_MOSI,
+               ESP32_BOARD_CYD_SD_MISO, ESP32_BOARD_CYD_SD_CS,
+               ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+               ESP32_BOARD_PROFILE_SD_SPI_FREQ_KHZ},
+        .lcd = {ESP32_BOARD_CYD_LCD_SCLK, ESP32_BOARD_CYD_LCD_MOSI,
+                ESP32_BOARD_CYD_LCD_MISO, ESP32_BOARD_CYD_LCD_CS,
+                ESP32_BOARD_CYD_LCD_DC, ESP32_BOARD_CYD_LCD_RST,
+                ESP32_BOARD_CYD_LCD_BL, ESP32_BOARD_CYD_LCD_SPI_HZ,
+                ST7789B, LANDSCAPE, 1},
+        .touch = {ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN},
+        .audio = {ESP32_AUDIO_SINK_NONE, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, 0, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, 0},
         .ws2812_pin = ESP32_BOARD_PROFILE_NO_PIN,
     },
 };
@@ -281,11 +310,9 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.LCD_CS = profile_pin(profile->lcd.cs);
         Option.LCD_Reset = profile_pin(profile->lcd.rst);
         Option.DISPLAY_BL = profile_pin(profile->lcd.backlight);
-        Option.DISPLAY_TYPE = ILI9341;
-        Option.DISPLAY_ORIENTATION = LANDSCAPE;
-        /* The Freenove panel wants the inverted colour polarity; in the
-         * shared ILI9341 init sequence BGR=1 selects INVON. */
-        Option.BGR = 1;
+        Option.DISPLAY_TYPE = profile->lcd.type;
+        Option.DISPLAY_ORIENTATION = profile->lcd.orientation;
+        Option.BGR = profile->lcd.bgr;
         Option.DefaultFont = 0x01;
         Option.DefaultFC = WHITE;
         Option.DefaultBC = BLACK;

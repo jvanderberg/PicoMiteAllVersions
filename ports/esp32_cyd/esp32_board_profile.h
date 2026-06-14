@@ -13,9 +13,29 @@
 #define ESP32_BOARD_PROFILE_ID_GENERIC 1
 #define ESP32_BOARD_PROFILE_ID_METRO 2
 #define ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341 3
+#define ESP32_BOARD_PROFILE_ID_CYD 4
 
 #define ESP32_BOARD_GENERIC_NAME "GENERIC"
 #define ESP32_BOARD_GENERIC_DEVICE_NAME "MMBasic ESP32"
+
+/* ESP32-2432S028R "CYD" / CYD2USB: 240x320 ST7789 panel on HSPI, no reset
+ * line (tied to board EN; software reset handles it). The panel wants the
+ * non-inverted polarity, which on the ST7789 init path is Option.BGR=1. */
+#define ESP32_BOARD_CYD_NAME "CYD"
+#define ESP32_BOARD_CYD_DEVICE_NAME "MMBasic ESP32 CYD"
+#define ESP32_BOARD_CYD_LCD_SCLK 14
+#define ESP32_BOARD_CYD_LCD_MOSI 13
+#define ESP32_BOARD_CYD_LCD_MISO 12
+#define ESP32_BOARD_CYD_LCD_CS 15
+#define ESP32_BOARD_CYD_LCD_DC 2
+#define ESP32_BOARD_CYD_LCD_RST -1
+#define ESP32_BOARD_CYD_LCD_BL 21
+#define ESP32_BOARD_CYD_LCD_SPI_HZ 40000000
+/* SD card on the CYD's separate VSPI-pin set (host is SPI2; LCD owns SPI3). */
+#define ESP32_BOARD_CYD_SD_SCLK 18
+#define ESP32_BOARD_CYD_SD_MOSI 23
+#define ESP32_BOARD_CYD_SD_MISO 19
+#define ESP32_BOARD_CYD_SD_CS 5
 
 #define ESP32_BOARD_METRO_NAME "METRO"
 #define ESP32_BOARD_METRO_DEVICE_NAME "MMBasic ESP32-S3 Metro"
@@ -88,6 +108,9 @@ typedef struct {
     int rst;
     int backlight;
     int spi_hz;
+    int type;        /* DISPLAY_TYPE controller (ILI9341, ST7789B, ...) */
+    int orientation; /* DISPLAY_ORIENTATION (LANDSCAPE, ...) */
+    int bgr;         /* Option.BGR colour-polarity flag */
 } esp32_board_lcd_pins_t;
 
 typedef struct {

@@ -150,6 +150,7 @@ set(PICOMITE_LEGACY_CORE_SOURCES
 	drivers/serial/Serial.c
 	drivers/spi_lcd/spi_lcd.c
 	drivers/spi_lcd/spi_lcd_panels.c
+	drivers/spi_lcd/spi_lcd_readback.c
 	drivers/spi_lcd/spi_lcd_bus_pico.c
 	drivers/bmp_decoder/BmpDecoder.c
 	drivers/gps/GPS.c

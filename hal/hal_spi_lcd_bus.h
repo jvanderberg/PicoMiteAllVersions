@@ -39,4 +39,13 @@ void hal_spi_lcd_bus_dc(int data);
 void hal_spi_lcd_bus_write(const uint8_t * buf, size_t len);
 int hal_spi_lcd_bus_read(uint8_t * buf, size_t len);
 
+/* Bracket a panel-RAM read: the transport may need to drop to a slower
+ * read clock between these (panels can't be read at full write speed).
+ * read_begin() is called after the read region/command is set up (CS held)
+ * and read_end() after the last read(), before CS is released. Ports with a
+ * dedicated slow read path (e.g. a separate low-clock device) leave these
+ * no-ops. */
+void hal_spi_lcd_bus_read_begin(void);
+void hal_spi_lcd_bus_read_end(void);
+
 #endif /* HAL_SPI_LCD_BUS_H */

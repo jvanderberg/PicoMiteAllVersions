@@ -29,9 +29,19 @@ list(REMOVE_ITEM PORT_LOCAL_SRCS
     ${ESP32_S3_MAIN_DIR}/hal_i2c_esp32_slave.c
     # I2S hardware-v2 DAC-style PDM slot -> the v1 single slot shape.
     ${ESP32_S3_MAIN_DIR}/esp32_audio_pdm_slot_s3.c
+    # Hand-rolled SPI-LCD backend -> ESP-IDF esp_lcd (esp32_cyd_esp_lcd.c).
+    ${ESP32_S3_MAIN_DIR}/esp32_ili9341_lcd.c
+)
+
+# The CYD drives its panel through ESP-IDF's esp_lcd, not the shared Pico
+# SPI-LCD controller core, so drop those (and their readback) from this port.
+list(REMOVE_ITEM DRIVER_STUBS
+    ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_panels.c
+    ${REPO_ROOT}/drivers/spi_lcd/spi_lcd_readback.c
 )
 
 list(APPEND PORT_LOCAL_SRCS
+    ${CYD_MAIN_DIR}/esp32_cyd_esp_lcd.c
     ${CYD_MAIN_DIR}/esp32_cyd_console.c
     ${CYD_MAIN_DIR}/esp32_cyd_usb_stub.c
     ${CYD_MAIN_DIR}/esp32_cyd_vga.c
