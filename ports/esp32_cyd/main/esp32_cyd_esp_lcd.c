@@ -380,12 +380,14 @@ static void bind_panel(void) {
     DrawBLITBuffer = esp_lcd_draw_buffer;
     DrawBufferFast = esp_lcd_draw_buffer_fast;
     if (s_rd) {
-        /* Read device present: full readback + readback-based scroll. */
+        /* Readback is available for PIXEL()/sprites, but keep CYD console
+         * no-scroll. ScrollLCDSPISCR belongs to the shared SPI-LCD backend;
+         * binding it here can leave the display console blank after scroll. */
         ReadBuffer = esp_lcd_read_buffer;
         ReadBLITBuffer = esp_lcd_read_buffer;
         ReadBufferFast = esp_lcd_read_buffer_fast;
-        ScrollLCD = ScrollLCDSPISCR;
-        Option.NoScroll = 0;
+        ScrollLCD = (void (*)(int))DisplayNotSet;
+        Option.NoScroll = 1;
     } else {
         /* No MISO / read device: PIXEL()/sprites/transparent error cleanly and
          * the console clear-homes on overflow instead of scrolling. */
