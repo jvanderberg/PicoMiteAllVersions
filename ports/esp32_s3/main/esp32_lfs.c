@@ -99,6 +99,8 @@ extern const char demo_mand_start[] asm("_binary_mand_bas_start");
 extern const char demo_mand_end[] asm("_binary_mand_bas_end");
 extern const char demo_touch_draw_start[] asm("_binary_touch_draw_bas_start");
 extern const char demo_touch_draw_end[] asm("_binary_touch_draw_bas_end");
+extern const char demo_gui_kitchen_sink_start[] asm("_binary_gui_kitchen_sink_bas_start");
+extern const char demo_gui_kitchen_sink_end[] asm("_binary_gui_kitchen_sink_bas_end");
 extern const char demo_web_hello_start[] asm("_binary_web_hello_bas_start");
 extern const char demo_web_hello_end[] asm("_binary_web_hello_bas_end");
 extern const char demo_site_start[] asm("_binary_site_bas_start");
@@ -135,6 +137,7 @@ static const struct embedded_demo s_demos[] = {
     {"sieve.bas", demo_sieve_start, demo_sieve_end, 0},
     {"mand.bas", demo_mand_start, demo_mand_end, 0},
     {"touch_draw.bas", demo_touch_draw_start, demo_touch_draw_end, 0},
+    {"gui_kitchen_sink.bas", demo_gui_kitchen_sink_start, demo_gui_kitchen_sink_end, 0},
     {"web_hello.bas", demo_web_hello_start, demo_web_hello_end, 0},
     {"site.bas", demo_site_start, demo_site_end, 1},
     {"server.bas", demo_site_start, demo_site_end, 1},
