@@ -14,29 +14,26 @@
 #define CONFIG_I2S_SUPPRESS_DEPRECATE_WARN 1
 #endif
 #include "driver/dac.h"
+#include "driver/gpio.h"
 #include "driver/i2s.h"
 #include "esp_err.h"
-#include "hal/dac_ll.h"
 
 #define CYD_DAC_I2S_NUM I2S_NUM_0
 #define CYD_DAC_DMA_DESC_NUM 2
 #define CYD_DAC_DMA_FRAME_NUM 128
 #define CYD_DAC_CHANNEL DAC_CHAN_1 /* GPIO26 / DAC2 / legacy I2S left */
-#define CYD_DAC_MIDPOINT 128
+#define CYD_DAC_ATTENUATION_SHIFT 11
 
 static int s_installed;
 static int s_active;
+static int s_rate_hz = 44100;
+static int32_t s_quant_error;
 static uint16_t s_dac_buf[CYD_DAC_DMA_FRAME_NUM * 2u];
 
 esp_err_t esp32_audio_internal_dac_set_rate(int rate_hz);
 
-static void cyd_dac_hold_midpoint(void) {
-    dac_ll_digi_enable_dma(false);
-    (void)dac_output_enable(CYD_DAC_CHANNEL);
-    (void)dac_output_voltage(CYD_DAC_CHANNEL, CYD_DAC_MIDPOINT);
-}
-
 esp_err_t esp32_audio_internal_dac_begin(int rate_hz) {
+    s_rate_hz = rate_hz;
     if (s_installed) return esp32_audio_internal_dac_set_rate(rate_hz);
     i2s_config_t cfg = {
         .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN,
@@ -53,19 +50,14 @@ esp_err_t esp32_audio_internal_dac_begin(int rate_hz) {
     };
     esp_err_t err = i2s_driver_install(CYD_DAC_I2S_NUM, &cfg, 0, NULL);
     if (err != ESP_OK) return err;
-    err = i2s_set_dac_mode(I2S_DAC_CHANNEL_LEFT_EN);
-    if (err != ESP_OK) {
-        i2s_driver_uninstall(CYD_DAC_I2S_NUM);
-        return err;
-    }
-    cyd_dac_hold_midpoint();
     s_installed = 1;
     s_active = 0;
     return ESP_OK;
 }
 
 esp_err_t esp32_audio_internal_dac_set_rate(int rate_hz) {
-    if (!s_installed) return ESP_ERR_INVALID_STATE;
+    s_rate_hz = rate_hz;
+    if (!s_installed) return ESP_OK;
     return i2s_set_clk(CYD_DAC_I2S_NUM, (uint32_t)rate_hz,
                        I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
 }
@@ -76,6 +68,10 @@ esp_err_t esp32_audio_internal_dac_write(const int16_t * frames,
     if (bytes_written) *bytes_written = 0;
     size_t words = frame_count * 2u;
     if (frame_count > CYD_DAC_DMA_FRAME_NUM) return ESP_ERR_INVALID_SIZE;
+    if (!s_installed) {
+        esp_err_t err = esp32_audio_internal_dac_begin(s_rate_hz);
+        if (err != ESP_OK) return err;
+    }
     if (!s_active) {
         esp_err_t err = i2s_set_dac_mode(I2S_DAC_CHANNEL_LEFT_EN);
         if (err != ESP_OK) return err;
@@ -86,8 +82,20 @@ esp_err_t esp32_audio_internal_dac_write(const int16_t * frames,
 
     for (size_t i = 0; i < frame_count; i++) {
         int32_t mono = ((int32_t)frames[i * 2u] + (int32_t)frames[i * 2u + 1u]) / 2;
-        mono >>= 4; /* The CYD amp is very hot; keep DAC swing modest. */
-        uint16_t dac = (uint16_t)((((mono >> 8) + 128) & 0xff) << 8);
+        int32_t shaped = mono + s_quant_error;
+        int32_t scaled = (shaped + (1 << (CYD_DAC_ATTENUATION_SHIFT - 1))) >>
+                         CYD_DAC_ATTENUATION_SHIFT;
+        int32_t level = scaled + 128;
+        if (level < 0) {
+            level = 0;
+            s_quant_error = 0;
+        } else if (level > 255) {
+            level = 255;
+            s_quant_error = 0;
+        } else {
+            s_quant_error = shaped - (scaled << CYD_DAC_ATTENUATION_SHIFT);
+        }
+        uint16_t dac = (uint16_t)((uint32_t)level << 8);
         s_dac_buf[i * 2u] = dac;
         s_dac_buf[i * 2u + 1u] = dac;
     }
@@ -102,7 +110,11 @@ esp_err_t esp32_audio_internal_dac_write(const int16_t * frames,
 void esp32_audio_internal_dac_idle(void) {
     if (!s_installed) return;
     if (s_active) (void)i2s_stop(CYD_DAC_I2S_NUM);
-    cyd_dac_hold_midpoint();
+    (void)i2s_set_dac_mode(I2S_DAC_CHANNEL_DISABLE);
+    (void)i2s_driver_uninstall(CYD_DAC_I2S_NUM);
+    (void)dac_output_disable(CYD_DAC_CHANNEL);
+    (void)gpio_reset_pin(GPIO_NUM_26);
+    s_installed = 0;
     s_active = 0;
 }
 

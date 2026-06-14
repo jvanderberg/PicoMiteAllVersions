@@ -11,5 +11,5 @@
 #define DR_MP3_NO_STDIO
 #define DR_MP3_ONLY_MP3
 #define DR_MP3_NO_SIMD
-#define DRMP3_DATA_CHUNK_SIZE 32768
+#define DRMP3_DATA_CHUNK_SIZE 16384
 #include "dr_mp3.h"

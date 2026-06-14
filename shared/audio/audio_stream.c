@@ -105,6 +105,12 @@ static drwav_bool32 stream_seek(void * ud, int offset, drwav_seek_origin origin)
     return hal_fs_seek(hal_fds[s_fnbr], offset, whence) < 0 ? 0 : 1;
 }
 
+static drmp3_bool32 stream_seek_mp3(void * ud, int offset, drmp3_seek_origin origin) {
+    (void)ud;
+    int whence = (origin == drmp3_seek_origin_start) ? HAL_FS_SEEK_SET : HAL_FS_SEEK_CUR;
+    return hal_fs_seek(hal_fds[s_fnbr], offset, whence) < 0 ? 0 : 1;
+}
+
 /* Decode scratch buffers, allocated per stream. */
 static int ensure_buffers(void) {
     if (!s_stereo) s_stereo = hal_audio_workmem_alloc(DECODE_FRAMES * 2 * sizeof(int16_t));
@@ -236,8 +242,7 @@ int audio_stream_play_mp3(char * fname) {
     if (stream_open_file(fname, ".mp3") != 0) return -1;
     s_mp3 = hal_audio_workmem_alloc(sizeof(drmp3));
     drmp3_allocation_callbacks ac = {NULL, dec_malloc, dec_realloc, dec_free};
-    if (!s_mp3 || !drmp3_init(s_mp3, (drmp3_read_proc)stream_read,
-                              (drmp3_seek_proc)stream_seek, NULL, &ac)) {
+    if (!s_mp3 || !drmp3_init(s_mp3, stream_read, stream_seek_mp3, NULL, &ac)) {
         hal_audio_workmem_free(s_mp3);
         s_mp3 = NULL;
         stream_close_file();
@@ -294,6 +299,15 @@ int audio_stream_play_mod_noloop(char * fname, int noloop) {
         stream_close_file();
         return -1;
     }
+#ifdef HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES
+    if ((unsigned long)size > (unsigned long)HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES) {
+        printf("audio_stream: mod too large bytes=%lu max=%lu\r\n",
+               (unsigned long)size,
+               (unsigned long)HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES);
+        stream_close_file();
+        return -1;
+    }
+#endif
 
     s_modbuf = hal_audio_workmem_alloc((unsigned long)size);
     s_modctx = hal_audio_workmem_alloc(sizeof(modcontext));

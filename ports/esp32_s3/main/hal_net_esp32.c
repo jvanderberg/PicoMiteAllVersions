@@ -547,6 +547,24 @@ int hal_net_wifi_connect(uint32_t timeout_ms) {
     return HAL_NET_TIMEOUT;
 }
 
+void esp32_net_wifi_pause_for_audio(void) {
+    if (!wifi_ready) return;
+    wifi_retry_count = ESP32_NET_WIFI_MAX_RETRIES;
+    if (wifi_started) {
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+    }
+    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                 esp32_net_wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                 esp32_net_wifi_event_handler);
+    esp_wifi_deinit();
+    wifi_ready = 0;
+    wifi_started = 0;
+    WIFIconnected = 0;
+    wifi_last_status = 0;
+}
+
 int hal_net_wifi_status(void) {
     return WIFIconnected ? 1 : wifi_last_status;
 }

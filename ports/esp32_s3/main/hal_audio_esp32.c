@@ -71,6 +71,8 @@ typedef enum {
 /* TONE/playback state owned by shared/audio/Audio.c (extern here). */
 extern volatile e_CurrentlyPlaying CurrentlyPlaying;
 extern volatile bool WAVcomplete;
+extern void StopAudio(void);
+extern void esp32_net_wifi_pause_for_audio(void);
 
 static const char * TAG = "mmaudio";
 
@@ -109,7 +111,10 @@ bool dmarunning = 0;
  * (audio_task) ring of 16-bit stereo frames in PSRAM. Free-running 32-bit
  * head/tail counters publish frame availability; the stream mux only
  * protects reset/session changes and single-frame consumer claims. */
-#define SAMPLE_RING_FRAMES 32768u /* 128 KB in PSRAM, ~0.74s @ 44.1k */
+#ifndef HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
+#define HAL_PORT_AUDIO_SAMPLE_RING_FRAMES 32768u /* 128 KB in PSRAM, ~0.74s @ 44.1k */
+#endif
+#define SAMPLE_RING_FRAMES HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
 static int16_t * s_ring;          /* SAMPLE_RING_FRAMES * 2 int16 */
 static _Atomic uint32_t s_ring_head, s_ring_tail;
 static _Atomic uint32_t s_stream_inflight_frames;
@@ -117,6 +122,7 @@ static _Atomic uint32_t s_stream_drain_frames;
 static _Atomic uint32_t s_stream_tail_hold_until;
 static _Atomic bool s_stream_eof_seen;
 static _Atomic uint32_t s_stream_generation;
+static _Atomic uint32_t s_stream_underrun_frames;
 static _Atomic int s_stream_rate;
 static portMUX_TYPE s_stream_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -193,6 +199,7 @@ static void stream_reset_state(void) {
     atomic_store_explicit(&s_stream_drain_frames, 0, memory_order_release);
     atomic_store_explicit(&s_stream_tail_hold_until, 0, memory_order_release);
     atomic_store_explicit(&s_stream_eof_seen, false, memory_order_release);
+    atomic_store_explicit(&s_stream_underrun_frames, 0, memory_order_release);
     atomic_fetch_add_explicit(&s_stream_generation, 1u, memory_order_release);
     portEXIT_CRITICAL(&s_stream_mux);
 }
@@ -374,8 +381,17 @@ int hal_audio_sample_begin(int sample_rate_hz) {
     if (!s_ring) {
         size_t bytes = (size_t)SAMPLE_RING_FRAMES * 2u * sizeof(int16_t);
         s_ring = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
+        if (!s_ring) s_ring = TryGetMemory((int)bytes);
+#endif
         if (!s_ring) s_ring = malloc(bytes);
-        if (!s_ring) return -1;
+        if (!s_ring) {
+            printf("hal_audio: sample ring alloc failed bytes=%u free=%u largest=%u\r\n",
+                   (unsigned)bytes,
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            return -1;
+        }
     }
     stream_reset_state();
     stream_set_rate(sample_rate_hz);
@@ -414,13 +430,33 @@ int hal_audio_sample_queued(void) {
  * unavailable. */
 void * hal_audio_workmem_alloc(unsigned long bytes) {
     void * p = heap_caps_malloc((size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : malloc((size_t)bytes);
+#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
+    if (!p) p = TryGetMemory((int)bytes);
+#endif
+    if (!p) p = malloc((size_t)bytes);
+    if (!p) {
+        printf("hal_audio: workmem alloc failed bytes=%lu free=%u largest=%u\r\n",
+               bytes,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    return p;
 }
 void * hal_audio_workmem_realloc(void * p, unsigned long bytes) {
+    if (!p) return hal_audio_workmem_alloc(bytes);
+#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
+    if (p >= (void *)MMHeap && p < (void *)(MMHeap + heap_memory_size))
+        return ReAllocMemory(p, (size_t)bytes);
+#endif
     void * n = heap_caps_realloc(p, (size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return n ? n : realloc(p, (size_t)bytes);
 }
 void hal_audio_workmem_free(void * p) {
+#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
+    void * q = p;
+    FreeMemorySafe(&q);
+    if (!q) return;
+#endif
     heap_caps_free(p);
 }
 
@@ -569,6 +605,7 @@ static void audio_task(void * arg) {
                     buf[2 * n + 1] = pcm16_apply_volume(right, vol_right);
                 } else {
                     (void)stream_claim_drain_frame(stream_generation);
+                    atomic_fetch_add_explicit(&s_stream_underrun_frames, 1u, memory_order_release);
                     buf[2 * n] = 0;
                     buf[2 * n + 1] = 0;
                 }
@@ -773,11 +810,12 @@ void esp32_audio_status_string(char * out, size_t out_len) {
                      : (s_ready ? 1 : 0);
     snprintf(out, out_len,
              "%s ready=%d active=%d mclk=%d bclk=%d ws=%d data=%d chan=%d mode=%d en=%d prof=%d write=%d "
-             "wr=%u nz=%u bytes=%u playing=%d",
+             "wr=%u nz=%u bytes=%u und=%u playing=%d",
              backend, s_ready ? 1 : 0, active, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
              (int)s_chan_err, (int)s_mode_err, (int)s_enable_err,
              (int)s_codec_err, (int)s_write_err, (unsigned)s_write_count,
              (unsigned)s_nonzero_write_count, (unsigned)s_last_write_bytes,
+             (unsigned)atomic_load_explicit(&s_stream_underrun_frames, memory_order_acquire),
              (int)CurrentlyPlaying);
 }
 
@@ -808,6 +846,12 @@ int hal_audio_tone_interrupt_supported(void) {
     return s_ready && (s_backend == AUDIO_BACKEND_I2S ||
                        s_backend == AUDIO_BACKEND_PDM ||
                        s_backend == AUDIO_BACKEND_INTERNAL_DAC);
+}
+
+void audio_cmd_play_prepare_file(const char * verb) {
+    StopAudio();
+    if (verb && (strcmp(verb, "MP3") == 0 || strcmp(verb, "MODFILE") == 0))
+        esp32_net_wifi_pause_for_audio();
 }
 
 void hal_audio_sound(int slot, const char * ch, const char * type,
@@ -861,7 +905,6 @@ void hal_audio_stop(void) {
         sound_mode_left[i] = (unsigned short *)nulltable;
         sound_mode_right[i] = (unsigned short *)nulltable;
     }
-    if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) esp32_audio_internal_dac_idle();
 }
 
 void hal_audio_volume(int left_pct, int right_pct) {
