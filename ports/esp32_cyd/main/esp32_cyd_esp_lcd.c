@@ -35,11 +35,8 @@
 #define LCD_W 320
 #define LCD_H 240
 #define LCD_SPI_HOST SPI3_HOST
-/* Writes only: readback is disabled, so the MISO timing limits do not apply. */
+/* Writes run fast; panel RAM reads use the separate slow read device below. */
 #define LCD_SPI_HZ 40000000
-/* Readback is intentionally disabled on CYD. A second SPI device for RAMRD can
- * leave the shared bus/DC/CS state in a form that starves the esp_lcd write
- * device, which presents as a solid white panel. */
 #define LCD_SPI_RD_HZ 8000000
 #define LCD_RD_INPUT_DELAY_NS 80
 #define LCD_CASET 0x2A
@@ -52,7 +49,7 @@ static const char * TAG = "esp_lcd";
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
 static spi_device_handle_t s_lcd; /* fast write device used after esp_lcd init */
-static spi_device_handle_t s_rd; /* NULL: readback disabled on CYD */
+static spi_device_handle_t s_rd;  /* slow RAMRD device */
 static int s_dc = -1;            /* DC GPIO, toggled manually around RAMRD */
 static int s_cs = -1;
 static int s_w = LCD_W;
@@ -131,6 +128,11 @@ static void raw_addr_window(int x1, int y1, int x2, int y2) {
     raw_tx_locked(&(uint8_t){LCD_PASET}, 1, 0);
     raw_tx_locked(b, sizeof(b), 1);
     raw_tx_locked(&(uint8_t){LCD_RAMWR}, 1, 0);
+}
+
+static void raw_read_window(int x1, int y1, int x2, int y2) {
+    raw_addr_window(x1, y1, x2, y2);
+    raw_tx_locked(&(uint8_t){LCD_RAMRD}, 1, 0);
 }
 
 /* Push an already-RGB565-filled region to the panel. */
@@ -287,32 +289,10 @@ static void esp_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2, int blank,
     }
 }
 
-/* Issue RAMRD on the slow input-delayed device and read nbytes into s_rdbuf.
- * The address window must already be set and CS is tied low, so the command
- * byte (DC low) and the read clocks (DC high) ride one continuous CS-low
- * frame. Full-duplex with length>=rxlength clocks zeros on MOSI while sampling
- * MISO; input_delay_ns (set on the device) lands the sample on the data. */
-static int raw_ramrd(int nbytes) {
-    uint8_t cmd = LCD_RAMRD;
-    spi_transaction_t t = {0};
-    gpio_set_level(s_dc, 0); /* command phase */
-    t.length = 8;
-    t.tx_buffer = &cmd;
-    if (spi_device_polling_transmit(s_rd, &t) != ESP_OK) return 0;
-    gpio_set_level(s_dc, 1); /* data phase */
-    spi_transaction_t r = {0};
-    r.length = (size_t)nbytes * 8;
-    r.rxlength = (size_t)nbytes * 8;
-    r.rx_buffer = s_rdbuf;
-    if (spi_device_polling_transmit(s_rd, &r) != ESP_OK) return 0;
-    return 1;
-}
-
-/* Read a region of panel RAM: set the column/page window through esp_lcd
- * (which drains any in-flight write first), then read 1 dummy byte + 3
- * bytes/pixel back through the dedicated input-delayed RAMRD device. */
+/* Read a region of panel RAM. CS is held low across CASET/PASET/RAMRD and the
+ * read clocks; there is no bus acquire and no CS_KEEP transaction flag. */
 static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) {
-    if (!s_io || !s_rd || !s_rdbuf) return 0;
+    if (!s_lcd || !s_rd || !s_rdbuf) return 0;
     int w = x2 - x1 + 1, h = y2 - y1 + 1;
     int per_row = w * 3;
     int rows = (1 + SCRATCH_PX * 3) / per_row;
@@ -321,13 +301,19 @@ static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) 
     for (int y = 0; y < h;) {
         int nr = h - y;
         if (nr > rows) nr = rows;
-        uint8_t ca[4] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8), (uint8_t)x2};
         int ys = y1 + y, ye = y1 + y + nr - 1;
-        uint8_t pa[4] = {(uint8_t)(ys >> 8), (uint8_t)ys, (uint8_t)(ye >> 8), (uint8_t)ye};
-        if (esp_lcd_panel_io_tx_param(s_io, LCD_CASET, ca, 4) != ESP_OK) return 0;
-        if (esp_lcd_panel_io_tx_param(s_io, LCD_PASET, pa, 4) != ESP_OK) return 0;
         int nbytes = 1 + nr * per_row; /* 1 leading dummy byte */
-        if (!raw_ramrd(nbytes)) return 0;
+        gpio_set_level((gpio_num_t)s_cs, 0);
+        raw_read_window(x1, ys, x2, ye);
+        gpio_set_level((gpio_num_t)s_dc, 1);
+        spi_transaction_t t = {0};
+        t.length = (size_t)nbytes * 8;
+        t.rxlength = (size_t)nbytes * 8;
+        t.rx_buffer = s_rdbuf;
+        esp_err_t err = spi_device_polling_transmit(s_rd, &t);
+        gpio_set_level((gpio_num_t)s_dc, 0);
+        gpio_set_level((gpio_num_t)s_cs, 1);
+        if (err != ESP_OK) return 0;
         uint8_t * src = s_rdbuf + 1; /* skip the RAMRD dummy byte */
         for (int i = 0; i < nr * w; i++) {
             uint8_t r = src[i * 3 + 0], g = src[i * 3 + 1], b = src[i * 3 + 2];
@@ -412,7 +398,7 @@ static void bind_panel(void) {
 }
 
 int esp32_ili9341_lcd_restore_panel(void) {
-    if (!s_panel) return 0;
+    if (!s_lcd && !s_panel) return 0;
     bind_panel();
     return 1;
 }
@@ -500,9 +486,7 @@ void esp32_ili9341_lcd_init(void) {
         return;
     }
 
-    (void)miso;
     s_dc = dc;
-    s_rd = NULL;
 
     /* Keep the same MADCTL colour-order bit as the known-working CYD init.
      * The visible red/blue swap is corrected in the pixel packer, not by
@@ -554,6 +538,18 @@ void esp32_ili9341_lcd_init(void) {
     if (spi_bus_add_device(LCD_SPI_HOST, &wr_cfg, &s_lcd) != ESP_OK) {
         ESP_LOGE(TAG, "LCD write device add failed");
         return;
+    }
+
+    spi_device_interface_config_t rd_cfg = {
+        .clock_speed_hz = LCD_SPI_RD_HZ,
+        .mode = 0,
+        .spics_io_num = -1,
+        .queue_size = 1,
+        .input_delay_ns = LCD_RD_INPUT_DELAY_NS,
+    };
+    if (miso >= 0 && spi_bus_add_device(LCD_SPI_HOST, &rd_cfg, &s_rd) != ESP_OK) {
+        ESP_LOGW(TAG, "RAMRD read device add failed; reads disabled");
+        s_rd = NULL;
     }
 
     if (!s_scratch)
