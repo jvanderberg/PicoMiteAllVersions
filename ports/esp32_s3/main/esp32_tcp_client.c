@@ -11,7 +11,13 @@
 #include "shared/net/mm_net_tcp_client_cmd.h"
 #include "esp32_tcp_client.h"
 
+#if CONFIG_IDF_TARGET_ESP32
+#define ESP32_TCP_CLIENT_RX_CHUNK 256
+#define ESP32_TCP_CLIENT_TASK_STACK 3072
+#else
 #define ESP32_TCP_CLIENT_RX_CHUNK 512
+#define ESP32_TCP_CLIENT_TASK_STACK 4096
+#endif
 #define ESP32_TLS_CA_MAX 8192
 
 typedef struct {
@@ -154,7 +160,8 @@ static void esp32_tcp_client_stream_cmd(unsigned char * arg) {
 
     s_client.stream_running = 1;
     if (xTaskCreate(esp32_tcp_client_stream_task, "mmbasic_tcp_client",
-                    4096, NULL, 5, &s_client.stream_task) != pdPASS) {
+                    ESP32_TCP_CLIENT_TASK_STACK, NULL, 5,
+                    &s_client.stream_task) != pdPASS) {
         s_client.stream_running = 0;
         error("Failed to create TCP client");
     }
