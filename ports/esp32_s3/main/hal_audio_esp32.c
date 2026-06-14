@@ -46,16 +46,26 @@
  * esp32_cyd_audio_pdm_slot.c on classic ESP32). */
 extern i2s_pdm_tx_slot_config_t esp32_audio_pdm_tx_slot_config(void);
 
+extern esp_err_t esp32_audio_internal_dac_begin(int rate_hz);
+extern esp_err_t esp32_audio_internal_dac_set_rate(int rate_hz);
+extern esp_err_t esp32_audio_internal_dac_write(const int16_t * frames,
+                                                size_t frame_count,
+                                                size_t * bytes_written);
+extern void esp32_audio_internal_dac_idle(void);
+extern int esp32_audio_internal_dac_active(void);
+
 #define AUDIO_RATE HAL_PORT_AUDIO_SAMPLE_RATE
-#define FRAMES_PER_CHUNK 256 /* stereo frames per write */
+#define FRAMES_PER_CHUNK 128 /* stereo frames per write */
 #define AUDIO_I2S_PORT I2S_NUM_1
 #define AUDIO_DMA_DESC_NUM 2
 #define AUDIO_DMA_FRAME_NUM 64
+#define AUDIO_TASK_STACK_WORDS 2048
 
 typedef enum {
     AUDIO_BACKEND_NONE = 0,
     AUDIO_BACKEND_I2S,
-    AUDIO_BACKEND_PDM
+    AUDIO_BACKEND_PDM,
+    AUDIO_BACKEND_INTERNAL_DAC
 } audio_backend_t;
 
 /* TONE/playback state owned by shared/audio/Audio.c (extern here). */
@@ -86,6 +96,7 @@ static uint32_t s_write_count;
 static uint32_t s_nonzero_write_count;
 static size_t s_last_write_bytes;
 static bool s_es8311;
+static int16_t s_task_buf[FRAMES_PER_CHUNK * 2];
 
 /* Audio-DMA channel globals referenced by core SOUND/ADC bookkeeping.
  * The shared synth path does not use them, but the symbols must exist. */
@@ -289,6 +300,9 @@ static audio_backend_t select_backend(void) {
          ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_OFF) &&
         Option.audio_i2s_bclk && Option.audio_i2s_data)
         return AUDIO_BACKEND_I2S;
+    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC &&
+        Option.audio_i2s_data)
+        return AUDIO_BACKEND_INTERNAL_DAC;
     return AUDIO_BACKEND_NONE;
 }
 
@@ -304,6 +318,11 @@ void esp32_audio_reserve_option_pins(void) {
         int amp_pin = ESP32_OPTION_AUDIO_AMP_EN;
         if (!audio_pin_invalid(amp_pin)) ExtCurrentConfig[amp_pin] = EXT_BOOT_RESERVED;
         esp32_board_profile_update_shared_i2c_pins();
+    }
+    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC) {
+        if (Option.audio_i2s_data && Option.audio_i2s_data <= NBRPINS)
+            ExtCurrentConfig[Option.audio_i2s_data] = EXT_BOOT_RESERVED;
+        return;
     }
     if (Option.audio_i2s_bclk && Option.audio_i2s_bclk <= NBRPINS) {
         ExtCurrentConfig[Option.audio_i2s_bclk] = EXT_BOOT_RESERVED;
@@ -328,7 +347,14 @@ static void stream_set_rate(int rate) {
 static void apply_pending_rate(void) {
     int rate = atomic_load_explicit(&s_pending_rate, memory_order_acquire);
     int current_rate = atomic_load_explicit(&s_stream_rate, memory_order_acquire);
-    if (!s_tx || rate <= 0 || rate == current_rate) return;
+    if (rate <= 0 || rate == current_rate) return;
+    if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+        esp_err_t err = esp32_audio_internal_dac_set_rate(rate);
+        if (err == ESP_OK)
+            atomic_store_explicit(&s_stream_rate, rate, memory_order_release);
+        return;
+    }
+    if (!s_tx) return;
     i2s_channel_disable(s_tx);
     if (s_backend == AUDIO_BACKEND_PDM) {
         i2s_pdm_tx_clk_config_t clk = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG((uint32_t)rate);
@@ -514,13 +540,19 @@ static void render_frame(int mode, int16_t * left, int16_t * right) {
 
 static void audio_task(void * arg) {
     (void)arg;
-    int16_t buf[FRAMES_PER_CHUNK * 2];
+    int16_t * buf = s_task_buf;
     for (;;) {
         apply_pending_rate(); /* safe rate switch between writes */
         int mode = atomic_load_explicit(&s_paused, memory_order_acquire)
                        ? P_NOTHING
                        : (int)CurrentlyPlaying;
-        if (s_backend != AUDIO_BACKEND_I2S && s_backend != AUDIO_BACKEND_PDM) {
+        if (s_backend != AUDIO_BACKEND_I2S && s_backend != AUDIO_BACKEND_PDM &&
+            s_backend != AUDIO_BACKEND_INTERNAL_DAC) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (s_backend == AUDIO_BACKEND_INTERNAL_DAC && mode == P_NOTHING) {
+            esp32_audio_internal_dac_idle();
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
@@ -546,7 +578,7 @@ static void audio_task(void * arg) {
         }
         size_t wr;
         if (file_mode && !stream_generation_active(stream_generation)) {
-            memset(buf, 0, sizeof(buf));
+            memset(buf, 0, FRAMES_PER_CHUNK * 2u * sizeof(*buf));
             atomic_store_explicit(&s_stream_inflight_frames, 0, memory_order_release);
         }
         bool nonzero = false;
@@ -556,8 +588,14 @@ static void audio_task(void * arg) {
                 break;
             }
         }
-        esp_err_t write_err = i2s_channel_write(s_tx, buf, sizeof(buf), &wr,
-                                                portMAX_DELAY);
+        esp_err_t write_err;
+        if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+            write_err = esp32_audio_internal_dac_write(buf, FRAMES_PER_CHUNK, &wr);
+        } else {
+            write_err = i2s_channel_write(s_tx, buf,
+                                          FRAMES_PER_CHUNK * 2u * sizeof(*buf),
+                                          &wr, portMAX_DELAY);
+        }
         s_write_err = write_err;
         s_last_write_bytes = wr;
         if (write_err == ESP_OK) {
@@ -692,11 +730,26 @@ void hal_audio_init(void) {
             return;
         }
         s_codec_err = ESP_OK;
+    } else if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+        int data_gpio = option_gpio(Option.audio_i2s_data, -1);
+        s_bclk_gpio = -1;
+        s_ws_gpio = -1;
+        s_data_gpio = data_gpio;
+        s_mclk_gpio = -1;
+        s_chan_err = ESP_OK;
+        s_mode_err = esp32_audio_internal_dac_begin(default_rate);
+        s_enable_err = s_mode_err;
+        s_codec_err = ESP_OK;
+        if (s_mode_err != ESP_OK) {
+            ESP_LOGE(TAG, "internal DAC init failed: %s", esp_err_to_name(s_mode_err));
+            s_backend = AUDIO_BACKEND_NONE;
+            return;
+        }
     }
     atomic_store_explicit(&s_stream_rate, default_rate, memory_order_release); /* channel starts at the synth rate */
     atomic_store_explicit(&s_pending_rate, default_rate, memory_order_release);
 
-    if (xTaskCreate(audio_task, "mmaudio", 4096, NULL, 5, &s_task) != pdPASS) {
+    if (xTaskCreate(audio_task, "mmaudio", AUDIO_TASK_STACK_WORDS, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "audio task create failed");
         if (s_es8311) esp32_audio_es8311_deinit();
         audio_teardown_channel();
@@ -713,10 +766,15 @@ void esp32_audio_status_string(char * out, size_t out_len) {
         backend = s_es8311 ? "ES8311" : "I2S";
     else if (s_backend == AUDIO_BACKEND_PDM)
         backend = "PDM";
+    else if (s_backend == AUDIO_BACKEND_INTERNAL_DAC)
+        backend = "DAC";
+    int active = s_backend == AUDIO_BACKEND_INTERNAL_DAC
+                     ? esp32_audio_internal_dac_active()
+                     : (s_ready ? 1 : 0);
     snprintf(out, out_len,
-             "%s ready=%d mclk=%d bclk=%d ws=%d data=%d chan=%d mode=%d en=%d prof=%d write=%d "
+             "%s ready=%d active=%d mclk=%d bclk=%d ws=%d data=%d chan=%d mode=%d en=%d prof=%d write=%d "
              "wr=%u nz=%u bytes=%u playing=%d",
-             backend, s_ready ? 1 : 0, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
+             backend, s_ready ? 1 : 0, active, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
              (int)s_chan_err, (int)s_mode_err, (int)s_enable_err,
              (int)s_codec_err, (int)s_write_err, (unsigned)s_write_count,
              (unsigned)s_nonzero_write_count, (unsigned)s_last_write_bytes,
@@ -747,7 +805,9 @@ void hal_audio_tone(double left_hz, double right_hz,
 
 int hal_audio_tone_interrupt_supported(void) {
     hal_audio_init();
-    return s_ready && (s_backend == AUDIO_BACKEND_I2S || s_backend == AUDIO_BACKEND_PDM);
+    return s_ready && (s_backend == AUDIO_BACKEND_I2S ||
+                       s_backend == AUDIO_BACKEND_PDM ||
+                       s_backend == AUDIO_BACKEND_INTERNAL_DAC);
 }
 
 void hal_audio_sound(int slot, const char * ch, const char * type,
@@ -801,6 +861,7 @@ void hal_audio_stop(void) {
         sound_mode_left[i] = (unsigned short *)nulltable;
         sound_mode_right[i] = (unsigned short *)nulltable;
     }
+    if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) esp32_audio_internal_dac_idle();
 }
 
 void hal_audio_volume(int left_pct, int right_pct) {

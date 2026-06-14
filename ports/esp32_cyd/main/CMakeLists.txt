@@ -29,6 +29,8 @@ list(REMOVE_ITEM PORT_LOCAL_SRCS
     ${ESP32_S3_MAIN_DIR}/hal_i2c_esp32_slave.c
     # I2S hardware-v2 DAC-style PDM slot -> the v1 single slot shape.
     ${ESP32_S3_MAIN_DIR}/esp32_audio_pdm_slot_s3.c
+    # S3/default internal-DAC stub -> CYD onboard GPIO26 DAC path.
+    ${ESP32_S3_MAIN_DIR}/esp32_audio_internal_dac_stub.c
     # Hand-rolled SPI-LCD backend -> ESP-IDF esp_lcd (esp32_cyd_esp_lcd.c).
     ${ESP32_S3_MAIN_DIR}/esp32_ili9341_lcd.c
 )
@@ -50,6 +52,7 @@ list(APPEND PORT_LOCAL_SRCS
     ${REPO_ROOT}/drivers/vga_i2s_esp32/vga_i2s_esp32.c
     ${CYD_MAIN_DIR}/esp32_cyd_pin_tables.c
     ${CYD_MAIN_DIR}/esp32_cyd_i2c_slave_stub.c
+    ${CYD_MAIN_DIR}/esp32_cyd_audio_dac.c
     ${CYD_MAIN_DIR}/esp32_cyd_audio_pdm_slot.c
 )
 

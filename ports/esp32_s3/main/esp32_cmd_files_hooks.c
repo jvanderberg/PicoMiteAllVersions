@@ -67,7 +67,7 @@ void port_apply_load_overrides(void) {
         esp32_board_profile_by_id(esp32_board_profile_current_id());
     if (!profile) profile = esp32_board_profile_by_id(ESP32_BOARD_PROFILE_ID_GENERIC);
     esp32_board_profile_set(profile->id);
-    if (ESP32_OPTION_AUDIO_KIND > ESP32_AUDIO_KIND_ES8311)
+    if (ESP32_OPTION_AUDIO_KIND > ESP32_AUDIO_KIND_INTERNAL_DAC)
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_OFF;
     if (Option.AUDIO_L && Option.AUDIO_R) {
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_PDM;
@@ -75,6 +75,15 @@ void port_apply_load_overrides(void) {
         ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
         ESP32_OPTION_AUDIO_I2S_WS = 0;
         ESP32_OPTION_AUDIO_I2S_MCLK = 0;
+    } else if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC &&
+               Option.audio_i2s_data) {
+        Option.AUDIO_L = 0;
+        Option.AUDIO_R = 0;
+        Option.audio_i2s_bclk = 0;
+        ESP32_OPTION_AUDIO_I2S_WS = 0;
+        ESP32_OPTION_AUDIO_I2S_MCLK = 0;
+        ESP32_OPTION_AUDIO_AMP_EN = 0;
+        ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
     } else if (Option.audio_i2s_bclk && Option.audio_i2s_data) {
         if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_OFF)
             ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_I2S;

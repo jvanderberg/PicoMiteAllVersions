@@ -322,6 +322,10 @@ static int esp32_net_wifi_ensure_ready(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&cfg) != ESP_OK) return HAL_NET_ERR;
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    /* The CYD audio amp shares a noisy board power domain. Avoid modem-sleep
+     * wake bursts coupling into the always-on speaker path as low-rate clicks. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    esp_wifi_set_max_tx_power(8); /* 2 dBm; reduce RF current spikes near the amp. */
 
     if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                             esp32_net_wifi_event_handler, NULL,

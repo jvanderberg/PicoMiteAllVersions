@@ -63,6 +63,7 @@ set(AUDIO_SHARED_CORE_SRCS
 
 set(AUDIO_BACKEND_SRCS
     hal_audio_esp32.c                       # I2S/PDM command/control + PCM sink backend
+    esp32_audio_internal_dac_stub.c         # default no-op for classic ESP32 internal DAC sink
     esp32_audio_pdm_slot_s3.c               # I2S hardware-v2 (DAC-style) PDM TX slot shape
 )
 

@@ -72,7 +72,9 @@ static void esp32_audio_release_pin(int pin) {
 }
 
 void esp32_audio_print_options(void) {
-    if (Option.AUDIO_L || Option.audio_i2s_bclk) {
+    if (Option.AUDIO_L || Option.audio_i2s_bclk ||
+        (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC &&
+         Option.audio_i2s_data)) {
         MMPrintString("OPTION AUDIO ");
         if (Option.AUDIO_L) {
             MMPrintString("PDM ");
@@ -84,6 +86,12 @@ void esp32_audio_print_options(void) {
             int mclk_pin = esp32_audio_i2s_mclk_pin();
             int es8311 = ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311;
             int amp_pin = es8311 ? ESP32_OPTION_AUDIO_AMP_EN : 0;
+            if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC) {
+                MMPrintString("DAC ");
+                MMPrintString((char *)PinDef[Option.audio_i2s_data].pinname);
+                MMPrintString("\r\n");
+                return;
+            }
             MMPrintString(es8311 ? "ES8311 " : "I2S ");
             MMPrintString((char *)PinDef[Option.audio_i2s_bclk].pinname);
             MMputchar(',', 1);
@@ -122,6 +130,8 @@ static void esp32_audio_clear_options(void) {
         esp32_audio_release_pin(esp32_audio_i2s_ws_pin());
         esp32_audio_release_pin(Option.audio_i2s_data);
         esp32_audio_release_pin(esp32_audio_i2s_mclk_pin());
+    } else if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC) {
+        esp32_audio_release_pin(Option.audio_i2s_data);
     }
     esp32_audio_release_pin(amp_pin);
     audio_option_clear_common_fields(0);
@@ -187,6 +197,20 @@ static void esp32_audio_reserve_pdm(int left_pin, int right_pin) {
     ESP32_OPTION_AUDIO_I2S_MCLK = 0;
     ExtCurrentConfig[left_pin] = EXT_BOOT_RESERVED;
     ExtCurrentConfig[right_pin] = EXT_BOOT_RESERVED;
+}
+
+static void esp32_audio_reserve_internal_dac(int data_pin) {
+    Option.AUDIO_L = 0;
+    Option.AUDIO_R = 0;
+    Option.AUDIO_SLICE = 99;
+    Option.audio_i2s_bclk = 0;
+    Option.audio_i2s_data = data_pin;
+    ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_INTERNAL_DAC;
+    ESP32_OPTION_AUDIO_I2S_WS = 0;
+    ESP32_OPTION_AUDIO_I2S_MCLK = 0;
+    ESP32_OPTION_AUDIO_AMP_EN = 0;
+    ESP32_OPTION_AUDIO_AMP_ACTIVE_HIGH = 0;
+    ExtCurrentConfig[data_pin] = EXT_BOOT_RESERVED;
 }
 
 static void esp32_audio_reserve_es8311(int bclk_pin, int ws_pin, int data_pin,
@@ -332,6 +356,19 @@ int esp32_audio_option_setter(unsigned char * line) {
         return 1;
     }
 
+    if ((line = checkstring(tp, (unsigned char *)"DAC"))) {
+        int data_pin;
+        getargs(&line, 1, (unsigned char *)",");
+        if (argc != 1) error("Syntax");
+        data_pin = audio_option_parse_gp_pin(argv[0]);
+        esp32_audio_require_valid_pin(data_pin);
+        esp32_audio_require_available_pin(data_pin);
+        esp32_audio_clear_options();
+        esp32_audio_reserve_internal_dac(data_pin);
+        esp32_audio_save_options();
+        return 1;
+    }
+
     {
         int left_pin, right_pin;
         line = checkstring(tp, (unsigned char *)"PDM");
@@ -363,6 +400,8 @@ int esp32_audio_mminfo(unsigned char * ep, unsigned char * out_sret, int * out_t
         strcpy((char *)out_sret, "PDM");
     else if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_ES8311)
         strcpy((char *)out_sret, "ES8311");
+    else if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC)
+        strcpy((char *)out_sret, "DAC");
     else if (Option.audio_i2s_bclk)
         strcpy((char *)out_sret, "I2S");
     else

@@ -114,7 +114,7 @@ static const esp32_board_profile_t s_profiles[] = {
         .has_sd = 1,
         .has_lcd = 1,
         .has_touch = 0,
-        .has_audio = 0,
+        .has_audio = 1,
         .has_ws2812 = 0,
         .sd = {ESP32_BOARD_CYD_SD_SCLK, ESP32_BOARD_CYD_SD_MOSI,
                ESP32_BOARD_CYD_SD_MISO, ESP32_BOARD_CYD_SD_CS,
@@ -127,9 +127,9 @@ static const esp32_board_profile_t s_profiles[] = {
                 ST7789B, LANDSCAPE, 1},
         .touch = {ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN},
-        .audio = {ESP32_AUDIO_SINK_NONE, ESP32_BOARD_PROFILE_NO_PIN,
+        .audio = {ESP32_AUDIO_SINK_INTERNAL_DAC, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
-                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_CYD_AUDIO_DAC, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_PROFILE_NO_PIN, 0, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_PROFILE_NO_PIN, 0},
         .ws2812_pin = ESP32_BOARD_PROFILE_NO_PIN,
@@ -339,6 +339,9 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
         ESP32_OPTION_AUDIO_I2S_WS = profile_pin(profile->audio.ws);
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_I2S;
+    } else if (profile->audio.sink == ESP32_AUDIO_SINK_INTERNAL_DAC) {
+        Option.audio_i2s_data = profile_pin(profile->audio.dout);
+        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_INTERNAL_DAC;
     } else if (profile->audio.sink == ESP32_AUDIO_SINK_ES8311) {
         Option.audio_i2s_bclk = profile_pin(profile->audio.bclk);
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
