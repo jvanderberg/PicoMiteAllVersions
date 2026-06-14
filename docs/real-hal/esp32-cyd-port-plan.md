@@ -1,19 +1,42 @@
 # ESP32 CYD Port Plan
 
-Status: Phases 1-3 and 8 implemented and smoke-tested on a generic classic
-ESP32 devkit (2026-06-11): UART0 REPL with banner/editing/Ctrl-C, LittleFS
-`A:` with demo seeding, file `RUN`, classic pin table with
-reserved/input-only rejection, and the full Wi-Fi surface — `WEB SCAN`,
-`WEB CONNECT` (DHCP), persisted auto-connect at boot, and the
-`network_conformance.py all` suite (TCP client/server, UDP, TFTP, telnet
-console, NTP, non-TLS MQTT) passing first-attempt on internal RAM only.
-Deviation from the Phase 8 baseline text: TLS is compiled in (S3 sdkconfig
-parity) rather than stubbed out; whether classic-ESP32 RAM can actually
-complete a handshake is untested and belongs to the memory-policy phase. Two shared-port bugs found by the smoke and fixed: the runtime
-abort pump's one-slot pushback livelock (any stray byte during RUN made
-programs un-interruptible; the pump now drains to `ConsoleRxBuf` like the
-Pico UART IRQ), and `FILES` free-bytes using Pico flash-layout math instead
-of the mounted lfs geometry. Remaining phases gated on the CYD board.
+Status: real CYD ESP32-2432S028R bring-up is now functional on hardware
+(2026-06-14). UART0 REPL, LittleFS `A:`, SD `B:`, direct-to-panel ST7789
+LCD, XPT2046 touch, internal-DAC audio, GPIO reservation/reporting, GUI
+controls, and plain Wi-Fi/networking are all exercised on the CYD profile.
+The current full smoke result is:
+
+- `esp32_fs_vm_smoke.py all`: pass for prompt/info, `A:` filesystem,
+  program lifecycle, VM/FRUN, GPIO, and `B:` SD detection.
+- `esp32_fs_vm_smoke.py display-perf`: pass. Latest CYD timings:
+  `CLS_FULL=399.4ms`, `BOX_BANDS=227.7ms`, `MENU_BOX_TEXT=579.9ms`,
+  `PIXEL_DENSE=4497.4ms`, `PIXEL_SPARSE=709.8ms`,
+  `LINES_DIAG=1804.8ms`, `BOX_SMALL=621.8ms`.
+- `esp32_fs_vm_smoke.py flash --var-save`: pass for flash slot
+  save/load/run and `VAR SAVE`/`VAR RESTORE`.
+- `network_conformance.py all`: pass for TCP client/server, UDP, TFTP,
+  telnet console, NTP, and non-TLS MQTT when run with explicit
+  `WEB CONNECT` credentials.
+
+Important fixed issues from real-board bring-up: LCD write performance is now
+usable through the raw/direct panel path; text corruption was fixed; readback
+is restored without starving writes; bad-command/error paths restore the LCD
+REPL console instead of leaving the screen frozen; `MM.INFO$(PIN n)` now
+returns `"Invalid"` for out-of-range classic GPIOs instead of aborting web
+demos; GUI controls return to the prompt after program exit/cancel; and the
+smoke harness prompt detector now handles split ANSI prompt colour sequences
+seen on the CYD serial stream. Remaining limitations are resource/hardware
+ones: no TLS/web-console baseline on no-PSRAM CYD, no true speaker amp-enable
+GPIO in the current board profile, and LCD scroll during large serial uploads
+is visibly slow because preserved console scroll uses panel readback.
+
+Earlier baseline: Phases 1-3 and 8 were first smoke-tested on a generic
+classic ESP32 devkit (2026-06-11): UART0 REPL with banner/editing/Ctrl-C,
+LittleFS `A:` with demo seeding, file `RUN`, classic pin table with
+reserved/input-only rejection, and the full Wi-Fi surface. Shared-port bugs
+found by that smoke and fixed included the runtime abort pump's one-slot
+pushback livelock and `FILES` free-bytes using Pico flash-layout math instead
+of the mounted lfs geometry.
 
 Devkit re-smoke 2026-06-12 (full `esp32_fs_vm_smoke.py info fs program vm
 flash gpio` set, abort-pump stray-byte/Ctrl-C test, MODE 1/2/3 sweep with

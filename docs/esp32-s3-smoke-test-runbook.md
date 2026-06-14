@@ -469,29 +469,38 @@ $PY porttools/esp32_tls_scan_smoke.py --port "$PORT" --vga both --long-timeout 9
 $PY porttools/esp32_lcdcam_vga_smoke.py --port "$PORT" --long-timeout 180
 ```
 
-Classic ESP32 (no PSRAM, e.g. CYD-class devkit — built from `esp32_cyd`):
+Classic ESP32 CYD / ESP32-2432S028R (no PSRAM, built from `esp32_cyd`):
 
-The classic chip is **memory-partitioned**: with Wi-Fi associated, the ~48 KB
-heap cannot also satisfy `FRUN`'s compiler tables, a graphics-mode
-framebuffer, or the web-console mirror — and there is no PSRAM to spill into.
-So networking and graphics/FRUN are tested in **separate Wi-Fi states**, and
-several features are simply unavailable. Expectations:
+The CYD build uses a direct-to-panel LCD path rather than a permanent
+framebuffer. The full baseline should exercise the local LCD console, SD,
+touch/GUI, flash slots, VM/FRUN, and plain network stack. Expectations:
 
-- TLS / MQTT-over-TLS: **unsupported** (no PSRAM for the handshake; the MQTT
-  SSL transport is compiled out). Do not run `esp32_tls_scan_smoke.py`.
-- Web console: **unavailable** (mirror buffer won't fit). Skip Tier 7.
-- `MODE 1/2` graphics and `FRUN`: only with **Wi-Fi off** (documented Wi-Fi↔
-  graphics mutual exclusion; `FRUN` compiler alloc also needs the heap).
-- TFTP can time out while a VGA console is active (the scanout ISR adds ~4× to
-  flash-write cost); other network protocols are unaffected.
+- TLS / MQTT-over-TLS: **unsupported** in the no-PSRAM CYD baseline. Do not run
+  `esp32_tls_scan_smoke.py`.
+- Web console: **unavailable** (mirror buffer will not fit). Skip Tier 7.
+- Audio uses the ESP32 internal DAC on GP26. The current board profile has no
+  amp-enable GPIO, so firmware can stop playback but cannot truly power down
+  the amplifier.
+- Large scripted uploads scroll slowly on the LCD because preserved CYD console
+  scroll uses panel readback. This is a performance limitation, not a smoke
+  failure, unless it wedges the prompt or display.
 
 ```sh
 ./buildesp32.sh esp32_cyd
-# Phase A — networking, Wi-Fi on (no graphics/FRUN, no TLS):
-$PY porttools/network_conformance.py all --port "$PORT" --connect-command 'WEB CONNECT "SSID","PASSWORD"'
-$PY porttools/esp32_tcp_smoke.py --port "$PORT" --host <mac-ip>
-# Phase B — FRUN + graphics, Wi-Fi off (clear OPTION WIFI, reboot first):
-$PY porttools/esp32_fs_vm_smoke.py info fs program vm flash gpio --port "$PORT" --long-timeout 120
+. "$HOME/esp/esp-idf/export.sh"
+idf.py -C ports/esp32_cyd -p "$PORT" flash
+
+# Core, SD detection, filesystem, VM/FRUN, and GPIO:
+$PY porttools/esp32_fs_vm_smoke.py all --port "$PORT" --boot-wait 4 --timeout 12 --long-timeout 60
+
+# Display primitive performance:
+$PY porttools/esp32_fs_vm_smoke.py display-perf --port "$PORT" --boot-wait 4 --timeout 12 --long-timeout 60
+
+# Flash slots and persistent variables:
+$PY porttools/esp32_fs_vm_smoke.py flash --var-save --port "$PORT" --boot-wait 4 --timeout 12 --long-timeout 60
+
+# Full plain-network conformance:
+$PY porttools/network_conformance.py all --port "$PORT" --boot-wait 4 --timeout 12 --long-timeout 60 --suite-timeout 120 --connect-command 'WEB CONNECT "SSID","PASSWORD"'
 ```
 
 ## Interpreting Failures
@@ -527,6 +536,16 @@ WiFi failures:
 - Confirm `WEB CONNECT` succeeds and `MM.INFO$(IP ADDRESS)` is non-empty.
 - Run TLS scan before full conformance when isolating certificate or MQTT
   failures.
+
+Network conformance reports a timeout but the transcript tail contains a prompt
+fragment such as `5m>`:
+
+- Treat this as a serial harness prompt-detection problem first, not an
+  immediate firmware regression.
+- `porttools/basic_serial.py` must tolerate prompts that begin in the middle of
+  an ANSI colour escape after a marker-based read stops early.
+- Re-run the focused suite, for example `network_conformance.py udp`, then the
+  full `network_conformance.py all` before declaring a protocol failure.
 
 NTP failures:
 

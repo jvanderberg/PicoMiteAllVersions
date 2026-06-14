@@ -91,9 +91,11 @@ static const char * esp32_pin_state_label(int cfg) {
 static int esp32_parse_gpio_info_pin_arg(unsigned char * arg) {
     unsigned char * p = arg;
     skipspace(p);
-    if ((p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p') && isdigit(p[2]))
-        return codemap(getint(p + 2, 0, 48));
-    return codemap(getint(p, 0, 48));
+    int gpio = (p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p') && isdigit(p[2])
+                   ? getinteger(p + 2)
+                   : getinteger(p);
+    if (gpio < 0 || gpio >= NBRPINS) return -1;
+    return codemap(gpio);
 }
 
 static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
@@ -856,7 +858,9 @@ void fun_info(void) {
     if ((tp = checkstring(ep, (unsigned char *)"PIN"))) {
         int pin = esp32_parse_gpio_info_pin_arg(tp);
         const char * reserved = port_pin_reserved_label(pin);
-        if (reserved)
+        if (pin < 1 || pin > NBRPINS)
+            strcpy((char *)sret, "Invalid");
+        else if (reserved)
             strcpy((char *)sret, reserved);
         else if (pin < 1 || pin > NBRPINS || (PinDef[pin].mode & UNUSED))
             strcpy((char *)sret, "Invalid");
