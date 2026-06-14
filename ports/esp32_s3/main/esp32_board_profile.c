@@ -331,6 +331,7 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.TOUCH_CS = profile_pin(profile->touch.reset);
         Option.TOUCH_CAP = 1;
         Option.THRESHOLD_CAP = 22;
+        Option.MaxCtrls = 25;
         esp32_touch_port_set_default_calibration();
     } else if (profile->has_touch &&
                profile->id == ESP32_BOARD_PROFILE_ID_CYD) {
@@ -338,6 +339,7 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.TOUCH_CS = profile_pin(profile->touch.reset);
         Option.TOUCH_CAP = 2;
         Option.THRESHOLD_CAP = 0;
+        Option.MaxCtrls = 24;
         esp32_touch_port_set_default_calibration();
     } else {
         esp32_touch_port_set_identity_calibration();

@@ -40,6 +40,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_time.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_display_merge.h"
+#include "hal/hal_gui_controls.h"
 #include "hal/hal_watchdog.h"
 #include "port_config.h"
 #include "bc_alloc.h"
@@ -1474,6 +1475,7 @@ void MIPS16 MMB_DISPATCH_FUNC(cmd_else)(void) {
 
 void do_end(bool ecmd) {
     hal_display_merge_abort();
+    hal_gui_controls_end_program();
     if (Option.SerialConsole)
         while (ConsoleTxBufHead != ConsoleTxBufTail) routinechecks();
     fflush(stdout);

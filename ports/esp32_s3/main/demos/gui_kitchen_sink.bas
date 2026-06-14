@@ -1,7 +1,4 @@
 ' GUI kitchen-sink touch demo.
-' Configure GUI slots once at the prompt before running:
-'   OPTION GUI CONTROLS 24
-'
 ' Tap controls directly. Press any serial/keyboard key to exit.
 
 GUI DELETE ALL
@@ -91,7 +88,7 @@ DO
     LastY = -1
   ENDIF
 
-  IF TIMER - NextAnim >= 150 THEN
+  IF TIMER - NextAnim >= 750 THEN
     NextAnim = TIMER
     IF CTRLVAL(6) = 1 THEN
       V = V + 5

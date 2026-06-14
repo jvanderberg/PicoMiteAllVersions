@@ -45,8 +45,9 @@
 #define HAL_PORT_HAS_WIFI 0
 #define HAL_PORT_HAS_GUICONTROLS 1
 /* Small GUI-control cap: the control table is static DRAM, and classic
- * ESP32 has roughly a third of the S3's internal RAM for it. */
-#define HAL_PORT_GUI_MAX_CONTROLS 16
+ * ESP32 has roughly a third of the S3's internal RAM for it. Keep enough
+ * slots for the packaged GUI kitchen-sink demo (#1..#17). */
+#define HAL_PORT_GUI_MAX_CONTROLS 24
 #define HAL_PORT_KEYBOARD_USB_HOST 0
 #define HAL_PORT_HAS_I2C_KEYPAD 0
 

@@ -38,6 +38,7 @@ int hal_gui_controls_print_char_escape(int fnt, int fc, int bc,
 }
 void hal_gui_controls_hide_all(void) {}
 void hal_gui_controls_reset(void) {}
+void hal_gui_controls_end_program(void) {}
 void hal_gui_controls_reset_interrupts(void) {}
 
 int hal_gui_controls_get_touch_attr(unsigned char * p, int64_t * iret_out) {
