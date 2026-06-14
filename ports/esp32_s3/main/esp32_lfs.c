@@ -113,6 +113,12 @@ extern const char demo_site_files_start[] asm("_binary_site_files_htm_start");
 extern const char demo_site_files_end[] asm("_binary_site_files_htm_end");
 extern const char demo_site_style_start[] asm("_binary_site_style_css_start");
 extern const char demo_site_style_end[] asm("_binary_site_style_css_end");
+#if defined(CONFIG_IDF_TARGET_ESP32)
+extern const char demo_touch_cal_start[] asm("_binary_touch_cal_bas_start");
+extern const char demo_touch_cal_end[] asm("_binary_touch_cal_bas_end");
+extern const char demo_touch_align_start[] asm("_binary_touch_align_bas_start");
+extern const char demo_touch_align_end[] asm("_binary_touch_align_bas_end");
+#endif
 
 struct embedded_demo {
     const char * name;
@@ -135,6 +141,10 @@ static const struct embedded_demo s_demos[] = {
     {"gpio.htm", demo_site_gpio_start, demo_site_gpio_end, 1},
     {"files.htm", demo_site_files_start, demo_site_files_end, 1},
     {"style.css", demo_site_style_start, demo_site_style_end, 1},
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    {"touch_cal.bas", demo_touch_cal_start, demo_touch_cal_end, 1},
+    {"touch_align.bas", demo_touch_align_start, demo_touch_align_end, 1},
+#endif
 };
 
 static void populate_demos(void) {

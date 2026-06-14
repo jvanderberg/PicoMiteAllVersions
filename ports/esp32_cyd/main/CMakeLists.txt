@@ -57,6 +57,11 @@ list(APPEND PORT_LOCAL_SRCS
     ${CYD_MAIN_DIR}/esp32_cyd_xpt2046_touch.c
 )
 
+list(APPEND EMBED_DEMOS
+    ${CYD_MAIN_DIR}/demos/touch_cal.bas
+    ${CYD_MAIN_DIR}/demos/touch_align.bas
+)
+
 idf_component_register(
     SRCS
         ${PORT_LOCAL_SRCS}
