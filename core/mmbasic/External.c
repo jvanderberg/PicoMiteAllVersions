@@ -1457,6 +1457,7 @@ void fun_pin(void) {
  */
 
 int CheckPin(int pin, int action) {
+    extern const char * port_pin_reserved_label(int pin);
 
     /* RP2350A is limited to 44 usable pins. On RP2040 rp2350a is true but
      * pin<=44 is always the case (NBRPINS==30), so this check is a no-op;
@@ -1465,6 +1466,14 @@ int CheckPin(int pin, int action) {
 
     if (pin < 1 || pin > NBRPINS || (PinDef[pin].mode & UNUSED)) {
         if (!(action & CP_NOABORT)) error("Pin %/| is invalid", pin, pin);
+        return false;
+    }
+
+    if (!(action & (CP_IGNORE_BOOTRES | CP_IGNORE_RESERVED)) && port_pin_reserved_label(pin)) {
+        if (!(action & CP_NOABORT)) {
+            error("Pin %/| is reserved on startup", pin, pin);
+            uSec(1000000);
+        }
         return false;
     }
 
@@ -3050,7 +3059,10 @@ void MIPS16 ClearExternalIO(void) {
     int sweep_max = rp2350a ? 44 : NBRPINS;
     if (sweep_max > NBRPINS) sweep_max = NBRPINS;
     extern int port_pin_is_reserved_alias(int pin);
+    extern const char * port_pin_reserved_label(int pin);
     for (i = 1; i < sweep_max; i++) {
+        if (ExtCurrentConfig[i] >= EXT_BOOT_RESERVED) continue;
+        if (port_pin_reserved_label(i)) continue;
         /* Skip reserved virtual aliases — on CYW43 ports these wrap
 		 * the CYW43 SPI/RST pins (GP23/24/25/29 → indices 41-44 on
 		 * pico_w family). Calling ExtCfg(EXT_NOT_CONFIG) deinit's

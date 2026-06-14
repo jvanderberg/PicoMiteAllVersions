@@ -40,6 +40,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_flash.h"
 #include "hal/hal_display_merge.h"
 #include "hal/hal_gui_controls.h"
+#include "hal/hal_vm_framebuffer.h"
 #include "Draw.h"
 #include "port_config.h"
 
@@ -3273,6 +3274,8 @@ void MIPS16 error(char * msg, ...) {
     }
     if (OptionErrorSkip) longjmp(ErrNext, 1); // if OPTION ERROR SKIP/IGNORE is in force
     hal_display_merge_abort();
+    hal_vm_framebuffer_shutdown_runtime();
+    hal_gui_controls_end_program();
 
     int saved_prompt_font = PromptFont;
     int saved_prompt_fc = PromptFC;

@@ -185,8 +185,12 @@ bool option_command_handle_common(unsigned char * cmdline, bool clear_display_on
             return true;
         }
         if (checkstring(tp, (unsigned char *)"ON")) {
+#if defined(MMBASIC_ESP32_CYD)
+            error("Invalid on this display");
+#else
             Option.Refresh = 1;
             return true;
+#endif
         }
         error("Syntax");
     }

@@ -502,7 +502,7 @@ static int pin_is_vga_pin(int pin) {
 }
 
 const char * port_pin_reserved_label(int pin) {
-    if (profile_pin_invalid(pin) || ExtCurrentConfig[pin] != EXT_BOOT_RESERVED)
+    if (profile_pin_invalid(pin))
         return NULL;
 
     const esp32_board_profile_t * profile = esp32_board_profile_current();

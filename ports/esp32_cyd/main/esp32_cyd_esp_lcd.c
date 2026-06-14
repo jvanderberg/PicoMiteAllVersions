@@ -43,7 +43,8 @@
 #define LCD_PASET 0x2B
 #define LCD_RAMWR 0x2C
 #define LCD_RAMRD 0x2E
-#define SCRATCH_PX (LCD_W * 16) /* tile draws/reads through this many pixels */
+#define SCRATCH_PX (LCD_W * 16) /* tile writes through this many pixels */
+#define READ_SCRATCH_PX (LCD_W * 4)
 
 static const char * TAG = "esp_lcd";
 static esp_lcd_panel_io_handle_t s_io;
@@ -55,13 +56,16 @@ static int s_cs = -1;
 static int s_w = LCD_W;
 static int s_h = LCD_H;
 static int s_panel_type = ST7789B;
-static uint8_t * s_scratch;   /* DMA scratch, SCRATCH_PX RGB565 pixels */
-static uint8_t * s_rdbuf;     /* DMA read scratch, 1 dummy + SCRATCH_PX*3 */
+static uint8_t * s_scratch;   /* DMA write scratch, SCRATCH_PX RGB565 pixels */
+static uint8_t * s_rdbuf;     /* DMA read scratch, 1 dummy + READ_SCRATCH_PX*3 */
 
 extern volatile int DISPLAY_TYPE;
 extern unsigned char OptionConsole;
 extern const int colours[16];
 extern int RGB121map[16];
+extern void port_set_error_restore_console_surface_callback(void (*callback)(void));
+
+void esp32_ili9341_lcd_scroll(int lines);
 
 static inline uint16_t rgb565(int c) {
     uint32_t v = (uint32_t)c;
@@ -295,7 +299,7 @@ static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) 
     if (!s_lcd || !s_rd || !s_rdbuf) return 0;
     int w = x2 - x1 + 1, h = y2 - y1 + 1;
     int per_row = w * 3;
-    int rows = (1 + SCRATCH_PX * 3) / per_row;
+    int rows = (1 + READ_SCRATCH_PX * 3) / per_row;
     if (rows < 1) rows = 1;
     if (rows > h) rows = h;
     for (int y = 0; y < h;) {
@@ -380,14 +384,14 @@ static void bind_panel(void) {
     DrawBLITBuffer = esp_lcd_draw_buffer;
     DrawBufferFast = esp_lcd_draw_buffer_fast;
     if (s_rd) {
-        /* Readback is available for PIXEL()/sprites, but keep CYD console
-         * no-scroll. ScrollLCDSPISCR belongs to the shared SPI-LCD backend;
-         * binding it here can leave the display console blank after scroll. */
+        /* Readback is available for PIXEL()/sprites and for console scroll.
+         * Use the CYD-local scroll implementation; the shared SPI-LCD scroll
+         * path assumes the Pico SPI backend state and can blank the console. */
         ReadBuffer = esp_lcd_read_buffer;
         ReadBLITBuffer = esp_lcd_read_buffer;
         ReadBufferFast = esp_lcd_read_buffer_fast;
-        ScrollLCD = (void (*)(int))DisplayNotSet;
-        Option.NoScroll = 1;
+        ScrollLCD = esp32_ili9341_lcd_scroll;
+        Option.NoScroll = 0;
     } else {
         /* No MISO / read device: PIXEL()/sprites/transparent error cleanly and
          * the console clear-homes on overflow instead of scrolling. */
@@ -402,10 +406,18 @@ static void bind_panel(void) {
 int esp32_ili9341_lcd_restore_panel(void) {
     if (!s_lcd && !s_panel) return 0;
     bind_panel();
+    esp32_board_profile_reserve_lcd_pins();
     return 1;
 }
 
 void esp32_ili9341_lcd_flush_pending(void) {}
+
+static void esp_lcd_error_restore_console_surface(void) {
+    if (!esp32_ili9341_lcd_restore_panel()) return;
+    ApplyDefaultConsoleColours();
+    CurrentX = 0;
+    CurrentY = 0;
+}
 
 /* Console scroll with no shadow buffer: read each shifted row straight off the
  * panel and redraw it, then fill the vacated band with the background. Only
@@ -558,7 +570,7 @@ void esp32_ili9341_lcd_init(void) {
         s_scratch = heap_caps_malloc(SCRATCH_PX * 2u,
                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     if (s_rd && !s_rdbuf)
-        s_rdbuf = heap_caps_malloc(1 + SCRATCH_PX * 3,
+        s_rdbuf = heap_caps_malloc(1 + READ_SCRATCH_PX * 3,
                                    MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
 
     if (backlight >= 0) esp32_backlight_init_default();
@@ -571,6 +583,7 @@ void esp32_ili9341_lcd_init(void) {
         Option.DefaultBC = BLACK;
     }
     esp32_board_profile_reserve_lcd_pins();
+    port_set_error_restore_console_surface_callback(esp_lcd_error_restore_console_surface);
     ApplyDefaultConsoleColours();
     CurrentX = 0;
     CurrentY = 0;
