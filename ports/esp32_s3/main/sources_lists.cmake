@@ -242,6 +242,7 @@ set(EMBED_DEMOS
     demos/fizzbuzz.bas
     demos/sieve.bas
     demos/mand.bas
+    demos/touch_draw.bas
     demos/web_hello.bas
     demos/site.bas
     demos/site_index.htm
