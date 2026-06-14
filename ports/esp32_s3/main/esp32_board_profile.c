@@ -13,6 +13,7 @@
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 #include "esp32_ft6336u_touch.h"
+#include "esp32_touch_port.h"
 
 extern int esp32_ft6336u_touch_is_ready(void);
 
@@ -113,7 +114,7 @@ static const esp32_board_profile_t s_profiles[] = {
         .platform_name = ESP32_BOARD_CYD_NAME,
         .has_sd = 1,
         .has_lcd = 1,
-        .has_touch = 0,
+        .has_touch = 1,
         .has_audio = 1,
         .has_ws2812 = 0,
         .sd = {ESP32_BOARD_CYD_SD_SCLK, ESP32_BOARD_CYD_SD_MOSI,
@@ -126,7 +127,7 @@ static const esp32_board_profile_t s_profiles[] = {
                 ESP32_BOARD_CYD_LCD_BL, ESP32_BOARD_CYD_LCD_SPI_HZ,
                 ST7789B, LANDSCAPE, 1},
         .touch = {ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
-                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN},
+                  ESP32_BOARD_CYD_TOUCH_IRQ, ESP32_BOARD_CYD_TOUCH_CS},
         .audio = {ESP32_AUDIO_SINK_INTERNAL_DAC, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
                   ESP32_BOARD_CYD_AUDIO_DAC, ESP32_BOARD_PROFILE_NO_PIN,
@@ -319,7 +320,8 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.ColourCode = 1;
     }
 
-    if (profile->has_touch) {
+    if (profile->has_touch &&
+        profile->id == ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
         /* Seed the shared system I2C bus on the touch pins. These are
          * overridable defaults: a user OPTION SYSTEM I2C or SETPIN
          * reconfigures the pins and persists over this seeding. */
@@ -329,9 +331,16 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.TOUCH_CS = profile_pin(profile->touch.reset);
         Option.TOUCH_CAP = 1;
         Option.THRESHOLD_CAP = 22;
-        esp32_ft6336u_touch_set_default_calibration();
+        esp32_touch_port_set_default_calibration();
+    } else if (profile->has_touch &&
+               profile->id == ESP32_BOARD_PROFILE_ID_CYD) {
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 2;
+        Option.THRESHOLD_CAP = 0;
+        esp32_touch_port_set_default_calibration();
     } else {
-        esp32_ft6336u_touch_set_identity_calibration();
+        esp32_touch_port_set_identity_calibration();
     }
 
     if (profile->audio.sink == ESP32_AUDIO_SINK_I2S_DAC) {
@@ -424,13 +433,28 @@ void esp32_board_profile_reserve_lcd_pins(void) {
 }
 
 void esp32_board_profile_reserve_touch_pins(void) {
-    /* Touch config lives in the PicoMite Option fields: bus from OPTION
-     * SYSTEM I2C, controller from OPTION TOUCH FT6336 (or profile seed). */
+    /* Touch config lives in the PicoMite Option fields. Freenove uses the
+     * shared system I2C bus; CYD uses XPT2046 GPIOs and does not touch I2C. */
+    if (!Option.TOUCH_CAP &&
+        esp32_board_profile_current_id() == ESP32_BOARD_PROFILE_ID_CYD) {
+        const esp32_board_profile_t * profile = esp32_board_profile_current();
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 2;
+        esp32_touch_port_set_default_calibration();
+    }
     if (!Option.TOUCH_CAP) return;
-    esp32_board_profile_update_shared_i2c_pins();
+    if (Option.TOUCH_CAP == 1) esp32_board_profile_update_shared_i2c_pins();
     reserve_pin_index(Option.TOUCH_IRQ);
     reserve_pin_index(Option.TOUCH_CS);
     reserve_pin_index(Option.TOUCH_Click);
+#if defined(ESP32_BOARD_CYD_TOUCH_SCLK)
+    if (esp32_board_profile_current_id() == ESP32_BOARD_PROFILE_ID_CYD) {
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_SCLK);
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_MOSI);
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_MISO);
+    }
+#endif
     s_touch_pins_reserved = 1;
 }
 

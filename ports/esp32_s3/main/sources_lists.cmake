@@ -199,6 +199,7 @@ set(PORT_LOCAL_SRCS
     esp32_lcd_options.c                     # OPTION SYSTEM SPI / OPTION LCDPANEL setters
     esp32_freenove_i2c.c                    # shared Freenove touch/audio I2C bus
     esp32_ft6336u_touch.c                   # Freenove FNK0104B FT6336U touch reader
+    esp32_touch_port.c                      # board-neutral ESP32 touch dispatch
     esp32_touch_function.c                  # ESP32 TOUCH() function over port-local touch readers
     esp32_gui_touch_adapter.c               # Freenove FT6336U bridge for shared GUI-control touch state
     esp32_fastgfx.c                         # FASTGFX for ESP32 VGA scanout and Freenove ILI9341

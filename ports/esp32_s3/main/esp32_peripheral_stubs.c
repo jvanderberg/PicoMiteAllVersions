@@ -34,7 +34,7 @@
 #include "hal/hal_time.h"
 #include "esp32_board_profile.h"
 #include "esp32_audio_options.h"
-#include "esp32_ft6336u_touch.h"
+#include "esp32_touch_port.h"
 #include "esp32_option_ext.h"
 
 extern void port_print_supported_boards(void);
@@ -101,11 +101,13 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
     if (!p) return 0;
     int persist = 1;
     if (!Option.TOUCH_CAP)
+        esp32_board_profile_reserve_touch_pins();
+    if (!Option.TOUCH_CAP)
         error("Touch not configured (OPTION TOUCH)");
     if (checkstring(p, (unsigned char *)"DEFAULT")) {
-        esp32_ft6336u_touch_set_default_calibration();
+        esp32_touch_port_set_default_calibration();
     } else if (checkstring(p, (unsigned char *)"OFF")) {
-        esp32_ft6336u_touch_set_identity_calibration();
+        esp32_touch_port_set_identity_calibration();
         persist = 0;
     } else {
         getargs(&p, 7, (unsigned char *)",");
@@ -128,6 +130,18 @@ static void esp32_touch_calibrate_print_option(void) {
              (double)(Option.TOUCH_XSCALE * 10000.0f),
              (double)(Option.TOUCH_YSCALE * 10000.0f));
     MMPrintString(line);
+}
+
+int port_mminfo_touch_status(unsigned char * out_sret) {
+    if (!Option.TOUCH_CS)
+        strcpy((char *)out_sret, "Disabled");
+    else if (!esp32_touch_port_is_ready())
+        strcpy((char *)out_sret, "Not ready");
+    else if (Option.TOUCH_XZERO == TOUCH_NOT_CALIBRATED)
+        strcpy((char *)out_sret, "Not calibrated");
+    else
+        strcpy((char *)out_sret, "Ready");
+    return 1;
 }
 
 /* PNG decoder + CMM2-program loader stubs. PNG support comes from

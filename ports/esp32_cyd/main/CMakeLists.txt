@@ -54,6 +54,7 @@ list(APPEND PORT_LOCAL_SRCS
     ${CYD_MAIN_DIR}/esp32_cyd_i2c_slave_stub.c
     ${CYD_MAIN_DIR}/esp32_cyd_audio_dac.c
     ${CYD_MAIN_DIR}/esp32_cyd_audio_pdm_slot.c
+    ${CYD_MAIN_DIR}/esp32_cyd_xpt2046_touch.c
 )
 
 idf_component_register(
