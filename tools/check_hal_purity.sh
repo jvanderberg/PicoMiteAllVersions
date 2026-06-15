@@ -197,6 +197,16 @@ shopt -u nullglob
 ESP32_CMAKE=ports/esp32_s3/main/CMakeLists.txt
 ESP32_PLATFORM=ports/esp32_s3/main/esp32_platform.h
 
+# Shared scope: every source/header under shared/ is portable code linked
+# into every target, so it must carry zero port-specific #ifdefs — no target
+# macros and no port-config (HAL_PORT_*/PORT_*) gates. Same strict rule as
+# core. Port-only code that happens to live under shared/ belongs in a port
+# directory instead. (find, not globstar — the gate runs under bash 3.2.)
+SHARED_FILES=()
+while IFS= read -r _f; do
+  SHARED_FILES+=("$_f")
+done < <(find shared -type f \( -name '*.c' -o -name '*.h' \) | sort)
+
 # SDK-clean scope (sdk-compat-retirement-plan.md, terminal gate): every file
 # under core/ and shared/ must compile against hal/*.h contracts only —
 # zero Pico-SDK header includes, zero `_hw->` register-window access, zero
@@ -474,6 +484,20 @@ for f in ${STRICT_FILES[@]+"${STRICT_FILES[@]}"}; do
 done
 if [[ $fail -eq 0 ]]; then
   echo "    (all strict files clean)"
+fi
+
+echo
+echo "Shared scope (shared/**/*.{c,h} must be 0 target-macro and 0 port-config #ifdefs):"
+if [[ ${#SHARED_FILES[@]} -eq 0 ]]; then
+  echo "    (no shared sources found)"
+else
+  pre_fail=$fail
+  for f in "${SHARED_FILES[@]}"; do
+    check_file_strict "$f"
+  done
+  if [[ $fail -eq $pre_fail ]]; then
+    echo "    (all shared files clean)"
+  fi
 fi
 
 echo

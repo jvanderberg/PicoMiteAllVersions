@@ -239,15 +239,11 @@ int cmd_tcpserver(void) {
     return 0;
 }
 
-/* 3D sprite-builder teardown: real implementation lives in
- * drivers/gfx_3d/gfx_3d.c. WEB-only WiFi ports (WEB, WEBRP2350) don't
- * link gfx_3d.c — stub so FileIO.c::CloseAllFiles can call it
- * unconditionally. WiFi+PICOMITEVGA ports (F2 = VGAWIFIRP2350) DO
- * link gfx_3d.c (because their dispatch table needs fun_3D), so this
- * stub must NOT also be present there. */
-#if !HAL_PORT_IS_VGA
-void closeall3d(void) {}
-#endif
+/* 3D sprite-builder teardown so FileIO.c::CloseAllFiles can call it
+ * unconditionally. Weak no-op: ports that link the real implementation
+ * (drivers/gfx_3d/gfx_3d.c, on VGA/HDMI builds whose dispatch table
+ * needs fun_3D) override it; WEB-only WiFi ports keep this stub. */
+__attribute__((weak)) void closeall3d(void) {}
 
 /* Called from MMBasic.c::ClearRuntime() to clear pending TCP requests and
  * reset the suppress-status flag when a BASIC program restarts. */

@@ -16,6 +16,10 @@
 #include "hal/hal_net.h"
 #include "shared/net/mm_net_mqtt_wire.h"
 
+int hal_net_ipv6_to_string(const uint8_t addr[16], char * out, int out_len) {
+    return inet_ntop(AF_INET6, addr, out, out_len) ? (int)strlen(out) : 0;
+}
+
 #define HOST_NET_MAX_TCP_SERVERS 8
 #define HOST_NET_MAX_TCP_CONNS 16
 #define HOST_NET_MAX_TCP_CLIENTS 16

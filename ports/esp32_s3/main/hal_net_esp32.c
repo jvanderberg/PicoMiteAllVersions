@@ -32,7 +32,12 @@
 #include "nvs_flash.h"
 
 #include "hal/hal_net.h"
+#include "lwip/inet.h"
 #include "vga_lcdcam_s3.h" /* vga_lcdcam_s3_scanout_reserved() */
+
+int hal_net_ipv6_to_string(const uint8_t addr[16], char * out, int out_len) {
+    return inet_ntop(AF_INET6, addr, out, out_len) ? (int)strlen(out) : 0;
+}
 
 #define ESP32_NET_MAX_TCP_SERVERS 4
 #define ESP32_NET_MAX_TCP_CONNS 12

@@ -46,6 +46,10 @@ extern int FindFreeFileNbr(void);
 extern int BasicFileOpen(char * fname, int fnbr, int mode);
 extern int ForceFileClose(int fnbr);
 
+/* No MOD-size limit by default; ports with a tight audio work-memory
+ * budget (e.g. the no-PSRAM CYD) override this. */
+__attribute__((weak)) unsigned long hal_audio_mod_max_file_bytes(void) { return 0; }
+
 #define DECODE_FRAMES 1024
 #define MOD_RENDER_RATE 22050
 #define MOD_OUTPUT_RATE (MOD_RENDER_RATE * 2)
@@ -299,15 +303,13 @@ int audio_stream_play_mod_noloop(char * fname, int noloop) {
         stream_close_file();
         return -1;
     }
-#ifdef HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES
-    if ((unsigned long)size > (unsigned long)HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES) {
+    unsigned long mod_max = hal_audio_mod_max_file_bytes();
+    if (mod_max && (unsigned long)size > mod_max) {
         printf("audio_stream: mod too large bytes=%lu max=%lu\r\n",
-               (unsigned long)size,
-               (unsigned long)HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES);
+               (unsigned long)size, mod_max);
         stream_close_file();
         return -1;
     }
-#endif
 
     s_modbuf = hal_audio_workmem_alloc((unsigned long)size);
     s_modctx = hal_audio_workmem_alloc(sizeof(modcontext));

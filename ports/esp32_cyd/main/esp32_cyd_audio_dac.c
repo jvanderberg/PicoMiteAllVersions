@@ -18,6 +18,12 @@
 #include "driver/i2s.h"
 #include "esp_err.h"
 
+#include "hal/hal_audio_stream.h"
+
+/* Cap MOD files to what fits in the no-PSRAM CYD audio work-memory budget
+ * (allocated from the internal/BASIC heap after Wi-Fi/LCD/SD init). */
+unsigned long hal_audio_mod_max_file_bytes(void) { return 24u * 1024u; }
+
 #define CYD_DAC_I2S_NUM I2S_NUM_0
 #define CYD_DAC_DMA_DESC_NUM 2
 #define CYD_DAC_DMA_FRAME_NUM 128

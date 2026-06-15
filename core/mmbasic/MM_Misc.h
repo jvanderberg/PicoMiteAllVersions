@@ -96,6 +96,12 @@ extern bool optionfulltime;
 extern int64_t TimeOffsetToUptime;
 extern time_t get_epoch(int year, int month, int day, int hour, int minute, int second);
 extern uint_fast64_t gettimefromepoch(int * year, int * month, int * day, int * hour, int * minute, int * second);
+/* Port hook for DATE$ / TIME$. Fills `out` with a C string and returns 1
+ * when the port supplies its own clock formatting (host wall-clock display
+ * or test mocking); returns 0 to use the standard mmbasic-epoch path. The
+ * default returns 0; host ports override. */
+int port_clock_format_date(char * out);
+int port_clock_format_time(char * out);
 /* Survives soft reset; the defining port places it in uninitialized RAM. */
 extern uint64_t _persistent;
 extern void printoptions(void);

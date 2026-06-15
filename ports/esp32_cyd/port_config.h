@@ -61,7 +61,6 @@
  * small enough to allocate from internal heap after Wi-Fi/LCD/SD init. */
 #define HAL_PORT_AUDIO_SAMPLE_RING_FRAMES 1024u
 #define HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP 1
-#define HAL_PORT_AUDIO_MOD_MAX_FILE_BYTES (24u * 1024u)
 
 /* Compile-time fallback I2S DAC pins (e.g. MAX98357A, PCM5102, UDA1334).
  * PLAY TONE / SOUND / NOTE synthesize 16-bit stereo PCM

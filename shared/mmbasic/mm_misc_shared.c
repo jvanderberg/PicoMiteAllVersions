@@ -48,10 +48,18 @@ extern unsigned int b64_decode(const unsigned char * in, unsigned int in_len, un
 /* Shared globals moved out of MM_Misc.c. */
 int64_t TimeOffsetToUptime = 1704067200;
 uint64_t timeroffset = 0;
-#if defined(MMBASIC_HOST) && !defined(MMBASIC_ESP32)
-int host_time_use_mmbasic_offset = 0;
-#endif
 const char * daystrings[] = {"dummy", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
+
+/* DATE$/TIME$ default to the standard mmbasic-epoch path; host ports
+ * override these to show wall-clock time and honour test mocking. */
+__attribute__((weak)) int port_clock_format_date(char * out) {
+    (void)out;
+    return 0;
+}
+__attribute__((weak)) int port_clock_format_time(char * out) {
+    (void)out;
+    return 0;
+}
 
 /* Forward decl: cmd_longString calls parselongAES (defined below). */
 void parselongAES(uint8_t * p, int ivadd, uint8_t * keyx, uint8_t * ivx, int64_t ** inint, int64_t ** outint);
@@ -1134,42 +1142,18 @@ void cmd_date(void) {
 
 // this is invoked as a function
 void fun_date(void) {
-#if defined(MMBASIC_HOST) && !defined(MMBASIC_ESP32)
-    /* Tests set MMBASIC_HOST_DATE to pin a deterministic value across
-     * interpreter + VM comparison; otherwise fall back to wall clock so
-     * --sim shows real time. WEB NTP flips host_time_use_mmbasic_offset so
-     * host network conformance follows the device DATE$/TIME$ path. */
-    sret = GetTempMemory(STRINGSIZE);
-    const char * mock = getenv("MMBASIC_HOST_DATE");
-    if (mock && *mock) {
-        strncpy((char *)sret, mock, 15);
-        ((char *)sret)[15] = '\0';
-    } else if (host_time_use_mmbasic_offset) {
+    sret = GetTempMemory(STRINGSIZE); // this will last for the life of the command
+    if (!port_clock_format_date((char *)sret)) {
         int year, month, day, hour, minute, second;
         gettimefromepoch(&year, &month, &day, &hour, &minute, &second);
-        snprintf((char *)sret, 16, "%02d-%02d-%04d", day, month, year);
-    } else {
-        time_t now = time(NULL);
-        struct tm * lt = localtime(&now);
-        if (lt) {
-            snprintf((char *)sret, 16, "%02d-%02d-%04d",
-                     lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900);
-        }
+        IntToStrPad((char *)sret, day, '0', 2, 10);
+        sret[2] = '-';
+        IntToStrPad((char *)sret + 3, month, '0', 2, 10);
+        sret[5] = '-';
+        IntToStr((char *)sret + 6, year, 10);
     }
     CtoM(sret);
     targ = T_STR;
-#else
-    int year, month, day, hour, minute, second;
-    gettimefromepoch(&year, &month, &day, &hour, &minute, &second);
-    sret = GetTempMemory(STRINGSIZE); // this will last for the life of the command
-    IntToStrPad((char *)sret, day, '0', 2, 10);
-    sret[2] = '-';
-    IntToStrPad((char *)sret + 3, month, '0', 2, 10);
-    sret[5] = '-';
-    IntToStr((char *)sret + 6, year, 10);
-    CtoM(sret);
-    targ = T_STR;
-#endif
 }
 
 // this is invoked as a function
@@ -1289,48 +1273,22 @@ void cmd_time(void) {
 
 // this is invoked as a function
 void fun_time(void) {
-#if defined(MMBASIC_HOST) && !defined(MMBASIC_ESP32)
-    /* See fun_date() above for the env-var/runtime override rationale. */
-    sret = GetTempMemory(STRINGSIZE);
-    const char * mock = getenv("MMBASIC_HOST_TIME");
-    if (mock && *mock) {
-        strncpy((char *)sret, mock, 15);
-        ((char *)sret)[15] = '\0';
-    } else if (host_time_use_mmbasic_offset) {
+    sret = GetTempMemory(STRINGSIZE); // this will last for the life of the command
+    if (!port_clock_format_time((char *)sret)) {
         int year, month, day, hour, minute, second;
-        uint64_t fulltime = gettimefromepoch(&year, &month, &day, &hour,
-                                             &minute, &second);
-        snprintf((char *)sret, 16, "%02d:%02d:%02d", hour, minute, second);
+        uint64_t fulltime = gettimefromepoch(&year, &month, &day, &hour, &minute, &second);
+        IntToStrPad((char *)sret, hour, '0', 2, 10);
+        sret[2] = ':';
+        IntToStrPad((char *)sret + 3, minute, '0', 2, 10);
+        sret[5] = ':';
+        IntToStrPad((char *)sret + 6, second, '0', 2, 10);
         if (optionfulltime) {
             sret[8] = '.';
             IntToStrPad((char *)sret + 9, (fulltime / 1000) % 1000, '0', 3, 10);
         }
-    } else {
-        time_t now = time(NULL);
-        struct tm * lt = localtime(&now);
-        if (lt) {
-            snprintf((char *)sret, 16, "%02d:%02d:%02d",
-                     lt->tm_hour, lt->tm_min, lt->tm_sec);
-        }
     }
     CtoM(sret);
     targ = T_STR;
-#else
-    int year, month, day, hour, minute, second;
-    sret = GetTempMemory(STRINGSIZE); // this will last for the life of the command
-    uint64_t fulltime = gettimefromepoch(&year, &month, &day, &hour, &minute, &second);
-    IntToStrPad((char *)sret, hour, '0', 2, 10);
-    sret[2] = ':';
-    IntToStrPad((char *)sret + 3, minute, '0', 2, 10);
-    sret[5] = ':';
-    IntToStrPad((char *)sret + 6, second, '0', 2, 10);
-    if (optionfulltime) {
-        sret[8] = '.';
-        IntToStrPad((char *)sret + 9, (fulltime / 1000) % 1000, '0', 3, 10);
-    }
-    CtoM(sret);
-    targ = T_STR;
-#endif
 }
 
 void fun_format(void) {
