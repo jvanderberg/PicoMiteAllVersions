@@ -130,7 +130,7 @@ struct option_s {
     int8_t ColourCode;
     unsigned char MOUSE_CLOCK;
     unsigned char MOUSE_DATA;
-    char spare;
+    char DISPLAY_MIRROR; // horizontal-mirror flag for SPI-LCD panels (0 = off); honoured on the ESP32 esp_lcd path for mirrored CYD ST7789 sub-variants
     int CPU_Speed;
     unsigned int Telnet;      // used to store the size of the program flash (also start of the LIBRARY code)
     int DefaultFC, DefaultBC; // the default colours
