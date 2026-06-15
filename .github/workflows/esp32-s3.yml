@@ -11,6 +11,7 @@ on:
       - 'hal/**'
       - 'ports/esp32_s3/**'
       - 'ports/esp32_s3_quad/**'
+      - 'ports/esp32_cyd/**'
       - 'runtime/**'
       - 'shared/**'
       - 'third_party/**'
@@ -27,6 +28,7 @@ on:
       - 'hal/**'
       - 'ports/esp32_s3/**'
       - 'ports/esp32_s3_quad/**'
+      - 'ports/esp32_cyd/**'
       - 'runtime/**'
       - 'shared/**'
       - 'third_party/**'
@@ -43,18 +45,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build ESP32-S3 firmware (octal + quad)
+      - name: Build ESP32-S3 firmware (octal + quad + CYD)
         shell: bash
         run: |
           docker run --rm \
             -v "$PWD:/project" \
             -w /project \
-            espressif/idf:v5.3 \
+            espressif/idf:v5.3.5 \
             bash -lc 'git config --global --add safe.directory /project &&
                       . "$IDF_PATH/export.sh" >/dev/null &&
                       ./buildesp32.sh all &&
                       chmod -R a+rw ports/esp32_s3/build ports/esp32_s3/sdkconfig \
-                                    ports/esp32_s3_quad/build ports/esp32_s3_quad/sdkconfig'
+                                    ports/esp32_s3_quad/build ports/esp32_s3_quad/sdkconfig \
+                                    ports/esp32_cyd/build ports/esp32_cyd/sdkconfig'
 
       - name: Stage ESP32-S3 artifacts (merged bins only)
         shell: bash
@@ -62,21 +65,22 @@ jobs:
           docker run --rm \
             -v "$PWD:/project" \
             -w /project \
-            espressif/idf:v5.3 \
+            espressif/idf:v5.3.5 \
             bash -lc 'set -euo pipefail
                       . "$IDF_PATH/export.sh" >/dev/null
                       mkdir -p artifacts
-                      for v in octal quad; do
+                      for v in octal quad cyd; do
                         case $v in
-                          octal) build=ports/esp32_s3/build;      app=mmbasic_anywhere_esp32_s3.bin ;;
-                          quad)  build=ports/esp32_s3_quad/build;  app=mmbasic_anywhere_esp32_s3_quad.bin ;;
+                          octal) build=ports/esp32_s3/build;      app=mmbasic_anywhere_esp32_s3.bin;      chip=esp32s3; freq=80m; boot=0x0;    out=MMBasic-Anywhere-esp32-s3-octal-merged.bin ;;
+                          quad)  build=ports/esp32_s3_quad/build;  app=mmbasic_anywhere_esp32_s3_quad.bin;  chip=esp32s3; freq=80m; boot=0x0;    out=MMBasic-Anywhere-esp32-s3-quad-merged.bin ;;
+                          cyd)   build=ports/esp32_cyd/build;      app=mmbasic_anywhere_esp32_cyd.bin;      chip=esp32;   freq=40m; boot=0x1000; out=MMBasic-Anywhere-esp32-cyd-merged.bin ;;
                         esac
-                        python -m esptool --chip esp32s3 merge_bin \
-                           -o "artifacts/MMBasic-Anywhere-esp32-s3-$v-merged.bin" \
+                        python -m esptool --chip "$chip" merge_bin \
+                           -o "artifacts/$out" \
                            --flash_mode dio \
-                           --flash_freq 80m \
+                           --flash_freq "$freq" \
                            --flash_size 4MB \
-                           0x0 "$build/bootloader/bootloader.bin" \
+                           "$boot" "$build/bootloader/bootloader.bin" \
                            0x8000 "$build/partition_table/partition-table.bin" \
                            0x10000 "$build/$app"
                       done

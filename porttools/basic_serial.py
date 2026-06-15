@@ -120,6 +120,12 @@ class BasicSerial:
         # Valid prompt shapes: end of stream with "\n>" or just ">".
         if tail.endswith(b"\n>") or tail == b">":
             return True
+        # A caller can start waiting in the middle of the prompt colour
+        # sequence after a previous read stopped on an application marker.
+        # In that case ANSI stripping cannot see the leading ESC and leaves
+        # a fragment like "5m>" before the prompt.
+        if re.search(rb"(?:^|\n)[0-9;]*m>$", tail):
+            return True
         return False
 
     def wait_for_prompt(self, timeout: float) -> bytes:

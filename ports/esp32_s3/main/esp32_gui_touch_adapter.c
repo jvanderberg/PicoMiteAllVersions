@@ -1,9 +1,9 @@
 /*
  * ESP32-S3 bridge for the legacy GUI-control touch API.
  *
- * The Freenove FT6336U driver already returns active-display pixel
- * coordinates. This adapter presents those mapped coordinates to the shared
- * GUI control stack without using the resistive-touch calibration path.
+ * The active board touch driver already returns display pixel coordinates.
+ * This adapter presents those mapped coordinates to the shared GUI control
+ * stack.
  */
 
 #include "MMBasic_Includes.h"
@@ -11,7 +11,7 @@
 
 #include "driver/gpio.h"
 #include "esp_timer.h"
-#include "esp32_ft6336u_touch.h"
+#include "esp32_touch_port.h"
 #include "esp32_option_ext.h"
 
 #define GUI_TOUCH_SAMPLE_CACHE_US 5000
@@ -81,11 +81,11 @@ static void sample_touch(void) {
     s_sample_us = now;
 
     s_x = s_y = s_x2 = s_y2 = TOUCH_ERROR;
-    s_down = esp32_ft6336u_touch_read(0, &s_x, &s_y);
+    s_down = esp32_touch_port_read(0, &s_x, &s_y);
     if (s_down) {
         s_x = clamp_axis(s_x, HRes);
         s_y = clamp_axis(s_y, VRes);
-        if (esp32_ft6336u_touch_read(1, &s_x2, &s_y2)) {
+        if (esp32_touch_port_read(1, &s_x2, &s_y2)) {
             s_x2 = clamp_axis(s_x2, HRes);
             s_y2 = clamp_axis(s_y2, VRes);
         }
@@ -105,8 +105,8 @@ int esp32_gui_touch_down_for_gui(void) {
 
 void InitTouch(void) {
     clear_cached_sample();
-    esp32_ft6336u_touch_init();
-    if (!esp32_ft6336u_touch_is_ready()) {
+    esp32_touch_port_init();
+    if (!esp32_touch_port_is_ready()) {
         /* Probe failure leaves the persisted configuration alone — the
          * controller is retried next boot. */
         TOUCH_GETIRQTRIS = 0;

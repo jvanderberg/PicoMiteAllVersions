@@ -4,19 +4,22 @@
 
 #include <string.h>
 
-#if defined(MMBASIC_HOST) && !defined(MMBASIC_ESP32)
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#else
-#include "lwip/inet.h"
-#endif
-
 #include "MMBasic_Includes.h"
 #include "hal/hal_net.h"
 #include "shared/net/mm_net_http.h"
 #include "shared/net/mm_net_interrupts.h"
 #include "shared/net/mm_net_service.h"
 #include "shared/net/mm_net_state.h"
+
+/* Default: no IPv6 text formatting. Backends with a socket stack override
+ * this (see hal_net_*.c). */
+__attribute__((weak)) int hal_net_ipv6_to_string(const uint8_t addr[16],
+                                                 char * out, int out_len) {
+    (void)addr;
+    (void)out;
+    (void)out_len;
+    return 0;
+}
 
 void mm_net_tcp_service_slot_init(mm_net_tcp_service_slot_t * slot,
                                   uint8_t * recv_buf, size_t recv_cap,
@@ -214,12 +217,10 @@ int mm_net_udp_service_poll(mm_net_udp_service_t * svc) {
         if (from.family == 4) {
             mm_net_state_set_ipv4_address(from.bytes);
         } else if (from.family == 6) {
-#ifdef AF_INET6
-            char text[INET6_ADDRSTRLEN];
-            if (inet_ntop(AF_INET6, from.bytes, text, sizeof text))
-                mm_net_state_set_mstring(MM_NET_STATE_ADDRESS, text,
-                                         strlen(text));
-#endif
+            char text[64];
+            int n = hal_net_ipv6_to_string(from.bytes, text, sizeof text);
+            if (n > 0)
+                mm_net_state_set_mstring(MM_NET_STATE_ADDRESS, text, n);
         }
         UDPreceive = true;
         received++;

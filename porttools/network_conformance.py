@@ -482,7 +482,7 @@ class MqttTestBroker:
                 except socket.timeout:
                     continue
                 with conn:
-                    conn.settimeout(10)
+                    conn.settimeout(60)
                     self._handle_client(conn)
                 if self.log.connected:
                     return

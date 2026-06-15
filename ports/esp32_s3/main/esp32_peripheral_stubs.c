@@ -17,6 +17,7 @@
 #include <limits.h>
 #include <setjmp.h>
 #include "esp_heap_caps.h"
+#include "esp_chip_info.h"
 #include "esp_mac.h"
 #include "esp_private/esp_clk.h"
 #include "esp_system.h"
@@ -33,12 +34,33 @@
 #include "hal/hal_time.h"
 #include "esp32_board_profile.h"
 #include "esp32_audio_options.h"
-#include "esp32_ft6336u_touch.h"
+#include "esp32_touch_port.h"
 #include "esp32_option_ext.h"
 
 extern void port_print_supported_boards(void);
 extern int port_factory_reset_board(unsigned char * p);
 extern const char * port_pin_reserved_label(int pin);
+
+/* MM.INFO(ID) chip prefix: this file is shared by every ESP32-family port,
+ * so the name comes from the silicon, not a compile-time constant. */
+static const char * esp32_chip_name(void) {
+    esp_chip_info_t info;
+    esp_chip_info(&info);
+    switch (info.model) {
+    case CHIP_ESP32:
+        return "ESP32";
+    case CHIP_ESP32S2:
+        return "ESP32-S2";
+    case CHIP_ESP32S3:
+        return "ESP32-S3";
+    case CHIP_ESP32C3:
+        return "ESP32-C3";
+    case CHIP_ESP32C6:
+        return "ESP32-C6";
+    default:
+        return "ESP32";
+    }
+}
 
 /* esp32_parse_pin_arg — converts a "GPn" textual pin argument (or raw pin
  * number) to the VM's internal pin index. Used by cmd_setpin / fun_pin and
@@ -69,9 +91,11 @@ static const char * esp32_pin_state_label(int cfg) {
 static int esp32_parse_gpio_info_pin_arg(unsigned char * arg) {
     unsigned char * p = arg;
     skipspace(p);
-    if ((p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p') && isdigit(p[2]))
-        return codemap(getint(p + 2, 0, 48));
-    return codemap(getint(p, 0, 48));
+    int gpio = (p[0] == 'G' || p[0] == 'g') && (p[1] == 'P' || p[1] == 'p') && isdigit(p[2])
+                   ? getinteger(p + 2)
+                   : getinteger(p);
+    if (gpio < 0 || gpio >= NBRPINS) return -1;
+    return codemap(gpio);
 }
 
 static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
@@ -79,11 +103,13 @@ static int esp32_touch_calibrate_option_setter(unsigned char * cmdline) {
     if (!p) return 0;
     int persist = 1;
     if (!Option.TOUCH_CAP)
+        esp32_board_profile_reserve_touch_pins();
+    if (!Option.TOUCH_CAP)
         error("Touch not configured (OPTION TOUCH)");
     if (checkstring(p, (unsigned char *)"DEFAULT")) {
-        esp32_ft6336u_touch_set_default_calibration();
+        esp32_touch_port_set_default_calibration();
     } else if (checkstring(p, (unsigned char *)"OFF")) {
-        esp32_ft6336u_touch_set_identity_calibration();
+        esp32_touch_port_set_identity_calibration();
         persist = 0;
     } else {
         getargs(&p, 7, (unsigned char *)",");
@@ -106,6 +132,18 @@ static void esp32_touch_calibrate_print_option(void) {
              (double)(Option.TOUCH_XSCALE * 10000.0f),
              (double)(Option.TOUCH_YSCALE * 10000.0f));
     MMPrintString(line);
+}
+
+int port_mminfo_touch_status(unsigned char * out_sret) {
+    if (!Option.TOUCH_CS)
+        strcpy((char *)out_sret, "Disabled");
+    else if (!esp32_touch_port_is_ready())
+        strcpy((char *)out_sret, "Not ready");
+    else if (Option.TOUCH_XZERO == TOUCH_NOT_CALIBRATED)
+        strcpy((char *)out_sret, "Not calibrated");
+    else
+        strcpy((char *)out_sret, "Ready");
+    return 1;
 }
 
 /* PNG decoder + CMM2-program loader stubs. PNG support comes from
@@ -151,6 +189,13 @@ void printoptions(void) {
     esp32_touch_calibrate_print_option();
     hal_gui_controls_print_options();
     i2c_config_print_option();
+    if (Option.ColourCode == true) MMPrintString("OPTION COLOURCODE ON\r\n");
+    if (Option.continuation) MMPrintString("OPTION CONTINUATION LINES ON\r\n");
+    if (Option.Tab != 2) {
+        char line[24];
+        snprintf(line, sizeof(line), "OPTION TAB %d\r\n", Option.Tab);
+        MMPrintString(line);
+    }
     if (Option.SD_CS) {
         MMPrintString("OPTION SDCARD ");
         MMPrintString((char *)PinDef[Option.SD_CS].pinname);
@@ -645,8 +690,6 @@ void cmd_wrap(void) {}
 
 void cmd_wraptarget(void) {}
 
-void cmd_xmodem(void) {}
-
 void disable_sd(void) {}
 
 void disable_systemspi(void) {}
@@ -800,12 +843,13 @@ void fun_info(void) {
         return;
     }
     if (checkstring(ep, (unsigned char *)"ID")) {
+        const char * chip = esp32_chip_name();
         uint8_t mac[6] = {0};
         if (esp_efuse_mac_get_default(mac) == ESP_OK) {
-            snprintf((char *)sret, STRINGSIZE, "ESP32-S3 %02X:%02X:%02X:%02X:%02X:%02X",
-                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+            snprintf((char *)sret, STRINGSIZE, "%s %02X:%02X:%02X:%02X:%02X:%02X",
+                     chip, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
         } else {
-            strcpy((char *)sret, "ESP32-S3");
+            strcpy((char *)sret, chip);
         }
         CtoM(sret);
         targ = T_STR;
@@ -814,7 +858,9 @@ void fun_info(void) {
     if ((tp = checkstring(ep, (unsigned char *)"PIN"))) {
         int pin = esp32_parse_gpio_info_pin_arg(tp);
         const char * reserved = port_pin_reserved_label(pin);
-        if (reserved)
+        if (pin < 1 || pin > NBRPINS)
+            strcpy((char *)sret, "Invalid");
+        else if (reserved)
             strcpy((char *)sret, reserved);
         else if (pin < 1 || pin > NBRPINS || (PinDef[pin].mode & UNUSED))
             strcpy((char *)sret, "Invalid");

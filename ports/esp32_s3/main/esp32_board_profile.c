@@ -13,6 +13,7 @@
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 #include "esp32_ft6336u_touch.h"
+#include "esp32_touch_port.h"
 
 extern int esp32_ft6336u_touch_is_ready(void);
 
@@ -92,7 +93,8 @@ static const esp32_board_profile_t s_profiles[] = {
         .lcd = {ESP32_BOARD_FREENOVE_LCD_SCLK, ESP32_BOARD_FREENOVE_LCD_MOSI,
                 ESP32_BOARD_FREENOVE_LCD_MISO, ESP32_BOARD_FREENOVE_LCD_CS,
                 ESP32_BOARD_FREENOVE_LCD_DC, ESP32_BOARD_FREENOVE_LCD_RST,
-                ESP32_BOARD_FREENOVE_LCD_BL, ESP32_BOARD_FREENOVE_LCD_SPI_HZ},
+                ESP32_BOARD_FREENOVE_LCD_BL, ESP32_BOARD_FREENOVE_LCD_SPI_HZ,
+                ILI9341, LANDSCAPE, 1},
         .touch = {ESP32_BOARD_FREENOVE_TOUCH_SDA, ESP32_BOARD_FREENOVE_TOUCH_SCL,
                   ESP32_BOARD_FREENOVE_TOUCH_INT, ESP32_BOARD_FREENOVE_TOUCH_RST},
         .audio = {ESP32_AUDIO_SINK_ES8311, ESP32_BOARD_FREENOVE_AUDIO_MCLK,
@@ -103,6 +105,34 @@ static const esp32_board_profile_t s_profiles[] = {
                   ESP32_BOARD_FREENOVE_AUDIO_I2C_SDA,
                   ESP32_BOARD_FREENOVE_AUDIO_I2C_SCL,
                   ESP32_BOARD_FREENOVE_ES8311_ADDR},
+        .ws2812_pin = ESP32_BOARD_PROFILE_NO_PIN,
+    },
+    {
+        .id = ESP32_BOARD_PROFILE_ID_CYD,
+        .configure_name = ESP32_BOARD_CYD_NAME,
+        .device_name = ESP32_BOARD_CYD_DEVICE_NAME,
+        .platform_name = ESP32_BOARD_CYD_NAME,
+        .has_sd = 1,
+        .has_lcd = 1,
+        .has_touch = 1,
+        .has_audio = 1,
+        .has_ws2812 = 0,
+        .sd = {ESP32_BOARD_CYD_SD_SCLK, ESP32_BOARD_CYD_SD_MOSI,
+               ESP32_BOARD_CYD_SD_MISO, ESP32_BOARD_CYD_SD_CS,
+               ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+               ESP32_BOARD_PROFILE_SD_SPI_FREQ_KHZ},
+        .lcd = {ESP32_BOARD_CYD_LCD_SCLK, ESP32_BOARD_CYD_LCD_MOSI,
+                ESP32_BOARD_CYD_LCD_MISO, ESP32_BOARD_CYD_LCD_CS,
+                ESP32_BOARD_CYD_LCD_DC, ESP32_BOARD_CYD_LCD_RST,
+                ESP32_BOARD_CYD_LCD_BL, ESP32_BOARD_CYD_LCD_SPI_HZ,
+                ST7789B, LANDSCAPE, 1},
+        .touch = {ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_CYD_TOUCH_IRQ, ESP32_BOARD_CYD_TOUCH_CS},
+        .audio = {ESP32_AUDIO_SINK_INTERNAL_DAC, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_CYD_AUDIO_DAC, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, 0, ESP32_BOARD_PROFILE_NO_PIN,
+                  ESP32_BOARD_PROFILE_NO_PIN, 0},
         .ws2812_pin = ESP32_BOARD_PROFILE_NO_PIN,
     },
 };
@@ -281,18 +311,17 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.LCD_CS = profile_pin(profile->lcd.cs);
         Option.LCD_Reset = profile_pin(profile->lcd.rst);
         Option.DISPLAY_BL = profile_pin(profile->lcd.backlight);
-        Option.DISPLAY_TYPE = ILI9341;
-        Option.DISPLAY_ORIENTATION = LANDSCAPE;
-        /* The Freenove panel wants the inverted colour polarity; in the
-         * shared ILI9341 init sequence BGR=1 selects INVON. */
-        Option.BGR = 1;
+        Option.DISPLAY_TYPE = profile->lcd.type;
+        Option.DISPLAY_ORIENTATION = profile->lcd.orientation;
+        Option.BGR = profile->lcd.bgr;
         Option.DefaultFont = 0x01;
         Option.DefaultFC = WHITE;
         Option.DefaultBC = BLACK;
         Option.ColourCode = 1;
     }
 
-    if (profile->has_touch) {
+    if (profile->has_touch &&
+        profile->id == ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341) {
         /* Seed the shared system I2C bus on the touch pins. These are
          * overridable defaults: a user OPTION SYSTEM I2C or SETPIN
          * reconfigures the pins and persists over this seeding. */
@@ -302,9 +331,18 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.TOUCH_CS = profile_pin(profile->touch.reset);
         Option.TOUCH_CAP = 1;
         Option.THRESHOLD_CAP = 22;
-        esp32_ft6336u_touch_set_default_calibration();
+        Option.MaxCtrls = 25;
+        esp32_touch_port_set_default_calibration();
+    } else if (profile->has_touch &&
+               profile->id == ESP32_BOARD_PROFILE_ID_CYD) {
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 2;
+        Option.THRESHOLD_CAP = 0;
+        Option.MaxCtrls = 24;
+        esp32_touch_port_set_default_calibration();
     } else {
-        esp32_ft6336u_touch_set_identity_calibration();
+        esp32_touch_port_set_identity_calibration();
     }
 
     if (profile->audio.sink == ESP32_AUDIO_SINK_I2S_DAC) {
@@ -312,6 +350,9 @@ void esp32_board_profile_apply_defaults(const esp32_board_profile_t * profile) {
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
         ESP32_OPTION_AUDIO_I2S_WS = profile_pin(profile->audio.ws);
         ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_I2S;
+    } else if (profile->audio.sink == ESP32_AUDIO_SINK_INTERNAL_DAC) {
+        Option.audio_i2s_data = profile_pin(profile->audio.dout);
+        ESP32_OPTION_AUDIO_KIND = ESP32_AUDIO_KIND_INTERNAL_DAC;
     } else if (profile->audio.sink == ESP32_AUDIO_SINK_ES8311) {
         Option.audio_i2s_bclk = profile_pin(profile->audio.bclk);
         Option.audio_i2s_data = profile_pin(profile->audio.dout);
@@ -394,13 +435,28 @@ void esp32_board_profile_reserve_lcd_pins(void) {
 }
 
 void esp32_board_profile_reserve_touch_pins(void) {
-    /* Touch config lives in the PicoMite Option fields: bus from OPTION
-     * SYSTEM I2C, controller from OPTION TOUCH FT6336 (or profile seed). */
+    /* Touch config lives in the PicoMite Option fields. Freenove uses the
+     * shared system I2C bus; CYD uses XPT2046 GPIOs and does not touch I2C. */
+    if (!Option.TOUCH_CAP &&
+        esp32_board_profile_current_id() == ESP32_BOARD_PROFILE_ID_CYD) {
+        const esp32_board_profile_t * profile = esp32_board_profile_current();
+        Option.TOUCH_IRQ = profile_pin(profile->touch.interrupt);
+        Option.TOUCH_CS = profile_pin(profile->touch.reset);
+        Option.TOUCH_CAP = 2;
+        esp32_touch_port_set_default_calibration();
+    }
     if (!Option.TOUCH_CAP) return;
-    esp32_board_profile_update_shared_i2c_pins();
+    if (Option.TOUCH_CAP == 1) esp32_board_profile_update_shared_i2c_pins();
     reserve_pin_index(Option.TOUCH_IRQ);
     reserve_pin_index(Option.TOUCH_CS);
     reserve_pin_index(Option.TOUCH_Click);
+#if defined(ESP32_BOARD_CYD_TOUCH_SCLK)
+    if (esp32_board_profile_current_id() == ESP32_BOARD_PROFILE_ID_CYD) {
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_SCLK);
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_MOSI);
+        reserve_profile_gpio(ESP32_BOARD_CYD_TOUCH_MISO);
+    }
+#endif
     s_touch_pins_reserved = 1;
 }
 
@@ -446,7 +502,7 @@ static int pin_is_vga_pin(int pin) {
 }
 
 const char * port_pin_reserved_label(int pin) {
-    if (profile_pin_invalid(pin) || ExtCurrentConfig[pin] != EXT_BOOT_RESERVED)
+    if (profile_pin_invalid(pin))
         return NULL;
 
     const esp32_board_profile_t * profile = esp32_board_profile_current();

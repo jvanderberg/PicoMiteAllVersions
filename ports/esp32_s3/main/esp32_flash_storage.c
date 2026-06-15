@@ -4,7 +4,8 @@
  * Provides the symbols FileIO.c expects from a port that has flash:
  *
  *   flash_prog_buf[]          — RAM mirror of the program-memory region
- *                               (currently 2 × MAX_PROG_SIZE).
+ *                               (MAX_PROG_SIZE + a 4 KB erased-flash
+ *                               trailer; see FLASH_PROG_REGION_SIZE).
  *   mmslots partition         — real flash backing for options, VAR SAVE
  *                               plus numbered SAVE/LOAD slots.
  *   esp32_flash_option_buf[]  — RAM mirror of the Options blob.
@@ -33,7 +34,7 @@
 
 #define TAG "mmslots"
 
-extern unsigned char flash_prog_buf[];
+extern unsigned char * flash_prog_buf;
 
 #define FLASH_PROG_REGION_SIZE (MAX_PROG_SIZE + 4096) /* matches esp32_compat.c */
 #define OPTIONS_REGION_SIZE 4096u
@@ -178,7 +179,7 @@ void flash_range_program(uint32_t off, const uint8_t * data, size_t len) {
  * bytes after the program terminator looking for the 0xff "erased flash"
  * sentinel, and stale token bytes there cause it to dereference garbage. */
 extern unsigned char * ProgMemory;
-extern unsigned char flash_prog_buf[];
+extern unsigned char * flash_prog_buf;
 
 void SaveProgramToFlash(unsigned char * pm, int msg) {
     (void)msg;
@@ -220,5 +221,8 @@ FRESULT hal_ff_getcwd(TCHAR * b, UINT n) {
  * at the XIP-mapped flash partition that holds the saved BASIC program.
  * On ESP32 stdio scope it points at our RAM mirror (flash_prog_buf in
  * esp32_compat.c) — same byte content, just not actually in flash yet. */
-extern unsigned char flash_prog_buf[];
-const uint8_t * flash_progmemory = flash_prog_buf;
+extern unsigned char * flash_prog_buf;
+const uint8_t * flash_progmemory; /* = flash_prog_buf, set in app_main before
+                                   * MMBasic boot (the buffer is allocated by
+                                   * a constructor, so the address is not a
+                                   * compile-time constant). */

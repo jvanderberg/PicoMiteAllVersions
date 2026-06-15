@@ -3,6 +3,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "hal/hal_filesystem.h"
 #include "hal/hal_net.h"
@@ -11,7 +12,13 @@
 #include "shared/net/mm_net_tcp_client_cmd.h"
 #include "esp32_tcp_client.h"
 
+#if CONFIG_IDF_TARGET_ESP32
+#define ESP32_TCP_CLIENT_RX_CHUNK 256
+#define ESP32_TCP_CLIENT_TASK_STACK 3072
+#else
 #define ESP32_TCP_CLIENT_RX_CHUNK 512
+#define ESP32_TCP_CLIENT_TASK_STACK 4096
+#endif
 #define ESP32_TLS_CA_MAX 8192
 
 typedef struct {
@@ -29,6 +36,12 @@ typedef struct {
 static esp32_tcp_client_t s_client = {
     .client = 0,
 };
+
+/* Signalled by the rx task immediately before it deletes itself, so a
+ * teardown can block until the task is guaranteed to no longer touch
+ * s_client. Lives outside s_client so esp32_tcp_client_close()'s memset
+ * cannot clobber it. */
+static SemaphoreHandle_t s_stream_done;
 
 static void esp32_tcp_client_stream_task(void * arg) {
     (void)arg;
@@ -56,6 +69,9 @@ static void esp32_tcp_client_stream_task(void * arg) {
     }
     s_client.stream_running = 0;
     s_client.stream_task = NULL;
+    /* Last write to shared state — after this the task only deletes itself,
+     * so a waiting teardown is free to memset s_client. */
+    if (s_stream_done) xSemaphoreGive(s_stream_done);
     vTaskDelete(NULL);
 }
 
@@ -65,9 +81,15 @@ static void esp32_tcp_client_stop_stream(void) {
         return;
     }
     s_client.stream_running = 0;
-    for (int i = 0; i < 100 && s_client.stream_task; i++) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
+    /* Block until the rx task has fully exited. stream_buf/stream_read/
+     * stream_write alias a live BASIC array; the caller is about to free or
+     * memset that state, so the task must be guaranteed not to append again.
+     * recv() uses a 100ms timeout, so the task returns to its stream_running
+     * guard and signals s_stream_done promptly. The finite timeout is a
+     * liveness backstop only — it should never elapse. */
+    if (s_stream_done)
+        xSemaphoreTake(s_stream_done, pdMS_TO_TICKS(5000));
+    s_client.stream_task = NULL;
 }
 
 void esp32_tcp_client_close(void) {
@@ -152,9 +174,17 @@ static void esp32_tcp_client_stream_cmd(unsigned char * arg) {
                                 parsed.request_len, 5000) != HAL_NET_OK)
         error("write failed");
 
+    if (!s_stream_done) s_stream_done = xSemaphoreCreateBinary();
+    if (!s_stream_done) error("Failed to create TCP client");
+    /* Clear any completion signal left by a task that exited on its own
+     * (recv error / EOF) without a teardown consuming it, so this run's
+     * stop waits for this run's task. */
+    xSemaphoreTake(s_stream_done, 0);
+
     s_client.stream_running = 1;
     if (xTaskCreate(esp32_tcp_client_stream_task, "mmbasic_tcp_client",
-                    4096, NULL, 5, &s_client.stream_task) != pdPASS) {
+                    ESP32_TCP_CLIENT_TASK_STACK, NULL, 5,
+                    &s_client.stream_task) != pdPASS) {
         s_client.stream_running = 0;
         error("Failed to create TCP client");
     }

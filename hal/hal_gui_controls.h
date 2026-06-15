@@ -65,6 +65,10 @@ void hal_gui_controls_hide_all(void);
  * ports. */
 void hal_gui_controls_reset(void);
 
+/* Quiesce GUI/touch state when a running program ends or is aborted.
+ * Frees live controls and clears pending touch/keypad/click state. */
+void hal_gui_controls_end_program(void);
+
 /* Clear the four GUI interrupt globals (gui_int_down/up,
  * GuiIntDown/UpVector). Called from the soft-reset cleanup path in
  * External.c. No-op on stub ports. */

@@ -63,11 +63,51 @@ typedef struct {
  */
 bool vga_lcdcam_s3_init(const vga_lcdcam_pins_t * pins, uint8_t ** fb_out);
 
+/* Reserve the native-320 scanout buffer (76.8 KB contiguous internal
+ * SRAM). The driver reserves automatically at CORE init stage — before
+ * the FreeRTOS task stacks fragment the region — so ports normally only
+ * need release: call vga_lcdcam_s3_release_scanout once options resolve
+ * on boards that boot without OPTION VGA, returning the memory to the
+ * internal heap. Both are idempotent. */
+void vga_lcdcam_s3_reserve_scanout(void);
+void vga_lcdcam_s3_release_scanout(void);
+
+/* True while the 76.8 KB native-scanout reservation is held. The internal
+ * SRAM it occupies is unavailable to other heavy consumers — notably
+ * esp-mqtt's TLS transport, which then cannot allocate alongside Wi-Fi. */
+bool vga_lcdcam_s3_scanout_reserved(void);
+
 /* The live framebuffer pointer, or NULL if init has not succeeded. */
 uint8_t * vga_lcdcam_s3_framebuffer(void);
 
 /* True once the panel is running. */
 bool vga_lcdcam_s3_active(void);
+
+/* Block until the next frame edge (start of vertical blanking), so
+ * top-down framebuffer writes issued immediately after stay ahead of
+ * the scanout reader. No-op until the panel is up. */
+void vga_lcdcam_s3_wait_vsync(void);
+
+/* Switch to the line-doubled native 320-wide panel (halved horizontal
+ * timing, internal-SRAM frame buffer scanned out by DMA descriptor
+ * pairs — no CPU in the path). Returns the panel's 320x240 frame
+ * buffer, or NULL when unavailable; the caller then falls back to its
+ * own logical buffer presented into the 640 panel's frame buffer.
+ * enter_640 restores the console panel (no-op when already there).
+ * Note: the 640 frame buffer is panel-owned and changes across panel
+ * rebuilds — re-read vga_lcdcam_s3_framebuffer() after every switch. */
+uint8_t * vga_lcdcam_s3_enter_320(void);
+bool vga_lcdcam_s3_enter_640(void);
+
+/* Push CPU writes to the live 320d frame buffer out to the scanout
+ * (rows in 320x240 space). No-op unless the native panel is up on a
+ * PSRAM frame buffer, where writes sit in the write-back cache until
+ * synced. Internal-SRAM scanout needs no sync. */
+void vga_lcdcam_s3_live_sync(int y1, int y2);
+
+/* True when the scanout reads `buf` directly (native 320d panel) —
+ * writes are on screen with no present step. */
+bool vga_lcdcam_s3_scanout_is_live(const uint8_t * buf);
 
 void vga_lcdcam_s3_flush_region(int x1, int y1, int x2, int y2);
 void vga_lcdcam_s3_flush_all(void);

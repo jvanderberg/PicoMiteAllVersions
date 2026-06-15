@@ -52,6 +52,8 @@
 #define HAL_PORT_AUDIO_FLAC_MAX_BASE_HZ 44100
 #define HAL_PORT_AUDIO_MOD_BUFFER_SIZE 6144
 #define HAL_PORT_HAS_MP3 0
+#define HAL_PORT_AUDIO_SAMPLE_RING_FRAMES 32768u
+#define HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP 0
 
 /* Compile-time fallback I2S DAC pins (e.g. MAX98357A, PCM5102, UDA1334). PLAY
  * TONE / SOUND / NOTE synthesize 16-bit stereo PCM (shared/audio/synth_pcm.c).
@@ -149,6 +151,12 @@
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
 /* Compiler-table sizes. */
+#define HAL_PORT_BC_COMPILE_USE_BASIC_HEAP 0
 #include "../bc_tables_rp2350.h"
+
+/* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on
+ * RP2 boards). Ports with no supply-rail ADC use slot 0, the NULL row,
+ * which never reads EXT_ANA_IN, so MM.SUPPLY reports -1. */
+#define HAL_PORT_SUPPLY_ADC_PIN 44
 
 #endif /* ESP32_S3_PORT_CONFIG_H */

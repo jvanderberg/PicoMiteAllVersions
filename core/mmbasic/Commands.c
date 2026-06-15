@@ -40,6 +40,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_time.h"
 #include "hal/hal_keyboard.h"
 #include "hal/hal_display_merge.h"
+#include "hal/hal_gui_controls.h"
+#include "hal/hal_vm_framebuffer.h"
 #include "hal/hal_watchdog.h"
 #include "port_config.h"
 #include "bc_alloc.h"
@@ -48,7 +50,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include <math.h>
 void flist(int, int, int);
 //void clearprog(void);
-extern void bc_run_source_string(const char * source, const char * source_name);
+extern int bc_run_source_string(const char * source, const char * source_name);
 /* WEB stack teardown hooks — real impls in MMtcpserver.c /
  * MMTCPclient.c, no-op stubs in MMweb_stubs.c / host_peripheral_stubs.c. */
 extern void cleanserver(void);
@@ -1474,6 +1476,8 @@ void MIPS16 MMB_DISPATCH_FUNC(cmd_else)(void) {
 
 void do_end(bool ecmd) {
     hal_display_merge_abort();
+    hal_vm_framebuffer_shutdown_runtime();
+    hal_gui_controls_end_program();
     if (Option.SerialConsole)
         while (ConsoleTxBufHead != ConsoleTxBufTail) routinechecks();
     fflush(stdout);

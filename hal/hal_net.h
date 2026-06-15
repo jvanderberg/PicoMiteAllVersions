@@ -21,6 +21,7 @@ typedef enum {
     HAL_NET_UNSUPPORTED = -2,
     HAL_NET_TIMEOUT = -3,
     HAL_NET_WOULD_BLOCK = -4,
+    HAL_NET_NOMEM = -5,
 } hal_net_result_t;
 
 typedef uint16_t hal_net_tcp_server_t;
@@ -175,6 +176,12 @@ int hal_net_mqtt_recv_event(hal_net_mqtt_client_t client, char * topic,
                             size_t topic_cap, void * payload,
                             size_t payload_cap, size_t * payload_len);
 int hal_net_mqtt_close(hal_net_mqtt_client_t client);
+
+/* Format a 16-byte IPv6 address as text into `out` (capacity `out_len`).
+ * Returns the string length on success, 0 if unsupported or on error. The
+ * default (no IPv6 backend) returns 0; backends with a socket stack
+ * override it. */
+int hal_net_ipv6_to_string(const uint8_t addr[16], char * out, int out_len);
 
 #ifdef __cplusplus
 }

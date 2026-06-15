@@ -1841,6 +1841,13 @@ void pio_rp2_dma_abort(void) {
     pio_rp2_dma_abort_pair(dma_tx_chan, dma_tx_chan2);
 }
 
+void pio_rp2_reserve_dma_channels(void) {
+    const uint chans[] = {dma_rx_chan, dma_tx_chan, dma_rx_chan2, dma_tx_chan2};
+    for (unsigned i = 0; i < count_of(chans); i++) {
+        if (!dma_channel_is_claimed(chans[i])) dma_channel_claim(chans[i]);
+    }
+}
+
 void pio_rp2_teardown(void) {
     dirOK = 2;
     nextline[0] = 0;

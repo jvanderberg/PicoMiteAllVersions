@@ -126,6 +126,10 @@ void hal_gui_controls_reset(void) {
     ResetGUI();
 }
 
+void hal_gui_controls_end_program(void) {
+    ResetGUI();
+}
+
 void hal_gui_controls_reset_interrupts(void) {
     gui_int_down = false;
     gui_int_up = false;

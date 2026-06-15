@@ -14,8 +14,11 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 
 #include "MMBasic_Includes.h"
@@ -31,10 +34,38 @@
  * CFunction-walk loop expects 0xffffffff-aligned terminator. Stale
  * bytes here corrupt the walk and crash with LoadProhibited. */
 #define FLASH_PROG_TRAILER 4096
-unsigned char flash_prog_buf[MAX_PROG_SIZE + FLASH_PROG_TRAILER];
 
-__attribute__((constructor)) static void flash_prog_buf_init(void) {
-    memset(flash_prog_buf, 0xff, sizeof flash_prog_buf);
+/* Allocated from the internal heap at boot rather than .bss: the buffer is
+ * MAX_PROG_SIZE + trailer (tens of KB), and on classic ESP32 the static
+ * dram0_0 segment cannot hold it alongside the MMBasic heap and variable
+ * table, while the runtime heap also spans DRAM that static data cannot
+ * reach. app_main calls this before any flash_prog_buf use. It must not
+ * run from a C constructor: constructors execute before ESP-IDF reclaims
+ * the ROM-reserved D/IRAM regions into the heap, and an early allocation
+ * this size starves the esp_timer/main-task creation that follows. */
+unsigned char * flash_prog_buf;
+
+void esp32_flash_prog_buf_init(void) {
+    if (flash_prog_buf) return;
+    flash_prog_buf = heap_caps_malloc(MAX_PROG_SIZE + FLASH_PROG_TRAILER,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    /* PSRAM spill-over, mirroring GetSystemMemory: on the S3 the internal
+     * heap is split across SRAM regions and cannot host this block
+     * contiguously alongside the interpreter task stack. Interpreter and
+     * file-op access is task-context with cache enabled, so PSRAM is a
+     * valid home; no-PSRAM chips have no SPIRAM region and skip this. */
+    if (!flash_prog_buf)
+        flash_prog_buf = heap_caps_malloc(MAX_PROG_SIZE + FLASH_PROG_TRAILER,
+                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!flash_prog_buf) {
+        ESP_LOGE("esp32_compat",
+                 "flash_prog_buf alloc failed: need=%u internal8 free=%u largest=%u",
+                 (unsigned)(MAX_PROG_SIZE + FLASH_PROG_TRAILER),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        abort();
+    }
+    memset(flash_prog_buf, 0xff, MAX_PROG_SIZE + FLASH_PROG_TRAILER);
 }
 
 /* ---- BASIC FRAMEBUFFER direct-command surface ---- */

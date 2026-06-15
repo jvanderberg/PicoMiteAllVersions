@@ -40,21 +40,39 @@
 #include "esp32_board_profile.h"
 #include "esp32_option_ext.h"
 
+/* Chip-specific PDM TX slot shape for OPTION AUDIO left,right: the
+ * DAC-style slot configuration only exists on I2S hardware v2, so each
+ * chip's port links its own provider (esp32_audio_pdm_slot_s3.c on S3,
+ * esp32_cyd_audio_pdm_slot.c on classic ESP32). */
+extern i2s_pdm_tx_slot_config_t esp32_audio_pdm_tx_slot_config(void);
+
+extern esp_err_t esp32_audio_internal_dac_begin(int rate_hz);
+extern esp_err_t esp32_audio_internal_dac_set_rate(int rate_hz);
+extern esp_err_t esp32_audio_internal_dac_write(const int16_t * frames,
+                                                size_t frame_count,
+                                                size_t * bytes_written);
+extern void esp32_audio_internal_dac_idle(void);
+extern int esp32_audio_internal_dac_active(void);
+
 #define AUDIO_RATE HAL_PORT_AUDIO_SAMPLE_RATE
-#define FRAMES_PER_CHUNK 256 /* stereo frames per write */
+#define FRAMES_PER_CHUNK 128 /* stereo frames per write */
 #define AUDIO_I2S_PORT I2S_NUM_1
 #define AUDIO_DMA_DESC_NUM 2
 #define AUDIO_DMA_FRAME_NUM 64
+#define AUDIO_TASK_STACK_WORDS 2048
 
 typedef enum {
     AUDIO_BACKEND_NONE = 0,
     AUDIO_BACKEND_I2S,
-    AUDIO_BACKEND_PDM
+    AUDIO_BACKEND_PDM,
+    AUDIO_BACKEND_INTERNAL_DAC
 } audio_backend_t;
 
 /* TONE/playback state owned by shared/audio/Audio.c (extern here). */
 extern volatile e_CurrentlyPlaying CurrentlyPlaying;
 extern volatile bool WAVcomplete;
+extern void StopAudio(void);
+extern void esp32_net_wifi_pause_for_audio(void);
 
 static const char * TAG = "mmaudio";
 
@@ -80,6 +98,7 @@ static uint32_t s_write_count;
 static uint32_t s_nonzero_write_count;
 static size_t s_last_write_bytes;
 static bool s_es8311;
+static int16_t s_task_buf[FRAMES_PER_CHUNK * 2];
 
 /* Audio-DMA channel globals referenced by core SOUND/ADC bookkeeping.
  * The shared synth path does not use them, but the symbols must exist. */
@@ -92,14 +111,16 @@ bool dmarunning = 0;
  * (audio_task) ring of 16-bit stereo frames in PSRAM. Free-running 32-bit
  * head/tail counters publish frame availability; the stream mux only
  * protects reset/session changes and single-frame consumer claims. */
-#define SAMPLE_RING_FRAMES 32768u /* 128 KB in PSRAM, ~0.74s @ 44.1k */
-static int16_t * s_ring;          /* SAMPLE_RING_FRAMES * 2 int16 */
+#define SAMPLE_RING_FRAMES HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
+#define AUDIO_WORKMEM_BASIC_HEAP_ENABLED (0 + HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP)
+static int16_t * s_ring; /* SAMPLE_RING_FRAMES * 2 int16 */
 static _Atomic uint32_t s_ring_head, s_ring_tail;
 static _Atomic uint32_t s_stream_inflight_frames;
 static _Atomic uint32_t s_stream_drain_frames;
 static _Atomic uint32_t s_stream_tail_hold_until;
 static _Atomic bool s_stream_eof_seen;
 static _Atomic uint32_t s_stream_generation;
+static _Atomic uint32_t s_stream_underrun_frames;
 static _Atomic int s_stream_rate;
 static portMUX_TYPE s_stream_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -167,6 +188,30 @@ static bool stream_generation_active(uint32_t generation) {
            atomic_load_explicit(&s_stream_generation, memory_order_acquire) == generation;
 }
 
+static int audio_basic_heap_enabled(void) {
+    return AUDIO_WORKMEM_BASIC_HEAP_ENABLED != 0;
+}
+
+static int audio_basic_heap_owns(const void * p) {
+    uintptr_t addr = (uintptr_t)p;
+    uintptr_t heap_start = (uintptr_t)MMHeap;
+    uintptr_t heap_end = heap_start + (uintptr_t)heap_memory_size;
+    return audio_basic_heap_enabled() &&
+           addr >= heap_start &&
+           addr < heap_end;
+}
+
+static void * audio_try_basic_heap_alloc(size_t bytes) {
+    return audio_basic_heap_enabled() ? TryGetMemory((int)bytes) : NULL;
+}
+
+static int audio_try_basic_heap_free(void * p) {
+    if (!audio_basic_heap_owns(p)) return 0;
+    void * q = p;
+    FreeMemorySafe(&q);
+    return q == NULL;
+}
+
 static void stream_reset_state(void) {
     portENTER_CRITICAL(&s_stream_mux);
     atomic_fetch_add_explicit(&s_stream_generation, 1u, memory_order_acq_rel);
@@ -176,6 +221,7 @@ static void stream_reset_state(void) {
     atomic_store_explicit(&s_stream_drain_frames, 0, memory_order_release);
     atomic_store_explicit(&s_stream_tail_hold_until, 0, memory_order_release);
     atomic_store_explicit(&s_stream_eof_seen, false, memory_order_release);
+    atomic_store_explicit(&s_stream_underrun_frames, 0, memory_order_release);
     atomic_fetch_add_explicit(&s_stream_generation, 1u, memory_order_release);
     portEXIT_CRITICAL(&s_stream_mux);
 }
@@ -283,6 +329,9 @@ static audio_backend_t select_backend(void) {
          ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_OFF) &&
         Option.audio_i2s_bclk && Option.audio_i2s_data)
         return AUDIO_BACKEND_I2S;
+    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC &&
+        Option.audio_i2s_data)
+        return AUDIO_BACKEND_INTERNAL_DAC;
     return AUDIO_BACKEND_NONE;
 }
 
@@ -298,6 +347,11 @@ void esp32_audio_reserve_option_pins(void) {
         int amp_pin = ESP32_OPTION_AUDIO_AMP_EN;
         if (!audio_pin_invalid(amp_pin)) ExtCurrentConfig[amp_pin] = EXT_BOOT_RESERVED;
         esp32_board_profile_update_shared_i2c_pins();
+    }
+    if (ESP32_OPTION_AUDIO_KIND == ESP32_AUDIO_KIND_INTERNAL_DAC) {
+        if (Option.audio_i2s_data && Option.audio_i2s_data <= NBRPINS)
+            ExtCurrentConfig[Option.audio_i2s_data] = EXT_BOOT_RESERVED;
+        return;
     }
     if (Option.audio_i2s_bclk && Option.audio_i2s_bclk <= NBRPINS) {
         ExtCurrentConfig[Option.audio_i2s_bclk] = EXT_BOOT_RESERVED;
@@ -322,7 +376,14 @@ static void stream_set_rate(int rate) {
 static void apply_pending_rate(void) {
     int rate = atomic_load_explicit(&s_pending_rate, memory_order_acquire);
     int current_rate = atomic_load_explicit(&s_stream_rate, memory_order_acquire);
-    if (!s_tx || rate <= 0 || rate == current_rate) return;
+    if (rate <= 0 || rate == current_rate) return;
+    if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+        esp_err_t err = esp32_audio_internal_dac_set_rate(rate);
+        if (err == ESP_OK)
+            atomic_store_explicit(&s_stream_rate, rate, memory_order_release);
+        return;
+    }
+    if (!s_tx) return;
     i2s_channel_disable(s_tx);
     if (s_backend == AUDIO_BACKEND_PDM) {
         i2s_pdm_tx_clk_config_t clk = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG((uint32_t)rate);
@@ -342,8 +403,15 @@ int hal_audio_sample_begin(int sample_rate_hz) {
     if (!s_ring) {
         size_t bytes = (size_t)SAMPLE_RING_FRAMES * 2u * sizeof(int16_t);
         s_ring = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_ring) s_ring = audio_try_basic_heap_alloc(bytes);
         if (!s_ring) s_ring = malloc(bytes);
-        if (!s_ring) return -1;
+        if (!s_ring) {
+            printf("hal_audio: sample ring alloc failed bytes=%u free=%u largest=%u\r\n",
+                   (unsigned)bytes,
+                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            return -1;
+        }
     }
     stream_reset_state();
     stream_set_rate(sample_rate_hz);
@@ -382,13 +450,24 @@ int hal_audio_sample_queued(void) {
  * unavailable. */
 void * hal_audio_workmem_alloc(unsigned long bytes) {
     void * p = heap_caps_malloc((size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    return p ? p : malloc((size_t)bytes);
+    if (!p) p = audio_try_basic_heap_alloc((size_t)bytes);
+    if (!p) p = malloc((size_t)bytes);
+    if (!p) {
+        printf("hal_audio: workmem alloc failed bytes=%lu free=%u largest=%u\r\n",
+               bytes,
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+               (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    return p;
 }
 void * hal_audio_workmem_realloc(void * p, unsigned long bytes) {
+    if (!p) return hal_audio_workmem_alloc(bytes);
+    if (audio_basic_heap_owns(p)) return ReAllocMemory(p, (size_t)bytes);
     void * n = heap_caps_realloc(p, (size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return n ? n : realloc(p, (size_t)bytes);
 }
 void hal_audio_workmem_free(void * p) {
+    if (audio_try_basic_heap_free(p)) return;
     heap_caps_free(p);
 }
 
@@ -508,13 +587,19 @@ static void render_frame(int mode, int16_t * left, int16_t * right) {
 
 static void audio_task(void * arg) {
     (void)arg;
-    int16_t buf[FRAMES_PER_CHUNK * 2];
+    int16_t * buf = s_task_buf;
     for (;;) {
         apply_pending_rate(); /* safe rate switch between writes */
         int mode = atomic_load_explicit(&s_paused, memory_order_acquire)
                        ? P_NOTHING
                        : (int)CurrentlyPlaying;
-        if (s_backend != AUDIO_BACKEND_I2S && s_backend != AUDIO_BACKEND_PDM) {
+        if (s_backend != AUDIO_BACKEND_I2S && s_backend != AUDIO_BACKEND_PDM &&
+            s_backend != AUDIO_BACKEND_INTERNAL_DAC) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (s_backend == AUDIO_BACKEND_INTERNAL_DAC && mode == P_NOTHING) {
+            esp32_audio_internal_dac_idle();
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
@@ -531,6 +616,7 @@ static void audio_task(void * arg) {
                     buf[2 * n + 1] = pcm16_apply_volume(right, vol_right);
                 } else {
                     (void)stream_claim_drain_frame(stream_generation);
+                    atomic_fetch_add_explicit(&s_stream_underrun_frames, 1u, memory_order_release);
                     buf[2 * n] = 0;
                     buf[2 * n + 1] = 0;
                 }
@@ -540,7 +626,7 @@ static void audio_task(void * arg) {
         }
         size_t wr;
         if (file_mode && !stream_generation_active(stream_generation)) {
-            memset(buf, 0, sizeof(buf));
+            memset(buf, 0, FRAMES_PER_CHUNK * 2u * sizeof(*buf));
             atomic_store_explicit(&s_stream_inflight_frames, 0, memory_order_release);
         }
         bool nonzero = false;
@@ -550,8 +636,14 @@ static void audio_task(void * arg) {
                 break;
             }
         }
-        esp_err_t write_err = i2s_channel_write(s_tx, buf, sizeof(buf), &wr,
-                                                portMAX_DELAY);
+        esp_err_t write_err;
+        if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+            write_err = esp32_audio_internal_dac_write(buf, FRAMES_PER_CHUNK, &wr);
+        } else {
+            write_err = i2s_channel_write(s_tx, buf,
+                                          FRAMES_PER_CHUNK * 2u * sizeof(*buf),
+                                          &wr, portMAX_DELAY);
+        }
         s_write_err = write_err;
         s_last_write_bytes = wr;
         if (write_err == ESP_OK) {
@@ -661,8 +753,7 @@ void hal_audio_init(void) {
         }
         i2s_pdm_tx_config_t pdm_cfg = {
             .clk_cfg = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(default_rate),
-            .slot_cfg = I2S_PDM_TX_SLOT_DAC_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                           I2S_SLOT_MODE_STEREO),
+            .slot_cfg = esp32_audio_pdm_tx_slot_config(),
             .gpio_cfg = {
                 .clk = I2S_GPIO_UNUSED,
                 .dout = left_gpio,
@@ -687,11 +778,26 @@ void hal_audio_init(void) {
             return;
         }
         s_codec_err = ESP_OK;
+    } else if (s_backend == AUDIO_BACKEND_INTERNAL_DAC) {
+        int data_gpio = option_gpio(Option.audio_i2s_data, -1);
+        s_bclk_gpio = -1;
+        s_ws_gpio = -1;
+        s_data_gpio = data_gpio;
+        s_mclk_gpio = -1;
+        s_chan_err = ESP_OK;
+        s_mode_err = esp32_audio_internal_dac_begin(default_rate);
+        s_enable_err = s_mode_err;
+        s_codec_err = ESP_OK;
+        if (s_mode_err != ESP_OK) {
+            ESP_LOGE(TAG, "internal DAC init failed: %s", esp_err_to_name(s_mode_err));
+            s_backend = AUDIO_BACKEND_NONE;
+            return;
+        }
     }
     atomic_store_explicit(&s_stream_rate, default_rate, memory_order_release); /* channel starts at the synth rate */
     atomic_store_explicit(&s_pending_rate, default_rate, memory_order_release);
 
-    if (xTaskCreate(audio_task, "mmaudio", 4096, NULL, 5, &s_task) != pdPASS) {
+    if (xTaskCreate(audio_task, "mmaudio", AUDIO_TASK_STACK_WORDS, NULL, 5, &s_task) != pdPASS) {
         ESP_LOGE(TAG, "audio task create failed");
         if (s_es8311) esp32_audio_es8311_deinit();
         audio_teardown_channel();
@@ -708,13 +814,19 @@ void esp32_audio_status_string(char * out, size_t out_len) {
         backend = s_es8311 ? "ES8311" : "I2S";
     else if (s_backend == AUDIO_BACKEND_PDM)
         backend = "PDM";
+    else if (s_backend == AUDIO_BACKEND_INTERNAL_DAC)
+        backend = "DAC";
+    int active = s_backend == AUDIO_BACKEND_INTERNAL_DAC
+                     ? esp32_audio_internal_dac_active()
+                     : (s_ready ? 1 : 0);
     snprintf(out, out_len,
-             "%s ready=%d mclk=%d bclk=%d ws=%d data=%d chan=%d mode=%d en=%d prof=%d write=%d "
-             "wr=%u nz=%u bytes=%u playing=%d",
-             backend, s_ready ? 1 : 0, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
+             "%s ready=%d active=%d mclk=%d bclk=%d ws=%d data=%d chan=%d mode=%d en=%d prof=%d write=%d "
+             "wr=%u nz=%u bytes=%u und=%u playing=%d",
+             backend, s_ready ? 1 : 0, active, s_mclk_gpio, s_bclk_gpio, s_ws_gpio, s_data_gpio,
              (int)s_chan_err, (int)s_mode_err, (int)s_enable_err,
              (int)s_codec_err, (int)s_write_err, (unsigned)s_write_count,
              (unsigned)s_nonzero_write_count, (unsigned)s_last_write_bytes,
+             (unsigned)atomic_load_explicit(&s_stream_underrun_frames, memory_order_acquire),
              (int)CurrentlyPlaying);
 }
 
@@ -742,7 +854,15 @@ void hal_audio_tone(double left_hz, double right_hz,
 
 int hal_audio_tone_interrupt_supported(void) {
     hal_audio_init();
-    return s_ready && (s_backend == AUDIO_BACKEND_I2S || s_backend == AUDIO_BACKEND_PDM);
+    return s_ready && (s_backend == AUDIO_BACKEND_I2S ||
+                       s_backend == AUDIO_BACKEND_PDM ||
+                       s_backend == AUDIO_BACKEND_INTERNAL_DAC);
+}
+
+void audio_cmd_play_prepare_file(const char * verb) {
+    StopAudio();
+    if (verb && (strcmp(verb, "MP3") == 0 || strcmp(verb, "MODFILE") == 0))
+        esp32_net_wifi_pause_for_audio();
 }
 
 void hal_audio_sound(int slot, const char * ch, const char * type,

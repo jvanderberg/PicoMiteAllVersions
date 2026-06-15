@@ -2,6 +2,7 @@
 
 #include "hal/hal_adc.h"
 #include "hal/hal_i2c.h"
+#include "drivers/pio_rp2/pio_rp2.h"
 
 lfs_t lfs;
 lfs_dir_t lfs_dir;
@@ -192,6 +193,11 @@ int MIPS16 main() {
     hal_adc_set_default_clock(500000);
     systick_hw->csr = 0x5;
     systick_hw->rvr = 0x00FFFFFF;
+    /* Reserve MMBasic's PIO DMA channels before any subsystem that claims
+     * DMA dynamically — the SPI-LCD merge pipeline below and, on WiFi boards,
+     * the CYW43 bus — so dma_claim_unused_channel() routes around them and a
+     * user PIO DMA op can't collide with the live WiFi link. */
+    pio_rp2_reserve_dma_channels();
     hal_display_merge_init_fb_mutex(); /* SPI-LCD ports only */
 
 #ifndef rp2350

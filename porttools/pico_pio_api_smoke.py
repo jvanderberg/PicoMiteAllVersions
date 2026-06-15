@@ -461,6 +461,23 @@ def smoke_callbacks_and_interrupts(basic: BasicSerial, pio: int, timeout: float)
     print(f"ok   PIO{pio} FIFO interrupts", flush=True)
 
 
+def detect_available_pios(basic: BasicSerial, device: str, timeout: float) -> list[int]:
+    """PIO instances MMBasic will let user code grab. WiFi/VGA boards reserve
+    a PIO for the system (e.g. the CYW43 WiFi SPI bus runs on PIO0); grabbing
+    a reserved PIO errors ("PIO n not available") and, for an active WiFi
+    link, would clobber it — so probe each candidate rather than assume PIO0
+    is free."""
+    candidates = [0, 1, 2] if has_pio2(device) else [0, 1]
+    usable: list[int] = []
+    for n in candidates:
+        command(basic, f"ON ERROR SKIP : PIO CLEAR {n}", timeout, check_error=False)
+        probe = command(basic, f'PRINT "PIO_PROBE_{n}="+STR$(MM.ERRNO)', timeout)
+        command(basic, "ON ERROR CLEAR", timeout, check_error=False)
+        if f"PIO_PROBE_{n}=0" in probe:
+            usable.append(n)
+    return usable
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=default_port(), help="serial device path")
@@ -477,16 +494,18 @@ def main() -> int:
     with BasicSerial(args.port, args.baud) as basic:
         basic.sync(timeout=args.timeout, boot_wait=args.boot_wait)
         device = command(basic, 'PRINT "PIO_API_DEVICE="+MM.DEVICE$', args.timeout)
-        available = [0, 2] if has_pio2(device) else [0]
-        if args.all_pios and has_pio2(device):
-            available = [0, 1, 2]
+        available = detect_available_pios(basic, device, args.timeout)
+        if not available:
+            print("FAIL: no user-available PIO instances detected", flush=True)
+            return 1
         cleanup_pio(basic, available, args.timeout)
 
         primary = available[0]
         smoke_functions_and_configure(basic, primary, args.timeout)
         smoke_assembler_surface(basic, primary, args.timeout)
         smoke_program_load_and_fifo(basic, primary, args.timeout)
-        if has_pio2(device):
+        rp2350_test = has_pio2(device) and 2 in available
+        if rp2350_test:
             smoke_rp2350_fifo_and_base(basic, 2, args.timeout)
 
         for pio in available:
@@ -499,7 +518,7 @@ def main() -> int:
         smoke_callbacks_and_interrupts(basic, primary, args.timeout)
         cleanup_pio(basic, available, args.timeout)
 
-    total = 5 + len(available) * 2 + 2
+    total = 4 + (1 if rp2350_test else 0) + len(available) * 2 + 2
     print(f"{total}/{total} passed", flush=True)
     return 0
 

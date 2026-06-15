@@ -43,7 +43,7 @@ target_sources(PicoMite PRIVATE
 
     # Non-WEB feature backends.
     ${CMAKE_SOURCE_DIR}/drivers/gfx_3d/gfx_3d.c
-    ${CMAKE_SOURCE_DIR}/shared/net/MMweb_stubs.c
+    ${CMAKE_SOURCE_DIR}/ports/pico_sdk_common/MMweb_stubs.c
 )
 
 # Keyboard backend axis (USB host stack vs PS/2 matrix).

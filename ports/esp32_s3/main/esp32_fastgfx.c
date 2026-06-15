@@ -19,6 +19,7 @@
 #include "hal/hal_vga_ops.h"
 
 extern int esp32_ili9341_lcd_ready(void);
+extern int esp32_ili9341_lcd_fastgfx_ready(void);
 extern void esp32_ili9341_lcd_snapshot_rgb121(uint8_t * out);
 extern void esp32_ili9341_lcd_present_rgb121_diff(uint8_t * back, uint8_t * front);
 
@@ -44,6 +45,12 @@ static size_t lcd_buf_size(void) {
     return (size_t)HRes * (size_t)VRes / 2u;
 }
 
+static int ptr_in_range(const void * p, const void * base, size_t bytes) {
+    uintptr_t addr = (uintptr_t)p;
+    uintptr_t start = (uintptr_t)base;
+    return bytes != 0 && addr >= start && addr < start + bytes;
+}
+
 static void fastgfx_sleep_to_fps(void) {
     if (s_frame_us == 0) return;
     uint64_t now = hal_time_us_64();
@@ -55,9 +62,8 @@ static void fastgfx_sleep_to_fps(void) {
 
 static void fastgfx_free_lcd_buffers(void) {
     if (s_back) {
-        if ((PSRAMsize && s_back >= (uint8_t *)PSRAMbase &&
-             s_back < (uint8_t *)(PSRAMbase + PSRAMsize)) ||
-            (s_back >= MMHeap && s_back < MMHeap + heap_memory_size)) {
+        if ((PSRAMsize && ptr_in_range(s_back, (const void *)PSRAMbase, PSRAMsize)) ||
+            ptr_in_range(s_back, MMHeap, (size_t)heap_memory_size)) {
             FreeMemorySafe((void **)&s_back);
         } else {
             heap_caps_free(s_back);
@@ -65,15 +71,28 @@ static void fastgfx_free_lcd_buffers(void) {
         }
     }
     if (s_front) {
-        if ((PSRAMsize && s_front >= (uint8_t *)PSRAMbase &&
-             s_front < (uint8_t *)(PSRAMbase + PSRAMsize)) ||
-            (s_front >= MMHeap && s_front < MMHeap + heap_memory_size)) {
+        if ((PSRAMsize && ptr_in_range(s_front, (const void *)PSRAMbase, PSRAMsize)) ||
+            ptr_in_range(s_front, MMHeap, (size_t)heap_memory_size)) {
             FreeMemorySafe((void **)&s_front);
         } else {
             heap_caps_free(s_front);
             s_front = NULL;
         }
     }
+}
+
+static uint8_t * fastgfx_alloc_scanout_buffer(size_t bytes) {
+    uint8_t * p =
+        (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!p) p = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p;
+}
+
+static void fastgfx_free_scanout_buffer(void) {
+    if (s_back) {
+        heap_caps_free(s_back);
+    }
+    s_back = NULL;
 }
 
 static void fastgfx_reset_state(int clear_fps) {
@@ -83,10 +102,7 @@ static void fastgfx_reset_state(int clear_fps) {
     } else if (s_mode == ESP32_FASTGFX_LCD) {
         restorepanel();
     }
-    if (s_mode == ESP32_FASTGFX_SCANOUT && s_back) {
-        bc_free(s_back);
-        s_back = NULL;
-    }
+    if (s_mode == ESP32_FASTGFX_SCANOUT) fastgfx_free_scanout_buffer();
     fastgfx_free_lcd_buffers();
     s_mode = ESP32_FASTGFX_NONE;
     if (clear_fps) s_frame_us = 0;
@@ -100,7 +116,7 @@ static void fastgfx_scanout_present(void) {
 }
 
 static void fastgfx_create_scanout(void) {
-    s_back = (uint8_t *)bc_alloc((size_t)framebuffersize);
+    s_back = fastgfx_alloc_scanout_buffer((size_t)framebuffersize);
     if (!s_back) error("FASTGFX: out of memory");
     memcpy(s_back, (const void *)FRAMEBUFFER, framebuffersize);
     s_saved_writebuf = WriteBuf;
@@ -111,10 +127,10 @@ static void fastgfx_create_scanout(void) {
 static void fastgfx_create_lcd(void) {
     size_t bytes = lcd_buf_size();
     if (bytes == 0) error("Display not configured");
-    s_back = (uint8_t *)TryGetMemory((int)bytes);
-    s_front = (uint8_t *)TryGetMemory((int)bytes);
-    if (!s_back) s_back = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_front) s_front = (uint8_t *)heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_back = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_front = (uint8_t *)heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_back) s_back = (uint8_t *)TryGetMemory((int)bytes);
+    if (!s_front) s_front = (uint8_t *)TryGetMemory((int)bytes);
     if (!s_back || !s_front) {
         fastgfx_free_lcd_buffers();
         error("NEM[fastgfx:bufs] want=%x2", (int)bytes);
@@ -131,6 +147,8 @@ void bc_fastgfx_create(void) {
     if (FrameBuf || LayerBuf) error("FRAMEBUFFER is active");
 
     if (esp32_ili9341_lcd_ready()) {
+        if (!esp32_ili9341_lcd_fastgfx_ready())
+            error("FASTGFX requires display memory");
         fastgfx_create_lcd();
     } else if (FRAMEBUFFER != NULL && framebuffersize != 0) {
         fastgfx_create_scanout();

@@ -22,6 +22,9 @@ ports/esp32_s3/dependencies.lock
 ports/esp32_s3_quad/build/
 ports/esp32_s3_quad/sdkconfig
 ports/esp32_s3_quad/sdkconfig.old
+ports/esp32_cyd/sdkconfig
+ports/esp32_cyd/sdkconfig.old
+ports/esp32_cyd/dependencies.lock
 ports/esp32_s3_quad/managed_components/
 ports/esp32_s3_quad/dependencies.lock
 options.ini

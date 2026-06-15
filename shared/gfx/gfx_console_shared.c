@@ -18,6 +18,22 @@
 __attribute__((weak)) void port_display_render_begin(void) {}
 __attribute__((weak)) void port_display_render_end(void) {}
 
+/* Panels honour the manual REFRESH / AUTOREFRESH model by default. Ports
+ * with an always-presented display (no off-screen buffer, e.g. the no-PSRAM
+ * CYD) clear this flag in their display init. Driven by a flag rather than a
+ * weak symbol override because a cross-TU weak default does not resolve under
+ * mingw/PE-COFF (the mmbasic_ansi.exe build). */
+int port_display_supports_manual_refresh = 1;
+int port_display_manual_refresh_supported(void) {
+    return port_display_supports_manual_refresh;
+}
+
+static int (*s_cursor_hook)(int show);
+
+void gfx_console_set_cursor_hook(int (*hook)(int show)) {
+    s_cursor_hook = hook;
+}
+
 /******************************************************************************************
  Print a char on the LCD display
  Any characters not in the font will print as a space.
@@ -156,6 +172,10 @@ void GUIPrintChar(int fnt, int fc, int bc, char c, int orientation) {
 void DisplayPutC(char c) {
 
     if (!Option.DISPLAY_CONSOLE) return;
+    if (HRes <= 0) return; // no display geometry: the right-margin wrap below
+                           // would CRLF on every char and tab expansion
+                           // ('\t' loops until a tab stop is reached) would
+                           // never terminate
     // if it is printable and it is going to take us off the right hand end of the screen do a CRLF
     if (c >= FontTable[gui_font >> 4][2] && c < FontTable[gui_font >> 4][2] + FontTable[gui_font >> 4][3]) {
         if (CurrentX + gui_font_width > HRes) {
@@ -212,6 +232,7 @@ void DisplayPutC(char c) {
 void ShowCursor(int show) {
     static int visible = false;
     int newstate;
+    if (s_cursor_hook && s_cursor_hook(show)) return;
     if (!Option.DISPLAY_CONSOLE) return;
     newstate = ((CursorTimer <= CURSOR_ON) && show); // what should be the state of the cursor?
     if (visible == newstate) return;                 // we can skip the rest if the cursor is already in the correct state

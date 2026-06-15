@@ -10,11 +10,52 @@
  */
 
 #include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "MMBasic_Includes.h"
 #include "Hardware_Includes.h"
 #include "host_time.h"
+
+/* Set by the WEB NTP path (host_web.c / host_wasm_web.c) so DATE$/TIME$
+ * follow the device mmbasic-epoch clock during network conformance. */
+int host_time_use_mmbasic_offset = 0;
+
+/* DATE$/TIME$ overrides for host builds: honour test mocking via the
+ * MMBASIC_HOST_DATE / MMBASIC_HOST_TIME env vars, otherwise show wall-clock
+ * time. When host_time_use_mmbasic_offset is set, return 0 to defer to the
+ * standard mmbasic-epoch path so host network conformance matches device. */
+int port_clock_format_date(char * out) {
+    const char * mock = getenv("MMBASIC_HOST_DATE");
+    if (mock && *mock) {
+        strncpy(out, mock, 15);
+        out[15] = '\0';
+        return 1;
+    }
+    if (host_time_use_mmbasic_offset) return 0;
+    time_t now = time(NULL);
+    struct tm * lt = localtime(&now);
+    if (!lt) return 0;
+    snprintf(out, 16, "%02d-%02d-%04d", lt->tm_mday, lt->tm_mon + 1, lt->tm_year + 1900);
+    return 1;
+}
+
+int port_clock_format_time(char * out) {
+    const char * mock = getenv("MMBASIC_HOST_TIME");
+    if (mock && *mock) {
+        strncpy(out, mock, 15);
+        out[15] = '\0';
+        return 1;
+    }
+    if (host_time_use_mmbasic_offset) return 0;
+    time_t now = time(NULL);
+    struct tm * lt = localtime(&now);
+    if (!lt) return 0;
+    snprintf(out, 16, "%02d:%02d:%02d", lt->tm_hour, lt->tm_min, lt->tm_sec);
+    return 1;
+}
 
 /* mSecTimer / CursorTimer are referenced as externs via Hardware_Includes.h.
  * CURSOR_OFF / CURSOR_ON come from the same chain. */

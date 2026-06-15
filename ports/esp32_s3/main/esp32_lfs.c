@@ -97,6 +97,10 @@ extern const char demo_sieve_start[] asm("_binary_sieve_bas_start");
 extern const char demo_sieve_end[] asm("_binary_sieve_bas_end");
 extern const char demo_mand_start[] asm("_binary_mand_bas_start");
 extern const char demo_mand_end[] asm("_binary_mand_bas_end");
+extern const char demo_touch_draw_start[] asm("_binary_touch_draw_bas_start");
+extern const char demo_touch_draw_end[] asm("_binary_touch_draw_bas_end");
+extern const char demo_gui_kitchen_sink_start[] asm("_binary_gui_kitchen_sink_bas_start");
+extern const char demo_gui_kitchen_sink_end[] asm("_binary_gui_kitchen_sink_bas_end");
 extern const char demo_web_hello_start[] asm("_binary_web_hello_bas_start");
 extern const char demo_web_hello_end[] asm("_binary_web_hello_bas_end");
 extern const char demo_site_start[] asm("_binary_site_bas_start");
@@ -113,6 +117,12 @@ extern const char demo_site_files_start[] asm("_binary_site_files_htm_start");
 extern const char demo_site_files_end[] asm("_binary_site_files_htm_end");
 extern const char demo_site_style_start[] asm("_binary_site_style_css_start");
 extern const char demo_site_style_end[] asm("_binary_site_style_css_end");
+#if defined(CONFIG_IDF_TARGET_ESP32)
+extern const char demo_touch_cal_start[] asm("_binary_touch_cal_bas_start");
+extern const char demo_touch_cal_end[] asm("_binary_touch_cal_bas_end");
+extern const char demo_touch_align_start[] asm("_binary_touch_align_bas_start");
+extern const char demo_touch_align_end[] asm("_binary_touch_align_bas_end");
+#endif
 
 struct embedded_demo {
     const char * name;
@@ -126,6 +136,8 @@ static const struct embedded_demo s_demos[] = {
     {"fizzbuzz.bas", demo_fizzbuzz_start, demo_fizzbuzz_end, 0},
     {"sieve.bas", demo_sieve_start, demo_sieve_end, 0},
     {"mand.bas", demo_mand_start, demo_mand_end, 0},
+    {"touch_draw.bas", demo_touch_draw_start, demo_touch_draw_end, 0},
+    {"gui_kitchen_sink.bas", demo_gui_kitchen_sink_start, demo_gui_kitchen_sink_end, 0},
     {"web_hello.bas", demo_web_hello_start, demo_web_hello_end, 0},
     {"site.bas", demo_site_start, demo_site_end, 1},
     {"server.bas", demo_site_start, demo_site_end, 1},
@@ -135,16 +147,31 @@ static const struct embedded_demo s_demos[] = {
     {"gpio.htm", demo_site_gpio_start, demo_site_gpio_end, 1},
     {"files.htm", demo_site_files_start, demo_site_files_end, 1},
     {"style.css", demo_site_style_start, demo_site_style_end, 1},
+#if defined(CONFIG_IDF_TARGET_ESP32)
+    {"touch_cal.bas", demo_touch_cal_start, demo_touch_cal_end, 1},
+    {"touch_align.bas", demo_touch_align_start, demo_touch_align_end, 1},
+#endif
 };
 
 static void populate_demos(void) {
+    /* The refresh-class demos track the firmware image, but rewriting
+     * them on every boot churns the directory's metadata log until every
+     * directory read crawls (observed: a day of bring-up boots took a
+     * 13-entry scan from ~10 ms to seconds). A version stamp stored as a
+     * root attribute (invisible to FILES) skips the rewrites when the
+     * firmware hasn't changed. */
+    const char * ver = MMBA_RELEASE_VERSION " " __DATE__ " " __TIME__;
+    char stamp[64] = {0};
+    lfs_ssize_t sl = lfs_getattr(&lfs, "/", 'V', stamp, sizeof(stamp) - 1);
+    int refresh_demos = !(sl > 0 && strncmp(stamp, ver, sizeof(stamp) - 1) == 0);
+
     for (size_t i = 0; i < sizeof s_demos / sizeof s_demos[0]; i++) {
         const struct embedded_demo * d = &s_demos[i];
         size_t len = (size_t)(d->end - d->start);
         if (len && d->start[len - 1] == '\0') len--;
         lfs_file_t f;
         int err = lfs_file_open(&lfs, &f, d->name, LFS_O_RDONLY);
-        if (!err && !d->refresh) {
+        if (!err && (!d->refresh || !refresh_demos)) {
             lfs_soff_t existing_size = lfs_file_size(&lfs, &f);
             lfs_file_close(&lfs, &f);
             if (existing_size > 0) continue;
@@ -159,6 +186,10 @@ static void populate_demos(void) {
         lfs_file_close(&lfs, &f);
         ESP_LOGI("lfs", "wrote demo %s (%u bytes)", d->name, (unsigned)len);
     }
+
+    if (refresh_demos &&
+        lfs_setattr(&lfs, "/", 'V', ver, strlen(ver)) < 0)
+        ESP_LOGW("lfs", "demo version stamp failed");
 }
 
 int esp32_lfs_mount(void) {

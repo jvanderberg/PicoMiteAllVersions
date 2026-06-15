@@ -9,6 +9,8 @@ Not sure which? Neither image bricks a board — flash either and check `MM.INFO
 
 ESP32-S3 port with selectable board profiles. The generic profile boots over USB Serial/JTAG without assuming board peripherals; the Metro profile keeps the Adafruit Metro ESP32-S3 (#5500) N16R8 wiring used for bring-up. MMBasic claims the board's PSRAM at boot — as much as the chip actually has — for its program/variable heap; `PSRAMsize` and the shared `RAM` command surface match Pico variants. The port can use the ESP32-S3 native USB port either as a USB Serial/JTAG console or as a USB HID host for an external keyboard.
 
+For the **classic ESP32** (no PSRAM) — the "Cheap Yellow Display" and bare ESP32 dev boards — see the sibling [`../esp32_cyd/README.md`](../esp32_cyd/README.md). It shares this codebase but runs in internal RAM, so it trades away the permanent framebuffer, TLS, and simultaneous Wi-Fi + graphics/`FRUN`.
+
 Plan: [docs/real-hal/esp32-s3-port.md](../../docs/real-hal/esp32-s3-port.md). Session log: [docs/real-hal/esp32-s3-port-log.md](../../docs/real-hal/esp32-s3-port-log.md).
 
 ## Prerequisites

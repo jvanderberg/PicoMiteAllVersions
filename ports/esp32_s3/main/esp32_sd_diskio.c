@@ -13,6 +13,7 @@
 #include "driver/gpio.h"
 #include "driver/sdspi_host.h"
 #include "driver/spi_common.h"
+#include "esp_chip_info.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -130,7 +131,18 @@ static esp_err_t init_sdspi_card(void) {
         .max_transfer_sz = 4000,
     };
 
-    err = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
+    /* Classic ESP32 shares two SPI DMA channels across all hosts; the LCD
+     * already holds one via SPI_DMA_CH_AUTO, so a second AUTO request here
+     * fails with ESP_ERR_NOT_FOUND. Pin the SD to the other channel. The S3
+     * uses GDMA, where AUTO always succeeds. */
+    spi_dma_chan_t sd_dma = SDSPI_DEFAULT_DMA;
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    /* SPI_DMA_CH2 (==2) is a classic-ESP32-only enum; the S3's GDMA path
+     * only defines SPI_DMA_CH_AUTO. Use the literal so this compiles on
+     * every target, and only take it on the classic chip. */
+    if (chip.model == CHIP_ESP32) sd_dma = (spi_dma_chan_t)2;
+    err = spi_bus_initialize(host.slot, &bus_cfg, sd_dma);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return err;

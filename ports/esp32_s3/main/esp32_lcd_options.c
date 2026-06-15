@@ -89,11 +89,28 @@ static int lcd_panel_setter(unsigned char * tp) {
     if (!Option.LCD_CLK) error("Set OPTION SYSTEM SPI first");
     getargs(&tp, 13, (unsigned char *)",");
     if (argc != 9 && argc != 11 && argc != 13)
-        error("OPTION LCDPANEL ILI9341, orientation, DC, RST, CS [,BL] [,INVERT]");
-    if (!checkstring(argv[0], (unsigned char *)"ILI9341"))
+        error("OPTION LCDPANEL ILI9341|ST7789, orientation, DC, RST, CS [,BL] [,INVERT]");
+    int paneltype;
+    if (checkstring(argv[0], (unsigned char *)"ILI9341"))
+        paneltype = ILI9341;
+    else if (checkstring(argv[0], (unsigned char *)"ST7789"))
+        paneltype = ST7789B; /* 320x240 ST7789 (CYD2USB-class panels) */
+    else
         error("Display type not supported");
-    if (!(checkstring(argv[2], (unsigned char *)"LANDSCAPE") ||
-          checkstring(argv[2], (unsigned char *)"L")))
+    int orient;
+    if (checkstring(argv[2], (unsigned char *)"LANDSCAPE") ||
+        checkstring(argv[2], (unsigned char *)"L"))
+        orient = LANDSCAPE;
+    else if (checkstring(argv[2], (unsigned char *)"RLANDSCAPE") ||
+             checkstring(argv[2], (unsigned char *)"RL"))
+        orient = RLANDSCAPE;
+    else if (checkstring(argv[2], (unsigned char *)"PORTRAIT") ||
+             checkstring(argv[2], (unsigned char *)"P"))
+        orient = PORTRAIT;
+    else if (checkstring(argv[2], (unsigned char *)"RPORTRAIT") ||
+             checkstring(argv[2], (unsigned char *)"RP"))
+        orient = RPORTRAIT;
+    else
         error("Orientation not supported");
 
     /* INVERT (panel colour-polarity inversion, PicoMite's Option.BGR) may
@@ -125,8 +142,8 @@ static int lcd_panel_setter(unsigned char * tp) {
     Option.LCD_Reset = rst;
     Option.LCD_CS = cs;
     Option.DISPLAY_BL = bl;
-    Option.DISPLAY_TYPE = ILI9341;
-    Option.DISPLAY_ORIENTATION = LANDSCAPE;
+    Option.DISPLAY_TYPE = paneltype;
+    Option.DISPLAY_ORIENTATION = orient;
     Option.BGR = invert;
     lcd_option_save_and_reset();
     return 1;
@@ -201,7 +218,23 @@ void esp32_lcd_print_options(void) {
         MMPrintString("\r\n");
     }
     if (Option.LCD_CD && Option.LCD_CS) {
-        MMPrintString("OPTION LCDPANEL ILI9341, LANDSCAPE, ");
+        const char * orient = "LANDSCAPE";
+        switch (Option.DISPLAY_ORIENTATION) {
+        case RLANDSCAPE:
+            orient = "RLANDSCAPE";
+            break;
+        case PORTRAIT:
+            orient = "PORTRAIT";
+            break;
+        case RPORTRAIT:
+            orient = "RPORTRAIT";
+            break;
+        }
+        MMPrintString("OPTION LCDPANEL ");
+        MMPrintString(Option.DISPLAY_TYPE == ST7789B ? "ST7789" : "ILI9341");
+        MMPrintString(", ");
+        MMPrintString((char *)orient);
+        MMPrintString(", ");
         lcd_print_pin(Option.LCD_CD);
         MMPrintString(", ");
         lcd_print_pin(Option.LCD_Reset);

@@ -46,6 +46,12 @@ extern int FindFreeFileNbr(void);
 extern int BasicFileOpen(char * fname, int fnbr, int mode);
 extern int ForceFileClose(int fnbr);
 
+/* No MOD-size limit by default; ports with a tight audio work-memory
+ * budget (e.g. the no-PSRAM CYD) override this. */
+__attribute__((weak)) unsigned long hal_audio_mod_max_file_bytes(void) {
+    return 0;
+}
+
 #define DECODE_FRAMES 1024
 #define MOD_RENDER_RATE 22050
 #define MOD_OUTPUT_RATE (MOD_RENDER_RATE * 2)
@@ -102,6 +108,12 @@ static size_t stream_read(void * ud, void * buf, size_t n) {
 static drwav_bool32 stream_seek(void * ud, int offset, drwav_seek_origin origin) {
     (void)ud;
     int whence = (origin == drwav_seek_origin_start) ? HAL_FS_SEEK_SET : HAL_FS_SEEK_CUR;
+    return hal_fs_seek(hal_fds[s_fnbr], offset, whence) < 0 ? 0 : 1;
+}
+
+static drmp3_bool32 stream_seek_mp3(void * ud, int offset, drmp3_seek_origin origin) {
+    (void)ud;
+    int whence = (origin == drmp3_seek_origin_start) ? HAL_FS_SEEK_SET : HAL_FS_SEEK_CUR;
     return hal_fs_seek(hal_fds[s_fnbr], offset, whence) < 0 ? 0 : 1;
 }
 
@@ -236,8 +248,7 @@ int audio_stream_play_mp3(char * fname) {
     if (stream_open_file(fname, ".mp3") != 0) return -1;
     s_mp3 = hal_audio_workmem_alloc(sizeof(drmp3));
     drmp3_allocation_callbacks ac = {NULL, dec_malloc, dec_realloc, dec_free};
-    if (!s_mp3 || !drmp3_init(s_mp3, (drmp3_read_proc)stream_read,
-                              (drmp3_seek_proc)stream_seek, NULL, &ac)) {
+    if (!s_mp3 || !drmp3_init(s_mp3, stream_read, stream_seek_mp3, NULL, &ac)) {
         hal_audio_workmem_free(s_mp3);
         s_mp3 = NULL;
         stream_close_file();
@@ -291,6 +302,13 @@ int audio_stream_play_mod_noloop(char * fname, int noloop) {
     long size = (long)hal_fs_seek(hal_fds[s_fnbr], 0, HAL_FS_SEEK_END);
     hal_fs_seek(hal_fds[s_fnbr], 0, HAL_FS_SEEK_SET);
     if (size <= 0) {
+        stream_close_file();
+        return -1;
+    }
+    unsigned long mod_max = hal_audio_mod_max_file_bytes();
+    if (mod_max && (unsigned long)size > mod_max) {
+        printf("audio_stream: mod too large bytes=%lu max=%lu\r\n",
+               (unsigned long)size, mod_max);
         stream_close_file();
         return -1;
     }

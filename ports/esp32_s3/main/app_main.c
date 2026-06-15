@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "esp_private/startup_internal.h" /* ESP_SYSTEM_INIT_FN */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -26,7 +27,8 @@
 #include "esp32_option_ext.h"
 
 extern jmp_buf mark;
-extern unsigned char flash_prog_buf[];
+extern unsigned char * flash_prog_buf;
+extern void esp32_flash_prog_buf_init(void);
 extern const uint8_t * flash_progmemory;
 extern void flash_range_erase(uint32_t off, uint32_t count);
 extern void esp32_console_init(void);
@@ -104,7 +106,13 @@ static void esp32_keyboard_mode_recovery(void) {
     MMPrintString("\r\nUSB keyboard not enumerated yet; staying in USB KEYBOARD mode\r\n");
 }
 
-void app_main(void) {
+/* The interpreter runs on its own task whose stack comes from the
+ * post-scheduler heap (the large D/IRAM region). The IDF main task only
+ * spawns it and exits, so its stack — allocated from the small early-boot
+ * DRAM pool before the big regions join the heap — can stay tiny
+ * (CONFIG_ESP_MAIN_TASK_STACK_SIZE), leaving that pool to .bss. */
+static void mmbasic_main_task(void * arg) {
+    (void)arg;
     esp_log_level_set("gpio", ESP_LOG_WARN);
 
     /* Crash-recovery boot. A crash-class reset carries the counter
@@ -132,11 +140,12 @@ void app_main(void) {
     hal_psram_init();
 
     /* MMBasic boot. flash_prog_buf is sized MAX_PROG_SIZE + 4096 in
-     * esp32_compat.c; the constructor 0xff-fills both the program region
+     * esp32_compat.c; the init 0xff-fills both the program region
      * and the trailer to mirror erased-flash semantics. PrepareProgramExt
      * walks past the program terminator looking for 0xff as the "end of
      * program / start of CFunction area" sentinel — non-0xff bytes there
      * cause it to deref garbage. */
+    esp32_flash_prog_buf_init();
     flash_progmemory = flash_prog_buf;
     esp32_mmbasic_console_glue_init();
 
@@ -217,8 +226,6 @@ void app_main(void) {
     /* Bring up local displays before USB host, Wi-Fi, and LittleFS. */
     extern void esp32_ili9341_lcd_init(void);
     esp32_ili9341_lcd_init();
-    extern void esp32_ft6336u_touch_init(void);
-    esp32_ft6336u_touch_init();
     extern void InitTouch(void);
     InitTouch();
     extern void esp32_vga_display_init(void);
@@ -269,4 +276,37 @@ void app_main(void) {
     /* MMBasic_RunPromptLoop is its own setjmp loop — it longjmps back
      * to its own `mark` on error / Ctrl-C / END / NEW. We don't return. */
     mmbasic_runtime_enter_repl(NULL, 0);
+}
+
+/* The interpreter task stack is carved at CORE init, immediately after
+ * the 320d scanout reservation (priority 200): both blocks need the big
+ * contiguous SRAM region, and only before the FreeRTOS task stacks land
+ * mid-region can the heap supply 76.8 KB + 32 KB side by side. The TCB
+ * is plain .bss. */
+#define MMBASIC_TASK_STACK_BYTES 32768
+static StaticTask_t s_mmbasic_tcb;
+static StackType_t * s_mmbasic_stack;
+
+ESP_SYSTEM_INIT_FN(mmbasic_stack_carve, CORE, BIT(0), 201) {
+    s_mmbasic_stack = (StackType_t *)heap_caps_malloc(
+        MMBASIC_TASK_STACK_BYTES, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    ESP_EARLY_LOGI("mmbasic", "interpreter stack carve: %s",
+                   s_mmbasic_stack ? "internal SRAM" : "FAILED (late create)");
+    return ESP_OK;
+}
+
+void app_main(void) {
+    TaskHandle_t task = NULL;
+    if (s_mmbasic_stack)
+        task = xTaskCreateStaticPinnedToCore(mmbasic_main_task, "mmbasic",
+                                             MMBASIC_TASK_STACK_BYTES, NULL, 1,
+                                             s_mmbasic_stack, &s_mmbasic_tcb, 0);
+    if (!task &&
+        xTaskCreatePinnedToCore(mmbasic_main_task, "mmbasic", MMBASIC_TASK_STACK_BYTES,
+                                NULL, 1, NULL, 0) != pdPASS) {
+        /* A silent return here looks like a dead board: say why. */
+        ESP_LOGE("mmbasic", "interpreter task create FAILED (need %u contiguous internal)",
+                 (unsigned)MMBASIC_TASK_STACK_BYTES);
+    }
+    /* Returning lets the IDF delete the main task. */
 }

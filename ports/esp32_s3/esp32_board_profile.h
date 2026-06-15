@@ -13,9 +13,33 @@
 #define ESP32_BOARD_PROFILE_ID_GENERIC 1
 #define ESP32_BOARD_PROFILE_ID_METRO 2
 #define ESP32_BOARD_PROFILE_ID_FREENOVE_ILI9341 3
+#define ESP32_BOARD_PROFILE_ID_CYD 4
 
 #define ESP32_BOARD_GENERIC_NAME "GENERIC"
 #define ESP32_BOARD_GENERIC_DEVICE_NAME "MMBasic ESP32-S3"
+
+/* Classic-ESP32 CYD profile (dead entry on the S3 build; the shared profile
+ * table is compiled for every ESP32 port). */
+#define ESP32_BOARD_CYD_NAME "CYD"
+#define ESP32_BOARD_CYD_DEVICE_NAME "MMBasic ESP32 CYD"
+#define ESP32_BOARD_CYD_LCD_SCLK 14
+#define ESP32_BOARD_CYD_LCD_MOSI 13
+#define ESP32_BOARD_CYD_LCD_MISO 12
+#define ESP32_BOARD_CYD_LCD_CS 15
+#define ESP32_BOARD_CYD_LCD_DC 2
+#define ESP32_BOARD_CYD_LCD_RST -1
+#define ESP32_BOARD_CYD_LCD_BL 21
+#define ESP32_BOARD_CYD_LCD_SPI_HZ 40000000
+#define ESP32_BOARD_CYD_SD_SCLK 18
+#define ESP32_BOARD_CYD_SD_MOSI 23
+#define ESP32_BOARD_CYD_SD_MISO 19
+#define ESP32_BOARD_CYD_SD_CS 5
+#define ESP32_BOARD_CYD_AUDIO_DAC 26
+#define ESP32_BOARD_CYD_TOUCH_SCLK 25
+#define ESP32_BOARD_CYD_TOUCH_MOSI 32
+#define ESP32_BOARD_CYD_TOUCH_MISO 39
+#define ESP32_BOARD_CYD_TOUCH_CS 33
+#define ESP32_BOARD_CYD_TOUCH_IRQ 36
 
 #define ESP32_BOARD_METRO_NAME "METRO"
 #define ESP32_BOARD_METRO_DEVICE_NAME "MMBasic ESP32-S3 Metro"
@@ -66,7 +90,8 @@
 typedef enum {
     ESP32_AUDIO_SINK_NONE = 0,
     ESP32_AUDIO_SINK_I2S_DAC,
-    ESP32_AUDIO_SINK_ES8311
+    ESP32_AUDIO_SINK_ES8311,
+    ESP32_AUDIO_SINK_INTERNAL_DAC
 } esp32_board_audio_sink_t;
 
 typedef struct {
@@ -88,6 +113,9 @@ typedef struct {
     int rst;
     int backlight;
     int spi_hz;
+    int type;        /* DISPLAY_TYPE controller (ILI9341, ST7789B, ...) */
+    int orientation; /* DISPLAY_ORIENTATION (LANDSCAPE, ...) */
+    int bgr;         /* Option.BGR colour-polarity flag */
 } esp32_board_lcd_pins_t;
 
 typedef struct {

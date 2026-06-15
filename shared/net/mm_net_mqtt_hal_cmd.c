@@ -53,11 +53,13 @@ int mm_net_mqtt_hal_cmd(unsigned char * line,
             MMPrintString(buff);
         }
 
-        if (hal_net_mqtt_connect(parsed.host, (uint16_t)parsed.port,
-                                 parsed.user, parsed.pass, ctx->client_id,
-                                 parsed.tls, 5000, ctx->client) != HAL_NET_OK) {
+        int connect_rc = hal_net_mqtt_connect(parsed.host, (uint16_t)parsed.port,
+                                              parsed.user, parsed.pass, ctx->client_id,
+                                              parsed.tls, 5000, ctx->client);
+        if (connect_rc != HAL_NET_OK) {
             *ctx->client = 0;
             mqtt_set_connected(ctx, 0);
+            if (connect_rc == HAL_NET_NOMEM) error("Not enough memory");
             error("Failed to connect");
         }
         mqtt_set_connected(ctx, 1);

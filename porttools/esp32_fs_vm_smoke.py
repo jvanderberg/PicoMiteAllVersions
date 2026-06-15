@@ -318,6 +318,10 @@ class Esp32Smoke:
             ("GP7", "PWM3A", 3),
             ("GP39", "PWM2A", 2),
             ("GP41", "PWM3A", 3),
+            # Classic-ESP32 candidates: the S3 pins above are the console,
+            # VGA, or flash pins there (or do not exist at all).
+            ("GP33", "PWM1A", 1),
+            ("GP32", "PWM0B", 0),
         )
         last = ""
         for pin, mode, channel in pwm_candidates:
@@ -351,8 +355,11 @@ class Esp32Smoke:
 
     def gpio_smoke(self) -> None:
         print("=== gpio ===", flush=True)
-        safe_digital = ("GP2", "GP3", "GP9", "GP14", "GP21", "GP35", "GP36", "GP37")
-        safe_analog = ("GP2", "GP3", "GP9", "GP14")
+        safe_digital = ("GP4", "GP16", "GP17", "GP25", "GP27",
+                        "GP2", "GP3", "GP9", "GP14", "GP21", "GP35", "GP36", "GP37")
+        # GP32/GP33 are the classic-ESP32 ADC1 candidates (GP2/GP3/GP9/GP14
+        # are S3 ADC1 channels; on classic they are ADC2 or the console).
+        safe_analog = ("GP2", "GP3", "GP9", "GP14", "GP32", "GP33", "GP34", "GP39")
         dout_pin = self.find_setpin_candidate("DOUT", safe_digital)
         self.command(f"PIN({dout_pin})=1")
         high = self.command(f'PRINT "ESP32_DOUT_HIGH=" + STR$(PIN({dout_pin}))')
@@ -472,6 +479,9 @@ def expected_pwm_servo_error(text: str) -> bool:
         "Channel in use for audio",
         "Channel in use for camera clock",
         "Channel in use for keyboard backlight",
+        "Pin in use",
+        "reserved on startup",
+        "Pin not set for PWM",
     )
     return has_basic_error(text) and any(message in text for message in accepted)
 

@@ -269,10 +269,17 @@ def run_scan(basic: BasicSerial, timeout: float, long_timeout: float) -> list[Ch
     return checks
 
 
-def run_tls_suite(args: argparse.Namespace) -> int:
+def run_tls_suite(args: argparse.Namespace, expect_mqtt_tls: str = "pass") -> int:
+    """Run the TLS suite. expect_mqtt_tls:
+       "pass"    — MQTT-over-TLS must connect and round-trip (VGA off).
+       "blocked" — MQTT-over-TLS must fail cleanly with "Not enough memory"
+                   because the native VGA scanout reserves the internal RAM
+                   esp-mqtt's TLS transport needs (VGA on). TLS HTTP and TLS
+                   streaming must still pass in both cases."""
     mac_ip = args.host or local_ip_for(args.gateway)
     ca_path = "A:esp32_tls_smoke_ca.pem"
     checks: list[CheckResult] = []
+    print(f"--- TLS suite (MQTT-over-TLS expectation: {expect_mqtt_tls}) ---", flush=True)
     with tempfile.TemporaryDirectory(prefix="esp32_tls_smoke_") as tmp:
         cert, key, ca = make_cert(Path(tmp), mac_ip)
         ca_text = ca.read_text(encoding="ascii")
@@ -289,7 +296,9 @@ def run_tls_suite(args: argparse.Namespace) -> int:
             basic.command(f'WEB TLS CERT "{ca_path}"', timeout=args.timeout)
             checks.append(CheckResult("tls_cert_load", True, ca_path))
 
-            commands = [
+            # TLS HTTP client + TLS streaming — fit in internal RAM in both
+            # VGA states, so always expected to pass.
+            tls_commands = [
                 "NEW",
                 "OPTION BASE 0",
                 "DIM INTEGER A%(4096/8)",
@@ -310,6 +319,8 @@ def run_tls_suite(args: argparse.Namespace) -> int:
                 "S%(0)=W%",
                 'IF W%>0 THEN PRINT LGETSTR$(S%(),1,W%) ELSE PRINT "TLS_STREAM_EMPTY"',
                 "WEB CLOSE TLS CLIENT",
+            ]
+            mqtt_commands = [
                 f'WEB MQTT CONNECT "{mac_ip}",{args.mqtt_tls_port},"","",,1',
                 'WEB MQTT SUBSCRIBE "netconf/in",0',
                 "PAUSE 500",
@@ -318,24 +329,53 @@ def run_tls_suite(args: argparse.Namespace) -> int:
                 'WEB MQTT PUBLISH "netconf/out","NETCONF_MQTT_OUT",0,0',
                 'WEB MQTT UNSUBSCRIBE "netconf/in"',
                 "WEB MQTT CLOSE",
-                'WEB TLS CERT ""',
-                f'ON ERROR SKIP : KILL "{ca_path}"',
             ]
-            transcript_parts: list[str] = []
-            for line in commands:
+            cleanup_commands = ['WEB TLS CERT ""', f'ON ERROR SKIP : KILL "{ca_path}"']
+
+            def run_line(line: str, check_error: bool = True):
                 timeout = args.long_timeout if line.startswith(("WEB OPEN TLS", "WEB TLS CLIENT", "WEB MQTT CONNECT", "PAUSE", "WEB SCAN")) else args.timeout
                 print(f">>> {line}", flush=True)
-                result = basic.command(line, timeout=timeout)
+                result = basic.command(line, timeout=timeout, check_error=check_error)
                 print(result.text, end="" if result.text.endswith("\n") else "\n", flush=True)
-                transcript_parts.append(result.text)
+                return result.text
+
+            transcript_parts: list[str] = []
+            for line in tls_commands:
+                transcript_parts.append(run_line(line))
+
+            # TLS HTTP + streaming are expected to pass regardless of VGA, so
+            # score them before the VGA-conditional MQTT section.
+            tls_clean = clean_text("".join(transcript_parts))
+            checks.extend([
+                CheckResult("tls_request_peer", http_server.first_line == "GET /tls-smoke HTTP/1.0", repr(http_server.first_line)),
+                CheckResult("tls_request_response", "ESP32_TLS_REQUEST_OK" in tls_clean),
+                CheckResult("tls_stream_peer", stream_server.received == b"TLS_INLINE\n", repr(stream_server.received)),
+                CheckResult("tls_stream_response", "TLS_STREAM_OK" in tls_clean),
+            ])
+
+            if expect_mqtt_tls == "blocked":
+                # MQTT-over-TLS must refuse cleanly while VGA holds the RAM:
+                # one "Not enough memory" error, no hang, no Wi-Fi flood.
+                connect_out = run_line(mqtt_commands[0], check_error=False)
+                blocked = "Not enough memory" in clean_text(connect_out)
+                checks.append(CheckResult(
+                    "mqtt_tls_blocked_in_vga", blocked,
+                    "clean 'Not enough memory'" if blocked else repr(clean_text(connect_out)[-80:])))
+                for name in ("mqtt_tls_connect", "mqtt_tls_subscribe",
+                             "mqtt_tls_receive_topic", "mqtt_tls_receive_message",
+                             "mqtt_tls_publish"):
+                    checks.append(CheckResult(name, True, "skipped (VGA active)"))
+                for line in cleanup_commands:
+                    transcript_parts.append(run_line(line, check_error=False))
+                return print_checks(checks)
+
+            # expect_mqtt_tls == "pass"
+            for line in mqtt_commands + cleanup_commands:
+                transcript_parts.append(run_line(line))
 
         clean = clean_text("".join(transcript_parts))
         checks.extend(
             [
-                CheckResult("tls_request_peer", http_server.first_line == "GET /tls-smoke HTTP/1.0", repr(http_server.first_line)),
-                CheckResult("tls_request_response", "ESP32_TLS_REQUEST_OK" in clean),
-                CheckResult("tls_stream_peer", stream_server.received == b"TLS_INLINE\n", repr(stream_server.received)),
-                CheckResult("tls_stream_response", "TLS_STREAM_OK" in clean),
                 CheckResult("mqtt_tls_connect", mqtt_broker.log.connected and bool(mqtt_broker.log.client_id), mqtt_broker.log.client_id),
                 CheckResult("mqtt_tls_subscribe", mqtt_broker.log.subscribed_topic == "netconf/in", repr(mqtt_broker.log.subscribed_topic)),
                 CheckResult("mqtt_tls_receive_topic", (marker_value(clean, "TLS_MQTT_TOPIC=") == "netconf/in"), repr(marker_value(clean, "TLS_MQTT_TOPIC="))),
@@ -361,12 +401,90 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--https-port", type=int, default=18443)
     parser.add_argument("--tls-stream-port", type=int, default=18444)
     parser.add_argument("--mqtt-tls-port", type=int, default=18445)
+    parser.add_argument(
+        "--vga",
+        choices=("auto", "off", "on", "both"),
+        default="auto",
+        help="auto: detect VGA and expect the matching MQTT-TLS result (default); "
+        "off/on: force that VGA state first; "
+        "both: cycle VGA off then on (needs a saved OPTION VGA) and verify both, "
+        "restoring the original state.",
+    )
     return parser.parse_args(argv)
+
+
+def read_vga_option(basic: BasicSerial, timeout: float) -> str | None:
+    """Return the saved 'OPTION VGA ...' line (re-issuable to re-enable), or
+    None when VGA is not configured."""
+    text = clean_text(basic.command("OPTION LIST", timeout=timeout).text)
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("OPTION VGA ") and "DISABLE" not in s:
+            return s
+    return None
+
+
+def apply_vga_state(basic: BasicSerial, args: argparse.Namespace, vga_line: str | None) -> None:
+    """Set VGA to the requested state (None disables) and reboot so the
+    boot-time scanout reservation reflects it, then re-sync + reconnect."""
+    basic.command("OPTION VGA DISABLE" if vga_line is None else vga_line,
+                  timeout=args.long_timeout, check_error=False)
+    basic.reset_app()
+    basic.read_for(13.0)
+    sync_with_reopen_retry(basic, args)
+    maybe_connect(basic, args)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    return run_tls_suite(args)
+
+    # Determine the current VGA state once up front (drives expectations and,
+    # for off/on/both, what to restore afterward).
+    with BasicSerial(args.port, args.baud) as probe:
+        sync_with_reopen_retry(probe, args)
+        saved_vga = read_vga_option(probe, args.timeout)
+    print(f"VGA currently: {'on — ' + saved_vga if saved_vga else 'off'}", flush=True)
+
+    if args.vga == "auto":
+        # Test the board as-is; MQTT-TLS is expected to work without VGA and
+        # to be blocked (clean 'Not enough memory') with VGA holding the RAM.
+        return run_tls_suite(args, "blocked" if saved_vga else "pass")
+
+    if args.vga == "off":
+        with BasicSerial(args.port, args.baud) as b:
+            sync_with_reopen_retry(b, args)
+            apply_vga_state(b, args, None)
+        return run_tls_suite(args, "pass")
+
+    if args.vga == "on":
+        vga_line = saved_vga
+        if not vga_line:
+            print("esp32_tls_scan_smoke: FAIL: --vga on needs a saved OPTION VGA "
+                  "(none configured); configure VGA first", file=sys.stderr)
+            return 1
+        with BasicSerial(args.port, args.baud) as b:
+            sync_with_reopen_retry(b, args)
+            apply_vga_state(b, args, vga_line)
+        return run_tls_suite(args, "blocked")
+
+    # args.vga == "both": verify both paths in one run, restore original state.
+    if not saved_vga:
+        print("esp32_tls_scan_smoke: FAIL: --vga both needs a saved OPTION VGA to "
+              "re-enable (none configured); configure VGA first or use --vga off",
+              file=sys.stderr)
+        return 1
+    rc = 0
+    with BasicSerial(args.port, args.baud) as b:
+        sync_with_reopen_retry(b, args)
+        apply_vga_state(b, args, None)
+    print("=== pass 1/2: VGA OFF (MQTT-TLS must work) ===", flush=True)
+    rc |= run_tls_suite(args, "pass")
+    with BasicSerial(args.port, args.baud) as b:
+        sync_with_reopen_retry(b, args)
+        apply_vga_state(b, args, saved_vga)
+    print("=== pass 2/2: VGA ON (MQTT-TLS must fail cleanly) ===", flush=True)
+    rc |= run_tls_suite(args, "blocked")
+    return rc
 
 
 if __name__ == "__main__":

@@ -288,6 +288,17 @@ Run on Pico and PicoCalc boards after PIO, DMA, SDK, or RP2350 changes:
 $PY porttools/pico_pio_dma_smoke.py --port "$PORT"
 ```
 
+> **WiFi boards (Pico W / Pico 2 W): run the PIO smokes (Tier 6 and Tier 7)
+> with WiFi OFF.** On the `*_wifi_*` ports PIO0 is reserved for the CYW43
+> WiFi SPI bus, so `PIO ... 0` now returns *"PIO 0 not available"* and the
+> smokes auto-probe and exercise the free PIO instead (PIO1, plus PIO2 on
+> RP2350). More importantly, a **continuous** PIO DMA transfer monopolises
+> the DMA path and starves the `PICO_CYW43_ARCH_POLL` WiFi poll, which drops
+> the link and hangs the board. Clear the saved credentials first
+> (`OPTION WIFI "",""`, which reboots), run the smoke, then restore them
+> (`OPTION WIFI "<ssid>","<pass>"`). This is a known Pico-W resource tension
+> (poll-mode WiFi + perpetual user DMA), not a smoke or firmware regression.
+
 What it covers:
 
 - `PIO INIT MACHINE` with the optional final `outout` argument.
@@ -296,7 +307,8 @@ What it covers:
 - `MM.INFO(PIO RX DMA)` and `MM.INFO(PIO TX DMA)` busy polling.
 - pio2 RX/TX DREQ mapping on RP2350.
 
-Expected on RP2350: pio0 and pio2 both pass.
+Expected on RP2350: pio0 and pio2 both pass on non-WiFi boards. On WiFi
+boards pio0 is CYW43-reserved, so the usable instances are pio1 and pio2.
 
 ### Tier 7: Comprehensive PIO API Smoke
 

@@ -66,13 +66,27 @@ static void esp32_runtime_pump_input(void) {
      * monotonic clock so ShowCursor's blink math works (editor poll path). */
     CursorTimer = (int)((esp_timer_get_time() / 1000) %
                         (CURSOR_OFF + CURSOR_ON));
-    int c = esp32_console_read_byte_nonblock();
-    if (c < 0) return;
-    if (c == 0x03 /* Ctrl-C */) {
-        MMAbort = 1;
-        return;
+    /* Mirror the Pico UART-IRQ contract: drain every pending byte, raise
+     * MMAbort on the break key, and bank the rest in ConsoleRxBuf (which
+     * every console input path pops before the raw transport). Draining
+     * fully matters — holding a byte in the one-slot transport pushback
+     * would make the pump re-read that byte forever and never see a break
+     * queued behind it (a running program that ignores input would become
+     * un-interruptible after one stray byte, e.g. the LF of a CRLF line
+     * ending). */
+    for (;;) {
+        int c = esp32_console_read_byte_nonblock();
+        if (c < 0) return;
+        if (BreakKey && c == BreakKey) {
+            MMAbort = 1;
+            continue;
+        }
+        int next = (ConsoleRxBufHead + 1) % CONSOLE_RX_BUF_SIZE;
+        if (next == ConsoleRxBufTail) continue; /* ring full: drop, like the
+                                                 * Pico IRQ overflow path */
+        ConsoleRxBuf[ConsoleRxBufHead] = (char)c;
+        ConsoleRxBufHead = next;
     }
-    esp32_console_push_back_byte(c);
 }
 
 static void esp32_runtime_network_service(void) {

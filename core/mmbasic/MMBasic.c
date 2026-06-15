@@ -40,6 +40,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #include "hal/hal_flash.h"
 #include "hal/hal_display_merge.h"
 #include "hal/hal_gui_controls.h"
+#include "hal/hal_vm_framebuffer.h"
 #include "Draw.h"
 #include "port_config.h"
 
@@ -3273,12 +3274,15 @@ void MIPS16 error(char * msg, ...) {
     }
     if (OptionErrorSkip) longjmp(ErrNext, 1); // if OPTION ERROR SKIP/IGNORE is in force
     hal_display_merge_abort();
+    hal_vm_framebuffer_shutdown_runtime();
+    hal_gui_controls_end_program();
 
     int saved_prompt_font = PromptFont;
     int saved_prompt_fc = PromptFC;
     int saved_prompt_bc = PromptBC;
 
-    LoadOptions(); // make sure that the option struct is in a clean state
+    LoadOptions();                        // make sure that the option struct is in a clean state
+    port_error_restore_console_surface(); // ports may need to re-assert runtime-only display state
     ApplyDefaultConsoleColours();
     PromptFont = saved_prompt_font;
     PromptFC = saved_prompt_fc;
@@ -3288,8 +3292,6 @@ void MIPS16 error(char * msg, ...) {
     OptionConsole = 1;
     if (Option.DISPLAY_CONSOLE) {
         OptionConsole = 3;
-        port_error_restore_console_surface(); // VGA retargets WriteBuf/DisplayBuf to FRAMEBUFFER;
-                                              // SPI-LCD calls restorepanel().
         SetFont(PromptFont);
         gui_fcolour = PromptFC;
         gui_bcolour = PromptBC;

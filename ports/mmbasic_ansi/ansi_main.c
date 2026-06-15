@@ -73,7 +73,7 @@ extern void vm_host_fat_reset(void);
 extern void vm_sys_file_reset(void);
 extern void vm_sys_pin_reset(void);
 
-extern void bc_run_source_string(const char * source, const char * source_name);
+extern int bc_run_source_string(const char * source, const char * source_name);
 extern int bc_opt_level;
 
 /* Output hook defined by host_main.c in the host_native build; we

@@ -2437,8 +2437,14 @@ void ResetGUI(void) {
     int i;
     InvokingCtrl = CurrentRef = LastRef = 0;
     LastX = LastY = TOUCH_ERROR;
+    TouchX = TouchY = TOUCH_ERROR;
+    TouchDown = TouchUp = TouchState = false;
+    TouchTimer = 0;
+    CheckGuiFlag = 0;
+    ClickTimer = 0;
     gui_int_down = gui_int_up = false;
     GuiIntDownVector = GuiIntUpVector = NULL;
+    DelayedDrawKeyboard = DelayedDrawFmtBox = false;
     GUIKeyDown = 0;
     KeyAltShift = 0;
     last_x2 = 100;

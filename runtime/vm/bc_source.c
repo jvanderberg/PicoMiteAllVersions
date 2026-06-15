@@ -5317,8 +5317,12 @@ static int source_convert_fast_loop(BCCompiler * cs, uint32_t loop_start,
     /* Heap-allocate: FastConv is ~12KB, too large for the 4KB device stack */
     FastConv * fcp = (FastConv *)BC_COMPILER_ALLOC(sizeof(FastConv));
     if (!fcp) {
+#if defined(BC_FAST_OOM_SOFT) && BC_FAST_OOM_SOFT
+        return 1;
+#else
         bc_set_error(cs, "'!FAST: out of memory");
         return 0;
+#endif
     }
     memset(fcp, 0, sizeof(*fcp));
 #define fc (*fcp)

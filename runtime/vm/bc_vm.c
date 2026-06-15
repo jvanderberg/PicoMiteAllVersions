@@ -1996,7 +1996,7 @@ op_push_str: {
     uint8_t * tmp = vm_get_str_temp(vm);
     tmp[0] = (uint8_t)c->len;
     if (c->len > 0)
-        memcpy(tmp + 1, c->data, c->len);
+        memcpy(tmp + 1, BC_CONST_PTR(vm->compiler, c), c->len);
     PUSH_S(tmp);
     DISPATCH();
 }
@@ -4290,7 +4290,7 @@ op_read_s: {
         BCConstant * c = &cs->constants[cidx];
         uint8_t * buf = vm_get_str_temp(vm);
         buf[0] = (uint8_t)c->len;
-        memcpy(buf + 1, c->data, c->len);
+        memcpy(buf + 1, BC_CONST_PTR(cs, c), c->len);
         PUSH_S(buf);
     } else {
         /* Convert number to string */

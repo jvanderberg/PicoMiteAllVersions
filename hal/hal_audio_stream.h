@@ -40,6 +40,11 @@ void * hal_audio_workmem_alloc(unsigned long bytes);
 void * hal_audio_workmem_realloc(void * p, unsigned long bytes);
 void hal_audio_workmem_free(void * p);
 
+/* Upper bound on the size of a MOD file the port can decode into work
+ * memory, in bytes; 0 means no limit. Ports with a small audio work-memory
+ * budget override this; the default (no limit) lives in audio_stream.c. */
+unsigned long hal_audio_mod_max_file_bytes(void);
+
 #ifdef __cplusplus
 }
 #endif

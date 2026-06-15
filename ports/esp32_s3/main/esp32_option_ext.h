@@ -16,6 +16,7 @@
 #define ESP32_AUDIO_KIND_I2S 1
 #define ESP32_AUDIO_KIND_PDM 2
 #define ESP32_AUDIO_KIND_ES8311 3
+#define ESP32_AUDIO_KIND_INTERNAL_DAC 4
 
 /* ES8311 codec wiring beyond the shared I2S fields: amplifier enable pin
  * (0 = none) and its active level (1 = active high; AMPLOW selects 0). */

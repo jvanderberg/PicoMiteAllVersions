@@ -34,7 +34,13 @@ int hal_vga_ops_handle_tile_cls(int c) {
 int hal_vga_ops_handle_layer_clear(void) {
     return 0;
 }
-void hal_vga_ops_retile_for_font(void) {}
+static void (*s_retile_for_font_callback)(void) = NULL;
+void hal_vga_ops_retile_for_font(void) {
+    if (s_retile_for_font_callback) s_retile_for_font_callback();
+}
+void hal_vga_ops_set_retile_for_font_callback(void (*callback)(void)) {
+    s_retile_for_font_callback = callback;
+}
 void hal_vga_ops_wait_scanline_zero(void) {}
 static void (*s_fastgfx_present_callback)(void) = NULL;
 void hal_vga_ops_fastgfx_present(void) {

@@ -32,6 +32,12 @@
 #include "nvs_flash.h"
 
 #include "hal/hal_net.h"
+#include "lwip/inet.h"
+#include "vga_lcdcam_s3.h" /* vga_lcdcam_s3_scanout_reserved() */
+
+int hal_net_ipv6_to_string(const uint8_t addr[16], char * out, int out_len) {
+    return inet_ntop(AF_INET6, addr, out, out_len) ? (int)strlen(out) : 0;
+}
 
 #define ESP32_NET_MAX_TCP_SERVERS 4
 #define ESP32_NET_MAX_TCP_CONNS 12
@@ -52,6 +58,8 @@ typedef struct {
 
 typedef struct {
     esp_mqtt_client_handle_t client;
+    hal_net_tcp_client_t plain_tcp;
+    uint16_t packet_id;
     volatile int connected;
     volatile int subscribed;
     volatile int unsubscribed;
@@ -319,6 +327,10 @@ static int esp32_net_wifi_ensure_ready(void) {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     if (esp_wifi_init(&cfg) != ESP_OK) return HAL_NET_ERR;
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    /* The CYD audio amp shares a noisy board power domain. Avoid modem-sleep
+     * wake bursts coupling into the always-on speaker path as low-rate clicks. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    esp_wifi_set_max_tx_power(8); /* 2 dBm; reduce RF current spikes near the amp. */
 
     if (esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                             esp32_net_wifi_event_handler, NULL,
@@ -360,7 +372,7 @@ static void esp32_net_copy_string(char * dst, size_t dst_len, const char * src) 
 static hal_net_mqtt_client_t esp32_net_alloc_mqtt_slot(void) {
     esp32_net_init_tables();
     for (size_t i = 0; i < ESP32_NET_MAX_MQTT_CLIENTS; ++i) {
-        if (!mqtt_clients[i].client) {
+        if (!mqtt_clients[i].client && !mqtt_clients[i].plain_tcp) {
             memset(&mqtt_clients[i], 0, sizeof mqtt_clients[i]);
             return (hal_net_mqtt_client_t)(i + 1);
         }
@@ -370,7 +382,8 @@ static hal_net_mqtt_client_t esp32_net_alloc_mqtt_slot(void) {
 
 static esp32_net_mqtt_slot_t * esp32_net_mqtt_slot(hal_net_mqtt_client_t handle) {
     if (handle == 0 || handle > ESP32_NET_MAX_MQTT_CLIENTS) return NULL;
-    if (!mqtt_clients[handle - 1].client) return NULL;
+    if (!mqtt_clients[handle - 1].client && !mqtt_clients[handle - 1].plain_tcp)
+        return NULL;
     return &mqtt_clients[handle - 1];
 }
 
@@ -537,6 +550,24 @@ int hal_net_wifi_connect(uint32_t timeout_ms) {
     WIFIconnected = 0;
     wifi_last_status = -1;
     return HAL_NET_TIMEOUT;
+}
+
+void esp32_net_wifi_pause_for_audio(void) {
+    if (!wifi_ready) return;
+    wifi_retry_count = ESP32_NET_WIFI_MAX_RETRIES;
+    if (wifi_started) {
+        esp_wifi_disconnect();
+        esp_wifi_stop();
+    }
+    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                 esp32_net_wifi_event_handler);
+    esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                 esp32_net_wifi_event_handler);
+    esp_wifi_deinit();
+    wifi_ready = 0;
+    wifi_started = 0;
+    WIFIconnected = 0;
+    wifi_last_status = 0;
 }
 
 int hal_net_wifi_status(void) {
@@ -1004,6 +1035,151 @@ int hal_net_udp_recv_event(hal_net_udp_socket_t sock, hal_net_addr_t * from,
     return HAL_NET_OK;
 }
 
+static int esp32_mqtt_put_remaining(uint8_t * out, size_t cap, size_t len,
+                                    size_t * used) {
+    size_t n = 0;
+    do {
+        if (n >= cap) return HAL_NET_ERR;
+        uint8_t byte = (uint8_t)(len % 128);
+        len /= 128;
+        if (len) byte |= 0x80;
+        out[n++] = byte;
+    } while (len);
+    if (used) *used = n;
+    return HAL_NET_OK;
+}
+
+static int esp32_mqtt_put_utf8(uint8_t * out, size_t cap, size_t * pos,
+                               const char * value) {
+    size_t len = value ? strlen(value) : 0;
+    if (len > 65535 || *pos + 2 + len > cap) return HAL_NET_ERR;
+    out[(*pos)++] = (uint8_t)(len >> 8);
+    out[(*pos)++] = (uint8_t)len;
+    if (len) {
+        memcpy(out + *pos, value, len);
+        *pos += len;
+    }
+    return HAL_NET_OK;
+}
+
+static int esp32_mqtt_send_packet(esp32_net_mqtt_slot_t * slot,
+                                  const uint8_t * packet, size_t len,
+                                  uint32_t timeout_ms) {
+    if (!slot || !slot->plain_tcp) return HAL_NET_ERR;
+    return hal_net_tcp_client_send(slot->plain_tcp, packet, len,
+                                   timeout_ms ? timeout_ms : 5000);
+}
+
+static int esp32_mqtt_recv_exact(esp32_net_mqtt_slot_t * slot, uint8_t * buf,
+                                 size_t len, uint32_t timeout_ms) {
+    size_t got_total = 0;
+    while (got_total < len) {
+        size_t got = 0;
+        int rc = hal_net_tcp_client_recv(slot->plain_tcp, buf + got_total,
+                                         len - got_total, &got, timeout_ms);
+        if (rc != HAL_NET_OK || got == 0) return rc == HAL_NET_OK ? HAL_NET_TIMEOUT : rc;
+        got_total += got;
+        timeout_ms = 200;
+    }
+    return HAL_NET_OK;
+}
+
+static int esp32_mqtt_recv_packet(esp32_net_mqtt_slot_t * slot,
+                                  uint8_t * packet, size_t cap,
+                                  size_t * packet_len,
+                                  uint32_t timeout_ms) {
+    if (packet_len) *packet_len = 0;
+    if (!slot || !slot->plain_tcp || !packet || cap < 2) return HAL_NET_ERR;
+    int rc = esp32_mqtt_recv_exact(slot, packet, 1, timeout_ms);
+    if (rc != HAL_NET_OK) return rc;
+    size_t pos = 1;
+    size_t remaining = 0;
+    size_t multiplier = 1;
+    uint8_t byte = 0;
+    do {
+        if (pos >= cap || multiplier > 128 * 128 * 128) return HAL_NET_ERR;
+        rc = esp32_mqtt_recv_exact(slot, &byte, 1, timeout_ms);
+        if (rc != HAL_NET_OK) return rc;
+        packet[pos++] = byte;
+        remaining += (size_t)(byte & 0x7f) * multiplier;
+        multiplier *= 128;
+    } while (byte & 0x80);
+    if (pos + remaining > cap) return HAL_NET_ERR;
+    rc = esp32_mqtt_recv_exact(slot, packet + pos, remaining, timeout_ms);
+    if (rc != HAL_NET_OK) return rc;
+    pos += remaining;
+    if (packet_len) *packet_len = pos;
+    return HAL_NET_OK;
+}
+
+static void esp32_mqtt_store_publish(esp32_net_mqtt_slot_t * slot,
+                                     const uint8_t * packet, size_t len) {
+    if (!slot || !packet || len < 4 || (packet[0] >> 4) != 3) return;
+    size_t pos = 1;
+    size_t remaining = 0;
+    size_t multiplier = 1;
+    uint8_t byte = 0;
+    do {
+        if (pos >= len) return;
+        byte = packet[pos++];
+        remaining += (size_t)(byte & 0x7f) * multiplier;
+        multiplier *= 128;
+    } while (byte & 0x80);
+    if (pos + remaining > len || pos + 2 > len) return;
+    size_t topic_len = ((size_t)packet[pos] << 8) | packet[pos + 1];
+    pos += 2;
+    if (pos + topic_len > len) return;
+    size_t topic_copy = topic_len < sizeof slot->topic - 1 ? topic_len : sizeof slot->topic - 1;
+    memcpy(slot->topic, packet + pos, topic_copy);
+    slot->topic[topic_copy] = 0;
+    pos += topic_len;
+    size_t payload_len = len - pos;
+    size_t payload_copy = payload_len < sizeof slot->payload ? payload_len : sizeof slot->payload;
+    memcpy(slot->payload, packet + pos, payload_copy);
+    slot->payload_len = payload_copy;
+    slot->pending = 1;
+}
+
+static int esp32_mqtt_plain_connect(esp32_net_mqtt_slot_t * slot,
+                                    const char * host, uint16_t port,
+                                    const char * user, const char * pass,
+                                    uint32_t timeout_ms) {
+    if (hal_net_tcp_client_open(host, port, timeout_ms ? timeout_ms : 5000, 0,
+                                &slot->plain_tcp) != HAL_NET_OK)
+        return HAL_NET_TIMEOUT;
+
+    uint8_t body[256];
+    size_t pos = 0;
+    if (esp32_mqtt_put_utf8(body, sizeof body, &pos, "MQTT") != HAL_NET_OK)
+        return HAL_NET_ERR;
+    body[pos++] = 4;
+    uint8_t flags = 0x02;
+    if (user && *user) flags |= 0x80;
+    if (pass && *pass) flags |= 0x40;
+    body[pos++] = flags;
+    body[pos++] = 0;
+    body[pos++] = 100;
+    if (esp32_mqtt_put_utf8(body, sizeof body, &pos, slot->client_id) != HAL_NET_OK)
+        return HAL_NET_ERR;
+    if (user && *user && esp32_mqtt_put_utf8(body, sizeof body, &pos, user) != HAL_NET_OK)
+        return HAL_NET_ERR;
+    if (pass && *pass && esp32_mqtt_put_utf8(body, sizeof body, &pos, pass) != HAL_NET_OK)
+        return HAL_NET_ERR;
+
+    uint8_t packet[300];
+    size_t rem_len = 0;
+    packet[0] = 0x10;
+    if (esp32_mqtt_put_remaining(packet + 1, sizeof packet - 1, pos,
+                                 &rem_len) != HAL_NET_OK)
+        return HAL_NET_ERR;
+    if (1 + rem_len + pos > sizeof packet) return HAL_NET_ERR;
+    memcpy(packet + 1 + rem_len, body, pos);
+    if (esp32_mqtt_send_packet(slot, packet, 1 + rem_len + pos, timeout_ms) != HAL_NET_OK)
+        return HAL_NET_ERR;
+
+    return HAL_NET_OK;
+}
+
 int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
                          const char * pass, const char * client_id, int tls,
                          uint32_t timeout_ms, hal_net_mqtt_client_t * out) {
@@ -1022,13 +1198,30 @@ int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
     } else {
         esp32_net_mqtt_make_client_id(slot->client_id, sizeof slot->client_id);
     }
-
+    if (!tls) {
+        int rc = esp32_mqtt_plain_connect(slot, slot->host, port, slot->user,
+                                          slot->pass, timeout_ms);
+        if (rc != HAL_NET_OK) {
+            if (slot->plain_tcp) hal_net_tcp_client_close(slot->plain_tcp);
+            memset(slot, 0, sizeof *slot);
+            return rc;
+        }
+        slot->connected = 1;
+        slot->packet_id = 1;
+        *out = handle;
+        return HAL_NET_OK;
+    }
     esp_mqtt_client_config_t cfg = {
         .broker.address.hostname = slot->host,
         .broker.address.port = (uint32_t)port,
         .broker.address.transport = tls ? MQTT_TRANSPORT_OVER_SSL
                                         : MQTT_TRANSPORT_OVER_TCP,
         .broker.verification.certificate = tls && tls_ca_pem ? tls_ca_pem : NULL,
+        /* PEM length must include the terminating NUL — the same +1 the
+         * esp-tls client path uses. Without it esp-mqtt's mbedTLS PEM
+         * parse rejects the CA and the handshake fails to open. */
+        .broker.verification.certificate_len =
+            tls && tls_ca_pem ? (tls_ca_len + 1) : 0,
         .broker.verification.crt_bundle_attach =
             tls && !tls_ca_pem ? esp_crt_bundle_attach : NULL,
         .credentials.username = *slot->user ? slot->user : NULL,
@@ -1037,8 +1230,27 @@ int hal_net_mqtt_connect(const char * host, uint16_t port, const char * user,
         .network.disable_auto_reconnect = true,
         .network.timeout_ms = timeout_ms ? (int)timeout_ms : 5000,
         .session.keepalive = 100,
+#if CONFIG_IDF_TARGET_ESP32
+        .task.stack_size = 4096,
+        .buffer.size = 256,
+        .buffer.out_size = 256,
+#endif
     };
 
+    /* MQTT-over-TLS spawns its own task and runs the mbedTLS handshake
+     * from internal/DMA SRAM alongside Wi-Fi. The native VGA scanout holds
+     * 76.8 KB of that SRAM for the life of the session, leaving too little
+     * for the TLS transport to come up — it fails late with a socket
+     * select() timeout and a flood of Wi-Fi buffer warnings. Detect the
+     * unwinnable case up front and fail cleanly instead. Non-TLS MQTT,
+     * TLS HTTP, and TLS streaming all fit and are unaffected. */
+    if (tls && vga_lcdcam_s3_scanout_reserved()) {
+        ESP_LOGE("hal_net",
+                 "MQTT-over-TLS needs internal RAM the VGA scanout reserves; "
+                 "OPTION VGA DISABLE (reboot) to use it");
+        memset(slot, 0, sizeof *slot);
+        return HAL_NET_NOMEM;
+    }
     slot->client = esp_mqtt_client_init(&cfg);
     if (!slot->client) {
         memset(slot, 0, sizeof *slot);
@@ -1067,6 +1279,25 @@ int hal_net_mqtt_publish(hal_net_mqtt_client_t client, const char * topic,
                          const void * payload, size_t len, int qos, int retain) {
     esp32_net_mqtt_slot_t * slot = esp32_net_mqtt_slot(client);
     if (!slot || !slot->connected || !topic || (!payload && len)) return HAL_NET_ERR;
+    if (slot->plain_tcp) {
+        if (qos != 0) return HAL_NET_UNSUPPORTED;
+        uint8_t body[512];
+        size_t pos = 0;
+        if (esp32_mqtt_put_utf8(body, sizeof body, &pos, topic) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        if (pos + len > sizeof body) return HAL_NET_ERR;
+        if (len) memcpy(body + pos, payload, len);
+        pos += len;
+        uint8_t packet[540];
+        size_t rem_len = 0;
+        packet[0] = retain ? 0x31 : 0x30;
+        if (esp32_mqtt_put_remaining(packet + 1, sizeof packet - 1, pos,
+                                     &rem_len) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        if (1 + rem_len + pos > sizeof packet) return HAL_NET_ERR;
+        memcpy(packet + 1 + rem_len, body, pos);
+        return esp32_mqtt_send_packet(slot, packet, 1 + rem_len + pos, 5000);
+    }
     int id = esp_mqtt_client_publish(slot->client, topic, (const char *)payload,
                                      (int)len, qos, retain);
     return id < 0 ? HAL_NET_ERR : HAL_NET_OK;
@@ -1076,6 +1307,44 @@ int hal_net_mqtt_subscribe(hal_net_mqtt_client_t client, const char * topic,
                            int qos, uint32_t timeout_ms) {
     esp32_net_mqtt_slot_t * slot = esp32_net_mqtt_slot(client);
     if (!slot || !slot->connected || !topic) return HAL_NET_ERR;
+    if (slot->plain_tcp) {
+        if (qos != 0) return HAL_NET_UNSUPPORTED;
+        uint8_t body[300];
+        size_t pos = 0;
+        uint16_t id = ++slot->packet_id;
+        if (!id) id = ++slot->packet_id;
+        body[pos++] = (uint8_t)(id >> 8);
+        body[pos++] = (uint8_t)id;
+        if (esp32_mqtt_put_utf8(body, sizeof body, &pos, topic) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        body[pos++] = 0;
+        uint8_t packet[320];
+        size_t rem_len = 0;
+        packet[0] = 0x82;
+        if (esp32_mqtt_put_remaining(packet + 1, sizeof packet - 1, pos,
+                                     &rem_len) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        if (1 + rem_len + pos > sizeof packet) return HAL_NET_ERR;
+        memcpy(packet + 1 + rem_len, body, pos);
+        if (esp32_mqtt_send_packet(slot, packet, 1 + rem_len + pos,
+                                   timeout_ms) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        uint8_t resp[512];
+        size_t resp_len = 0;
+        int rc = HAL_NET_ERR;
+        for (int i = 0; i < 3; ++i) {
+            rc = esp32_mqtt_recv_packet(slot, resp, sizeof resp, &resp_len,
+                                        timeout_ms ? timeout_ms : 4000);
+            if (rc != HAL_NET_OK) return HAL_NET_ERR;
+            if (resp_len >= 5 && resp[0] == 0x90) break;
+            if (resp_len >= 4 && resp[0] == 0x20) continue;
+            esp32_mqtt_store_publish(slot, resp, resp_len);
+        }
+        if (resp_len < 5 || resp[0] != 0x90) return HAL_NET_ERR;
+        rc = esp32_mqtt_recv_packet(slot, resp, sizeof resp, &resp_len, 200);
+        if (rc == HAL_NET_OK) esp32_mqtt_store_publish(slot, resp, resp_len);
+        return HAL_NET_OK;
+    }
     slot->subscribed = 0;
     if (esp_mqtt_client_subscribe(slot->client, topic, qos) < 0)
         return HAL_NET_ERR;
@@ -1087,6 +1356,34 @@ int hal_net_mqtt_unsubscribe(hal_net_mqtt_client_t client, const char * topic,
                              uint32_t timeout_ms) {
     esp32_net_mqtt_slot_t * slot = esp32_net_mqtt_slot(client);
     if (!slot || !slot->connected || !topic) return HAL_NET_ERR;
+    if (slot->plain_tcp) {
+        uint8_t body[300];
+        size_t pos = 0;
+        uint16_t id = ++slot->packet_id;
+        if (!id) id = ++slot->packet_id;
+        body[pos++] = (uint8_t)(id >> 8);
+        body[pos++] = (uint8_t)id;
+        if (esp32_mqtt_put_utf8(body, sizeof body, &pos, topic) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        uint8_t packet[320];
+        size_t rem_len = 0;
+        packet[0] = 0xa2;
+        if (esp32_mqtt_put_remaining(packet + 1, sizeof packet - 1, pos,
+                                     &rem_len) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        if (1 + rem_len + pos > sizeof packet) return HAL_NET_ERR;
+        memcpy(packet + 1 + rem_len, body, pos);
+        if (esp32_mqtt_send_packet(slot, packet, 1 + rem_len + pos,
+                                   timeout_ms) != HAL_NET_OK)
+            return HAL_NET_ERR;
+        uint8_t resp[16];
+        size_t resp_len = 0;
+        int rc = esp32_mqtt_recv_packet(slot, resp, sizeof resp, &resp_len,
+                                        timeout_ms ? timeout_ms : 4000);
+        return rc == HAL_NET_OK && resp_len >= 4 && resp[0] == 0xb0
+                   ? HAL_NET_OK
+                   : HAL_NET_ERR;
+    }
     slot->unsubscribed = 0;
     if (esp_mqtt_client_unsubscribe(slot->client, topic) < 0)
         return HAL_NET_ERR;
@@ -1101,6 +1398,13 @@ int hal_net_mqtt_recv_event(hal_net_mqtt_client_t client, char * topic,
     if (topic && topic_cap) topic[0] = 0;
     if (payload_len) *payload_len = 0;
     if (!slot || !payload || payload_cap == 0) return HAL_NET_ERR;
+    if (slot->plain_tcp && !slot->pending) {
+        uint8_t packet[512];
+        size_t packet_len = 0;
+        int rc = esp32_mqtt_recv_packet(slot, packet, sizeof packet,
+                                        &packet_len, 1);
+        if (rc == HAL_NET_OK) esp32_mqtt_store_publish(slot, packet, packet_len);
+    }
     if (!slot->pending) return HAL_NET_WOULD_BLOCK;
     if (topic && topic_cap) {
         strncpy(topic, slot->topic, topic_cap - 1);
@@ -1116,6 +1420,13 @@ int hal_net_mqtt_recv_event(hal_net_mqtt_client_t client, char * topic,
 int hal_net_mqtt_close(hal_net_mqtt_client_t client) {
     esp32_net_mqtt_slot_t * slot = esp32_net_mqtt_slot(client);
     if (!slot) return HAL_NET_ERR;
+    if (slot->plain_tcp) {
+        const uint8_t disconnect[] = {0xe0, 0x00};
+        esp32_mqtt_send_packet(slot, disconnect, sizeof disconnect, 1000);
+        hal_net_tcp_client_close(slot->plain_tcp);
+        memset(slot, 0, sizeof *slot);
+        return HAL_NET_OK;
+    }
     esp_mqtt_client_stop(slot->client);
     esp_mqtt_client_destroy(slot->client);
     memset(slot, 0, sizeof *slot);

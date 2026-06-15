@@ -41,8 +41,12 @@ extern uint32_t mergetimer;
 
 extern int esp32_ili9341_lcd_restore_panel(void);
 extern int esp32_ili9341_lcd_ready(void);
+/* 1 if the active SPI-LCD backend can back an off-screen FRAMEBUFFER (the
+ * S3/Freenove shadow path); 0 on the no-PSRAM CYD direct-to-panel backend. */
+extern int esp32_ili9341_lcd_framebuffer_supported(void);
 extern void esp32_ili9341_lcd_flush_pending(void);
 extern void esp32_ili9341_lcd_scroll(int lines);
+extern int esp32_packed_vga_active(void);
 extern int esp32_fastgfx_active(void);
 extern void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src,
                                                   int xstart, int xend,
@@ -246,6 +250,10 @@ static size_t esp32_fb_bytes(void) {
     return (size_t)HRes * (size_t)VRes / 2u;
 }
 
+static int esp32_fb_packed_display_active(void) {
+    return esp32_ili9341_lcd_ready() || esp32_packed_vga_active();
+}
+
 static uint8_t esp32_fb_rgb121(uint32_t c) {
     return (uint8_t)(((c & 0x800000u) >> 20) |
                      ((c & 0x00C000u) >> 13) |
@@ -268,12 +276,25 @@ static int esp32_fb_vga_display_owned(unsigned char * p) {
     return p == vga_lcdcam_s3_framebuffer() || p == FRAMEBUFFER || p == DisplayBuf;
 }
 
+static int esp32_fb_cyd_display_owned(unsigned char * p) {
+    if (!p || !esp32_packed_vga_active()) return 0;
+    return p == FRAMEBUFFER || p == DisplayBuf;
+}
+
+static int esp32_fb_display_owned(unsigned char * p) {
+    return esp32_fb_vga_display_owned(p) || esp32_fb_cyd_display_owned(p);
+}
+
 static unsigned char * esp32_fb_alloc(size_t bytes, const char * tag) {
     unsigned char * p = (unsigned char *)TryGetMemory((int)bytes);
     if (p) return p;
     p = heap_caps_calloc(1, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!p) p = heap_caps_calloc(1, bytes, MALLOC_CAP_8BIT);
-    if (!p) error("NEM[%s] want=%", tag, (int)bytes);
+    if (!p) {
+        if (strcmp(tag, "gfx:layer") == 0) error("NEM[gfx:layer] want=%", (int)bytes);
+        if (strcmp(tag, "gfx:read") == 0) error("NEM[gfx:read] want=%", (int)bytes);
+        error("NEM[gfx:fb] want=%", (int)bytes);
+    }
     return p;
 }
 
@@ -351,6 +372,13 @@ static void esp32_fb_merge_region(int x0, int y0, int w, int h, uint8_t transpar
             }
             out[bx] = merged;
         }
+        if (esp32_packed_vga_active()) {
+            uint8_t * dst = DisplayBuf + (size_t)y * row_bytes;
+            int bx = x1 / 2;
+            int bx_end = x2 / 2;
+            memcpy(dst + bx, out + bx, (size_t)(bx_end - bx + 1));
+            continue;
+        }
         if (!shadow) {
             copyframetoscreen(out + x1 / 2, x1, x2, y, y, x1 & 1);
             continue;
@@ -407,6 +435,10 @@ static void esp32_fb_copy_to_screen(uint8_t * src) {
         hal_vga_ops_fastgfx_present();
         return;
     }
+    if (esp32_packed_vga_active()) {
+        if (DisplayBuf && src != DisplayBuf) memcpy(DisplayBuf, src, esp32_fb_bytes());
+        return;
+    }
     copyframetoscreen(src, 0, HRes - 1, 0, VRes - 1, 0);
     if (ShadowBuf) memcpy(ShadowBuf, src, esp32_fb_bytes());
 }
@@ -440,8 +472,8 @@ static void esp32_fb_service_once(int force) {
 void hal_vm_framebuffer_shutdown_runtime(void) {
     esp32_fb_stop_merge();
     esp32_fb_clear_pending_copy();
-    int frame_display_owned = esp32_fb_vga_display_owned(FrameBuf);
-    int layer_display_owned = esp32_fb_vga_display_owned(LayerBuf);
+    int frame_display_owned = esp32_fb_display_owned(FrameBuf);
+    int layer_display_owned = esp32_fb_display_owned(LayerBuf);
     if ((WriteBuf == FrameBuf && s_fb_owned && !frame_display_owned) ||
         (WriteBuf == LayerBuf && s_layer_owned && !layer_display_owned))
         restorepanel();
@@ -449,9 +481,16 @@ void hal_vm_framebuffer_shutdown_runtime(void) {
         esp32_fb_free(&FrameBuf);
         esp32_fb_free(&ShadowBuf);
         s_fb_owned = false;
+    } else if (frame_display_owned) {
+        FrameBuf = NULL;
+        ShadowBuf = NULL;
+        s_fb_owned = false;
     }
     if (s_layer_owned && !layer_display_owned) {
         esp32_fb_free(&LayerBuf);
+        s_layer_owned = false;
+    } else if (layer_display_owned) {
+        LayerBuf = NULL;
         s_layer_owned = false;
     }
     fb_dma_chan = -1;
@@ -466,10 +505,24 @@ void hal_vm_framebuffer_create(int fast) {
     unsigned char * frame = NULL;
     unsigned char * shadow = NULL;
     int vga = vga_lcdcam_s3_active();
-    if (!vga && !esp32_ili9341_lcd_ready()) error("FRAMEBUFFER requires active ILI9341 display");
+    int cyd = esp32_packed_vga_active();
+    if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
+    /* The no-PSRAM CYD direct-to-panel backend has no off-screen buffer; reject
+     * FRAMEBUFFER cleanly rather than drawing into a buffer that never reaches
+     * glass. The packed-VGA mode (which owns a real buffer) is still allowed. */
+    if (!vga && !cyd && !esp32_ili9341_lcd_framebuffer_supported())
+        error("FRAMEBUFFER not supported on this display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
-    if (FrameBuf && !(vga && esp32_fb_vga_display_owned(FrameBuf))) error("Framebuffer already exists");
+    if (FrameBuf && !esp32_fb_display_owned(FrameBuf)) error("Framebuffer already exists");
     if (bytes == 0) error("Display not configured");
+    if (cyd) {
+        if (!DisplayBuf) error("Display not configured");
+        FrameBuf = DisplayBuf;
+        ShadowBuf = NULL;
+        s_fb_owned = false;
+        memset(FrameBuf, 0, bytes);
+        return;
+    }
     frame = esp32_fb_try_alloc(bytes);
     if (!frame) error("NEM[gfx:fb] want=%", (int)bytes);
     memset(frame, 0, bytes);
@@ -489,9 +542,11 @@ void hal_vm_framebuffer_layer(int hc, int c) {
     size_t bytes = esp32_fb_bytes();
     uint8_t transparent = esp32_fb_transparent_colour(hc, c);
     int vga = vga_lcdcam_s3_active();
-    if (!vga && !esp32_ili9341_lcd_ready()) error("FRAMEBUFFER requires active ILI9341 display");
+    if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
+    if (!vga && !esp32_packed_vga_active() && !esp32_ili9341_lcd_framebuffer_supported())
+        error("FRAMEBUFFER not supported on this display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
-    if (LayerBuf && !(vga && esp32_fb_vga_display_owned(LayerBuf))) error("Layer already exists");
+    if (LayerBuf && !esp32_fb_display_owned(LayerBuf)) error("Layer already exists");
     if (bytes == 0) error("Display not configured");
     LayerBuf = esp32_fb_alloc(bytes, "gfx:layer");
     s_layer_owned = true;
@@ -521,20 +576,29 @@ void hal_vm_framebuffer_close(char w) {
     if (w == 0) w = 'A';
     esp32_fb_stop_merge();
     esp32_fb_clear_pending_copy();
-    if ((w == 'A' || w == 'F') && FrameBuf && s_fb_owned) {
-        int display_owned = esp32_fb_vga_display_owned(FrameBuf);
+    if ((w == 'A' || w == 'F') && FrameBuf) {
+        int display_owned = esp32_fb_display_owned(FrameBuf);
         if (WriteBuf == FrameBuf && !display_owned) restorepanel();
-        if (!display_owned) {
+        if (s_fb_owned && !display_owned) {
             esp32_fb_free(&FrameBuf);
             esp32_fb_free(&ShadowBuf);
             s_fb_owned = false;
+        } else if (display_owned) {
+            if (WriteBuf == FrameBuf) restorepanel();
+            FrameBuf = NULL;
+            ShadowBuf = NULL;
+            s_fb_owned = false;
         }
     }
-    if ((w == 'A' || w == 'L') && LayerBuf && s_layer_owned) {
-        int display_owned = esp32_fb_vga_display_owned(LayerBuf);
+    if ((w == 'A' || w == 'L') && LayerBuf) {
+        int display_owned = esp32_fb_display_owned(LayerBuf);
         if (WriteBuf == LayerBuf && !display_owned) restorepanel();
-        if (!display_owned) {
+        if (s_layer_owned && !display_owned) {
             esp32_fb_free(&LayerBuf);
+            s_layer_owned = false;
+        } else if (display_owned) {
+            if (WriteBuf == LayerBuf) restorepanel();
+            LayerBuf = NULL;
             s_layer_owned = false;
         }
     }
@@ -593,6 +657,9 @@ void hal_vm_framebuffer_copy(char from, char to, int bg) {
 
     if (from == 'N') {
         if (vga_lcdcam_s3_active()) {
+            if (!DisplayBuf) error("Invalid on this display");
+            s = DisplayBuf;
+        } else if (esp32_packed_vga_active()) {
             if (!DisplayBuf) error("Invalid on this display");
             s = DisplayBuf;
         } else {
@@ -699,6 +766,10 @@ void setframebuffer(void) {
 }
 void restorepanel(void) {
     if (vga_lcdcam_s3_active()) {
+        WriteBuf = DisplayBuf;
+        return;
+    }
+    if (esp32_packed_vga_active()) {
         WriteBuf = DisplayBuf;
         return;
     }
