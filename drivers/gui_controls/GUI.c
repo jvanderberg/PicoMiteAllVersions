@@ -44,13 +44,13 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 // a soft top-to-bottom gloss gradient and a thin defining border, so they
 // read with depth on any background (no background-dependent drop shadow).
 // A pressed control reverses the gradient and darkens.
-#define GUI_BTN_RADIUS 4    // corner radius for buttons / switches
-#define GUI_BOX_RADIUS 4    // corner radius for frames / boxes / spinners
-#define GUI_BORDER_WIDTH 2  // border thickness (solid, uniform)
-#define GUI_GLOSS_TOP 16    // % brighten at the top of the face (gradient)
-#define GUI_GLOSS_BOT -18   // % darken at the bottom of the face (gradient)
-#define GUI_BORDER_PCT -42  // % darken for the border
-#define GUI_PRESS_PCT -16   // extra face darkening while pressed
+#define GUI_BTN_RADIUS 4   // corner radius for buttons / switches
+#define GUI_BOX_RADIUS 4   // corner radius for frames / boxes / spinners
+#define GUI_BORDER_WIDTH 2 // border thickness (solid, uniform)
+#define GUI_GLOSS_TOP 16   // % brighten at the top of the face (gradient)
+#define GUI_GLOSS_BOT -18  // % darken at the bottom of the face (gradient)
+#define GUI_BORDER_PCT -42 // % darken for the border
+#define GUI_PRESS_PCT -16  // extra face darkening while pressed
 
 #define CLICK_DURATION 3 // the duration of a "click" in mSec
 
@@ -1314,12 +1314,12 @@ void DrawGauge(int r) {
                 for (int px = cx - ro; px <= cx + ro; px++) {
                     int dxv = px - cx;
                     int d2 = dxv * dxv + dyv * dyv;
-                    if (d2 > ro2 || d2 < ri2) continue;  // outside the band
+                    if (d2 > ro2 || d2 < ri2) continue; // outside the band
                     int adx = dxv < 0 ? -dxv : dxv;
-                    if (dyv > 0 && dyv >= adx) continue; // the gauge's bottom opening
-                    int draw = (d2 >= outer2 || d2 <= inner2);                            // outer / inner ring
-                    if (!draw && dyv > 0 && dxv > 0 && dxv - dyv <= bw + 1) draw = 1;      // right end cap
-                    if (!draw && dyv > 0 && dxv < 0 && -dxv - dyv <= bw + 1) draw = 1;     // left end cap
+                    if (dyv > 0 && dyv >= adx) continue;                               // the gauge's bottom opening
+                    int draw = (d2 >= outer2 || d2 <= inner2);                         // outer / inner ring
+                    if (!draw && dyv > 0 && dxv > 0 && dxv - dyv <= bw + 1) draw = 1;  // right end cap
+                    if (!draw && dyv > 0 && dxv < 0 && -dxv - dyv <= bw + 1) draw = 1; // left end cap
                     if (draw) SpecialWritePixel(px, py, Ctrl[r].fc, Ctrl[r].state);
                 }
             }

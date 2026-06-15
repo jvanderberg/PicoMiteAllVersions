@@ -31,7 +31,7 @@ extern int gui_colour_depth;
 
 #define HOST_WASM_MODE_MAX 5
 
-static int mode_w[HOST_WASM_MODE_MAX + 1] = {0};     /* 1-indexed; [0] unused */
+static int mode_w[HOST_WASM_MODE_MAX + 1] = {0}; /* 1-indexed; [0] unused */
 static int mode_h[HOST_WASM_MODE_MAX + 1] = {0};
 static int mode_depth[HOST_WASM_MODE_MAX + 1] = {0}; /* bits; 0/unset => 24 */
 
