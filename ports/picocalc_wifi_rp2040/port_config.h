@@ -78,9 +78,12 @@
 #define HAL_PORT_HEAP_TOP_USB 0x2003D000
 #define HAL_PORT_PIOMAX 2
 #define HAL_PORT_NBR_PINS 40
-/* CYW43 SPI runs on PIO0; PIO1 free for user on rp2040 WIFI. */
-#define HAL_PORT_PIO0_CLAIMED true
-#define HAL_PORT_PIO1_CLAIMED false
+/* HAL_PORT_PIOx_CLAIMED = "this PIO is available for user PIO commands"
+ * (true = MMBasic may grab it). CYW43's SPI runs on PIO0, so it must NOT be
+ * user-accessible — grabbing it clobbers the live WiFi link and hangs the
+ * board. PIO1 is free; rp2040 has no PIO2. */
+#define HAL_PORT_PIO0_CLAIMED false
+#define HAL_PORT_PIO1_CLAIMED true
 #define HAL_PORT_PIO2_CLAIMED false
 
 /* FLAC decoder base sample-rate cap (RP2040 → 44.1 kHz). */

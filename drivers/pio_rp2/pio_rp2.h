@@ -32,6 +32,14 @@ void pio_rp2_dma_abort(void);
  * Called from ClearExternalIO(). */
 void pio_rp2_teardown(void);
 
+/* Reserve the PIO DMA channels in the SDK's claimed-channel bitmap at boot,
+ * so later subsystems calling dma_claim_unused_channel() — the SPI-LCD merge
+ * pipeline and, on WiFi boards, the CYW43 bus — route around them. Without
+ * this CYW43 can land on a PIO DMA channel, and a user PIO DMA op (or its
+ * abort) then corrupts the live WiFi link and hangs the board. Same idiom as
+ * the VGA/HDMI scanout DMA reservations. Call once, early in boot. */
+void pio_rp2_reserve_dma_channels(void);
+
 #ifdef __cplusplus
 }
 #endif

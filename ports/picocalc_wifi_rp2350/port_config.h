@@ -76,9 +76,13 @@
 #define HAL_PORT_HEAP_TOP_USB 0x2006E000
 #define HAL_PORT_PIOMAX 3
 #define HAL_PORT_NBR_PINS 40
-/* CYW43 SPI runs on PIO0; rp2350 also claims PIO2; PIO1 free. */
-#define HAL_PORT_PIO0_CLAIMED true
-#define HAL_PORT_PIO1_CLAIMED false
+/* HAL_PORT_PIOx_CLAIMED = "this PIO is available for user PIO commands"
+ * (true = MMBasic may grab it). CYW43's SPI runs on PIO0, so it must NOT be
+ * user-accessible — grabbing it clobbers the live WiFi link and hangs the
+ * board. PIO1 is free; PIO2 is available (audio I2S claims it only while
+ * playing). */
+#define HAL_PORT_PIO0_CLAIMED false
+#define HAL_PORT_PIO1_CLAIMED true
 #define HAL_PORT_PIO2_CLAIMED true
 /* QSPI PSRAM region. PicoCalc Pico 2 W boards use CYW43 on regular GPIOs,
  * so QSPI PSRAM remains available when OPTION PSRAM PIN is configured. */
