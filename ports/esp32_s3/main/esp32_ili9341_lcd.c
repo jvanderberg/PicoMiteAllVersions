@@ -640,6 +640,12 @@ int esp32_ili9341_lcd_ready(void) {
            HRes == s_w && VRes == s_h;
 }
 
+/* The S3/Freenove backend keeps a PSRAM shadow that backs an off-screen
+ * FRAMEBUFFER whenever the panel is ready. */
+int esp32_ili9341_lcd_framebuffer_supported(void) {
+    return esp32_ili9341_lcd_ready();
+}
+
 static void esp32_ili9341_lcd_bind_panel(void) {
     HRes = DisplayHRes = s_w;
     VRes = DisplayVRes = s_h;

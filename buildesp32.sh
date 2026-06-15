@@ -40,7 +40,7 @@ fi
 
 ports=()
 if [ "$port" = "all" ]; then
-    for d in "$root"/ports/esp32_s3*; do
+    for d in "$root"/ports/esp32_*; do
         [ -f "$d/CMakeLists.txt" ] && ports+=("$(basename "$d")")
     done
 else
@@ -50,7 +50,7 @@ fi
 # Guard the empty case explicitly: iterating an empty array under `set -u`
 # aborts with "unbound variable" on older bash (e.g. macOS's 3.2).
 if [ "${#ports[@]}" -eq 0 ]; then
-    echo "No ESP32 ports found under ports/esp32_s3*." >&2
+    echo "No ESP32 ports found under ports/esp32_*." >&2
     exit 2
 fi
 

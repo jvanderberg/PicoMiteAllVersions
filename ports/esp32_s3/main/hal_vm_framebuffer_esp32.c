@@ -41,6 +41,9 @@ extern uint32_t mergetimer;
 
 extern int esp32_ili9341_lcd_restore_panel(void);
 extern int esp32_ili9341_lcd_ready(void);
+/* 1 if the active SPI-LCD backend can back an off-screen FRAMEBUFFER (the
+ * S3/Freenove shadow path); 0 on the no-PSRAM CYD direct-to-panel backend. */
+extern int esp32_ili9341_lcd_framebuffer_supported(void);
 extern void esp32_ili9341_lcd_flush_pending(void);
 extern void esp32_ili9341_lcd_scroll(int lines);
 extern int esp32_packed_vga_active(void);
@@ -504,6 +507,11 @@ void hal_vm_framebuffer_create(int fast) {
     int vga = vga_lcdcam_s3_active();
     int cyd = esp32_packed_vga_active();
     if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
+    /* The no-PSRAM CYD direct-to-panel backend has no off-screen buffer; reject
+     * FRAMEBUFFER cleanly rather than drawing into a buffer that never reaches
+     * glass. The packed-VGA mode (which owns a real buffer) is still allowed. */
+    if (!vga && !cyd && !esp32_ili9341_lcd_framebuffer_supported())
+        error("FRAMEBUFFER not supported on this display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
     if (FrameBuf && !esp32_fb_display_owned(FrameBuf)) error("Framebuffer already exists");
     if (bytes == 0) error("Display not configured");
@@ -535,6 +543,8 @@ void hal_vm_framebuffer_layer(int hc, int c) {
     uint8_t transparent = esp32_fb_transparent_colour(hc, c);
     int vga = vga_lcdcam_s3_active();
     if (!vga && !esp32_fb_packed_display_active()) error("FRAMEBUFFER requires active display");
+    if (!vga && !esp32_packed_vga_active() && !esp32_ili9341_lcd_framebuffer_supported())
+        error("FRAMEBUFFER not supported on this display");
     if (esp32_fastgfx_active()) error("FASTGFX is active");
     if (LayerBuf && !esp32_fb_display_owned(LayerBuf)) error("Layer already exists");
     if (bytes == 0) error("Display not configured");

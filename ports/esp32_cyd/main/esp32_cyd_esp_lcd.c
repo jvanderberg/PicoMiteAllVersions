@@ -387,6 +387,12 @@ int esp32_ili9341_lcd_fastgfx_ready(void) {
     return 0;
 }
 
+/* The no-PSRAM CYD presents straight to the panel; there is no off-screen
+ * buffer to back an MMBasic FRAMEBUFFER, so the command is rejected. */
+int esp32_ili9341_lcd_framebuffer_supported(void) {
+    return 0;
+}
+
 static void bind_panel(void) {
     HRes = DisplayHRes = s_w;
     VRes = DisplayVRes = s_h;
