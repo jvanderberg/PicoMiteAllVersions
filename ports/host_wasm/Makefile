@@ -67,10 +67,10 @@ CFLAGS = -O2 -std=gnu11 -funsigned-char \
 # multiple-definition asks wasm-ld to take the first symbol it sees and
 # ignore the rest — same effective behaviour as gcc's native merge.
 
-LDFLAGS = -pthread -sPTHREAD_POOL_SIZE=1 \
+LDFLAGS = -pthread -sPTHREAD_POOL_SIZE=2 \
           -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=33554432 -sMAXIMUM_MEMORY=67108864 \
           -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker \
-          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_key_ring_ptr","_wasm_key_ring_head_ptr","_wasm_key_ring_tail_ptr","_wasm_key_ring_size","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_wasm_framebuffer_generation","_wasm_framebuffer_generation_ptr","_wasm_framebuffer_config_generation_ptr","_wasm_vsync_counter_ptr","_wasm_set_framebuffer_size","_wasm_set_mode_resolution","_wasm_set_heap_size","_wasm_set_slowdown_us","_wasm_set_proxy_mode","_wasm_set_proxy_http_capability","_wasm_set_proxy_tcp_stream_capability","_wasm_set_proxy_tcp_server_capability","_wasm_set_proxy_udp_capability","_wasm_set_proxy_ntp_capability","_wasm_set_proxy_tftp_capability","_wasm_set_proxy_telnet_capability","_wasm_set_proxy_mqtt_plain_capability","_wasm_set_proxy_tftp_port","_wasm_set_proxy_telnet_port","_wasm_proxy_mode","_malloc","_free"]' \
+          -sEXPORTED_FUNCTIONS='["_main","_wasm_boot","_wasm_push_key","_wasm_key_ring_ptr","_wasm_key_ring_head_ptr","_wasm_key_ring_tail_ptr","_wasm_key_ring_size","_wasm_push_touch","_wasm_touch_state_ptr","_wasm_break","_wasm_framebuffer_ptr","_wasm_framebuffer_width","_wasm_framebuffer_height","_wasm_framebuffer_generation","_wasm_framebuffer_generation_ptr","_wasm_framebuffer_config_generation_ptr","_wasm_vsync_counter_ptr","_wasm_set_framebuffer_size","_wasm_set_mode_resolution","_wasm_current_colour_depth","_wasm_set_heap_size","_wasm_set_slowdown_us","_wasm_set_proxy_mode","_wasm_set_proxy_http_capability","_wasm_set_proxy_tcp_stream_capability","_wasm_set_proxy_tcp_server_capability","_wasm_set_proxy_udp_capability","_wasm_set_proxy_ntp_capability","_wasm_set_proxy_tftp_capability","_wasm_set_proxy_telnet_capability","_wasm_set_proxy_mqtt_plain_capability","_wasm_set_proxy_tftp_port","_wasm_set_proxy_telnet_port","_wasm_proxy_mode","_malloc","_free"]' \
           -sEXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString","stringToUTF8","HEAPU8","HEAPU32","FS","IDBFS"]' \
           -sFETCH=1 \
           -sFORCE_FILESYSTEM=1 \
@@ -118,7 +118,10 @@ CORE_SRCS = core/mmbasic/MMBasic.c core/mmbasic/Commands.c core/mmbasic/Function
             core/mmbasic/Draw.c shared/gfx/RGB121.c shared/gfx/Tilemap.c core/mmbasic/FileIO.c $(AUDIO_SHARED_CORE_SRCS) drivers/bmp_decoder/BmpDecoder.c third_party/regex/re.c third_party/picojpeg/picojpeg.c
 # Stubs + host-only subsystems — match ports/host_native/Makefile.
 CORE_SRCS += audio_mp3_real.c third_party/hxcmod/hxcmod.c spi_lcd_mem332_stub.c display_merge_stub.c vga_ops_stub.c vga_mode_stub.c
-CORE_SRCS += gfx_3d.c upng_sprite_stub.c gui_touch_stub.c gui_controls_stub.c psram_heap_stub.c hal_psram_stub.c i2c_keypad_stub.c heartbeat_stub.c
+# Browser build ships the real GUI controls (GUI.c + gui_controls_real.c);
+# touch is emulated from the mouse (host_wasm_touch.c). gui_touch_stub.c
+# stays — GUI BEEP/CALIBRATE/RESET LCDPANEL are device-only no-ops here.
+CORE_SRCS += gfx_3d.c upng_sprite_stub.c gui_touch_stub.c GUI.c gui_controls_real.c psram_heap_stub.c hal_psram_stub.c i2c_keypad_stub.c heartbeat_stub.c
 CORE_SRCS += editor_console_stub.c
 CORE_SRCS += display_pixel_host.c
 CORE_SRCS += I2C.c
@@ -143,7 +146,7 @@ HOST_PORTABLE_SRCS = host_runtime.c host_fastgfx.c host_fs_shims.c \
                      hal_keyboard_host.c $(AUDIO_BACKEND_SRCS) hal_vm_framebuffer_host.c
 HOST_WASM_SRCS = host_wasm_main.c host_wasm_console.c host_wasm_canvas.c \
                  host_wasm_audio.c host_wasm_web.c host_sim_slowdown.c \
-                 host_fastgfx_resync.c host_wasm_mode.c
+                 host_fastgfx_resync.c host_wasm_mode.c host_wasm_touch.c
 
 HAL_GENERIC_SRCS = hal_watchdog_noop.c
 RUNTIME_SRCS = runtime_boot.c runtime_program.c runtime_console.c runtime_console_putchar.c runtime_console_printstring.c runtime_console_adapter.c runtime_console_input_noop.c runtime_console_escdecode.c runtime_getline.c runtime_terminal_hooks_noop.c runtime_abort.c runtime_interrupt.c runtime_filesystem_defaults.c runtime_cmd_load_post_cleanup.c calendar_bare.c

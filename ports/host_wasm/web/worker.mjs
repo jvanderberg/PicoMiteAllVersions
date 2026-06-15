@@ -51,20 +51,29 @@ function syncfs(populate) {
     });
 }
 
-function populateFromBundle() {
+// onlyMissing=true copies bundled files that aren't already in /sd — used
+// on every persistent boot so newly shipped demos show up without
+// overwriting files the user has edited. With it false (empty/first boot)
+// the whole bundle is copied.
+function populateFromBundle(onlyMissing) {
     let names = [];
     try {
         names = instance.FS.readdir(BUNDLE_ROOT).filter(n => n !== '.' && n !== '..');
     } catch (_) { return 0; }
+    let copied = 0;
     for (const n of names) {
         try {
+            if (onlyMissing) {
+                try { instance.FS.stat(`${SD_ROOT}/${n}`); continue; } catch (_) { /* missing → copy */ }
+            }
             const data = instance.FS.readFile(`${BUNDLE_ROOT}/${n}`);
             instance.FS.writeFile(`${SD_ROOT}/${n}`, data);
+            copied++;
         } catch (e) {
             post({ type: 'log', level: 'warn', line: `bundle copy skipped ${n}: ${e}` });
         }
     }
-    return names.length;
+    return copied;
 }
 
 function installFsTracker() {
@@ -111,10 +120,10 @@ async function mountSd(persist) {
     try {
         empty = instance.FS.readdir(SD_ROOT).filter(n => n !== '.' && n !== '..').length === 0;
     } catch (_) { empty = true; }
-    if (empty) {
-        const n = populateFromBundle();
-        if (n > 0) await syncfs(false);
-    }
+    // First boot copies the whole bundle; later boots top up any newly
+    // shipped files (e.g. demos) without touching the user's edits.
+    const n = populateFromBundle(!empty);
+    if (n > 0) await syncfs(false);
     return { populated: true };
 }
 
@@ -130,7 +139,7 @@ async function initInstance(cfg) {
     if (Array.isArray(cfg.modeMap)) {
         for (const e of cfg.modeMap) {
             if (typeof instance._wasm_set_mode_resolution === 'function') {
-                instance._wasm_set_mode_resolution(e.mode, e.w, e.h);
+                instance._wasm_set_mode_resolution(e.mode, e.w, e.h, e.depth || 24);
             }
         }
     }
@@ -204,6 +213,9 @@ async function initInstance(cfg) {
         keyRingHeadPtr:  instance._wasm_key_ring_head_ptr(),
         keyRingTailPtr:  instance._wasm_key_ring_tail_ptr(),
         keyRingSize:     instance._wasm_key_ring_size(),
+        touchStatePtr:   (typeof instance._wasm_touch_state_ptr === 'function')
+                             ? instance._wasm_touch_state_ptr()
+                             : 0,
     });
 
     // wasm_boot spawns a pthread that runs MMBasic_RunPromptLoop and
@@ -295,20 +307,23 @@ self.onmessage = async (e) => {
             if (Array.isArray(msg.entries) &&
                 typeof instance._wasm_set_mode_resolution === 'function') {
                 for (const e of msg.entries) {
-                    instance._wasm_set_mode_resolution(e.mode, e.w, e.h);
+                    instance._wasm_set_mode_resolution(e.mode, e.w, e.h, e.depth || 24);
                 }
             }
             break;
 
         case 'refetch-framebuffer':
             // BASIC `MODE N` reallocated the framebuffer; main thread needs
-            // the fresh pointer + dimensions to resize the canvas/texture.
+            // the fresh pointer + dimensions to resize the canvas/texture,
+            // and the colour depth to drive the quantising shader.
             post({
                 type:    'refetch-framebuffer-result',
                 reqId:   msg.reqId,
                 fbPtr:   instance._wasm_framebuffer_ptr(),
                 fbWidth: instance._wasm_framebuffer_width(),
                 fbHeight:instance._wasm_framebuffer_height(),
+                depth:   (typeof instance._wasm_current_colour_depth === 'function')
+                             ? instance._wasm_current_colour_depth() : 24,
             });
             break;
     }

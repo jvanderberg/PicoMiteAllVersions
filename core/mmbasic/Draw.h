@@ -97,6 +97,10 @@ extern short gui_font_width, gui_font_height;
 extern int gui_fcolour;
 extern int gui_bcolour;
 extern int last_fcolour, last_bcolour;
+/* Framebuffer colour depth in bits (24 = true colour). GUI buttons drop the
+ * gloss gradient at 8 bpp and below, where it would only band; the border
+ * carries the look. Defaults to 24; low-depth paths / WASM mode config lower it. */
+extern int gui_colour_depth;
 extern int display_backlight;
 extern int gui_click_pin;
 

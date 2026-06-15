@@ -61,4 +61,5 @@ int display_backlight;
 int gui_click_pin = 0;
 int last_fcolour;
 int last_bcolour;
+int gui_colour_depth = 24; /* full colour unless a low-depth path lowers it */
 volatile int CursorTimer = 0;
