@@ -5469,9 +5469,7 @@ void fun_mmcharheight(void) {
 ****************************************************************************************************/
 void cmd_refresh(void) {
     if (Option.DISPLAY_TYPE == 0) error("Display not configured");
-#if defined(MMBASIC_ESP32_CYD)
-    return;
-#endif
+    if (!port_display_manual_refresh_supported()) return;
     if (Option.DISPLAY_TYPE >= NEXTGEN) {
         if (!Option.Refresh) {
             hal_display_nextgen_refresh_rect(low_x, low_y, high_x, high_y);

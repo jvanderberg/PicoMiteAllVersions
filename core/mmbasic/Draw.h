@@ -109,6 +109,14 @@ extern volatile short low_y, high_y, low_x, high_x;
 #define RLANDSCAPE 3
 #define RPORTRAIT 4
 #define DISPLAY_LANDSCAPE (Option.DISPLAY_ORIENTATION & 1)
+
+/* Display capability hook: 1 if the panel honours the manual REFRESH /
+ * OPTION DISPLAY AUTOREFRESH ON model, 0 for always-presented panels that
+ * push every draw to glass immediately (REFRESH is a no-op, AUTOREFRESH ON
+ * is rejected). Weak default lives in shared/gfx/gfx_console_shared.c;
+ * ports override as needed. */
+int port_display_manual_refresh_supported(void);
+
 #define TOUCH_NOT_CALIBRATED -999999
 #define RESET_COMMAND 9999     // indicates that the reset was caused by the RESET command
 #define WATCHDOG_TIMEOUT 9998  // reset caused by the watchdog timer

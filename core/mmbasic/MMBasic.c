@@ -3284,17 +3284,11 @@ void MIPS16 error(char * msg, ...) {
     LoadOptions();                        // make sure that the option struct is in a clean state
     port_error_restore_console_surface(); // ports may need to re-assert runtime-only display state
     ApplyDefaultConsoleColours();
-#if !defined(MMBASIC_ESP32_CYD)
     PromptFont = saved_prompt_font;
     PromptFC = saved_prompt_fc;
     PromptBC = saved_prompt_bc;
     gui_fcolour = PromptFC;
     gui_bcolour = PromptBC;
-#else
-    (void)saved_prompt_font;
-    (void)saved_prompt_fc;
-    (void)saved_prompt_bc;
-#endif
     OptionConsole = 1;
     if (Option.DISPLAY_CONSOLE) {
         OptionConsole = 3;
@@ -3313,11 +3307,6 @@ void MIPS16 error(char * msg, ...) {
         }
         if (CurrentX != 0) MMPrintString("\r\n"); // error message should be on a new line
     }
-#if defined(MMBASIC_ESP32_CYD)
-    Option.DISPLAY_CONSOLE = 1;
-    OptionConsole = 3;
-    ApplyDefaultConsoleColours();
-#endif
     if (MMCharPos > 1) MMPrintString("\r\n");
     int line_num = -2;
     if (CurrentLinePtr) {

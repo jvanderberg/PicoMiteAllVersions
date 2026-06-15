@@ -4,7 +4,8 @@
  * Provides the symbols FileIO.c expects from a port that has flash:
  *
  *   flash_prog_buf[]          — RAM mirror of the program-memory region
- *                               (currently 2 × MAX_PROG_SIZE).
+ *                               (MAX_PROG_SIZE + a 4 KB erased-flash
+ *                               trailer; see FLASH_PROG_REGION_SIZE).
  *   mmslots partition         — real flash backing for options, VAR SAVE
  *                               plus numbered SAVE/LOAD slots.
  *   esp32_flash_option_buf[]  — RAM mirror of the Options blob.

@@ -156,9 +156,11 @@
 #define HAL_PORT_PSRAM_BLOCK_SIZE (MAXRAMSLOTS * MAX_PROG_SIZE)
 
 /* Compiler-table sizes: a classic-ESP32 CYD set. The compiler's transient
- * allocations must fit the internal heap left over at FRUN time
- * with the VGA console up in MODE 3; even the RP2040 tables assume
- * more headroom than a no-PSRAM classic ESP32 has after IDF and VGA. */
+ * allocations first try ESP-IDF heap, then fall back to the MMBasic heap.
+ * The no-PSRAM classic ESP32 does not always have a contiguous internal-heap
+ * window large enough after Wi-Fi/LCD/FS init, while the BASIC heap is fully
+ * reclaimed after the compile/compact step. */
+#define HAL_PORT_BC_COMPILE_USE_BASIC_HEAP 1
 #include "../bc_tables_esp32_cyd.h"
 
 /* PinDef[] slot of the supply-voltage ADC input MM.SUPPLY reads (GP29 on

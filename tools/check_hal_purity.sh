@@ -76,6 +76,8 @@ TARGET_MACROS=(
   USBKEYBOARD
   MMBASIC_HOST
   MMBASIC_WASM
+  MMBASIC_ESP32
+  MMBASIC_ESP32_CYD
   PICOMITEPLUS
   PICOCALC
 )
@@ -170,6 +172,9 @@ STRICT_FILES=(
               # Remaining 3 #ifdef gates are feature flags (MMFAMILY,
               # GUICONTROLS, __PIC32MX__), permitted by the strict
               # check.
+  core/mmbasic/OptionCommands.c # AUTOREFRESH display-capability gate routed
+              # through port_display_manual_refresh_supported(); zero
+              # target-macro, zero port-config ifdefs.
 )
 
 # Host-port WASM-clean scope: ports/host_native/*.c must not bleed

@@ -111,10 +111,8 @@ bool dmarunning = 0;
  * (audio_task) ring of 16-bit stereo frames in PSRAM. Free-running 32-bit
  * head/tail counters publish frame availability; the stream mux only
  * protects reset/session changes and single-frame consumer claims. */
-#ifndef HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
-#define HAL_PORT_AUDIO_SAMPLE_RING_FRAMES 32768u /* 128 KB in PSRAM, ~0.74s @ 44.1k */
-#endif
 #define SAMPLE_RING_FRAMES HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
+#define AUDIO_WORKMEM_BASIC_HEAP_ENABLED (0 + HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP)
 static int16_t * s_ring;          /* SAMPLE_RING_FRAMES * 2 int16 */
 static _Atomic uint32_t s_ring_head, s_ring_tail;
 static _Atomic uint32_t s_stream_inflight_frames;
@@ -188,6 +186,30 @@ static uint32_t stream_space_frames(void) {
 static bool stream_generation_active(uint32_t generation) {
     return !(generation & 1u) &&
            atomic_load_explicit(&s_stream_generation, memory_order_acquire) == generation;
+}
+
+static int audio_basic_heap_enabled(void) {
+    return AUDIO_WORKMEM_BASIC_HEAP_ENABLED != 0;
+}
+
+static int audio_basic_heap_owns(const void * p) {
+    uintptr_t addr = (uintptr_t)p;
+    uintptr_t heap_start = (uintptr_t)MMHeap;
+    uintptr_t heap_end = heap_start + (uintptr_t)heap_memory_size;
+    return audio_basic_heap_enabled() &&
+           addr >= heap_start &&
+           addr < heap_end;
+}
+
+static void * audio_try_basic_heap_alloc(size_t bytes) {
+    return audio_basic_heap_enabled() ? TryGetMemory((int)bytes) : NULL;
+}
+
+static int audio_try_basic_heap_free(void * p) {
+    if (!audio_basic_heap_owns(p)) return 0;
+    void * q = p;
+    FreeMemorySafe(&q);
+    return q == NULL;
 }
 
 static void stream_reset_state(void) {
@@ -381,9 +403,7 @@ int hal_audio_sample_begin(int sample_rate_hz) {
     if (!s_ring) {
         size_t bytes = (size_t)SAMPLE_RING_FRAMES * 2u * sizeof(int16_t);
         s_ring = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
-        if (!s_ring) s_ring = TryGetMemory((int)bytes);
-#endif
+        if (!s_ring) s_ring = audio_try_basic_heap_alloc(bytes);
         if (!s_ring) s_ring = malloc(bytes);
         if (!s_ring) {
             printf("hal_audio: sample ring alloc failed bytes=%u free=%u largest=%u\r\n",
@@ -430,9 +450,7 @@ int hal_audio_sample_queued(void) {
  * unavailable. */
 void * hal_audio_workmem_alloc(unsigned long bytes) {
     void * p = heap_caps_malloc((size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
-    if (!p) p = TryGetMemory((int)bytes);
-#endif
+    if (!p) p = audio_try_basic_heap_alloc((size_t)bytes);
     if (!p) p = malloc((size_t)bytes);
     if (!p) {
         printf("hal_audio: workmem alloc failed bytes=%lu free=%u largest=%u\r\n",
@@ -444,19 +462,12 @@ void * hal_audio_workmem_alloc(unsigned long bytes) {
 }
 void * hal_audio_workmem_realloc(void * p, unsigned long bytes) {
     if (!p) return hal_audio_workmem_alloc(bytes);
-#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
-    if (p >= (void *)MMHeap && p < (void *)(MMHeap + heap_memory_size))
-        return ReAllocMemory(p, (size_t)bytes);
-#endif
+    if (audio_basic_heap_owns(p)) return ReAllocMemory(p, (size_t)bytes);
     void * n = heap_caps_realloc(p, (size_t)bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     return n ? n : realloc(p, (size_t)bytes);
 }
 void hal_audio_workmem_free(void * p) {
-#ifdef HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP
-    void * q = p;
-    FreeMemorySafe(&q);
-    if (!q) return;
-#endif
+    if (audio_try_basic_heap_free(p)) return;
     heap_caps_free(p);
 }
 

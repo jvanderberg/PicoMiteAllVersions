@@ -278,7 +278,7 @@ static void shadow_rect(int x1, int y1, int x2, int y2, uint32_t c) {
 }
 
 static void dirty_mark(int x1, int y1, int x2, int y2) {
-    if (!clip_rect(&x1, &y1, &x2, &y2)) return;
+    if (!s_shadow || !clip_rect(&x1, &y1, &x2, &y2)) return;
     int tx1 = x1 / LCD_DIRTY_TILE;
     int tx2 = x2 / LCD_DIRTY_TILE;
     int ty1 = y1 / LCD_DIRTY_TILE;
@@ -686,6 +686,10 @@ int esp32_ili9341_lcd_restore_panel(void) {
     return 1;
 }
 
+int esp32_ili9341_lcd_fastgfx_ready(void) {
+    return esp32_ili9341_lcd_ready() && PSRAMsize != 0;
+}
+
 void esp32_ili9341_lcd_snapshot_rgb121(uint8_t * out) {
     if (!out || !esp32_ili9341_lcd_ready()) return;
     int index = 0;
@@ -1038,8 +1042,15 @@ void esp32_ili9341_lcd_init(void) {
      * No-PSRAM boards (classic-ESP32 CYD) have no room for it and run a
      * direct-to-panel path instead: drawing writes straight to the
      * controller and the shadow stays NULL. PSRAMsize is the shared,
-     * published signal for "external PSRAM exists" (hal_psram_init). */
-    if (!s_shadow && PSRAMsize) {
+     * published signal for "external PSRAM exists" (hal_psram_init).
+     *
+     * The shadow buffer and its dirty-tile/FASTGFX machinery are indexed
+     * with the landscape 320-wide stride, so they are only valid in
+     * landscape. Portrait orientations (s_w/s_h swapped to 240x320, latched
+     * below) keep the shadow NULL and use the same direct-to-panel path as
+     * the no-PSRAM boards — MISO readback still works, console scroll falls
+     * back to clear-home. */
+    if (!s_shadow && PSRAMsize && DISPLAY_LANDSCAPE) {
         s_shadow = heap_caps_malloc((size_t)LCD_W * LCD_H * sizeof(*s_shadow),
                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (!s_shadow)

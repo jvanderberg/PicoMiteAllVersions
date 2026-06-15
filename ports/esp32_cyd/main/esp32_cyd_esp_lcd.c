@@ -295,9 +295,11 @@ static void esp_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2, int blank,
 
 /* Read a region of panel RAM. CS is held low across CASET/PASET/RAMRD and the
  * read clocks; there is no bus acquire and no CS_KEEP transaction flag. */
-static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) {
+static int panel_read_region_stride(int x1, int y1, int x2, int y2,
+                                    uint8_t * out_bgr, int out_stride_px) {
     if (!s_lcd || !s_rd || !s_rdbuf) return 0;
     int w = x2 - x1 + 1, h = y2 - y1 + 1;
+    if (w <= 0 || h <= 0 || out_stride_px < w) return 0;
     int per_row = w * 3;
     int rows = (1 + READ_SCRATCH_PX * 3) / per_row;
     if (rows < 1) rows = 1;
@@ -319,25 +321,37 @@ static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) 
         gpio_set_level((gpio_num_t)s_cs, 1);
         if (err != ESP_OK) return 0;
         uint8_t * src = s_rdbuf + 1; /* skip the RAMRD dummy byte */
-        for (int i = 0; i < nr * w; i++) {
-            uint8_t r = src[i * 3 + 0], g = src[i * 3 + 1], b = src[i * 3 + 2];
-            size_t o = (size_t)(y * w + i) * 3; /* out is row-major B,G,R */
-            out_bgr[o + 0] = b;
-            out_bgr[o + 1] = g;
-            out_bgr[o + 2] = r;
+        for (int ry = 0; ry < nr; ry++) {
+            for (int x = 0; x < w; x++) {
+                size_t si = ((size_t)ry * (size_t)w + (size_t)x) * 3u;
+                size_t o = ((size_t)(y + ry) * (size_t)out_stride_px +
+                            (size_t)x) * 3u;
+                out_bgr[o + 0] = src[si + 2];
+                out_bgr[o + 1] = src[si + 1];
+                out_bgr[o + 2] = src[si + 0];
+            }
         }
         y += nr;
     }
     return 1;
 }
 
+static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) {
+    return panel_read_region_stride(x1, y1, x2, y2, out_bgr, x2 - x1 + 1);
+}
+
 static void esp_lcd_read_buffer(int x1, int y1, int x2, int y2, unsigned char * bgr) {
     if (!bgr) return;
     if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
     if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    int out_w = x2 - x1 + 1;
+    int out_h = y2 - y1 + 1;
+    memset(bgr, 0, (size_t)out_w * (size_t)out_h * 3u);
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
-    if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) { memset(bgr, 0, (size_t)(x2 - x1 + 1) * (y2 - y1 + 1) * 3); return; }
-    panel_read_region(cx1, cy1, cx2, cy2, bgr);
+    if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
+    uint8_t * out = bgr + ((size_t)(cy1 - y1) * (size_t)out_w +
+                           (size_t)(cx1 - x1)) * 3u;
+    panel_read_region_stride(cx1, cy1, cx2, cy2, out, out_w);
 }
 
 static void esp_lcd_read_buffer_fast(int x1, int y1, int x2, int y2, unsigned char * p) {
@@ -345,20 +359,21 @@ static void esp_lcd_read_buffer_fast(int x1, int y1, int x2, int y2, unsigned ch
     if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
     if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
     int w = x2 - x1 + 1;
-    uint8_t row[LCD_W * 3]; /* one row of B,G,R */
-    int index = 0;
+    int h = y2 - y1 + 1;
+    memset(p, 0, ((size_t)w * (size_t)h + 1u) / 2u);
+    static uint8_t row[LCD_W * 3]; /* one clipped B,G,R row, off-stack */
     for (int y = y1; y <= y2; y++) {
-        memset(row, 0, (size_t)w * 3u);
         if (y >= 0 && y < s_h) {
             int rx1 = x1 < 0 ? 0 : x1;
             int rx2 = x2 >= s_w ? s_w - 1 : x2;
-            if (rx1 <= rx2)
-                panel_read_region(rx1, y, rx2, y, row + (size_t)(rx1 - x1) * 3u);
-        }
-        for (int x = 0; x < w; x++) {
-            size_t o = (size_t)x * 3;
-            int c = (row[o + 2] << 16) | (row[o + 1] << 8) | row[o + 0];
-            packed_rgb121_set(p, index++, RGB121(c));
+            if (rx1 <= rx2 && panel_read_region(rx1, y, rx2, y, row)) {
+                int base = (y - y1) * w + (rx1 - x1);
+                for (int x = 0; x <= rx2 - rx1; x++) {
+                    size_t o = (size_t)x * 3u;
+                    int c = (row[o + 2] << 16) | (row[o + 1] << 8) | row[o + 0];
+                    packed_rgb121_set(p, base + x, RGB121(c));
+                }
+            }
         }
     }
 }
@@ -366,6 +381,10 @@ static void esp_lcd_read_buffer_fast(int x1, int y1, int x2, int y2, unsigned ch
 int esp32_ili9341_lcd_ready(void) {
     return (s_panel != NULL || s_lcd != NULL) && Option.DISPLAY_TYPE == s_panel_type && HRes == s_w &&
            VRes == s_h;
+}
+
+int esp32_ili9341_lcd_fastgfx_ready(void) {
+    return 0;
 }
 
 static void bind_panel(void) {
@@ -414,6 +433,8 @@ void esp32_ili9341_lcd_flush_pending(void) {}
 
 static void esp_lcd_error_restore_console_surface(void) {
     if (!esp32_ili9341_lcd_restore_panel()) return;
+    Option.DISPLAY_CONSOLE = 1;
+    OptionConsole = 3;
     ApplyDefaultConsoleColours();
     CurrentX = 0;
     CurrentY = 0;
@@ -442,10 +463,53 @@ void esp32_ili9341_lcd_scroll(int lines) {
         esp_lcd_draw_rectangle(0, 0, s_w - 1, n - 1, gui_bcolour);
     }
 }
-void esp32_ili9341_lcd_snapshot_rgb121(uint8_t * out) { (void)out; }
-void esp32_ili9341_lcd_present_rgb121_diff(uint8_t * back, uint8_t * front) { (void)back; (void)front; }
+
+void esp32_ili9341_lcd_snapshot_rgb121(uint8_t * out) {
+    (void)out;
+}
+
+static uint8_t * lcd_present_batch_buffer(int width, int * rows_per_batch) {
+    int rows = SCRATCH_PX / width;
+    if (rows < 1) rows = 1;
+    if (rows_per_batch) *rows_per_batch = rows;
+    return s_scratch;
+}
+
+void esp32_ili9341_lcd_present_rgb121_diff(uint8_t * back, uint8_t * front) {
+    (void)back;
+    (void)front;
+}
+
 void esp32_ili9341_lcd_present_rgb121_rect(const uint8_t * src, int xs, int xe, int ys, int ye, int odd) {
-    (void)src; (void)xs; (void)xe; (void)ys; (void)ye; (void)odd;
+    if (!esp32_ili9341_lcd_ready() || !s_scratch || !src) return;
+    int src_w = xe - xs + 1;
+    if (src_w <= 0) return;
+    int cx1 = xs, cy1 = ys, cx2 = xe, cy2 = ye;
+    if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
+    int w = cx2 - cx1 + 1;
+    int h = cy2 - cy1 + 1;
+    int rows_per_batch;
+    uint8_t * tx = lcd_present_batch_buffer(w, &rows_per_batch);
+
+    for (int yoff = 0; yoff < h;) {
+        int rows = h - yoff;
+        if (rows > rows_per_batch) rows = rows_per_batch;
+        for (int ry = 0; ry < rows; ry++) {
+            int y = cy1 + yoff + ry;
+            int src_row_base = (y - ys) * src_w;
+            uint8_t * out = tx + (size_t)ry * (size_t)w * 2u;
+            for (int x = cx1; x <= cx2; x++) {
+                int src_index = src_row_base + (x - xs);
+                int packed_index = src_index + (odd ? 1 : 0);
+                uint8_t byte = src[(size_t)packed_index >> 1];
+                uint8_t nibble = (packed_index & 1) ? (uint8_t)(byte >> 4)
+                                                    : (uint8_t)(byte & 0x0f);
+                put565(&out[(size_t)(x - cx1) * 2u], rgb121_palette_colour(nibble));
+            }
+        }
+        panel_blit(cx1, cy1 + yoff, cx2, cy1 + yoff + rows - 1, tx);
+        yoff += rows;
+    }
 }
 
 static int lcd_option_gpio(int pin) {
@@ -453,8 +517,38 @@ static int lcd_option_gpio(int pin) {
     return PinDef[pin].GPno;
 }
 
+static void lcd_release_resources(int bus_inited) {
+    if (s_rd) {
+        (void)spi_bus_remove_device(s_rd);
+        s_rd = NULL;
+    }
+    if (s_lcd) {
+        (void)spi_bus_remove_device(s_lcd);
+        s_lcd = NULL;
+    }
+    if (s_panel) {
+        (void)esp_lcd_panel_del(s_panel);
+        s_panel = NULL;
+    }
+    if (s_io) {
+        (void)esp_lcd_panel_io_del(s_io);
+        s_io = NULL;
+    }
+    if (bus_inited) (void)spi_bus_free(LCD_SPI_HOST);
+    if (s_scratch) {
+        heap_caps_free(s_scratch);
+        s_scratch = NULL;
+    }
+    if (s_rdbuf) {
+        heap_caps_free(s_rdbuf);
+        s_rdbuf = NULL;
+    }
+    s_dc = -1;
+    s_cs = -1;
+}
+
 void esp32_ili9341_lcd_init(void) {
-    if (Option.WebConsole || s_panel) return;
+    if (Option.WebConsole || s_lcd || s_panel) return;
     if (!Option.LCD_CD || !Option.LCD_CS) return;
     const int sclk = lcd_option_gpio(Option.LCD_CLK);
     const int mosi = lcd_option_gpio(Option.LCD_MOSI);
@@ -480,8 +574,9 @@ void esp32_ili9341_lcd_init(void) {
         .quadhd_io_num = -1,
         .max_transfer_sz = SCRATCH_PX * 3 + 16,
     };
-    if (spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO) != ESP_OK) {
-        ESP_LOGE(TAG, "spi_bus_initialize failed");
+    esp_err_t err = spi_bus_initialize(LCD_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return;
     }
 
@@ -494,9 +589,11 @@ void esp32_ili9341_lcd_init(void) {
         .lcd_cmd_bits = 8,
         .lcd_param_bits = 8,
     };
-    if (esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_cfg,
-                                 &s_io) != ESP_OK) {
-        ESP_LOGE(TAG, "panel_io_spi failed");
+    err = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_SPI_HOST, &io_cfg,
+                                   &s_io);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel_io_spi failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
         return;
     }
 
@@ -510,23 +607,55 @@ void esp32_ili9341_lcd_init(void) {
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
         .bits_per_pixel = 16,
     };
-    if (esp_lcd_new_panel_st7789(s_io, &panel_cfg, &s_panel) != ESP_OK) {
-        ESP_LOGE(TAG, "new_panel_st7789 failed");
+    err = esp_lcd_new_panel_st7789(s_io, &panel_cfg, &s_panel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "new_panel_st7789 failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
         return;
     }
 
-    esp_lcd_panel_reset(s_panel);
-    esp_lcd_panel_init(s_panel);
+    err = esp_lcd_panel_reset(s_panel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel reset failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
+    err = esp_lcd_panel_init(s_panel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel init failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
     /* CYD2USB ST7789 wants inversion off; OPTION INVERT (Option.BGR=1) means
      * "no inversion" on this controller, matching the old ST7789 path. */
-    esp_lcd_panel_invert_color(s_panel, !Option.BGR);
+    err = esp_lcd_panel_invert_color(s_panel, !Option.BGR);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel invert failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
     /* Landscape = swap X/Y; flip the mirror for the 180° variants. */
     int landscape = Option.DISPLAY_ORIENTATION & 1;
     int flip = (Option.DISPLAY_ORIENTATION == RLANDSCAPE ||
                 Option.DISPLAY_ORIENTATION == RPORTRAIT);
-    esp_lcd_panel_swap_xy(s_panel, landscape);
-    esp_lcd_panel_mirror(s_panel, landscape ^ flip, flip);
-    esp_lcd_panel_disp_on_off(s_panel, true);
+    err = esp_lcd_panel_swap_xy(s_panel, landscape);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel swap_xy failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
+    err = esp_lcd_panel_mirror(s_panel, landscape ^ flip, flip);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel mirror failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
+    err = esp_lcd_panel_disp_on_off(s_panel, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "panel display-on failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
 
     esp_lcd_panel_del(s_panel);
     s_panel = NULL;
@@ -539,7 +668,12 @@ void esp32_ili9341_lcd_init(void) {
         .pin_bit_mask = (1ULL << (uint32_t)s_dc) | (1ULL << (uint32_t)s_cs),
         .mode = GPIO_MODE_OUTPUT,
     };
-    gpio_config(&out);
+    err = gpio_config(&out);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "gpio_config failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
+        return;
+    }
     gpio_set_level((gpio_num_t)s_cs, 1);
 
     spi_device_interface_config_t wr_cfg = {
@@ -549,8 +683,10 @@ void esp32_ili9341_lcd_init(void) {
         .queue_size = 1,
         .flags = SPI_DEVICE_NO_DUMMY,
     };
-    if (spi_bus_add_device(LCD_SPI_HOST, &wr_cfg, &s_lcd) != ESP_OK) {
-        ESP_LOGE(TAG, "LCD write device add failed");
+    err = spi_bus_add_device(LCD_SPI_HOST, &wr_cfg, &s_lcd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD write device add failed: %s", esp_err_to_name(err));
+        lcd_release_resources(1);
         return;
     }
 
@@ -561,17 +697,31 @@ void esp32_ili9341_lcd_init(void) {
         .queue_size = 1,
         .input_delay_ns = LCD_RD_INPUT_DELAY_NS,
     };
-    if (miso >= 0 && spi_bus_add_device(LCD_SPI_HOST, &rd_cfg, &s_rd) != ESP_OK) {
-        ESP_LOGW(TAG, "RAMRD read device add failed; reads disabled");
-        s_rd = NULL;
+    if (miso >= 0) {
+        err = spi_bus_add_device(LCD_SPI_HOST, &rd_cfg, &s_rd);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "RAMRD read device add failed; reads disabled: %s",
+                     esp_err_to_name(err));
+            s_rd = NULL;
+        }
     }
 
     if (!s_scratch)
         s_scratch = heap_caps_malloc(SCRATCH_PX * 2u,
                                      MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (!s_scratch) {
+        ESP_LOGE(TAG, "LCD scratch allocation failed");
+        lcd_release_resources(1);
+        return;
+    }
     if (s_rd && !s_rdbuf)
         s_rdbuf = heap_caps_malloc(1 + READ_SCRATCH_PX * 3,
                                    MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+    if (s_rd && !s_rdbuf) {
+        ESP_LOGW(TAG, "RAMRD scratch allocation failed; reads disabled");
+        (void)spi_bus_remove_device(s_rd);
+        s_rd = NULL;
+    }
 
     if (backlight >= 0) esp32_backlight_init_default();
 
@@ -591,3 +741,7 @@ void esp32_ili9341_lcd_init(void) {
     ESP_LOGI(TAG, "esp_lcd ST7789 ready: %dx%d sclk=%d mosi=%d miso=%d cs=%d dc=%d",
              s_w, s_h, sclk, mosi, miso, cs, dc);
 }
+
+/* The CYD panel is presented to glass on every draw, so the manual REFRESH
+ * command is a no-op and OPTION DISPLAY AUTOREFRESH ON is rejected. */
+int port_display_manual_refresh_supported(void) { return 0; }
