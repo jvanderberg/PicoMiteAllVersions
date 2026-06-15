@@ -241,6 +241,7 @@ void InitDisplayI2C(int InitOnly) {
     if (Option.DISPLAY_TYPE == 0 || Option.DISPLAY_TYPE > I2C_PANEL) return;
     //	I2Con();
     //	i2c_enable(display_details[Option.DISPLAY_TYPE].speed);
+    gui_colour_depth = 1; /* monochrome OLED */
     DrawRectangle = DrawRectangleMEM;
     DrawBitmap = DrawBitmapMEM;
     DrawBuffer = DrawBufferMEM;

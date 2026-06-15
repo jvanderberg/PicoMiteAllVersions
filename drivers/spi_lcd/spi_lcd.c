@@ -263,6 +263,7 @@ void MIPS16 InitDisplaySPI(int InitOnly) {
         }
         // setup the pointers to the drawing primitives
         if (Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) {
+            gui_colour_depth = 16; /* RGB565 SPI panels */
             if (Option.DISPLAY_ORIENTATION == PORTRAIT) {
                 DrawRectangle = DrawRectangleSPISCR;
                 DrawBitmap = DrawBitmapSPISCR;
@@ -292,6 +293,7 @@ void MIPS16 InitDisplaySPI(int InitOnly) {
 			 * to no-op stubs in spi_lcd_mem332_stub.c elsewhere. The
 			 * branch only fires on MEM332 ports (DISPLAY_TYPE never
 			 * reaches NEXTGEN values otherwise). */
+            gui_colour_depth = 8; /* RGB332 buffered panels */
             DrawRectangle = DrawRectangleMEM332;
             DrawBitmap = DrawBitmapMEM332;
             DrawBuffer = DrawBufferMEM332;
@@ -300,6 +302,7 @@ void MIPS16 InitDisplaySPI(int InitOnly) {
             ReadBLITBuffer = ReadBlitBufferMEM332;
             ScrollLCD = ScrollLCDMEM332;
         } else {
+            gui_colour_depth = (Option.DISPLAY_TYPE == ILI9341_8) ? 8 : 16; /* RGB332 vs SSD1963 RGB565 */
             DrawRectangle = DrawRectangleMEM;
             DrawBitmap = DrawBitmapMEM;
             DrawBuffer = DrawBufferMEM;
