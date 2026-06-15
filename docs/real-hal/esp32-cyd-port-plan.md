@@ -1,5 +1,15 @@
 # ESP32 CYD Port Plan
 
+Landed (2026-06-15): the port is integrated into CI and released. The
+`esp32-s3.yml` workflow builds `ports/esp32_cyd` alongside the two S3 variants
+(`buildesp32.sh all`) and publishes `MMBasic-Anywhere-esp32-cyd-merged.bin`
+(chip esp32, 40 MHz, bootloader `0x1000`) to the rolling `latest` release.
+Shared/core code is purity-clean for the classic-ESP32 target (the gate now
+scans the `MMBASIC_ESP32` / `MMBASIC_ESP32_CYD` macros and all of `shared/`).
+User docs live in [`ports/esp32_cyd/README.md`](../../ports/esp32_cyd/README.md),
+covering both the CYD board and bare ESP32 dev boards. Hardware smokes pass on
+the CYD, a Freenove, and the Metro (3-bit VGA).
+
 Status: real CYD ESP32-2432S028R bring-up is now functional on hardware
 (2026-06-14). UART0 REPL, LittleFS `A:`, SD `B:`, direct-to-panel ST7789
 LCD, XPT2046 touch, internal-DAC audio, GPIO reservation/reporting, GUI
