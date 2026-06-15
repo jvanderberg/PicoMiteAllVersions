@@ -157,6 +157,9 @@ extern esp_err_t vga320d_rgb_panel_get_frame_buffer(esp_lcd_panel_handle_t panel
                                                     uint32_t fb_num, void ** fb0, ...);
 extern uint8_t * vga320d_reserved_fb;
 extern size_t vga320d_reserved_fb_size;
+extern uint8_t * vga320d_reserved_psram_fb;
+extern size_t vga320d_reserved_psram_fb_size;
+extern void vga320d_release_reserved_links(void);
 
 static vga_lcdcam_pins_t s_pins;
 static int s_panel_kind;   /* 0 = 640 bounce-fill panel, 1 = 320d panel */
@@ -339,11 +342,18 @@ void vga_lcdcam_s3_reserve_scanout(void) {
 /* Give the reservation back (boards that boot without OPTION VGA call
  * this once options resolve, so they keep their internal heap). */
 void vga_lcdcam_s3_release_scanout(void) {
-    if (!vga320d_reserved_fb) return;
     if (s_panel) return; /* a live panel may be using it (fb or bounce) */
-    heap_caps_free(vga320d_reserved_fb);
-    vga320d_reserved_fb = NULL;
-    vga320d_reserved_fb_size = 0;
+    if (vga320d_reserved_fb) {
+        heap_caps_free(vga320d_reserved_fb);
+        vga320d_reserved_fb = NULL;
+        vga320d_reserved_fb_size = 0;
+    }
+    if (vga320d_reserved_psram_fb) {
+        heap_caps_free(vga320d_reserved_psram_fb);
+        vga320d_reserved_psram_fb = NULL;
+        vga320d_reserved_psram_fb_size = 0;
+    }
+    vga320d_release_reserved_links();
 }
 
 bool vga_lcdcam_s3_scanout_reserved(void) {

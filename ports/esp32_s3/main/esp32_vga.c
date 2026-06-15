@@ -353,6 +353,10 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
          * panel-owned and changes across rebuilds — re-read it. */
         vga_lcdcam_s3_enter_640();
         s_vga_scanout_fb = vga_lcdcam_s3_framebuffer();
+        /* The console panel build can fail to allocate its frame buffer
+         * (out of contiguous PSRAM); never dereference a NULL scanout
+         * buffer below — surface a clean error instead. */
+        if (!s_vga_scanout_fb) error("Not enough memory");
         if (s_vga_logical_fb) {
             if (s_vga_logical_owned) heap_caps_free(s_vga_logical_fb);
             s_vga_logical_fb = NULL;
@@ -412,7 +416,7 @@ static int esp32_vga_apply_mode(int mode, bool clear) {
     esp32_vga_bind_rgb332_draw();
     ApplyDefaultConsoleColours();
     if (clear) {
-        memset(WriteBuf, 0, ScreenSize);
+        if (WriteBuf) memset(WriteBuf, 0, ScreenSize);
         vga_lcdcam_s3_clear(0);
         if (mode == ESP32_VGA_MODE_320X240)
             vga_lcdcam_s3_present_rgb332_2x(WriteBuf, HRes, VRes, HRes, 0, 0, HRes - 1, VRes - 1);

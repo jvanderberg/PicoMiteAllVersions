@@ -72,6 +72,34 @@
 uint8_t * vga320d_reserved_fb = NULL;
 size_t vga320d_reserved_fb_size = 0;
 
+/* [320d] PSRAM console frame buffer, held for the life of the session.
+ * The 640x480 panel is torn down and rebuilt on every mode switch, but
+ * re-allocating its ~300 KB contiguous PSRAM fb after the MMBasic slab
+ * has claimed the pool fragments and fails. The first build's fb is
+ * cached here and reused across rebuilds; the panel destroy path leaves
+ * it allocated, and the port frees it only when VGA is released. */
+uint8_t * vga320d_reserved_psram_fb = NULL;
+size_t vga320d_reserved_psram_fb_size = 0;
+
+/* [320d] descriptor link list for the native line-doubled panel: one
+ * node per output line, ~8 KB of the scarce internal DMA RAM. Like the
+ * frame buffers it is otherwise re-created on every mode switch, and
+ * re-allocating it once internal DMA RAM has fragmented fails (the panel
+ * then falls back to the slower present path). The first build's list is
+ * cached and reused across rebuilds: only the allocation is skipped, the
+ * per-build mount re-initialises every descriptor (buffers + owner bits),
+ * so the topology is rebuilt identically. Freed when VGA is released. */
+gdma_link_list_handle_t vga320d_reserved_fb_link = NULL;
+uint32_t vga320d_reserved_fb_link_nodes = 0;
+
+void vga320d_release_reserved_links(void) {
+    if (vga320d_reserved_fb_link) {
+        gdma_del_link_list(vga320d_reserved_fb_link);
+        vga320d_reserved_fb_link = NULL;
+        vga320d_reserved_fb_link_nodes = 0;
+    }
+}
+
 #define esp_lcd_new_rgb_panel vga320d_new_rgb_panel
 #define esp_lcd_rgb_panel_register_event_callbacks vga320d_rgb_panel_register_event_callbacks
 #define esp_lcd_rgb_panel_set_pclk vga320d_rgb_panel_set_pclk
@@ -193,9 +221,19 @@ static esp_err_t lcd_rgb_panel_alloc_frame_buffers(esp_rgb_panel_t *rgb_panel)
     // alloc frame buffer
     for (int i = 0; i < rgb_panel->num_fbs; i++) {
         if (fb_in_psram) {
-            // the allocated buffer is also aligned to the cache line size
-            rgb_panel->fbs[i] = heap_caps_aligned_calloc(rgb_panel->ext_mem_align, 1, rgb_panel->fb_size,
-                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+            /* [320d] reuse the cached PSRAM console fb across rebuilds; on
+             * the first build, allocate (aligned to the cache line size)
+             * and cache it so later mode switches never re-allocate. */
+            if (i == 0 && vga320d_reserved_psram_fb && rgb_panel->fb_size == vga320d_reserved_psram_fb_size) {
+                rgb_panel->fbs[i] = vga320d_reserved_psram_fb;
+            } else {
+                rgb_panel->fbs[i] = heap_caps_aligned_calloc(rgb_panel->ext_mem_align, 1, rgb_panel->fb_size,
+                                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+                if (i == 0 && rgb_panel->fbs[i] && !vga320d_reserved_psram_fb) {
+                    vga320d_reserved_psram_fb = rgb_panel->fbs[i];
+                    vga320d_reserved_psram_fb_size = rgb_panel->fb_size;
+                }
+            }
             ESP_RETURN_ON_FALSE(rgb_panel->fbs[i], ESP_ERR_NO_MEM, TAG, "no mem for frame buffer");
             rgb_panel->flags.fb_behind_cache = ext_mem_cache_line_size > 0;
         } else {
@@ -265,13 +303,20 @@ static esp_err_t lcd_rgb_panel_destroy(esp_rgb_panel_t *rgb_panel)
     }
     for (size_t i = 0; i < RGB_LCD_PANEL_MAX_FB_NUM; i++) {
         if (rgb_panel->fbs[i]) {
-            /* [320d] the boot-reserved buffer outlives the panel. */
-            if (rgb_panel->fbs[i] != vga320d_reserved_fb) {
+            /* [320d] the boot-reserved internal buffer and the cached
+             * PSRAM console fb both outlive the panel (reused across mode
+             * switches); the port frees them when VGA is released. */
+            if (rgb_panel->fbs[i] != vga320d_reserved_fb &&
+                rgb_panel->fbs[i] != vga320d_reserved_psram_fb) {
                 free(rgb_panel->fbs[i]);
             }
         }
         if (rgb_panel->dma_fb_links[i]) {
-            gdma_del_link_list(rgb_panel->dma_fb_links[i]);
+            /* [320d] the cached native-panel descriptor list outlives the
+             * panel (reused across mode switches; freed on VGA release). */
+            if (rgb_panel->dma_fb_links[i] != vga320d_reserved_fb_link) {
+                gdma_del_link_list(rgb_panel->dma_fb_links[i]);
+            }
         }
     }
     for (int i = 0; i < RGB_LCD_PANEL_BOUNCE_BUF_NUM; i++) {
@@ -1153,10 +1198,27 @@ static esp_err_t lcd_rgb_panel_init_trans_link(esp_rgb_panel_t *rgb_panel)
         if (!mount_cfgs) mount_cfgs = calloc(num_dma_nodes, sizeof(gdma_buffer_mount_config_t));
         ESP_RETURN_ON_FALSE(mount_cfgs, ESP_ERR_NO_MEM, TAG, "no mem for mount configs");
         for (size_t i = 0; i < rgb_panel->num_fbs; i++) {
-            esp_err_t link_err = gdma_new_link_list(&link_cfg, &rgb_panel->dma_fb_links[i]);
-            if (link_err != ESP_OK) {
-                free(mount_cfgs);
-                ESP_RETURN_ON_ERROR(link_err, TAG, "create frame buffer DMA link failed");
+            if (i == 0 && vga320d_reserved_fb_link &&
+                vga320d_reserved_fb_link_nodes == num_dma_nodes) {
+                /* [320d] reuse the cached descriptor list. The prior scan
+                 * left every node DMA-owned, which the check_owner mount
+                 * below treats as unavailable ("no more space"); hand them
+                 * back to the CPU first so the re-mount re-initialises all
+                 * of them. */
+                rgb_panel->dma_fb_links[i] = vga320d_reserved_fb_link;
+                for (uint32_t n = 0; n < num_dma_nodes; n++) {
+                    gdma_link_set_owner(rgb_panel->dma_fb_links[i], n, GDMA_LLI_OWNER_CPU);
+                }
+            } else {
+                esp_err_t link_err = gdma_new_link_list(&link_cfg, &rgb_panel->dma_fb_links[i]);
+                if (link_err != ESP_OK) {
+                    free(mount_cfgs);
+                    ESP_RETURN_ON_ERROR(link_err, TAG, "create frame buffer DMA link failed");
+                }
+                if (i == 0 && !vga320d_reserved_fb_link) {
+                    vga320d_reserved_fb_link = rgb_panel->dma_fb_links[i];
+                    vga320d_reserved_fb_link_nodes = num_dma_nodes;
+                }
             }
             for (uint32_t n = 0; n < num_dma_nodes; n++) {
                 mount_cfgs[n].buffer = rgb_panel->fbs[i] + (n / VGA320D_LINE_REPEAT) * row_bytes;
