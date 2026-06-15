@@ -43,7 +43,7 @@ static const mm_options_ini_field_t option_fields[] = {
     OPT_FIELD(ColourCode, MM_OPT_INI_I8),
     OPT_FIELD(MOUSE_CLOCK, MM_OPT_INI_U8),
     OPT_FIELD(MOUSE_DATA, MM_OPT_INI_U8),
-    OPT_FIELD(spare, MM_OPT_INI_I8),
+    OPT_FIELD(DISPLAY_MIRROR, MM_OPT_INI_I8),
     OPT_FIELD(CPU_Speed, MM_OPT_INI_I32),
     OPT_FIELD(Telnet, MM_OPT_INI_U32),
     OPT_FIELD(DefaultFC, MM_OPT_INI_I32),
