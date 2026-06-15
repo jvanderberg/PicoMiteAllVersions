@@ -113,8 +113,10 @@ extern volatile short low_y, high_y, low_x, high_x;
 /* Display capability hook: 1 if the panel honours the manual REFRESH /
  * OPTION DISPLAY AUTOREFRESH ON model, 0 for always-presented panels that
  * push every draw to glass immediately (REFRESH is a no-op, AUTOREFRESH ON
- * is rejected). Weak default lives in shared/gfx/gfx_console_shared.c;
- * ports override as needed. */
+ * is rejected). Backed by port_display_supports_manual_refresh (default 1 in
+ * shared/gfx/gfx_console_shared.c); ports with an always-presented display
+ * clear that flag in their display init. */
+extern int port_display_supports_manual_refresh;
 int port_display_manual_refresh_supported(void);
 
 #define TOUCH_NOT_CALIBRATED -999999

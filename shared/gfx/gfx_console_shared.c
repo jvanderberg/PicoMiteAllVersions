@@ -18,10 +18,14 @@
 __attribute__((weak)) void port_display_render_begin(void) {}
 __attribute__((weak)) void port_display_render_end(void) {}
 
-/* Panels honour the manual REFRESH / AUTOREFRESH model by default; ports
- * with always-presented displays override this to return 0. */
-__attribute__((weak)) int port_display_manual_refresh_supported(void) {
-    return 1;
+/* Panels honour the manual REFRESH / AUTOREFRESH model by default. Ports
+ * with an always-presented display (no off-screen buffer, e.g. the no-PSRAM
+ * CYD) clear this flag in their display init. Driven by a flag rather than a
+ * weak symbol override because a cross-TU weak default does not resolve under
+ * mingw/PE-COFF (the mmbasic_ansi.exe build). */
+int port_display_supports_manual_refresh = 1;
+int port_display_manual_refresh_supported(void) {
+    return port_display_supports_manual_refresh;
 }
 
 static int (*s_cursor_hook)(int show);

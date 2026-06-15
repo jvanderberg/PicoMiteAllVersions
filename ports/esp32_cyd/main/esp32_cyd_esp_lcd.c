@@ -805,10 +805,8 @@ void esp32_ili9341_lcd_init(void) {
     ClearScreen(gui_bcolour);
     ESP_LOGI(TAG, "esp_lcd ST7789 ready: %dx%d sclk=%d mosi=%d miso=%d cs=%d dc=%d",
              s_w, s_h, sclk, mosi, miso, cs, dc);
-}
-
-/* The CYD panel is presented to glass on every draw, so the manual REFRESH
- * command is a no-op and OPTION DISPLAY AUTOREFRESH ON is rejected. */
-int port_display_manual_refresh_supported(void) {
-    return 0;
+    /* The CYD presents to glass on every draw — no off-screen buffer — so the
+     * manual REFRESH command is a no-op and OPTION DISPLAY AUTOREFRESH ON is
+     * rejected. */
+    port_display_supports_manual_refresh = 0;
 }
