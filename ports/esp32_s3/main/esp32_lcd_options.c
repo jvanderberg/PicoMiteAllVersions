@@ -82,6 +82,21 @@ static int lcd_panel_setter(unsigned char * tp) {
         Option.DISPLAY_TYPE = 0;
         Option.DISPLAY_CONSOLE = 0;
         Option.BGR = 0;
+        Option.DISPLAY_MIRROR = 0;
+        lcd_option_save_and_reset();
+        return 1;
+    }
+    /* OPTION LCDPANEL MIRROR ON|OFF — horizontal flip for panel variants
+     * whose scan is reflected relative to the validated default (some CYD
+     * ST7789 sub-variants). Toggles in place without re-stating the panel. */
+    unsigned char * mp;
+    if ((mp = checkstring(tp, (unsigned char *)"MIRROR"))) {
+        if (checkstring(mp, (unsigned char *)"ON"))
+            Option.DISPLAY_MIRROR = 1;
+        else if (checkstring(mp, (unsigned char *)"OFF"))
+            Option.DISPLAY_MIRROR = 0;
+        else
+            error("OPTION LCDPANEL MIRROR ON|OFF");
         lcd_option_save_and_reset();
         return 1;
     }
@@ -246,5 +261,6 @@ void esp32_lcd_print_options(void) {
         }
         if (Option.BGR) MMPrintString(", INVERT");
         MMPrintString("\r\n");
+        if (Option.DISPLAY_MIRROR) MMPrintString("OPTION LCDPANEL MIRROR ON\r\n");
     }
 }

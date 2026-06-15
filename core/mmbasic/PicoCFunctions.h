@@ -244,7 +244,7 @@ struct option_s {
     char ColourCode;
     unsigned char MOUSE_CLOCK;
     unsigned char MOUSE_DATA;
-    char spare;
+    char DISPLAY_MIRROR; // was 'spare'; horizontal-mirror flag for SPI-LCD panels (0 = off)
     int CPU_Speed;
     unsigned int Telnet;      // 40 used to store status on console OFF/ON/BOTH
     int DefaultFC, DefaultBC; // 44 the default colours

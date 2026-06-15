@@ -699,17 +699,21 @@ void esp32_ili9341_lcd_init(void) {
         lcd_release_resources(1);
         return;
     }
-    /* Landscape = swap X/Y; flip the mirror for the 180° variants. */
+    /* Landscape = swap X/Y; flip the mirror for the 180° variants. The
+     * orientations above are all rotations; OPTION LCDPANEL MIRROR adds a
+     * true horizontal reflection (XOR into mirror-X) for panel sub-variants
+     * whose scan is mirrored relative to the validated CYD2USB. */
     int landscape = Option.DISPLAY_ORIENTATION & 1;
     int flip = (Option.DISPLAY_ORIENTATION == RLANDSCAPE ||
                 Option.DISPLAY_ORIENTATION == RPORTRAIT);
+    int umirror = Option.DISPLAY_MIRROR ? 1 : 0;
     err = esp_lcd_panel_swap_xy(s_panel, landscape);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "panel swap_xy failed: %s", esp_err_to_name(err));
         lcd_release_resources(1);
         return;
     }
-    err = esp_lcd_panel_mirror(s_panel, landscape ^ flip, flip);
+    err = esp_lcd_panel_mirror(s_panel, (landscape ^ flip) ^ umirror, flip);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "panel mirror failed: %s", esp_err_to_name(err));
         lcd_release_resources(1);
