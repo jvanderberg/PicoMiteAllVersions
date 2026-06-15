@@ -220,9 +220,15 @@ void esp32_lcd_print_options(void) {
     if (Option.LCD_CD && Option.LCD_CS) {
         const char * orient = "LANDSCAPE";
         switch (Option.DISPLAY_ORIENTATION) {
-        case RLANDSCAPE: orient = "RLANDSCAPE"; break;
-        case PORTRAIT: orient = "PORTRAIT"; break;
-        case RPORTRAIT: orient = "RPORTRAIT"; break;
+        case RLANDSCAPE:
+            orient = "RLANDSCAPE";
+            break;
+        case PORTRAIT:
+            orient = "PORTRAIT";
+            break;
+        case RPORTRAIT:
+            orient = "RPORTRAIT";
+            break;
         }
         MMPrintString("OPTION LCDPANEL ");
         MMPrintString(Option.DISPLAY_TYPE == ST7789B ? "ST7789" : "ILI9341");

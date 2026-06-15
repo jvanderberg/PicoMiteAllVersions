@@ -48,7 +48,9 @@ extern int ForceFileClose(int fnbr);
 
 /* No MOD-size limit by default; ports with a tight audio work-memory
  * budget (e.g. the no-PSRAM CYD) override this. */
-__attribute__((weak)) unsigned long hal_audio_mod_max_file_bytes(void) { return 0; }
+__attribute__((weak)) unsigned long hal_audio_mod_max_file_bytes(void) {
+    return 0;
+}
 
 #define DECODE_FRAMES 1024
 #define MOD_RENDER_RATE 22050

@@ -20,7 +20,9 @@ __attribute__((weak)) void port_display_render_end(void) {}
 
 /* Panels honour the manual REFRESH / AUTOREFRESH model by default; ports
  * with always-presented displays override this to return 0. */
-__attribute__((weak)) int port_display_manual_refresh_supported(void) { return 1; }
+__attribute__((weak)) int port_display_manual_refresh_supported(void) {
+    return 1;
+}
 
 static int (*s_cursor_hook)(int show);
 

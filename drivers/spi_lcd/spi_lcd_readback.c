@@ -95,7 +95,7 @@ void ReadBufferSPISCR(int x1, int y1, int x2, int y2, unsigned char * p) {
     if (y1 >= VRes) y1 = VRes - 1;
     if (y2 < 0) y2 = 0;
     if (y2 >= VRes) y2 = VRes - 1;
-    t = y2 - y1;                                                                                                      // get the distance between the top and bottom
+    t = y2 - y1; // get the distance between the top and bottom
     y1 = (y1 + ScrollStart) % VRes;
     y2 = y1 + t;
     if (y2 >= VRes) {

@@ -113,7 +113,7 @@ bool dmarunning = 0;
  * protects reset/session changes and single-frame consumer claims. */
 #define SAMPLE_RING_FRAMES HAL_PORT_AUDIO_SAMPLE_RING_FRAMES
 #define AUDIO_WORKMEM_BASIC_HEAP_ENABLED (0 + HAL_PORT_AUDIO_WORKMEM_USE_BASIC_HEAP)
-static int16_t * s_ring;          /* SAMPLE_RING_FRAMES * 2 int16 */
+static int16_t * s_ring; /* SAMPLE_RING_FRAMES * 2 int16 */
 static _Atomic uint32_t s_ring_head, s_ring_tail;
 static _Atomic uint32_t s_stream_inflight_frames;
 static _Atomic uint32_t s_stream_drain_frames;

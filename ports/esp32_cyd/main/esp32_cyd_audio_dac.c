@@ -22,7 +22,9 @@
 
 /* Cap MOD files to what fits in the no-PSRAM CYD audio work-memory budget
  * (allocated from the internal/BASIC heap after Wi-Fi/LCD/SD init). */
-unsigned long hal_audio_mod_max_file_bytes(void) { return 24u * 1024u; }
+unsigned long hal_audio_mod_max_file_bytes(void) {
+    return 24u * 1024u;
+}
 
 #define CYD_DAC_I2S_NUM I2S_NUM_0
 #define CYD_DAC_DMA_DESC_NUM 2

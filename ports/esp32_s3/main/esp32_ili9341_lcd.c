@@ -187,7 +187,9 @@ int hal_spi_lcd_bus_read(uint8_t * buf, size_t len) {
 /* Reads run on a dedicated low-clock device, so there's no clock to switch;
  * just reset the per-span read index so the first read consumes the RAMRD
  * dummy byte. */
-void hal_spi_lcd_bus_read_begin(void) { s_rd_n = 0; }
+void hal_spi_lcd_bus_read_begin(void) {
+    s_rd_n = 0;
+}
 void hal_spi_lcd_bus_read_end(void) {}
 
 static void lcd_cmd(uint8_t cmd) {

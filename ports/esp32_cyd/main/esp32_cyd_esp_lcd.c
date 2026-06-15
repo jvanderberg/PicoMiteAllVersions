@@ -51,13 +51,13 @@ static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_panel_handle_t s_panel;
 static spi_device_handle_t s_lcd; /* fast write device used after esp_lcd init */
 static spi_device_handle_t s_rd;  /* slow RAMRD device */
-static int s_dc = -1;            /* DC GPIO, toggled manually around RAMRD */
+static int s_dc = -1;             /* DC GPIO, toggled manually around RAMRD */
 static int s_cs = -1;
 static int s_w = LCD_W;
 static int s_h = LCD_H;
 static int s_panel_type = ST7789B;
-static uint8_t * s_scratch;   /* DMA write scratch, SCRATCH_PX RGB565 pixels */
-static uint8_t * s_rdbuf;     /* DMA read scratch, 1 dummy + READ_SCRATCH_PX*3 */
+static uint8_t * s_scratch; /* DMA write scratch, SCRATCH_PX RGB565 pixels */
+static uint8_t * s_rdbuf;   /* DMA read scratch, 1 dummy + READ_SCRATCH_PX*3 */
 
 extern volatile int DISPLAY_TYPE;
 extern unsigned char OptionConsole;
@@ -98,8 +98,16 @@ static void packed_rgb121_set(uint8_t * p, int index, uint8_t v) {
 }
 
 static int clip_rect(int * x1, int * y1, int * x2, int * y2) {
-    if (*x1 > *x2) { int t = *x1; *x1 = *x2; *x2 = t; }
-    if (*y1 > *y2) { int t = *y1; *y1 = *y2; *y2 = t; }
+    if (*x1 > *x2) {
+        int t = *x1;
+        *x1 = *x2;
+        *x2 = t;
+    }
+    if (*y1 > *y2) {
+        int t = *y1;
+        *y1 = *y2;
+        *y2 = t;
+    }
     if (*x1 < 0) *x1 = 0;
     if (*y1 < 0) *y1 = 0;
     if (*x2 >= s_w) *x2 = s_w - 1;
@@ -202,7 +210,11 @@ static void esp_lcd_draw_bitmap(int x, int y, int width, int height, int scale,
                 int bit = row * width + col;
                 int on = (bitmap[bit / 8] >> ((total_bits - bit - 1) % 8)) & 1;
                 if (!on) {
-                    if (run_w) { panel_blit(run_x, py, run_x + run_w - 1, py, s_scratch); run_w = 0; run_x = -1; }
+                    if (run_w) {
+                        panel_blit(run_x, py, run_x + run_w - 1, py, s_scratch);
+                        run_w = 0;
+                        run_x = -1;
+                    }
                     continue;
                 }
                 if (run_x < 0) run_x = px;
@@ -242,8 +254,16 @@ static void esp_lcd_draw_bitmap(int x, int y, int width, int height, int scale,
 
 static void esp_lcd_draw_buffer(int x1, int y1, int x2, int y2, unsigned char * bgr) {
     if (!bgr || !s_scratch) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int src_w = x2 - x1 + 1;
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
@@ -255,7 +275,8 @@ static void esp_lcd_draw_buffer(int x1, int y1, int x2, int y2, unsigned char * 
         if (nr > rows) nr = rows;
         for (int ry = 0; ry < nr; ry++) {
             unsigned char * src = bgr + ((size_t)(py + ry - y1) * (size_t)src_w +
-                                         (size_t)(cx1 - x1)) * 3u;
+                                         (size_t)(cx1 - x1)) *
+                                            3u;
             uint8_t * out = s_scratch + (size_t)ry * (size_t)w * 2u;
             for (int x = 0; x < w; x++) {
                 int c = ((int)src[2] << 16) | ((int)src[1] << 8) | src[0];
@@ -271,8 +292,16 @@ static void esp_lcd_draw_buffer(int x1, int y1, int x2, int y2, unsigned char * 
 static void esp_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2, int blank,
                                      unsigned char * p) {
     if (!p || !s_scratch) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int src_w = x2 - x1 + 1;
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
@@ -282,7 +311,11 @@ static void esp_lcd_draw_buffer_fast(int x1, int y1, int x2, int y2, int blank,
             int src_index = (y - y1) * src_w + (x - x1);
             uint8_t nibble = packed_rgb121_get(p, src_index);
             if (blank != -1 && nibble == sprite_transparent) {
-                if (run_w) { panel_blit(run_x, y, run_x + run_w - 1, y, s_scratch); run_w = 0; run_x = -1; }
+                if (run_w) {
+                    panel_blit(run_x, y, run_x + run_w - 1, y, s_scratch);
+                    run_w = 0;
+                    run_x = -1;
+                }
                 continue;
             }
             if (run_x < 0) run_x = x;
@@ -325,7 +358,8 @@ static int panel_read_region_stride(int x1, int y1, int x2, int y2,
             for (int x = 0; x < w; x++) {
                 size_t si = ((size_t)ry * (size_t)w + (size_t)x) * 3u;
                 size_t o = ((size_t)(y + ry) * (size_t)out_stride_px +
-                            (size_t)x) * 3u;
+                            (size_t)x) *
+                           3u;
                 out_bgr[o + 0] = src[si + 2];
                 out_bgr[o + 1] = src[si + 1];
                 out_bgr[o + 2] = src[si + 0];
@@ -342,22 +376,39 @@ static int panel_read_region(int x1, int y1, int x2, int y2, uint8_t * out_bgr) 
 
 static void esp_lcd_read_buffer(int x1, int y1, int x2, int y2, unsigned char * bgr) {
     if (!bgr) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int out_w = x2 - x1 + 1;
     int out_h = y2 - y1 + 1;
     memset(bgr, 0, (size_t)out_w * (size_t)out_h * 3u);
     int cx1 = x1, cy1 = y1, cx2 = x2, cy2 = y2;
     if (!clip_rect(&cx1, &cy1, &cx2, &cy2)) return;
     uint8_t * out = bgr + ((size_t)(cy1 - y1) * (size_t)out_w +
-                           (size_t)(cx1 - x1)) * 3u;
+                           (size_t)(cx1 - x1)) *
+                              3u;
     panel_read_region_stride(cx1, cy1, cx2, cy2, out, out_w);
 }
 
 static void esp_lcd_read_buffer_fast(int x1, int y1, int x2, int y2, unsigned char * p) {
     if (!p) return;
-    if (x1 > x2) { int t = x1; x1 = x2; x2 = t; }
-    if (y1 > y2) { int t = y1; y1 = y2; y2 = t; }
+    if (x1 > x2) {
+        int t = x1;
+        x1 = x2;
+        x2 = t;
+    }
+    if (y1 > y2) {
+        int t = y1;
+        y1 = y2;
+        y2 = t;
+    }
     int w = x2 - x1 + 1;
     int h = y2 - y1 + 1;
     memset(p, 0, ((size_t)w * (size_t)h + 1u) / 2u);
@@ -453,7 +504,10 @@ void esp32_ili9341_lcd_scroll(int lines) {
     if (!s_rd || lines == 0) return;
     ScrollStart = 0;
     int n = lines < 0 ? -lines : lines;
-    if (n >= s_h) { esp_lcd_draw_rectangle(0, 0, s_w - 1, s_h - 1, gui_bcolour); return; }
+    if (n >= s_h) {
+        esp_lcd_draw_rectangle(0, 0, s_w - 1, s_h - 1, gui_bcolour);
+        return;
+    }
     static uint8_t row[LCD_W * 3]; /* one BGR row, off-stack */
     if (lines > 0) {
         for (int y = 0; y < s_h - lines; y++) {
@@ -569,8 +623,13 @@ void esp32_ili9341_lcd_init(void) {
     }
 
     s_panel_type = (Option.DISPLAY_TYPE == ST7789B) ? ST7789B : ILI9341;
-    if (Option.DISPLAY_ORIENTATION & 1) { s_w = LCD_W; s_h = LCD_H; }
-    else { s_w = LCD_H; s_h = LCD_W; }
+    if (Option.DISPLAY_ORIENTATION & 1) {
+        s_w = LCD_W;
+        s_h = LCD_H;
+    } else {
+        s_w = LCD_H;
+        s_h = LCD_W;
+    }
 
     spi_bus_config_t bus = {
         .mosi_io_num = mosi,
@@ -750,4 +809,6 @@ void esp32_ili9341_lcd_init(void) {
 
 /* The CYD panel is presented to glass on every draw, so the manual REFRESH
  * command is a no-op and OPTION DISPLAY AUTOREFRESH ON is rejected. */
-int port_display_manual_refresh_supported(void) { return 0; }
+int port_display_manual_refresh_supported(void) {
+    return 0;
+}
