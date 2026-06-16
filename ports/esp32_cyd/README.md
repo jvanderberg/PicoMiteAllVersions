@@ -107,7 +107,7 @@ The `METRO` and `FREENOVE ILI9341` profiles also appear in `CONFIGURE LIST` (the
 | microSD (SPI) | SCLK 18, MOSI 23, MISO 19, CS 5 |
 | Audio | internal DAC on GPIO 26 |
 
-The LCD draws **direct to the panel** — there is no off-screen framebuffer (see [No-PSRAM limits](#no-psram-limits)). Graphics (`CLS`, `PIXEL`, `LINE`, `BOX`, `CIRCLE`, `TEXT`, `IMAGE`), the text console, and GUI controls all render straight to glass; `REFRESH` / `AUTOREFRESH` are not applicable and report `Invalid on this display`. Calibrate the resistive touchscreen with `GUI CALIBRATE`. The display, touch, SD, and audio are all `OPTION`-driven, so you can re-wire any of them by hand exactly as on the other PicoMite ports — the profile only supplies defaults.
+The LCD draws **direct to the panel** — there is no off-screen framebuffer (see [No-PSRAM limits](#no-psram-limits)). Graphics (`CLS`, `PIXEL`, `LINE`, `BOX`, `CIRCLE`, `TEXT`, `IMAGE`), the text console, and GUI controls all render straight to glass; `REFRESH` / `AUTOREFRESH` are not applicable and report `Invalid on this display`. Calibrate the resistive touchscreen with `GUI CALIBRATE`. The display, SD, and audio are all `OPTION`-driven, so you can re-wire any of them by hand exactly as on the other PicoMite ports — the profile only supplies defaults. The XPT2046 touch controller is on the board's fixed touch header, so it has no configurable pins: `OPTION TOUCH XPT2046` enables it on that wiring and `OPTION TOUCH DISABLE` turns it off.
 
 ### Generic ESP32 dev board (no display)
 
@@ -117,10 +117,11 @@ On a plain ESP32 dev board with no panel, stay on `GENERIC`. It brings up only w
 OPTION SYSTEM SPI GP14,GP13,GP12         ' LCD SPI bus: clk, mosi, miso
 OPTION LCDPANEL ST7789, LANDSCAPE, GP2, 0, GP15, GP21
                                          ' controller, orientation, DC, RST (0 = none), CS [, BL]
-OPTION TOUCH XPT2046, GP33, GP36         ' cs, irq
 OPTION SDCARD GP5,GP18,GP23,GP19         ' cs, clk, mosi, miso
 CPU RESTART
 ```
+
+The XPT2046 resistive touch controller is driven only under the `CYD` profile (its bus is the board's fixed touch header), so attach it with `CONFIGURE CYD` rather than by hand here.
 
 ## Wi-Fi And Network
 
