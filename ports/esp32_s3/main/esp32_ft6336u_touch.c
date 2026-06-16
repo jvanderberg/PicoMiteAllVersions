@@ -17,6 +17,7 @@
 #include "esp32_board_profile.h"
 #include "esp32_freenove_i2c.h"
 #include "esp32_option_ext.h"
+#include "esp32_touch_port.h"
 
 #define FT6336U_ADDR 0x38
 #define FT_REG_DEVICE_MODE 0x00
@@ -250,6 +251,25 @@ int esp32_touch_option_setter(unsigned char * cmdline) {
         SoftReset();
         return 1;
     }
+    if (checkstring(tp, (unsigned char *)"XPT2046")) {
+        /* Resistive XPT2046 (CYD): the controller's SPI bus, CS and IRQ are
+         * fixed by the board, so the command takes no pins — it re-enables
+         * touch on the board wiring (for example after OPTION TOUCH DISABLE)
+         * without re-running CONFIGURE. */
+        const esp32_board_profile_t * profile = esp32_board_profile_current();
+        if (!profile || !profile->has_touch || profile->touch.sda >= 0)
+            error("Touch type not supported on this port");
+        if (Option.TOUCH_CAP) error("Touch already configured");
+        Option.TOUCH_IRQ = codemap(profile->touch.interrupt);
+        Option.TOUCH_CS = codemap(profile->touch.reset);
+        Option.TOUCH_Click = 0;
+        Option.TOUCH_CAP = 2;
+        esp32_touch_port_set_default_calibration();
+        SaveOptions();
+        _excep_code = RESET_COMMAND;
+        SoftReset();
+        return 1;
+    }
     unsigned char * p = checkstring(tp, (unsigned char *)"FT6336");
     if (!p) error("Touch type not supported on this port");
     if (Option.TOUCH_CAP) error("Touch already configured");
@@ -285,6 +305,11 @@ int esp32_touch_option_setter(unsigned char * cmdline) {
 
 void esp32_touch_print_options(void) {
     if (!Option.TOUCH_CAP) return;
+    if (Option.TOUCH_CAP == 2) {
+        /* Resistive XPT2046 (CYD): bus and pins are board-fixed, no args. */
+        MMPrintString("OPTION TOUCH XPT2046\r\n");
+        return;
+    }
     MMPrintString("OPTION TOUCH FT6336, ");
     MMPrintString((char *)PinDef[Option.TOUCH_IRQ].pinname);
     MMPrintString(", ");
