@@ -79,12 +79,21 @@ const VERT_SRC = `#version 300 es
 in vec2 a_pos;
 out vec2 v_uv;
 void main() { v_uv = a_pos * 0.5 + 0.5; gl_Position = vec4(a_pos, 0.0, 1.0); }`;
+// u_levels = quantisation steps per channel (256 = no quantisation). Used to
+// preview low colour-depth displays: e.g. RGB565 = (32,64,32), RGB121 = (2,4,2).
 const FRAG_SRC = `#version 300 es
 precision mediump float;
 in vec2 v_uv;
 uniform sampler2D u_tex;
+uniform vec3 u_levels;
 out vec4 outColor;
-void main() { vec4 c = texture(u_tex, v_uv); outColor = vec4(c.b, c.g, c.r, 1.0); }`;
+void main() {
+    vec4 c = texture(u_tex, v_uv);
+    vec3 rgb = vec3(c.b, c.g, c.r);
+    vec3 L = max(u_levels - 1.0, vec3(1.0));
+    rgb = floor(rgb * L + 0.5) / L;
+    outColor = vec4(rgb, 1.0);
+}`;
 
 function compileShader(type, src) {
     const s = gl.createShader(type);
@@ -115,6 +124,22 @@ const aPosLoc = gl.getAttribLocation(glProgram, 'a_pos');
 gl.enableVertexAttribArray(aPosLoc);
 gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
 gl.uniform1i(gl.getUniformLocation(glProgram, 'u_tex'), 0);
+
+// Colour-depth preview: quantise the canvas to the active mode's depth.
+const uLevelsLoc = gl.getUniformLocation(glProgram, 'u_levels');
+function depthToLevels(bits) {
+    switch (bits) {
+        case 16: return [32, 64, 32];  // RGB565
+        case 8:  return [8, 8, 4];     // RGB332
+        case 4:  return [2, 4, 2];     // RGB121 (1:2:1)
+        default: return [256, 256, 256]; // 24-bit true colour
+    }
+}
+function setShaderDepth(bits) {
+    const l = depthToLevels(bits);
+    gl.uniform3f(uLevelsLoc, l[0], l[1], l[2]);
+}
+setShaderDepth(24);
 
 const glTex = gl.createTexture();
 gl.activeTexture(gl.TEXTURE0);
@@ -315,82 +340,116 @@ function saveModeMap(map) {
 }
 
 function modeMapForWorker(map) {
-    // worker.mjs wants [{mode, w, h}], easier to iterate than an object.
+    // worker.mjs wants [{mode, w, h, depth}], easier to iterate than an object.
     const out = [];
     for (let m = 1; m <= MODE_COUNT; m++) {
         const label = map[m];
         if (!label) continue;
         const r = parseRes(label);
-        if (r) out.push({ mode: m, w: r.w, h: r.h });
+        if (r) out.push({ mode: m, w: r.w, h: r.h, depth: depthOf(m) });
     }
     return out;
 }
 
-let modeMap = pickModeMap();
-
-const modeMapBody = document.getElementById('mode-map-body');
-
-function renderModeMapUI() {
-    if (!modeMapBody) return;
-    modeMapBody.innerHTML = '';
-    for (const label of MODE_RESOLUTIONS) {
-        const tr  = document.createElement('tr');
-        const td0 = document.createElement('td');
-        const td1 = document.createElement('td');
-        td0.textContent = label.replace('x', ' × ');
-        const sel = document.createElement('select');
-        sel.dataset.res = label;
-        const none = document.createElement('option');
-        none.value = ''; none.textContent = '(none)';
-        sel.appendChild(none);
-        for (let m = 1; m <= MODE_COUNT; m++) {
-            const opt = document.createElement('option');
-            opt.value = String(m);
-            opt.textContent = `Mode ${m}`;
-            sel.appendChild(opt);
+// ---- Per-mode colour depth ----------------------------------------------
+const MODE_DEPTH_KEY = 'picomite.modeDepth';
+const MODE_DEPTH_DEFAULT = 24;
+const MODE_DEPTHS = [
+    { bits: 24, label: '24-bit true colour' },
+    { bits: 16, label: '16-bit (RGB565)' },
+    { bits: 8,  label: '8-bit (RGB332)' },
+    { bits: 4,  label: '4-bit (RGB121)' },
+];
+function pickModeDepth() {
+    try {
+        const raw = JSON.parse(localStorage.getItem(MODE_DEPTH_KEY) || 'null');
+        const out = {};
+        if (raw && typeof raw === 'object') {
+            for (let m = 1; m <= MODE_COUNT; m++) {
+                const v = raw[m] ?? raw[String(m)];
+                if ([24, 16, 8, 4].includes(v)) out[m] = v;
+            }
         }
-        // Reflect current mapping: which mode (if any) has this label?
-        let assigned = '';
-        for (let m = 1; m <= MODE_COUNT; m++) {
-            if (modeMap[m] === label) { assigned = String(m); break; }
-        }
-        sel.value = assigned;
-        sel.addEventListener('change', () => onModeAssignmentChange(label, sel.value));
-        td1.appendChild(sel);
-        tr.appendChild(td0);
-        tr.appendChild(td1);
-        modeMapBody.appendChild(tr);
-    }
+        return out;
+    } catch (_) { return {}; }
+}
+let modeDepth = pickModeDepth();
+function depthOf(m) { return modeDepth[m] || MODE_DEPTH_DEFAULT; }
+function saveModeDepth() {
+    try { localStorage.setItem(MODE_DEPTH_KEY, JSON.stringify(modeDepth)); } catch (_) {}
 }
 
-function onModeAssignmentChange(label, modeStr) {
-    const mode = parseInt(modeStr, 10);
-    // Clear any prior assignment of this resolution and of the chosen
-    // mode — each mode owns exactly one resolution at a time.
+let modeMap = pickModeMap();
+
+// One row per mode: a resolution picker and a colour-depth picker.
+const modeRowsBody = document.getElementById('mode-rows-body');
+function renderModeRowsUI() {
+    if (!modeRowsBody) return;
+    modeRowsBody.innerHTML = '';
     for (let m = 1; m <= MODE_COUNT; m++) {
-        if (modeMap[m] === label) delete modeMap[m];
+        const tr = document.createElement('tr');
+
+        const tdMode = document.createElement('td');
+        tdMode.textContent = `Mode ${m}`;
+
+        // resolution picker
+        const tdRes = document.createElement('td');
+        const resSel = document.createElement('select');
+        const none = document.createElement('option');
+        none.value = ''; none.textContent = '(none)';
+        resSel.appendChild(none);
+        for (const label of MODE_RESOLUTIONS) {
+            const opt = document.createElement('option');
+            opt.value = label;
+            opt.textContent = label.replace('x', ' × ');
+            resSel.appendChild(opt);
+        }
+        resSel.value = modeMap[m] || '';
+        resSel.addEventListener('change', () => {
+            if (resSel.value) modeMap[m] = resSel.value;
+            else delete modeMap[m];
+            saveModeMap(modeMap);
+            pushModeMapLive(modeMap);
+        });
+        tdRes.appendChild(resSel);
+
+        // colour-depth picker
+        const tdDepth = document.createElement('td');
+        const depthSel = document.createElement('select');
+        for (const d of MODE_DEPTHS) {
+            const opt = document.createElement('option');
+            opt.value = String(d.bits);
+            opt.textContent = d.label;
+            depthSel.appendChild(opt);
+        }
+        depthSel.value = String(depthOf(m));
+        depthSel.addEventListener('change', () => {
+            modeDepth[m] = parseInt(depthSel.value, 10);
+            saveModeDepth();
+            pushModeMapLive(modeMap);
+        });
+        tdDepth.appendChild(depthSel);
+
+        tr.appendChild(tdMode);
+        tr.appendChild(tdRes);
+        tr.appendChild(tdDepth);
+        modeRowsBody.appendChild(tr);
     }
-    if (Number.isFinite(mode) && mode >= 1 && mode <= MODE_COUNT) {
-        modeMap[mode] = label;
-    }
-    saveModeMap(modeMap);
-    pushModeMapLive(modeMap);
-    renderModeMapUI();
 }
 
 function pushModeMapLive(map) {
-    // Send to the worker; the worker forwards each mapping into wasm via
-    // _wasm_set_mode_resolution.  Also clears modes the user deselected
-    // (w=h=0 marks "unconfigured" in host_wasm_mode.c).
+    // Send to the worker; it forwards each mapping into wasm via
+    // _wasm_set_mode_resolution.  Modes left at "(none)" send w=h=0, which
+    // marks them unconfigured in host_wasm_mode.c.
     const entries = [];
     for (let m = 1; m <= MODE_COUNT; m++) {
         const r = map[m] ? parseRes(map[m]) : null;
-        entries.push({ mode: m, w: r?.w ?? 0, h: r?.h ?? 0 });
+        entries.push({ mode: m, w: r?.w ?? 0, h: r?.h ?? 0, depth: depthOf(m) });
     }
     worker.postMessage({ type: 'set-mode-map', entries });
 }
 
-renderModeMapUI();
+renderModeRowsUI();
 
 function pickProxyTftpPort() {
     const params = new URLSearchParams(window.location.search);
@@ -441,6 +500,10 @@ let workerInstance = null;      // exposed for resize ccalls via worker proxy
 // without a postMessage round-trip.
 let keyRingI32Base = 0, keyHeadIdx = 0, keyTailIdx = 0, keyRingMask = 0;
 
+// Direct-write index into the wasm touch state block [x, y, down] — mouse
+// is mapped to touch coordinates and stored here without a postMessage hop.
+let touchBaseIdx = 0;
+
 const screenAreaEl = document.getElementById('screen-area');
 const screenWrapEl = document.getElementById('screen-wrap');
 
@@ -489,6 +552,7 @@ async function handleConfigResize() {
     fbPtr    = dims.fbPtr;
     fbWidth  = dims.fbWidth;
     fbHeight = dims.fbHeight;
+    if (dims.depth) setShaderDepth(dims.depth);  // preview the mode's colour depth
     canvas.width  = fbWidth;
     canvas.height = fbHeight;
     gl.viewport(0, 0, fbWidth, fbHeight);
@@ -583,6 +647,7 @@ worker.onmessage = (e) => {
         keyHeadIdx      = m.keyRingHeadPtr >>> 2;
         keyTailIdx      = m.keyRingTailPtr >>> 2;
         keyRingMask     = m.keyRingSize - 1;
+        touchBaseIdx    = m.touchStatePtr ? (m.touchStatePtr >>> 2) : 0;
         onWorkerReady();
         return;
     }
@@ -1134,6 +1199,56 @@ function pushKeyToRing(code) {
     Atomics.store(memoryU32, keyHeadIdx, next);
 }
 
+// ---- Mouse-as-touch -----------------------------------------------------
+// The canvas shows the fbWidth x fbHeight framebuffer scaled to CSS pixels.
+// Map a pointer event back to framebuffer coordinates and write the shared
+// touch block [x, y, down]. Coordinates are written before the down flag
+// (Atomics.store on the flag is the barrier) so the wasm side never reads a
+// down edge against stale coordinates.
+function writeTouch(x, y, down) {
+    if (!touchBaseIdx) return;
+    memoryI32[touchBaseIdx]     = x;
+    memoryI32[touchBaseIdx + 1] = y;
+    Atomics.store(memoryU32, touchBaseIdx + 2, down ? 1 : 0);
+}
+
+function pointerToFb(ev) {
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    let x = Math.floor((ev.clientX - rect.left) / rect.width  * fbWidth);
+    let y = Math.floor((ev.clientY - rect.top)  / rect.height * fbHeight);
+    x = Math.max(0, Math.min(fbWidth  - 1, x));
+    y = Math.max(0, Math.min(fbHeight - 1, y));
+    return { x, y };
+}
+
+function wireTouch() {
+    if (!touchBaseIdx) return;   // older wasm without the touch export
+    let penDown = false;
+    canvas.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;          // primary button / touch / pen only
+        const p = pointerToFb(ev);
+        if (!p) return;
+        penDown = true;
+        writeTouch(p.x, p.y, true);
+        try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+    });
+    canvas.addEventListener('pointermove', (ev) => {
+        if (!penDown) return;
+        const p = pointerToFb(ev);
+        if (p) writeTouch(p.x, p.y, true);
+    });
+    const release = (ev) => {
+        if (!penDown) return;
+        penDown = false;
+        const p = pointerToFb(ev);
+        if (p) writeTouch(p.x, p.y, false);
+        else Atomics.store(memoryU32, touchBaseIdx + 2, 0);
+    };
+    canvas.addEventListener('pointerup', release);
+    canvas.addEventListener('pointercancel', release);
+}
+
 // Soft-keyboard support runs at page load — independent of the WASM
 // worker — so tapping the canvas raises the OS keyboard immediately,
 // and the layout adapts to visualViewport changes even before the
@@ -1490,6 +1605,7 @@ async function onWorkerReady() {
     window.addEventListener('resize', fitCanvas);
 
     wireKeyboard();
+    wireTouch();
     wireFileIO();
     startRenderLoop();
 

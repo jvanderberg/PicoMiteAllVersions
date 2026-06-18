@@ -657,6 +657,7 @@ static void esp32_ili9341_lcd_bind_panel(void) {
     Option.DISPLAY_CONSOLE = 1;
     Option.Refresh = 0;
     OptionConsole = 3;
+    gui_colour_depth = 16; /* RGB565 */
     DrawPixel = esp32_lcd_draw_pixel;
     DrawRectangle = esp32_lcd_draw_rectangle;
     DrawBitmap = esp32_lcd_draw_bitmap;

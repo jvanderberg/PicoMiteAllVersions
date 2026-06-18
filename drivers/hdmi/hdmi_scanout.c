@@ -1551,6 +1551,7 @@ int hal_vga_assign_hdmi_screenmode(int display_type) {
     extern void ReadBuffer256Fast(int x1, int y1, int x2, int y2, unsigned char * p);
     extern void DrawPixel256(int x, int y, int c);
     if (display_type == SCREENMODE4) {
+        gui_colour_depth = 16; /* RGB555 */
         DrawRectangle = DrawRectangle555;
         DrawBitmap = DrawBitmap555;
         ScrollLCD = ScrollLCD555;
@@ -1562,6 +1563,7 @@ int hal_vga_assign_hdmi_screenmode(int display_type) {
         return 1;
     }
     if (display_type == SCREENMODE5) {
+        gui_colour_depth = 8; /* RGB332 */
         DrawRectangle = DrawRectangle256;
         DrawBitmap = DrawBitmap256;
         ScrollLCD = ScrollLCD256;

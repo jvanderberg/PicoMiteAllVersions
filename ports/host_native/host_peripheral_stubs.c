@@ -70,12 +70,14 @@ void cmd_nop(void) {}
 void cmd_onewire(void) {}
 void cmd_option(void) {
     extern int port_web_option_setter(unsigned char * cmdline);
+    extern int hal_gui_controls_option_set(unsigned char * cmdline);
     extern void printoptions(void);
     if (checkstring(cmdline, (unsigned char *)"LIST")) {
         printoptions();
         return;
     }
     if (option_command_handle_common(cmdline, false)) return;
+    if (hal_gui_controls_option_set(cmdline)) return; /* OPTION GUI CONTROLS N (no-op on stub ports) */
     if (port_web_option_setter(cmdline)) return;
     error("Option not supported on this port");
 }
@@ -363,7 +365,9 @@ void fun_port(void) {}
 void fun_pulsin(void) {}
 void fun_spi(void) {}
 void fun_spi2(void) {}
-void fun_touch(void) {}
+#if !HAL_PORT_HAS_GUICONTROLS
+void fun_touch(void) {} /* WASM provides a real fun_touch in host_wasm_touch.c */
+#endif
 
 /* =========================================================================
  * Drawing stubs — Draw.c still references these transitively for

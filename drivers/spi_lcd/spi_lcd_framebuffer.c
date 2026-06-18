@@ -44,6 +44,7 @@ extern int SSD1963data;
  * DMAing bytes to a physical LCD controller. This block closes at the
  * original PICOMITEVGA #endif further down. */
 void restorepanel(void) {
+    gui_colour_depth = 16; /* RGB565 unless a low-depth branch lowers it */
     if (Option.DISPLAY_TYPE > I2C_PANEL && Option.DISPLAY_TYPE < BufferedPanel) {
         if (Option.DISPLAY_ORIENTATION == PORTRAIT) {
             DrawRectangle = DrawRectangleSPISCR;
@@ -69,6 +70,7 @@ void restorepanel(void) {
             }
         }
     } else if (Option.DISPLAY_TYPE >= SSDPANEL && Option.DISPLAY_TYPE < VIRTUAL) {
+        if (Option.DISPLAY_TYPE == ILI9341_8) gui_colour_depth = 8; /* RGB332 */
         if (screen320) {
             DrawRectangle = DrawRectangle320;
             DrawBitmap = DrawBitmap320;
@@ -99,6 +101,7 @@ void restorepanel(void) {
          * MEM332 function symbols are stubbed via
          * drivers/spi_lcd/spi_lcd_nextgen_stub.c on other builds so the
          * assignments below link unconditionally. */
+        gui_colour_depth = 8; /* RGB332 */
         DrawRectangle = DrawRectangleMEM332;
         DrawBitmap = DrawBitmapMEM332;
         DrawBuffer = DrawBufferMEM332;

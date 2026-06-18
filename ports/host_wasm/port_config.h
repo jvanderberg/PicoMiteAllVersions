@@ -30,6 +30,12 @@
 #undef HAL_PORT_HEAP_MEMORY_SIZE
 #define HAL_PORT_HEAP_MEMORY_SIZE (8 * 1024 * 1024)
 
+/* The browser build has the heap headroom the WiFi device variants lack,
+ * so it ships the on-screen GUI controls (GUI BUTTON/SWITCH/...). Touch
+ * is emulated from the mouse — see host_wasm_touch.c. */
+#undef HAL_PORT_HAS_GUICONTROLS
+#define HAL_PORT_HAS_GUICONTROLS 1
+
 #define MAX_PROG_SIZE (512 * 1024)
 
 /* Override the host_native banner. WASM canvas font is 7-bit ASCII, so

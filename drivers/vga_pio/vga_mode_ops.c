@@ -96,6 +96,7 @@ void hal_vga_ops_reset_display_vga(void) {
         break;
     }
     if (DISPLAY_TYPE == SCREENMODE2 || DISPLAY_TYPE == SCREENMODE3) {
+        gui_colour_depth = 16; /* RGB565 */
         DrawRectangle = DrawRectangle16;
         DrawBitmap = DrawBitmap16;
         ScrollLCD = ScrollLCD16;
@@ -106,10 +107,12 @@ void hal_vga_ops_reset_display_vga(void) {
         DrawPixel = DrawPixel16;
         /* HDMI-only SCREENMODE4 / SCREENMODE5 dispatch — real impl
          * in drivers/hdmi/hdmi_modes.c, stub returns 0 elsewhere.
-         * Returns 1 if the function pointers were assigned. */
+         * Returns 1 if the function pointers were assigned. (it sets
+         * gui_colour_depth for its mode.) */
     } else if (hal_vga_assign_hdmi_screenmode(DISPLAY_TYPE)) {
         /* function pointers populated by the hook */
     } else {
+        gui_colour_depth = 4; /* SCREENMODE1 = RGB121 */
         DrawRectangle = DrawRectangle2;
         DrawBitmap = DrawBitmap2;
         ScrollLCD = ScrollLCD2;

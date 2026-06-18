@@ -250,10 +250,10 @@
 
         <fieldset class="config-modes">
             <legend>Screen modes</legend>
-            <p class="config-hint">Assign a mode number to each resolution. BASIC <code>MODE&nbsp;N</code> switches the framebuffer to the assigned resolution at runtime.</p>
+            <p class="config-hint">Pick a resolution and colour depth for each mode. BASIC <code>MODE&nbsp;N</code> switches to it at runtime. The canvas is previewed at the chosen depth, and buttons drop the gloss gradient below 8-bit (matching low-colour displays).</p>
             <table class="mode-map">
-                <thead><tr><th>Resolution</th><th>Mode</th></tr></thead>
-                <tbody id="mode-map-body"><!-- rows injected by app.mjs --></tbody>
+                <thead><tr><th>Mode</th><th>Resolution</th><th>Colour depth</th></tr></thead>
+                <tbody id="mode-rows-body"><!-- rows injected by app.mjs --></tbody>
             </table>
         </fieldset>
     </form>

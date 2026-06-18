@@ -61,6 +61,7 @@ void vm_sys_pin_reset(void);
 void host_options_snapshot(void);
 
 extern void MMBasic_PrintBanner(void);
+extern void wasm_gui_touch_start(void);
 
 /* Set by wasm_break so CheckAbort / routinechecks sees the break and
  * longjmps back to the prompt. Polled opportunistically — full Ctrl-C
@@ -191,9 +192,17 @@ static void * wasm_runtime_thread(void * arg) {
 
     mmbasic_runtime_port_begin();
 
+    wasm_gui_touch_start(); /* mouse->touch bridge + GUI 1ms tick */
+
     wasm_configure_display_console();
     Option.Width = HRes / gui_font_width;   /* 320/8 = 40 cols */
     Option.Height = VRes / gui_font_height; /* 320/12 = 26 rows */
+
+    /* The browser build has the heap headroom for GUI controls and emulates
+     * touch from the mouse, so enable them out of the box (OPTION GUI
+     * CONTROLS can't run from inside a program). The CTRLS[] array is
+     * statically sized, so this only sets the active count. */
+    if (!Option.MaxCtrls) Option.MaxCtrls = 64;
 
     /* Re-snapshot Option into flash_option_buf AFTER the display
      * console is configured. mmbasic_runtime_port_begin took its snapshot

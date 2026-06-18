@@ -40,6 +40,18 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
 #define BTN_SIDE_WIDTH 4
 #define BTN_CAPTION_SHIFT 2
 
+// Modern control styling. Buttons / switches are rounded rectangles with
+// a soft top-to-bottom gloss gradient and a thin defining border, so they
+// read with depth on any background (no background-dependent drop shadow).
+// A pressed control reverses the gradient and darkens.
+#define GUI_BTN_RADIUS 4   // corner radius for buttons / switches
+#define GUI_BOX_RADIUS 4   // corner radius for frames / boxes / spinners
+#define GUI_BORDER_WIDTH 2 // border thickness (solid, uniform)
+#define GUI_GLOSS_TOP 16   // % brighten at the top of the face (gradient)
+#define GUI_GLOSS_BOT -18  // % darken at the bottom of the face (gradient)
+#define GUI_BORDER_PCT -42 // % darken for the border
+#define GUI_PRESS_PCT -16  // extra face darkening while pressed
+
 #define CLICK_DURATION 3 // the duration of a "click" in mSec
 
 #define CTRL_NORMAL 0b0000000    // the control should be displayed as normal
@@ -908,9 +920,108 @@ void DrawBorder(int x1, int y1, int x2, int y2, int w, int tc, int bc, int statu
     }
 }
 
+// integer square root (radii are tiny, so the linear scan is fine)
+static int GuiISqrt(int v) {
+    int r = 0;
+    while ((r + 1) * (r + 1) <= v) r++;
+    return r;
+}
+
+// blend two RGB colours, t = 0..256 (0 = a, 256 = b)
+static int GuiBlend(int a, int b, int t) {
+    int ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
+    int br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff;
+    int r = ar + ((br - ar) * t) / 256;
+    int g = ag + ((bg - ag) * t) / 256;
+    int bl = ab + ((bb - ab) * t) / 256;
+    return RGB(r, g, bl);
+}
+
+// horizontal inset of a rounded-rect row at vertical position y. The arc
+// is computed once here so fills and the border share identical corners.
+static int GuiRowInset(int y, int y1, int y2, int radius) {
+    int dy = 0;
+    if (y < y1 + radius)
+        dy = (y1 + radius) - y;
+    else if (y > y2 - radius)
+        dy = y - (y2 - radius);
+    if (dy <= 0 || radius <= 0) return 0;
+    if (dy > radius) dy = radius;
+    return radius - GuiISqrt(radius * radius - dy * dy);
+}
+
+// rounded rectangle, solid fill (one clean horizontal span per row)
+static void GuiFillRBox(int x1, int y1, int x2, int y2, int radius, int c) {
+    for (int y = y1; y <= y2; y++) {
+        int inset = GuiRowInset(y, y1, y2, radius);
+        DrawRectangle(x1 + inset, y, x2 - inset, y, c);
+    }
+}
+
+// rounded rectangle, vertical gradient fill from ctop to cbot
+static void GuiGradientRBox(int x1, int y1, int x2, int y2, int radius, int ctop, int cbot) {
+    int h = y2 - y1;
+    if (h < 1) h = 1;
+    for (int y = y1; y <= y2; y++) {
+        int inset = GuiRowInset(y, y1, y2, radius);
+        int col = GuiBlend(ctop, cbot, ((y - y1) * 256) / h);
+        DrawRectangle(x1 + inset, y, x2 - inset, y, col);
+    }
+}
+
+// A rounded panel: a solid border-colour rounded rect with an inner fill
+// inset by the border width. The border is the area difference of two
+// clean fills, so it is uniform on the sides AND the corners.
+static void GuiPanelRBox(int x1, int y1, int x2, int y2, int radius, int border, int fill, int status) {
+    if (status & CTRL_HIDDEN) {
+        DrawBox(x1, y1, x2, y2, 0, gui_bcolour, gui_bcolour);
+        return;
+    }
+    if (status & (CTRL_DISABLED | CTRL_DISABLED2)) {
+        border = ChangeBright(border, BTN_DISABLED);
+        if (fill != gui_bcolour) fill = ChangeBright(fill, BTN_DISABLED);
+    }
+    int bw = GUI_BORDER_WIDTH;
+    int ir = radius - bw;
+    if (ir < 0) ir = 0;
+    GuiFillRBox(x1, y1, x2, y2, radius, border);
+    if (fill >= 0) GuiFillRBox(x1 + bw, y1 + bw, x2 - bw, y2 - bw, ir, fill);
+}
+
 void DrawBasicButton(int x1, int y1, int x2, int y2, int w, int up, int c, int status) {
-    DrawBorder(x1, y1, x2, y2, w, ChangeBright(c, up ? BTN_SIDE_BRIGHT : BTN_SIDE_DULL), ChangeBright(c, BTN_SIDE_DULL), status);
-    SpecialDrawBox(x1 + w, y1 + w, x2 - w, y2 - w, 0, 0, c, status); // fill in the face of the button
+    // rounded button: soft vertical gloss gradient inside a uniform border.
+    (void)w;
+    int radius = GUI_BTN_RADIUS;
+    if (radius > (x2 - x1) / 2) radius = (x2 - x1) / 2;
+    if (radius > (y2 - y1) / 2) radius = (y2 - y1) / 2;
+    if (radius < 0) radius = 0;
+
+    if (status & CTRL_HIDDEN) {
+        DrawBox(x1, y1, x2, y2, 0, gui_bcolour, gui_bcolour);
+        return;
+    }
+    if (status & (CTRL_DISABLED | CTRL_DISABLED2)) c = ChangeBright(c, BTN_DISABLED);
+
+    int ctop, cbot;
+    if (up) {
+        ctop = ChangeBright(c, GUI_GLOSS_TOP);
+        cbot = ChangeBright(c, GUI_GLOSS_BOT);
+    } else {
+        int p = ChangeBright(c, GUI_PRESS_PCT); // pressed: darker, gradient flips
+        ctop = ChangeBright(p, GUI_GLOSS_BOT);
+        cbot = ChangeBright(p, GUI_GLOSS_TOP);
+    }
+    int bw = GUI_BORDER_WIDTH;
+    int ir = radius - bw;
+    if (ir < 0) ir = 0;
+    GuiFillRBox(x1, y1, x2, y2, radius, ChangeBright(c, GUI_BORDER_PCT)); // border
+    if (gui_colour_depth <= 8) {
+        // At 8 bpp and below the gradient only bands, so draw a flat face;
+        // the border still carries the look. (RGB332 / RGB121.)
+        GuiFillRBox(x1 + bw, y1 + bw, x2 - bw, y2 - bw, ir, GuiBlend(ctop, cbot, 128));
+    } else {
+        GuiGradientRBox(x1 + bw, y1 + bw, x2 - bw, y2 - bw, ir, ctop, cbot); // face
+    }
 }
 
 void DrawButton(int r) {
@@ -931,11 +1042,11 @@ void DrawButton(int r) {
     p++;
     *pp = 0;
 
-    // draw the caption
+    // draw the caption (transparent background so it sits on the gradient)
     if (Ctrl[r].value == 0)
-        SpecialPrintString(Ctrl[r].x1 + (Ctrl[r].x2 - Ctrl[r].x1) / 2, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, Ctrl[r].bc, (char *)s, Ctrl[r].state);
+        SpecialPrintString(Ctrl[r].x1 + (Ctrl[r].x2 - Ctrl[r].x1) / 2, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, -1, (char *)s, Ctrl[r].state);
     else
-        SpecialPrintString(Ctrl[r].x1 + (Ctrl[r].x2 - Ctrl[r].x1) / 2 + bs, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + bs, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, Ctrl[r].bc, (char *)p, Ctrl[r].state);
+        SpecialPrintString(Ctrl[r].x1 + (Ctrl[r].x2 - Ctrl[r].x1) / 2 + bs, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + bs, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, -1, (char *)p, Ctrl[r].state);
 }
 
 void DrawSwitch(int r) {
@@ -982,19 +1093,22 @@ void DrawSwitch(int r) {
         shift = 0;
     else
         shift = BTN_CAPTION_SHIFT;
-    SpecialPrintString(Ctrl[r].x1 + (half - Ctrl[r].x1) / 2 + shift, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + shift, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, ChangeBright(Ctrl[r].fc, (on || !twobtn) ? 0 : -25), ChangeBright(Ctrl[r].bc, on ? 0 : -25), (char *)s, Ctrl[r].state);
+    SpecialPrintString(Ctrl[r].x1 + (half - Ctrl[r].x1) / 2 + shift, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + shift, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, ChangeBright(Ctrl[r].fc, (on || !twobtn) ? 0 : -25), -1, (char *)s, Ctrl[r].state);
     if (!on)
         shift = 0;
     else
         shift = BTN_CAPTION_SHIFT;
-    if (twobtn) SpecialPrintString(half + (Ctrl[r].x2 - half) / 2 + shift, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + shift, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, ChangeBright(Ctrl[r].fc, on ? -25 : 0), ChangeBright(Ctrl[r].bc, on ? -25 : 0), (char *)p, Ctrl[r].state);
+    if (twobtn) SpecialPrintString(half + (Ctrl[r].x2 - half) / 2 + shift, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2 + shift, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, ChangeBright(Ctrl[r].fc, on ? -25 : 0), -1, (char *)p, Ctrl[r].state);
 }
 
 // for the checkbox the width/height is saved in Ctrl[r].inc
 void DrawCheckBox(int r) {
-    int i, w;
+    int i, w, radius;
 
-    SpecialDrawBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x1 + Ctrl[r].inc, Ctrl[r].y1 + Ctrl[r].inc, BTN_SIDE_WIDTH, ChangeBright(Ctrl[r].fc, -30), gui_bcolour, Ctrl[r].state);
+    // flat, rounded checkbox with a thin border (modern look)
+    radius = Ctrl[r].inc / 5;
+    if (radius > GUI_BTN_RADIUS) radius = GUI_BTN_RADIUS;
+    SpecialDrawRBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x1 + Ctrl[r].inc, Ctrl[r].y1 + Ctrl[r].inc, radius, ChangeBright(Ctrl[r].fc, -30), gui_bcolour, Ctrl[r].state);
     SpecialPrintString(Ctrl[r].x1 + Ctrl[r].inc + Ctrl[r].inc / 2, Ctrl[r].y1 + Ctrl[r].inc / 2, JUSTIFY_LEFT, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fcc, gui_bcolour, (char *)Ctrl[r].s, Ctrl[r].state);
 
     // draw the tick
@@ -1062,7 +1176,7 @@ void DrawSpinner(int r) {
     x2 = Ctrl[r].x2;
     y1 = Ctrl[r].y1;
     y2 = Ctrl[r].y2;
-    SpecialDrawRBox(x1 + h, y1, x2 - h, y2, 10, Ctrl[r].fc, Ctrl[r].bc, Ctrl[r].state);
+    GuiPanelRBox(x1 + h, y1, x2 - h, y2, GUI_BOX_RADIUS, Ctrl[r].fc, Ctrl[r].bc, Ctrl[r].state);
     FloatToStr((char *)Ctrl[r].s, Ctrl[r].value, 0, STR_AUTO_PRECISION, ' '); // convert the value to a string for display
     Ctrl[r].s[(x2 - x1 - h * 2) / gui_font_width] = 0;                        // truncate to the display width
     SpecialPrintString(x1 + (x2 - x1) / 2, y1 + h / 2, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, Ctrl[r].bc, (char *)Ctrl[r].s, Ctrl[r].state);
@@ -1077,7 +1191,7 @@ void DrawSpinner(int r) {
 }
 
 void DrawFrame(int r) {
-    SpecialDrawRBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x2, Ctrl[r].y2, 10, Ctrl[r].fc, -1, Ctrl[r].state); // the border
+    SpecialDrawRBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x2, Ctrl[r].y2, GUI_BOX_RADIUS, Ctrl[r].fc, -1, Ctrl[r].state); // the border
     SpecialPrintString(Ctrl[r].x1 + 15, Ctrl[r].y1, JUSTIFY_LEFT, JUSTIFY_MIDDLE, ORIENT_NORMAL, Ctrl[r].fc, gui_bcolour, (char *)Ctrl[r].s, Ctrl[r].state);
 }
 
@@ -1180,13 +1294,35 @@ void DrawGauge(int r) {
                 SpecialDrawTriangle(xo1, yo1, xo2, yo2, xi1, yi1, c, c, Ctrl[r].state);
                 SpecialDrawTriangle(xo2, yo2, xi1, yi1, xi2, yi2, c, c, Ctrl[r].state);
             }
-            // draw the outside frame
-            SpecialDrawLine(xo1, yo1, xo2, yo2, 1, Ctrl[r].fc, Ctrl[r].state);
-            SpecialDrawLine(xi1, yi1, xi2, yi2, 1, Ctrl[r].fc, Ctrl[r].state);
+        }
 
-            // draw the end stops
-            if (i == gstart) SpecialDrawLine(xi1, yi1, xo1, yo1, 1, Ctrl[r].fc, Ctrl[r].state);
-            if (i == gend) SpecialDrawLine(xi2, yi2, xo2, yo2, 1, Ctrl[r].fc, Ctrl[r].state);
+        // Smooth GUI_BORDER_WIDTH-pixel frame: a true distance-based annulus
+        // ring rather than per-segment chords, so the edge doesn't wobble.
+        // The coloured band triangles above fill the interior; this paints
+        // clean outer + inner edges and the two end caps over their ragged
+        // borders.
+        {
+            int cx = x, cy = y;
+            int ro = (int)(radius + 0.5f);
+            int ri = (int)(radius * (1.0f - width) + 0.5f);
+            int bw = GUI_BORDER_WIDTH;
+            int ro2 = ro * ro, ri2 = ri * ri;
+            int outer2 = (ro - bw) * (ro - bw);
+            int inner2 = (ri + bw) * (ri + bw);
+            for (int py = cy - ro; py <= cy + ro; py++) {
+                int dyv = py - cy;
+                for (int px = cx - ro; px <= cx + ro; px++) {
+                    int dxv = px - cx;
+                    int d2 = dxv * dxv + dyv * dyv;
+                    if (d2 > ro2 || d2 < ri2) continue; // outside the band
+                    int adx = dxv < 0 ? -dxv : dxv;
+                    if (dyv > 0 && dyv >= adx) continue;                               // the gauge's bottom opening
+                    int draw = (d2 >= outer2 || d2 <= inner2);                         // outer / inner ring
+                    if (!draw && dyv > 0 && dxv > 0 && dxv - dyv <= bw + 1) draw = 1;  // right end cap
+                    if (!draw && dyv > 0 && dxv < 0 && -dxv - dyv <= bw + 1) draw = 1; // left end cap
+                    if (draw) SpecialWritePixel(px, py, Ctrl[r].fc, Ctrl[r].state);
+                }
+            }
         }
     }
 
@@ -1452,7 +1588,7 @@ void DrawDisplayBox(int r) {
         fc = Ctrl[r].fc;
         bc = Ctrl[r].bc;
     }
-    SpecialDrawRBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x2, Ctrl[r].y2, 10, fc, bc, Ctrl[r].state);
+    GuiPanelRBox(Ctrl[r].x1, Ctrl[r].y1, Ctrl[r].x2, Ctrl[r].y2, GUI_BOX_RADIUS, fc, bc, Ctrl[r].state);
     if (strlen((char *)Ctrl[r].s) > 2 && Ctrl[r].s[0] == '#' && Ctrl[r].s[1] == '#')
         SpecialPrintString(Ctrl[r].x1 + (Ctrl[r].x2 - Ctrl[r].x1) / 2, Ctrl[r].y1 + (Ctrl[r].y2 - Ctrl[r].y1) / 2, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, ChangeBright(fc, BTN_DISABLED), bc, (char *)Ctrl[r].s + 2, Ctrl[r].state);
     else
@@ -1503,7 +1639,7 @@ void DrawSingleKey(int is_alpha, int x1, int y1, int x2, int y2, char * s, int f
         else
             SetFont(0x01);
     }
-    SpecialDrawRBox(x1, y1, x2, y2, 10, fc, bc, 0); // the border
+    GuiPanelRBox(x1, y1, x2, y2, GUI_BOX_RADIUS, fc, bc, 0); // the border
     SpecialPrintString(x1 + (x2 - x1) / 2, y1 + (y2 - y1) / 2, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, fc, bc, s, 0);
     if (is_alpha && *s == ' ') { // a space means that we should draw the shift symbol inside the button
         for (i = 0; i < ((x2 - x1) / 3); i++)
@@ -2250,7 +2386,7 @@ void fun_msgbox(void) {
     } while (TouchState && mSecTimer < timeout);
 
     PopUpRedrawAll(0, true);
-    SpecialDrawRBox(x1, y1, x2, y2, 25, gui_fcolour, gui_bcolour, CTRL_NORMAL);
+    GuiPanelRBox(x1, y1, x2, y2, GUI_BOX_RADIUS, gui_fcolour, gui_bcolour, CTRL_NORMAL);
 
     for (i = 0; i < msgnbr; i++)
         SpecialPrintString(HRes / 2, y1 + gui_font_height + (gui_font_height * i), JUSTIFY_CENTER, JUSTIFY_TOP, ORIENT_NORMAL, gui_fcolour, gui_bcolour, &msg[i * MAXSTRLEN], CTRL_NORMAL);
@@ -2261,7 +2397,7 @@ void fun_msgbox(void) {
         btnx1[i] = HRes / 2 - (k / 2) + (btnwidth * i) + (i * 2 * gui_font_width);
         btnx2[i] = btnx1[i] + btnwidth;
         DrawBasicButton(btnx1[i], btny1, btnx2[i], btny2, BTN_SIDE_WIDTH, 1, gui_fcolour, CTRL_NORMAL);
-        SpecialPrintString(btnx1[i] + btnwidth / 2, btny1 + gui_font_height, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, gui_bcolour, gui_fcolour, &btn[i * MAXSTRLEN], CTRL_NORMAL);
+        SpecialPrintString(btnx1[i] + btnwidth / 2, btny1 + gui_font_height, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, gui_bcolour, -1, &btn[i * MAXSTRLEN], CTRL_NORMAL);
     }
 
     while (1) {
@@ -2273,10 +2409,10 @@ void fun_msgbox(void) {
                 break;
         if (i < btnnbr) {
             DrawBasicButton(btnx1[i], btny1, btnx2[i], btny2, BTN_SIDE_WIDTH, 0, gui_fcolour, CTRL_NORMAL);
-            SpecialPrintString(btnx1[i] + btnwidth / 2 + BTN_CAPTION_SHIFT, btny1 + gui_font_height + BTN_CAPTION_SHIFT, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, gui_bcolour, gui_fcolour, &btn[i * MAXSTRLEN], CTRL_NORMAL);
+            SpecialPrintString(btnx1[i] + btnwidth / 2 + BTN_CAPTION_SHIFT, btny1 + gui_font_height + BTN_CAPTION_SHIFT, JUSTIFY_CENTER, JUSTIFY_MIDDLE, ORIENT_NORMAL, gui_bcolour, -1, &btn[i * MAXSTRLEN], CTRL_NORMAL);
             ClickTimer += CLICK_DURATION; // sound a "click"
             while (GetTouch(GET_X_AXIS) != TOUCH_ERROR) ServiceInterrupts();
-            SpecialDrawRBox(x1, y1, x2, y2, 25, gui_bcolour, gui_bcolour, CTRL_NORMAL);
+            SpecialDrawRBox(x1, y1, x2, y2, GUI_BOX_RADIUS, gui_bcolour, gui_bcolour, CTRL_NORMAL);
             PopUpRedrawAll(0, false);
             iret = i + 1;
             targ = T_INT;

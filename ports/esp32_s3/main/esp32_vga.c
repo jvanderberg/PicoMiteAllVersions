@@ -304,6 +304,7 @@ static void esp32_ScrollLCD256(int lines) {
 }
 
 static void esp32_vga_bind_rgb332_draw(void) {
+    gui_colour_depth = 8; /* RGB332 */
     DrawRectangle = esp32_DrawRectangle256;
     DrawBitmap = esp32_DrawBitmap256;
     ScrollLCD = esp32_ScrollLCD256;
